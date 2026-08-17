@@ -17,6 +17,7 @@ ag-ui-core = { path = "crates/ag-ui-core", version = "0.1.0" }
 ag-ui-server = { path = "crates/ag-ui-server", version = "0.1.0" }
 ag-ui-client = { path = "crates/ag-ui-client", version = "0.1.0" }
 ag-ui-a2ui = { path = "crates/ag-ui-a2ui", version = "0.1.0" }
+ag-ui-axum = { path = "crates/ag-ui-axum", version = "0.1.0" }
 
 # ---- runtime: core (must stay minimal) ----
 serde = { version = "1.0.229", features = ["derive"] }

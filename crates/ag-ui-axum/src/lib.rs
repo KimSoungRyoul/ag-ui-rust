@@ -108,6 +108,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+// The README is the crate's front page on crates.io, so its examples are
+// doctested: a stale one is a red build rather than a bad first impression.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+mod readme {}
+
 pub mod error;
 pub mod extract;
 pub mod respond;

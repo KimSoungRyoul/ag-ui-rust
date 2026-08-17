@@ -50,6 +50,13 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+// The README is the crate's front page on crates.io, so its examples are
+// doctested: a stale one is a red build rather than a bad first impression.
+// Gated on `sse` because that is the feature the example demonstrates.
+#[cfg(all(doctest, feature = "sse"))]
+#[doc = include_str!("../README.md")]
+mod readme {}
+
 pub mod capabilities;
 pub mod context;
 pub mod error;
