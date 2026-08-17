@@ -24,6 +24,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Only the tests use it, and only to prove the loop closes: what this endpoint
+# writes to the socket is what an AG-UI client reads back off it.
+ag-ui-client.workspace = true
 # `net` and `io-util` for the raw HTTP/1.1 client in tests/http.rs, `time` for
 # its timeouts.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }

@@ -150,6 +150,45 @@ impl Agent for Waiting {
     }
 }
 
+/// Emits one of nearly every event family, so a wire-shape test has something
+/// to look at. Every payload it invents is camelCase and null-free, which is
+/// what lets the checks below treat any `null` or `snake_case` key it finds as
+/// a protocol field rather than the agent's own data.
+struct Verbose;
+
+impl Agent for Verbose {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        ctx.emit(Event::state_snapshot(
+            serde_json::json!({ "cityName": "Seoul" }),
+        ))?;
+        ctx.emit(Event::custom("ping", serde_json::json!({ "seqNo": 1 })))?;
+
+        let mut step = ctx.step("answer")?;
+
+        let mut thought = step.reasoning()?;
+        thought.delta("They want the weather.")?;
+        thought.end()?;
+
+        let mut message = step.assistant_message()?;
+        message.delta("Let me check.")?;
+        message.end()?;
+
+        let mut call = step.tool_call("get_weather")?;
+        call.args(r#"{"city":"Seoul"}"#)?;
+        call.result(r#"{"tempC":21}"#)?;
+
+        step.emit(Event::state_delta(vec![ag_ui_core::PatchOperation::add(
+            "/tempC",
+            serde_json::json!(21),
+        )]))?;
+
+        drop(step);
+        Ok(RunOutcome::Success)
+    }
+}
+
 // ----------------------------------------------------------------- tests ----
 
 #[tokio::test(flavor = "multi_thread")]
@@ -202,6 +241,113 @@ async fn the_response_is_framed_as_an_unbuffered_event_stream() {
     assert_eq!(head.header("x-accel-buffering"), Some("no"));
     // The body was chosen by `Accept`.
     assert_eq!(head.header("vary"), Some("accept"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn frames_carry_what_the_reference_encoders_put_on_the_wire() {
+    // The Python SDK's encoder is one line and it is the whole contract:
+    // `f"data: {event.model_dump_json(by_alias=True, exclude_none=True)}\n\n"`
+    // (sdks/python/ag_ui/encoder/encoder.py). By alias means camelCase; exclude
+    // none means an absent optional is *absent*, not `null`; and the frame is a
+    // bare `data:` line with no `event:`, `id:` or `retry:` field. TypeScript
+    // gets the same three properties for free, since `undefined` fields do not
+    // survive `JSON.stringify`.
+    //
+    // `ag-ui-core`'s own tests prove the per-event field sets. What this one
+    // adds is that nothing between the emitter and the socket puts a field
+    // back: not the run driver, not the transformer chain, not the formatter.
+    let addr = serve(Router::new().route_agui("/agent", Verbose)).await;
+    let (head, body) = request(addr, &[], &input()).await;
+    assert_eq!(head.status, 200);
+
+    for frame in body.split("\n\n").filter(|frame| !frame.trim().is_empty()) {
+        let lines: Vec<&str> = frame.lines().collect();
+        assert_eq!(lines.len(), 1, "one line per frame: {frame:?}");
+        let payload = lines[0]
+            .strip_prefix("data: ")
+            .unwrap_or_else(|| panic!("every frame is a `data:` line: {frame:?}"));
+        let value: serde_json::Value =
+            serde_json::from_str(payload).expect("every frame carries one JSON event");
+        walk(&value, &mut |path, node| {
+            assert!(
+                !node.is_null(),
+                "{path} is null; absent optionals are absent"
+            );
+        });
+        walk(&value, &mut |path, _| {
+            let key = path.rsplit('.').next().unwrap_or(path);
+            assert!(
+                !key.contains('_'),
+                "{path} is not camelCase — the wire is `by_alias`"
+            );
+        });
+    }
+
+    // And the run really did exercise the families this is meant to cover.
+    let seen: Vec<EventType> = events(&body).iter().map(Event::event_type).collect();
+    for expected in [
+        EventType::RunStarted,
+        EventType::StateSnapshot,
+        EventType::Custom,
+        EventType::StepStarted,
+        EventType::ReasoningStart,
+        EventType::ReasoningMessageStart,
+        EventType::TextMessageStart,
+        EventType::ToolCallStart,
+        EventType::ToolCallResult,
+        EventType::StateDelta,
+        EventType::RunFinished,
+    ] {
+        assert!(seen.contains(&expected), "{expected} missing from {seen:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_client_streams_back_is_what_the_agent_emitted() {
+    // The other half of the wire check: the bytes above go through the client's
+    // own pipeline — normalize, verify, apply — and land as the conversation
+    // the agent meant. A field the server dropped or renamed would surface here
+    // as a verification error or a missing message.
+    let addr = serve(Router::new().route_agui("/agent", Verbose)).await;
+    let (_, body) = request(addr, &[], &input()).await;
+
+    let events = events(&body);
+    ag_ui_client::verify_all(&events).expect("the server's own stream must verify client-side");
+
+    let mut applier = ag_ui_client::apply::Applier::new();
+    for event in &events {
+        applier.apply(event).expect("every event should apply");
+    }
+    assert_eq!(applier.text_of("run-1-msg-2"), Some("Let me check."));
+    assert_eq!(
+        applier.reasoning_text(&"run-1-msg-1".into()),
+        Some("They want the weather.")
+    );
+    assert_eq!(
+        applier.state(),
+        &serde_json::json!({ "cityName": "Seoul", "tempC": 21 })
+    );
+}
+
+/// Calls `check` for every value in a JSON document, with a dotted path.
+fn walk(value: &serde_json::Value, check: &mut impl FnMut(&str, &serde_json::Value)) {
+    fn go(path: &str, value: &serde_json::Value, check: &mut impl FnMut(&str, &serde_json::Value)) {
+        check(path, value);
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    go(&format!("{path}.{key}"), child, check);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    go(&format!("{path}[{index}]"), child, check);
+                }
+            }
+            _ => {}
+        }
+    }
+    go("event", value, check);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -335,6 +481,83 @@ async fn an_oversized_body_is_a_413() {
 
     let (head, _) = request(addr, &[], &oversized).await;
     assert_eq!(head.status, 413);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_headers_the_typescript_client_sends_are_accepted() {
+    // `client/src/agent/http.ts` builds every request with exactly these two:
+    // `"Content-Type": "application/json"` and `Accept: "text/event-stream"`.
+    // Nothing else in the SDK negotiates, so this pair is the one that has to
+    // work, verbatim.
+    let addr = serve(Router::new().route_agui("/agent", Chatty)).await;
+
+    let (head, body) = request(
+        addr,
+        &[
+            ("content-type", "application/json"),
+            ("accept", "text/event-stream"),
+        ],
+        &input(),
+    )
+    .await;
+    assert_eq!(head.status, 200, "{body}");
+    assert_eq!(head.header("content-type"), Some("text/event-stream"));
+
+    // A charset parameter is not a different media type. Several HTTP clients
+    // append one whether or not the caller asked for it.
+    for content_type in [
+        "application/json; charset=utf-8",
+        "application/json;charset=UTF-8",
+        "Application/JSON; charset=utf-8",
+    ] {
+        let (head, body) = request(addr, &[("content-type", content_type)], &input()).await;
+        assert_eq!(
+            head.status, 200,
+            "{content_type} should be accepted: {body}"
+        );
+    }
+
+    // And no `Accept` at all is not a refusal to accept anything. RFC 9110
+    // reads an absent header as `*/*`, and a client that omits it is common
+    // enough that a 406 here would be a mystery.
+    let (head, body) = request(addr, &[], &input()).await;
+    assert_eq!(head.status, 200, "{body}");
+    assert_eq!(head.header("content-type"), Some("text/event-stream"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_input_may_leave_out_or_null_the_free_form_fields() {
+    // Upstream types both as `z.any()` (core/src/types.ts, RunAgentInputSchema),
+    // which in Zod accepts undefined — so absent, `null` and a value are all
+    // legal, and a producer that sends one shape today may send another
+    // tomorrow. The three array fields are *not* optional there, and are not
+    // here either; `a_malformed_body_is_a_400_that_says_why` covers that.
+    let addr = serve(Router::new().route_agui("/agent", Chatty)).await;
+
+    for body in [
+        // Neither field present.
+        br#"{"threadId":"t","runId":"r","messages":[],"tools":[],"context":[]}"#.as_slice(),
+        // Both explicitly null.
+        br#"{"threadId":"t","runId":"r","messages":[],"tools":[],"context":[],"state":null,"forwardedProps":null}"#,
+        // Both empty rather than absent.
+        br#"{"threadId":"t","runId":"r","messages":[],"tools":[],"context":[],"state":{},"forwardedProps":{}}"#,
+        // A field this SDK has never heard of, which a newer peer may add.
+        br#"{"threadId":"t","runId":"r","messages":[],"tools":[],"context":[],"somethingNewer":{"a":1}}"#,
+        // LangGraph-shaped ids: arbitrary strings, not UUIDs (upstream #2195).
+        br#"{"threadId":"agent:chat:1","runId":"1f0-a-b","messages":[],"tools":[],"context":[]}"#,
+    ] {
+        let (head, response) = request(addr, &[], body).await;
+        assert_eq!(
+            head.status,
+            200,
+            "{} should be accepted: {response}",
+            String::from_utf8_lossy(body)
+        );
+        assert_eq!(
+            events(&response).first().map(Event::event_type),
+            Some(EventType::RunStarted)
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
