@@ -494,8 +494,12 @@ impl StreamParser {
                 self.yielded_surfaces.insert(sid.clone());
                 self.buffered_start_message = None;
             }
-            // A fresh surface discards anything buffered for the old one.
+            // A fresh surface discards anything buffered for the old one, and
+            // is live again: replacing a surface is delete-then-create on the
+            // same id, and leaving it marked deleted would suppress every
+            // component that follows.
             self.pending_messages.remove(&sid);
+            self.deleted_surfaces.remove(&sid);
             self.yield_reachable(parts, false)?;
             return Ok(true);
         }
@@ -1623,6 +1627,30 @@ mod tests {
         );
         assert_eq!(messages.len(), 1);
         assert!(messages[0].get("createSurface").is_some());
+    }
+
+    #[test]
+    fn a_surface_recreated_after_a_delete_renders_again() {
+        let mut parser = parser();
+        let messages = feed(
+            &mut parser,
+            &[
+                "<a2ui-json>[",
+                CREATE,
+                r#"{"version":"v0.9","deleteSurface":{"surfaceId":"s1"}}, "#,
+                CREATE,
+                &format!(r#"{UPDATE_OPEN}[{{"id":"root","component":"Text","text":"back"}}]}}}}"#),
+            ],
+        );
+        // Replacing a surface is delete-then-create on the same id, which the
+        // create path already anticipates. The components that follow belong to
+        // the new surface, not the deleted one.
+        let components = &messages
+            .iter()
+            .rev()
+            .find(|m| m.get("updateComponents").is_some())
+            .expect("the recreated surface must render")["updateComponents"]["components"];
+        assert_eq!(components[0]["text"], "back");
     }
 
     #[test]
