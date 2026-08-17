@@ -99,6 +99,18 @@ macro_rules! define_events {
         ///
         /// Serializes as the payload's fields plus a `type` discriminator, so
         /// there is no nesting on the wire.
+        ///
+        /// # Exhaustive on purpose
+        ///
+        /// This enum is deliberately *not* `#[non_exhaustive]`, unlike every
+        /// error type in this workspace. A new protocol event **should** be a
+        /// compile error where you match on events: that is what a typed SDK
+        /// buys you over `serde_json::Value`, and the alternative — a `_` arm
+        /// in every consumer — is exactly how the previous Rust SDK came to be
+        /// missing eight event types without anyone noticing.
+        ///
+        /// The consequence is that adding an event is a major version of this
+        /// crate. That is the intended price; see `docs/DESIGN.md`.
         #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
         #[serde(tag = "type")]
         #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -114,6 +126,8 @@ macro_rules! define_events {
         /// The `type` discriminator of an [`Event`], on its own.
         ///
         /// Useful for routing and filtering without matching the payload.
+        /// Exhaustive for the same reason [`Event`] is, and
+        /// [`EventType::ALL`] is the list, in upstream order.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
         #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]

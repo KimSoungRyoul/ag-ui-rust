@@ -27,6 +27,37 @@ keeps it honest. Detection, not generation: it parses the upstream `EventType` e
 object keys and fails the build when they diverge from the Rust side. Full code generation would
 mean writing and maintaining a Zod-to-Rust compiler, which is not worth it yet.
 
+## `Event` is exhaustive on purpose; the errors are not
+
+Every error enum in the workspace is `#[non_exhaustive]`. `Event` and `EventType` are not,
+and that asymmetry is deliberate rather than an oversight — the protocol *has* grown twice
+in the last year (`REASONING_*`, `ACTIVITY_*`), so this will be tested.
+
+The failure this SDK exists to correct is silent under-coverage. `ag-ui-core 0.1.0`
+declares 24 variants against a spec with 32 and nobody noticed, because nothing anywhere
+forced the question. `#[non_exhaustive]` institutionalises that: it obliges every consumer
+to write a `_` arm, and a `_` arm is precisely the construct that turns "event 34 arrived"
+into no diagnostic at all. It does not remove the work of handling a new event; it removes
+the notification that there is work.
+
+So a new protocol event *should* be a compile error for a Rust consumer. That is the whole
+value proposition of a typed SDK over `serde_json::Value`, and it is the story the drift
+checker completes: `xtask drift-check` fails this repo's build when upstream adds an event,
+this crate adds the variant, and every downstream match then fails to compile until someone
+decides what the new event means to them. Three links, each loud.
+
+The price is honest and accepted: adding an event is a major version of this SDK. It should
+be — the wire contract changed.
+
+The same reasoning inverts for errors, which is why they carry the attribute. Nobody wants
+an exhaustive match over failure modes, callers route on a handful of variants and fall
+through on the rest, and a new failure mode is not a protocol change.
+
+The runtime side agrees with the type side. An event type this build does not know fails to
+deserialize, `Session` reports it and ends the run as `RunEnd::Failed`. A frontend talking
+to a newer agent stops with an error naming the unknown type rather than quietly rendering
+three quarters of a conversation.
+
 ## Crate boundaries
 
 Five crates, not seven. The first draft mirrored the .NET assembly split one-for-one, which is
