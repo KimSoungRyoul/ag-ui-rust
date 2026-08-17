@@ -144,9 +144,13 @@ pub enum RunEnd {
 /// A conversation with an agent.
 ///
 /// Holds the thread id, the messages both sides have said, and the application
-/// state. `S` is the type the state deserializes into; it defaults to
-/// [`serde_json::Value`], so `Session::<_>::new(transport, thread)` is the
-/// untyped spelling and `Session::<_, MyState>::new(…)` the typed one.
+/// state. `S` is the type the state deserializes into, and it is inferred from
+/// whatever the caller does with an [`Update::State`] — a `Session` handed to a
+/// function expecting `Session<T, MyState>`, or a match arm that keeps the
+/// state in a typed local, needs no turbofish at all. Spell it only when
+/// nothing else names it: `Session::<_>::new(transport, thread)` falls back to
+/// the [`serde_json::Value`] default, and `Session::<_, MyState>::new(…)` pins
+/// it by hand.
 ///
 /// To stream updates, `S` must be `Deserialize + Clone + Unpin` — an
 /// [`Update::State`] carries the state by value, so a view can hold it after

@@ -19,6 +19,13 @@ ag-ui-core = "0.1"
 use ag_ui_client::{RunEnd, Session, Update, transport::ReplayTransport};
 use ag_ui_core::{Event, PatchOperation, TextMessageRole};
 use futures_util::StreamExt;
+use serde::Deserialize;
+
+/// The agent's state, in your own type.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct Weather {
+    checked: bool,
+}
 
 #[tokio::main]
 async fn main() {
@@ -33,14 +40,17 @@ async fn main() {
         Event::run_finished_success("thread-1", "run-1"),
     ]);
 
-    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut session = Session::new(transport, "thread-1");
+    let mut weather = None;
     let mut ended = None;
 
     let mut run = session.send("what is the weather?");
     while let Some(update) = run.next().await {
         match update {
             Update::Message(message) => println!("{:?}", message.change),
-            Update::State(state) => println!("state is now {state}"),
+            // The state arrives already typed — and this is where the type
+            // comes from, so `Session` needs no turbofish.
+            Update::State(state) => weather = Some(state),
             Update::Error(error) => eprintln!("{error}"),
             Update::Done(end) => ended = Some(end),
             _ => {}
@@ -50,6 +60,8 @@ async fn main() {
 
     assert!(matches!(ended, Some(RunEnd::Success { .. })));
     assert_eq!(session.messages().len(), 2);
+    assert_eq!(weather, Some(Weather { checked: true }));
+    // The raw JSON is always there too, whether or not it fits the type.
     assert_eq!(session.raw_state()["checked"], true);
 }
 ```
