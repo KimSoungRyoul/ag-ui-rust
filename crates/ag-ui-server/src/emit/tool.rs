@@ -4,8 +4,10 @@ use ag_ui_core::{Event, MessageId, ReasoningEncryptedValueSubtype, ToolCallId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::agent::AgentState;
 use crate::emit::EventSink;
 use crate::error::Result;
+use crate::state::RunState;
 
 /// One open tool call.
 ///
@@ -33,16 +35,49 @@ use crate::error::Result;
 /// call.result(r#"{"tempC":21}"#)?;    // emits TOOL_CALL_END then TOOL_CALL_RESULT
 /// # Ok::<(), ag_ui_server::Error>(())
 /// ```
+///
+/// # Doing the work while the call is open
+///
+/// The handle borrows the run's event sink and its state, not the run context,
+/// so the tool's own work belongs *between* the arguments and the result. The
+/// protocol treats the `STATE_*` family as unordered, so a publish inside the
+/// brackets is a legal stream — and the one that lets a client watch the call
+/// land instead of seeing it land already done:
+///
+/// ```
+/// # use ag_ui_core::RunAgentInput;
+/// # use ag_ui_server::RunContext;
+/// # use serde::{Deserialize, Serialize};
+/// # use serde_json::json;
+/// #[derive(Default, Serialize, Deserialize)]
+/// struct Board { tasks: Vec<String> }
+///
+/// # let (mut ctx, _events) = RunContext::<Board>::new(RunAgentInput::new("t", "r"))?;
+/// let mut call = ctx.tool_call("add_task")?;
+/// call.args_json(&json!({"title": "ship it"}))?;
+///
+/// call.state_mut().tasks.push("ship it".to_owned());
+/// call.publish_state()?;               // STATE_SNAPSHOT, with the call open
+///
+/// call.result_json(&json!({"ok": true}))?;
+/// assert_eq!(ctx.state().tasks, ["ship it"]);
+/// # Ok::<(), ag_ui_server::Error>(())
+/// ```
+///
+/// What the handle still cannot do is open a second message, reasoning block or
+/// tool call: it holds no run context to open one with, and the context it came
+/// from stays borrowed until it drops.
 #[derive(Debug)]
-pub struct ToolCallHandle<'a> {
+pub struct ToolCallHandle<'a, S> {
     sink: &'a mut EventSink,
+    state: &'a mut RunState<S>,
     id: ToolCallId,
     result_message_id: MessageId,
     args: String,
     ended: bool,
 }
 
-impl<'a> ToolCallHandle<'a> {
+impl<'a, S> ToolCallHandle<'a, S> {
     /// Emits `TOOL_CALL_START`.
     ///
     /// `result_message_id` is allocated up front so the handle can emit
@@ -50,6 +85,7 @@ impl<'a> ToolCallHandle<'a> {
     /// what keeps a second overlapping handle a borrow-check error.
     pub(crate) fn start(
         sink: &'a mut EventSink,
+        state: &'a mut RunState<S>,
         id: ToolCallId,
         name: &str,
         parent_message_id: Option<MessageId>,
@@ -60,6 +96,7 @@ impl<'a> ToolCallHandle<'a> {
         sink.emit(start.into())?;
         Ok(Self {
             sink,
+            state,
             id,
             result_message_id,
             args: String::new(),
@@ -152,7 +189,32 @@ impl<'a> ToolCallHandle<'a> {
     }
 }
 
-impl Drop for ToolCallHandle<'_> {
+/// The run's state, reachable while the call is open. Same three methods as on
+/// [`RunContext`](crate::RunContext), forwarded — a tool that changes the state
+/// is the ordinary case, and it changes it in the middle of the call.
+impl<S: AgentState> ToolCallHandle<'_, S> {
+    /// The typed state, as of the last publish.
+    pub fn state(&self) -> &S {
+        self.state.get()
+    }
+
+    /// The typed state, mutably. Nothing is emitted until you call
+    /// [`publish_state`](Self::publish_state).
+    pub fn state_mut(&mut self) -> &mut S {
+        self.state.get_mut()
+    }
+
+    /// Publishes whatever [`state_mut`](Self::state_mut) left behind, as a
+    /// `STATE_SNAPSHOT` or a `STATE_DELTA` between this call's `TOOL_CALL_START`
+    /// and its `TOOL_CALL_END`.
+    ///
+    /// A no-op when nothing changed since the last publish.
+    pub fn publish_state(&mut self) -> Result<()> {
+        self.state.publish(self.sink)
+    }
+}
+
+impl<S> Drop for ToolCallHandle<'_, S> {
     fn drop(&mut self) {
         if !self.ended {
             let _ = self.sink.emit(Event::tool_call_end(self.id.clone()));

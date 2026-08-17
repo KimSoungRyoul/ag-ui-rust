@@ -73,6 +73,12 @@ That last guarantee is what forces the design. `Drop` cannot be async, so a hand
 `await` while emitting its terminator. The emit path is therefore synchronous end to end —
 handles push into an unbounded channel and the transport layer drains it.
 
+The borrow forbids a *second block*, not work. A handle holds two fields of the run
+context — the event sink and the state — so `call.state_mut()` and `call.publish_state()`
+reach the run state while the call is open, which is where a tool's own work belongs:
+`TOOL_CALL_START`, the arguments, the `STATE_*` event, then `TOOL_CALL_END` and the result.
+The protocol allows it because state events are unordered.
+
 ## Protocol verification
 
 Emitting `TEXT_MESSAGE_CONTENT` without a preceding `START` is a bug that otherwise

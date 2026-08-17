@@ -10,9 +10,10 @@
 //!
 //! ```text
 //! STEP_STARTED board
-//!   REASONING_*                 what the agent made of the message
-//!   TOOL_CALL_START/ARGS/END/RESULT   once per mutation
-//!   STATE_SNAPSHOT | STATE_DELTA      once per mutation
+//!   REASONING_*                       what the agent made of the message
+//!   TOOL_CALL_START/ARGS              once per mutation
+//!     STATE_SNAPSHOT | STATE_DELTA    the board moving, with the call open
+//!   TOOL_CALL_END/RESULT
 //!   TEXT_MESSAGE_START/CONTENT*/END   the reply, a word per delta
 //!   TOOL_CALL_* render_a2ui           the board as an A2UI surface
 //! STEP_FINISHED board
@@ -130,14 +131,17 @@ struct Report {
 
 /// Runs the command: one tool call and one state publish per mutation.
 ///
-/// # Why every branch works before it announces the call
+/// # Why every branch works while its call is open
 ///
-/// A [`ToolCallHandle`](ag_ui_server::ToolCallHandle) borrows the whole
-/// [`RunContext`], so `ctx.state_mut()` is unreachable for as long as one is
-/// open — the tool's own work cannot happen between `args()` and `result()`.
-/// Each branch therefore mutates the board first and narrates the call
-/// afterwards. The wire is identical; what it costs is the ability to show a
-/// call in flight, which for a slow tool is the reason to stream it at all.
+/// A [`ToolCallHandle`](ag_ui_server::ToolCallHandle) reaches the run state, so
+/// each branch announces the call, moves the board under it, and only then
+/// reports the result. That is the order a client sees: the call in flight, the
+/// board changing, the result closing it — which for a slow tool is the reason
+/// to stream a call at all.
+///
+/// The protocol allows it because `STATE_*` is unordered, so a publish between
+/// `TOOL_CALL_START` and `TOOL_CALL_END` is a well-formed stream. The server's
+/// verifier agrees, and `tests/flows.rs` pins the resulting order.
 fn apply(
     ctx: &mut RunContext<Board>,
     command: &Command,
@@ -147,18 +151,18 @@ fn apply(
         Command::Add(titles) => {
             let mut added = Vec::new();
             for title in titles {
-                let task = ctx.state_mut().add(title).clone();
-
                 let mut call = offered(ctx, board::ADD_TASK)?;
                 call.args_json(&json!({"title": title}))?;
-                call.result_json(&json!({"id": task.id, "title": task.title}))?;
 
+                let task = call.state_mut().add(title).clone();
                 // One publish per task, so a two-task message makes the server
                 // choose an encoding twice: the first publish is a snapshot,
                 // and the second is a STATE_DELTA only if the patch comes out
                 // smaller than the board. A client mirroring this has to
                 // survive both, and `tests/flows.rs` pins both.
-                ctx.publish_state()?;
+                call.publish_state()?;
+
+                call.result_json(&json!({"id": task.id, "title": task.title}))?;
                 added.push(format!("#{} {}", task.id, task.title));
             }
             Ok(Report {
@@ -168,14 +172,14 @@ fn apply(
         }
 
         Command::Complete(needle) => {
-            let done = ctx.state_mut().complete(needle).cloned();
-
             let mut call = offered(ctx, board::COMPLETE_TASK)?;
             call.args_json(&json!({"task": needle}))?;
+
+            let done = call.state_mut().complete(needle).cloned();
             match done {
                 Some(task) => {
+                    call.publish_state()?;
                     call.result_json(&json!({"id": task.id, "title": task.title, "done": true}))?;
-                    ctx.publish_state()?;
                     Ok(Report {
                         reply: format!(
                             "Done: #{} {}. {}",
@@ -197,14 +201,14 @@ fn apply(
         }
 
         Command::Estimate { task, minutes } => {
-            let estimated = ctx.state_mut().estimate(task, *minutes).cloned();
-
             let mut call = offered(ctx, board::ESTIMATE)?;
             call.args_json(&json!({"task": task, "minutes": minutes}))?;
+
+            let estimated = call.state_mut().estimate(task, *minutes).cloned();
             match estimated {
                 Some(estimated) => {
+                    call.publish_state()?;
                     call.result_json(&json!({"id": estimated.id, "minutes": minutes}))?;
-                    ctx.publish_state()?;
                     Ok(Report {
                         reply: format!(
                             "#{} is {minutes}m. {}",
@@ -228,13 +232,13 @@ fn apply(
         // interrupt before any of this.
         Command::Clear => match answer {
             Some(ResumeStatus::Resolved) => {
-                let removed = ctx.state_mut().clear();
-
                 let mut call = offered(ctx, board::CLEAR_BOARD)?;
                 call.args_json(&json!({}))?;
-                call.result_json(&json!({"removed": removed}))?;
 
-                ctx.publish_state()?;
+                let removed = call.state_mut().clear();
+                call.publish_state()?;
+
+                call.result_json(&json!({"removed": removed}))?;
                 Ok(Report {
                     reply: format!("Cleared {removed} task(s). The board is empty."),
                     render: true,
@@ -270,7 +274,7 @@ fn apply(
 fn offered<'a>(
     ctx: &'a mut RunContext<Board>,
     name: &str,
-) -> Result<ag_ui_server::ToolCallHandle<'a>> {
+) -> Result<ag_ui_server::ToolCallHandle<'a, Board>> {
     if ctx.tool(name).is_none() {
         return Err(Error::agent(format!("the client offered no {name} tool")));
     }

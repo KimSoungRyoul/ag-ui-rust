@@ -301,13 +301,17 @@ async fn the_event_stream_is_ordered_as_the_protocol_requires() {
         EventType::ReasoningMessageContent,
         EventType::ReasoningMessageEnd,
         EventType::ReasoningEnd,
-        // `add_task`, executed here and answered here.
+        // `add_task`, executed here and answered here — and the board moves
+        // *inside* the call: the agent announces it, mutates, publishes, then
+        // answers. `STATE_*` is unordered, so a publish between the call's
+        // start and its end is a well-formed stream, and it is what lets a
+        // client show a call in flight.
         EventType::ToolCallStart,
         EventType::ToolCallArgs,
-        EventType::ToolCallEnd,
-        EventType::ToolCallResult,
         // The board's first publish of a run is always a snapshot.
         EventType::StateSnapshot,
+        EventType::ToolCallEnd,
+        EventType::ToolCallResult,
         EventType::TextMessageStart,
     ];
     expected.extend(std::iter::repeat_n(

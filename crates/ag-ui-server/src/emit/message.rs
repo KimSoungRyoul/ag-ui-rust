@@ -2,8 +2,10 @@
 
 use ag_ui_core::{Event, MessageId, TextMessageRole};
 
+use crate::agent::AgentState;
 use crate::emit::EventSink;
 use crate::error::Result;
+use crate::state::RunState;
 
 /// One open text message.
 ///
@@ -24,13 +26,14 @@ use crate::error::Result;
 /// # Ok::<(), ag_ui_server::Error>(())
 /// ```
 #[derive(Debug)]
-pub struct MessageHandle<'a> {
+pub struct MessageHandle<'a, S> {
     sink: &'a mut EventSink,
+    state: &'a mut RunState<S>,
     id: MessageId,
     ended: bool,
 }
 
-impl<'a> MessageHandle<'a> {
+impl<'a, S> MessageHandle<'a, S> {
     /// Emits `TEXT_MESSAGE_START` and takes the message.
     ///
     /// Returns `Err` without producing a handle when the start could not be
@@ -38,12 +41,14 @@ impl<'a> MessageHandle<'a> {
     /// message that does not exist.
     pub(crate) fn start(
         sink: &'a mut EventSink,
+        state: &'a mut RunState<S>,
         id: MessageId,
         role: TextMessageRole,
     ) -> Result<Self> {
         sink.emit(Event::text_message_start(id.clone(), role))?;
         Ok(Self {
             sink,
+            state,
             id,
             ended: false,
         })
@@ -82,7 +87,31 @@ impl<'a> MessageHandle<'a> {
     }
 }
 
-impl Drop for MessageHandle<'_> {
+/// The run's state, reachable while the message is open — an agent that
+/// narrates what it is doing changes both in the same breath. See
+/// [`ToolCallHandle`](crate::ToolCallHandle), where this matters most.
+impl<S: AgentState> MessageHandle<'_, S> {
+    /// The typed state, as of the last publish.
+    pub fn state(&self) -> &S {
+        self.state.get()
+    }
+
+    /// The typed state, mutably. Nothing is emitted until you call
+    /// [`publish_state`](Self::publish_state).
+    pub fn state_mut(&mut self) -> &mut S {
+        self.state.get_mut()
+    }
+
+    /// Publishes whatever [`state_mut`](Self::state_mut) left behind, as a
+    /// `STATE_SNAPSHOT` or a `STATE_DELTA` inside this message's brackets.
+    ///
+    /// A no-op when nothing changed since the last publish.
+    pub fn publish_state(&mut self) -> Result<()> {
+        self.state.publish(self.sink)
+    }
+}
+
+impl<S> Drop for MessageHandle<'_, S> {
     fn drop(&mut self) {
         if !self.ended {
             // Nowhere to report a failure to; a dead channel or a cancelled run

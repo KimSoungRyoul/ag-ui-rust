@@ -79,6 +79,44 @@ fn parallel_tool_calls_and_overlapping_messages_are_accepted() {
     }
 }
 
+/// The rule that makes [`ToolCallHandle::publish_state`] usable: `STATE_*` is
+/// unordered, so the work a tool does between its arguments and its result is a
+/// well-formed stream. Driven through the handle rather than `emit`, because
+/// the handle reaching the state is the point.
+///
+/// [`ToolCallHandle::publish_state`]: ag_ui_server::ToolCallHandle::publish_state
+#[test]
+fn a_state_delta_may_land_inside_an_open_tool_call() {
+    let (mut ctx, mut events) = RunContext::<serde_json::Value>::new(RunAgentInput::new("t", "r"))
+        .expect("a JSON state always decodes");
+    ctx.emit(Event::run_started("t", "r"))
+        .expect("the run starts");
+    // Long enough that the second publish is cheaper to patch than to resend.
+    ctx.set_state(&serde_json::json!({"hits": 0, "notes": "a".repeat(200)}))
+        .expect("the first publish is a snapshot");
+
+    let mut call = ctx.tool_call("search").expect("the call opens");
+    call.args(r#"{"q":"rust"}"#).expect("the arguments go out");
+    call.state_mut()["hits"] = serde_json::json!(1);
+    call.publish_state()
+        .expect("a publish inside an open call is legal");
+    call.result("{}").expect("the result closes the call");
+
+    let types: Vec<EventType> = events.drain().iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::StateSnapshot,
+            EventType::ToolCallStart,
+            EventType::ToolCallArgs,
+            EventType::StateDelta,
+            EventType::ToolCallEnd,
+            EventType::ToolCallResult,
+        ]
+    );
+}
+
 #[test]
 fn content_without_a_start_is_rejected() {
     let (mut ctx, _events) = context();

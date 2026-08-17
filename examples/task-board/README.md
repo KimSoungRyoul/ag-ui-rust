@@ -54,11 +54,11 @@ printf 'add draft the agenda, book the room\nlist\n' | cargo run -p task-board -
 you> add draft the agenda, book the room
   ~ adding 2 task(s)
   · add_task({"title":"draft the agenda"})
-    → {"id":1,"title":"draft the agenda"}
   [state] 1 open · 0 done
+    → {"id":1,"title":"draft the agenda"}
   · add_task({"title":"book the room"})
-    → {"id":2,"title":"book the room"}
   [state] 2 open · 0 done
+    → {"id":2,"title":"book the room"}
   agent> Added #1 draft the agenda, #2 book the room. 2 open · 0 done
   · render_a2ui({"surfaceId":"task-board"})
     ┌ a2ui surface
@@ -70,8 +70,8 @@ you> add draft the agenda, book the room
 you> complete 1
   ~ looking for the task matching "1"
   · complete_task({"task":"1"})
-    → {"id":1,"title":"draft the agenda","done":true}
   [state] 1 open · 1 done
+    → {"id":1,"title":"draft the agenda","done":true}
   agent> Done: #1 draft the agenda. 1 open · 1 done
   · render_a2ui({"surfaceId":"task-board"})
     ┌ a2ui surface
@@ -86,6 +86,13 @@ you> complete 1
 after a state event, and the box is the A2UI surface — drawn by walking the
 component tree and resolving each binding through `ag_ui_a2ui::binding::Scope`,
 which is as far as a terminal can honestly go towards rendering.
+
+The board lands *between* a call and its result because that is where the agent
+does the work: `ctx.tool_call(…)` returns a handle that reaches the run state,
+so a mutation happens with the call open — `TOOL_CALL_START`, the arguments, the
+`STATE_*` event, then `TOOL_CALL_END` and the result. The protocol allows it
+(state events are unordered) and it is what lets a client show a call in flight
+rather than only after it is done.
 
 Two adds means two publishes, and nothing above can tell what either was on the
 wire, because the client applied both into the same `Board`. The server decides
@@ -123,8 +130,8 @@ you> clear
   [y/N] y
   ~ a human approved clearing the board
   · clear_board({})
-    → {"removed":1}
   [state] nothing on the board
+    → {"removed":1}
   agent> Cleared 1 task(s). The board is empty.
 ```
 
@@ -169,8 +176,8 @@ transitions stay deterministic:
 you> add ship the rust sdk
   ~ adding 1 task(s)
   · add_task({"title":"ship the rust sdk"})
-    → {"id":1,"title":"ship the rust sdk"}
   [state] 1 open · 0 done
+    → {"id":1,"title":"ship the rust sdk"}
   agent> Okay, I've added task #1 ship the rust sdk, which is currently open.
 ```
 

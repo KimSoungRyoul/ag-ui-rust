@@ -17,6 +17,8 @@
 use ag_ui_core::{Event, JsonPatch, PatchOperation};
 use serde_json::Value;
 
+use crate::agent::AgentState;
+use crate::emit::EventSink;
 use crate::error::Result;
 
 /// What a publish decided to send.
@@ -126,6 +128,62 @@ impl StateManager {
             Ok(StatePublish::Delta(patch))
         } else {
             Ok(StatePublish::Snapshot(next))
+        }
+    }
+}
+
+/// A run's typed state together with the publish history that encodes it.
+///
+/// One cell rather than two fields on [`RunContext`](crate::RunContext),
+/// because an open handle borrows it *beside* the event sink: `&mut self.state`
+/// and `&mut self.sink` are disjoint borrows of the context, so a tool call can
+/// mutate and publish the state without holding a reference to the context
+/// itself — which is what keeps a second overlapping block a borrow-check
+/// error.
+#[derive(Debug)]
+pub(crate) struct RunState<S> {
+    value: S,
+    manager: StateManager,
+}
+
+impl<S> RunState<S> {
+    /// Wraps a decoded state, with nothing published yet.
+    pub(crate) fn new(value: S) -> Self {
+        Self {
+            value,
+            manager: StateManager::new(),
+        }
+    }
+
+    pub(crate) fn get(&self) -> &S {
+        &self.value
+    }
+
+    pub(crate) fn get_mut(&mut self) -> &mut S {
+        &mut self.value
+    }
+}
+
+impl<S: AgentState> RunState<S> {
+    /// Publishes whatever [`get_mut`](Self::get_mut) left behind.
+    pub(crate) fn publish(&mut self, sink: &mut EventSink) -> Result<()> {
+        let value = serde_json::to_value(&self.value)?;
+        self.publish_value(sink, value)
+    }
+
+    /// Replaces the value and publishes the change.
+    pub(crate) fn replace(&mut self, sink: &mut EventSink, value: &S) -> Result<()> {
+        let json = serde_json::to_value(value)?;
+        // Round-tripping keeps the typed view and the published snapshot in
+        // step without asking `S` to be `Clone`.
+        self.value = serde_json::from_value(json.clone())?;
+        self.publish_value(sink, json)
+    }
+
+    fn publish_value(&mut self, sink: &mut EventSink, value: Value) -> Result<()> {
+        match self.manager.publish(value)?.into_event() {
+            Some(event) => sink.emit(event),
+            None => Ok(()),
         }
     }
 }

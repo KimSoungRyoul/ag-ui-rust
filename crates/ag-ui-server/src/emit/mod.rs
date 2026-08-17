@@ -41,6 +41,31 @@
 //! not, because that is exactly what would let a second message open inside the
 //! first. They expose [`emit`](MessageHandle::emit) instead, for the unordered
 //! events (state, activity, custom) that may legally interleave with a message.
+//!
+//! # What an open handle can still reach
+//!
+//! A handle borrows two *fields* of the run context — the event sink and the
+//! state — rather than the context itself. So the state is reachable through
+//! the handle ([`state`](ToolCallHandle::state),
+//! [`state_mut`](ToolCallHandle::state_mut),
+//! [`publish_state`](ToolCallHandle::publish_state)) and a tool call can do its
+//! work between its arguments and its result: `STATE_*` is unordered, so a
+//! publish inside the brackets is a legal stream.
+//!
+//! Widening reach, not weakening the rule. The context stays exclusively
+//! borrowed for as long as the handle lives, so a second block is still a
+//! borrow-check error — including from inside an open call:
+//!
+//! ```compile_fail,E0499
+//! use ag_ui_server::RunContext;
+//!
+//! fn narrate(ctx: &mut RunContext<()>) {
+//!     let mut call = ctx.tool_call("search").unwrap();
+//!     // error[E0499]: cannot borrow `*ctx` as mutable more than once at a time
+//!     let mut message = ctx.assistant_message().unwrap();
+//!     call.args("{}").unwrap();
+//! }
+//! ```
 
 mod message;
 mod reasoning;

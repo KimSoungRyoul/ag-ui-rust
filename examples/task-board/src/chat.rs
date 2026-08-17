@@ -141,10 +141,17 @@ async fn drive<T: Transport>(
 ) -> io::Result<Option<Interrupt>> {
     let mut pending = None;
     let mut printed = None;
+    // The reply and a tool call's arguments print without a newline, so an
+    // update that owns a whole line has to wait for the open one to close
+    // rather than splice itself into it. The board does exactly that now: a
+    // tool call publishes state *while it is open*, so the summary arrives
+    // between the call's arguments and its closing bracket.
+    let mut open_line = false;
+    let mut board = None;
 
     while let Some(update) = run.next().await {
         match update {
-            Update::Message(message) => print_message(output, &message)?,
+            Update::Message(message) => open_line = print_message(output, &message, open_line)?,
 
             // Only the finished thought is printed: a reasoning block is
             // commentary, and streaming it interleaved with the reply is noise
@@ -165,7 +172,7 @@ async fn drive<T: Transport>(
             // The typed state, already patched: `Board` came off the wire as a
             // STATE_SNAPSHOT or a STATE_DELTA and neither this line nor the
             // one above it can tell which.
-            Update::State(board) => writeln!(output, "  [state] {}", board.summary())?,
+            Update::State(state) => board = Some(state.summary()),
 
             Update::Interrupt(interrupt) => pending = Some(interrupt),
             Update::Error(error) => writeln!(output, "  !! {error}")?,
@@ -174,31 +181,59 @@ async fn drive<T: Transport>(
             }
             _ => {}
         }
+
+        if !open_line {
+            if let Some(summary) = board.take() {
+                writeln!(output, "  [state] {summary}")?;
+            }
+        }
     }
     Ok(pending)
 }
 
-/// Prints one message change.
-fn print_message(output: &mut impl Write, update: &MessageUpdate) -> io::Result<()> {
+/// Prints one message change, and reports whether it left the line open.
+fn print_message(
+    output: &mut impl Write,
+    update: &MessageUpdate,
+    open_line: bool,
+) -> io::Result<bool> {
     match &update.change {
         MessageChangeKind::Started => {
             write!(output, "  agent> ")?;
-            output.flush()
+            output.flush()?;
+            Ok(true)
         }
         // One delta, one word. Flushed so a slow agent reads as typing rather
         // than as a hang.
         MessageChangeKind::Content { delta } => {
             write!(output, "{delta}")?;
-            output.flush()
+            output.flush()?;
+            Ok(true)
         }
-        MessageChangeKind::Ended => writeln!(output),
+        MessageChangeKind::Ended => {
+            writeln!(output)?;
+            Ok(false)
+        }
 
-        MessageChangeKind::ToolCallStarted { name, .. } => write!(output, "  · {name}("),
-        MessageChangeKind::ToolCallArgs { delta, .. } => write!(output, "{delta}"),
-        MessageChangeKind::ToolCallEnded { .. } => writeln!(output, ")"),
-        MessageChangeKind::ToolResult { .. } => print_result(output, &update.message),
+        MessageChangeKind::ToolCallStarted { name, .. } => {
+            write!(output, "  · {name}(")?;
+            Ok(true)
+        }
+        MessageChangeKind::ToolCallArgs { delta, .. } => {
+            write!(output, "{delta}")?;
+            Ok(true)
+        }
+        MessageChangeKind::ToolCallEnded { .. } => {
+            writeln!(output, ")")?;
+            Ok(false)
+        }
+        MessageChangeKind::ToolResult { .. } => {
+            print_result(output, &update.message)?;
+            Ok(false)
+        }
 
-        _ => Ok(()),
+        // Nothing printed, so the line is however the last print left it.
+        _ => Ok(open_line),
     }
 }
 

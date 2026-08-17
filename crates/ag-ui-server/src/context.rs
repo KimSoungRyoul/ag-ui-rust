@@ -16,7 +16,7 @@ use crate::emit::{
     EventReceiver, EventSink, MessageHandle, ReasoningHandle, StepGuard, ToolCallHandle,
 };
 use crate::error::{Error, Result};
-use crate::state::StateManager;
+use crate::state::RunState;
 use crate::transform::TransformerChain;
 
 /// The request, the state, the event sink and the cancellation flag — one
@@ -41,8 +41,7 @@ use crate::transform::TransformerChain;
 #[derive(Debug)]
 pub struct RunContext<S> {
     input: RunAgentInput,
-    state: S,
-    states: StateManager,
+    state: RunState<S>,
     sink: EventSink,
     next_message: u64,
     next_tool_call: u64,
@@ -70,8 +69,7 @@ impl<S: AgentState> RunContext<S> {
     pub(crate) fn from_parts(input: RunAgentInput, state: S, sink: EventSink) -> Self {
         Self {
             input,
-            state,
-            states: StateManager::new(),
+            state: RunState::new(state),
             sink,
             next_message: 0,
             next_tool_call: 0,
@@ -80,26 +78,22 @@ impl<S: AgentState> RunContext<S> {
 
     /// The typed state, as of the last publish.
     pub fn state(&self) -> &S {
-        &self.state
+        self.state.get()
     }
 
     /// The typed state, mutably. Nothing is emitted until you call
     /// [`publish_state`](Self::publish_state).
     pub fn state_mut(&mut self) -> &mut S {
-        &mut self.state
+        self.state.get_mut()
     }
 
     /// Replaces the state and publishes the change.
     ///
     /// The first publish of a run is a `STATE_SNAPSHOT`; later ones are a
     /// `STATE_DELTA` unless the patch would be no smaller than the snapshot.
-    /// See [`StateManager`].
+    /// See [`StateManager`](crate::StateManager).
     pub fn set_state(&mut self, state: &S) -> Result<()> {
-        let value = serde_json::to_value(state)?;
-        // Round-tripping keeps `state()` and the published snapshot in step
-        // without asking `S` to be `Clone`.
-        self.state = serde_json::from_value(value.clone())?;
-        self.publish_value(value)
+        self.state.replace(&mut self.sink, state)
     }
 
     /// Mutates the state in place and publishes the change.
@@ -117,7 +111,7 @@ impl<S: AgentState> RunContext<S> {
     /// # Ok::<(), ag_ui_server::Error>(())
     /// ```
     pub fn update_state(&mut self, update: impl FnOnce(&mut S)) -> Result<()> {
-        update(&mut self.state);
+        update(self.state.get_mut());
         self.publish_state()
     }
 
@@ -125,15 +119,7 @@ impl<S: AgentState> RunContext<S> {
     ///
     /// A no-op when nothing changed since the last publish.
     pub fn publish_state(&mut self) -> Result<()> {
-        let value = serde_json::to_value(&self.state)?;
-        self.publish_value(value)
-    }
-
-    fn publish_value(&mut self, value: Value) -> Result<()> {
-        match self.states.publish(value)?.into_event() {
-            Some(event) => self.emit(event),
-            None => Ok(()),
-        }
+        self.state.publish(&mut self.sink)
     }
 }
 
@@ -296,12 +282,12 @@ impl<S> RunContext<S> {
     }
 
     /// Opens an assistant message under a fresh id — `TEXT_MESSAGE_START`.
-    pub fn assistant_message(&mut self) -> Result<MessageHandle<'_>> {
+    pub fn assistant_message(&mut self) -> Result<MessageHandle<'_, S>> {
         self.message(TextMessageRole::Assistant)
     }
 
     /// Opens a message with the given role under a fresh id.
-    pub fn message(&mut self, role: TextMessageRole) -> Result<MessageHandle<'_>> {
+    pub fn message(&mut self, role: TextMessageRole) -> Result<MessageHandle<'_, S>> {
         let id = self.new_message_id();
         self.message_with_id(id, role)
     }
@@ -311,8 +297,10 @@ impl<S> RunContext<S> {
         &mut self,
         id: impl Into<MessageId>,
         role: TextMessageRole,
-    ) -> Result<MessageHandle<'_>> {
-        MessageHandle::start(&mut self.sink, id.into(), role)
+    ) -> Result<MessageHandle<'_, S>> {
+        // Two disjoint field borrows, not a borrow of the context: the handle
+        // reaches the state without being able to open a second block.
+        MessageHandle::start(&mut self.sink, &mut self.state, id.into(), role)
     }
 
     /// Emits a whole assistant message — start, content, end — and returns its
@@ -326,14 +314,17 @@ impl<S> RunContext<S> {
     }
 
     /// Opens a reasoning block under a fresh id — `REASONING_START`.
-    pub fn reasoning(&mut self) -> Result<ReasoningHandle<'_>> {
+    pub fn reasoning(&mut self) -> Result<ReasoningHandle<'_, S>> {
         let id = self.new_message_id();
         self.reasoning_with_id(id)
     }
 
     /// Opens a reasoning block under an id you choose.
-    pub fn reasoning_with_id(&mut self, id: impl Into<MessageId>) -> Result<ReasoningHandle<'_>> {
-        ReasoningHandle::start(&mut self.sink, id.into())
+    pub fn reasoning_with_id(
+        &mut self,
+        id: impl Into<MessageId>,
+    ) -> Result<ReasoningHandle<'_, S>> {
+        ReasoningHandle::start(&mut self.sink, &mut self.state, id.into())
     }
 
     /// Emits a whole reasoning block in one call and returns its id.
@@ -346,7 +337,7 @@ impl<S> RunContext<S> {
     }
 
     /// Opens a call to `name` under a fresh id — `TOOL_CALL_START`.
-    pub fn tool_call(&mut self, name: &str) -> Result<ToolCallHandle<'_>> {
+    pub fn tool_call(&mut self, name: &str) -> Result<ToolCallHandle<'_, S>> {
         let id = self.new_tool_call_id();
         self.tool_call_with_id(id, name)
     }
@@ -356,10 +347,17 @@ impl<S> RunContext<S> {
         &mut self,
         id: impl Into<ToolCallId>,
         name: &str,
-    ) -> Result<ToolCallHandle<'_>> {
+    ) -> Result<ToolCallHandle<'_, S>> {
         let id = id.into();
         let result_message_id = self.new_message_id();
-        ToolCallHandle::start(&mut self.sink, id, name, None, result_message_id)
+        ToolCallHandle::start(
+            &mut self.sink,
+            &mut self.state,
+            id,
+            name,
+            None,
+            result_message_id,
+        )
     }
 
     /// Opens a named step — `STEP_STARTED`.

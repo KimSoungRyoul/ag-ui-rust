@@ -98,6 +98,19 @@ context mutably, so starting a second overlapping message is a borrow-check erro
 runtime protocol violation. The handle emits its terminating event on `Drop`, so forgetting
 `end()` is harmless.
 
+What the borrow forbids is a second open block — the protocol's rule — and nothing else. A
+handle therefore holds two *fields* of the context, the event sink and the state, rather than
+the context itself: `call.state_mut()` and `call.publish_state()` work while the call is open,
+which is where a tool's own work belongs. The verifier agrees, because `STATE_*` is unordered on
+the wire.
+
+The first draft held only the sink, which left the state unreachable for as long as anything was
+open and forced every agent to mutate *before* announcing the call it was mutating for. Same
+events, different order — and the order is what decides whether a client can watch a call land or
+only see it already done. Holding the state beside the sink widens what a handle can reach
+without widening what it can open: there is still no run context behind it to open a second block
+with.
+
 That last guarantee is what forces the design. `Drop` cannot be async, so a handle cannot
 `await` while emitting its terminator. The emit path is therefore synchronous end to end —
 handles push into an unbounded channel and the transport layer drains it. The first draft of

@@ -2,8 +2,10 @@
 
 use ag_ui_core::{Event, MessageId, ReasoningEncryptedValueSubtype};
 
+use crate::agent::AgentState;
 use crate::emit::EventSink;
 use crate::error::Result;
+use crate::state::RunState;
 
 /// One open reasoning block.
 ///
@@ -23,20 +25,26 @@ use crate::error::Result;
 /// provider returns only as an opaque blob goes through
 /// [`encrypted_value`](Self::encrypted_value) instead.
 #[derive(Debug)]
-pub struct ReasoningHandle<'a> {
+pub struct ReasoningHandle<'a, S> {
     sink: &'a mut EventSink,
+    state: &'a mut RunState<S>,
     id: MessageId,
     ended: bool,
 }
 
-impl<'a> ReasoningHandle<'a> {
+impl<'a, S> ReasoningHandle<'a, S> {
     /// Emits `REASONING_START` and `REASONING_MESSAGE_START`.
-    pub(crate) fn start(sink: &'a mut EventSink, id: MessageId) -> Result<Self> {
+    pub(crate) fn start(
+        sink: &'a mut EventSink,
+        state: &'a mut RunState<S>,
+        id: MessageId,
+    ) -> Result<Self> {
         sink.emit(Event::reasoning_start(id.clone()))?;
         // The block is open now, so from here on a failure must still leave a
         // handle behind to close it.
         let handle = Self {
             sink,
+            state,
             id,
             ended: false,
         };
@@ -96,7 +104,30 @@ impl<'a> ReasoningHandle<'a> {
     }
 }
 
-impl Drop for ReasoningHandle<'_> {
+/// The run's state, reachable while the block is open. See
+/// [`ToolCallHandle`](crate::ToolCallHandle), where this matters most.
+impl<S: AgentState> ReasoningHandle<'_, S> {
+    /// The typed state, as of the last publish.
+    pub fn state(&self) -> &S {
+        self.state.get()
+    }
+
+    /// The typed state, mutably. Nothing is emitted until you call
+    /// [`publish_state`](Self::publish_state).
+    pub fn state_mut(&mut self) -> &mut S {
+        self.state.get_mut()
+    }
+
+    /// Publishes whatever [`state_mut`](Self::state_mut) left behind, as a
+    /// `STATE_SNAPSHOT` or a `STATE_DELTA` inside this block's brackets.
+    ///
+    /// A no-op when nothing changed since the last publish.
+    pub fn publish_state(&mut self) -> Result<()> {
+        self.state.publish(self.sink)
+    }
+}
+
+impl<S> Drop for ReasoningHandle<'_, S> {
     fn drop(&mut self) {
         if !self.ended {
             let _ = self.close();

@@ -2,7 +2,7 @@
 
 use ag_ui_client::apply::{Applier, Changed};
 use ag_ui_client::transport::ReplayTransport;
-use ag_ui_client::{Error, Session, Update};
+use ag_ui_client::{Error, MessageChangeKind, Session, Update};
 use ag_ui_core::{Event, PatchOperation};
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -293,6 +293,50 @@ async fn a_session_reports_a_failed_patch_and_keeps_the_state_it_had() {
         .filter(|update| matches!(update, Update::State(_)))
         .collect();
     assert_eq!(states.len(), 2);
+}
+
+/// An agent that does a tool's work while the call is open publishes state
+/// between `TOOL_CALL_START` and `TOOL_CALL_END`. `STATE_*` is unordered, so
+/// that is a well-formed stream and the client folds it like any other — the
+/// update arrives while the call is still open, which is the point of sending
+/// it there.
+#[tokio::test]
+async fn state_published_inside_an_open_tool_call_applies_like_any_other() {
+    let transport = ReplayTransport::new([
+        Event::run_started("thread-1", "run-1"),
+        Event::state_snapshot(json!({ "count": 0 })),
+        Event::tool_call_start("call-1", "increment"),
+        Event::tool_call_args("call-1", r#"{"by":1}"#),
+        Event::state_delta(vec![PatchOperation::replace("/count", json!(1))]),
+        Event::tool_call_end("call-1"),
+        Event::tool_call_result("msg-1", "call-1", r#"{"count":1}"#),
+        Event::run_finished_success("thread-1", "run-1"),
+    ]);
+    let mut session = Session::<_, Counter>::new(transport, "thread-1");
+
+    let updates: Vec<_> = session.send("increment").collect().await;
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, Update::Error(_))),
+        "the stream should apply cleanly: {updates:?}"
+    );
+
+    let order: Vec<&str> = updates
+        .iter()
+        .filter_map(|update| match update {
+            Update::State(_) => Some("state"),
+            Update::Message(message) => match message.change {
+                MessageChangeKind::ToolCallArgs { .. } => Some("args"),
+                MessageChangeKind::ToolCallEnded { .. } => Some("call ended"),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, ["state", "args", "state", "call ended"]);
+
+    assert_eq!(session.state(), Some(&Counter { count: 1 }));
 }
 
 #[tokio::test]
