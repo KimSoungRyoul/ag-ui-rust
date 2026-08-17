@@ -13,14 +13,15 @@ categories.workspace = true
 ag-ui-core.workspace = true
 ag-ui-server.workspace = true
 axum.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
+# `time` is for the optional SSE keep-alive; the rest comes from the workspace.
+tokio = { workspace = true, features = ["time"] }
 futures-util.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+# `net` and `io-util` for the raw HTTP/1.1 client in tests/http.rs, `time` for
+# its timeouts.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+# `oneshot` in the crate-level doctest, so the example needs no port.
 tower = { workspace = true, features = ["util"] }
-axum = { workspace = true, features = ["macros"] }
-http-body-util = "0.1"
