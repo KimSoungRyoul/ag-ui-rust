@@ -169,6 +169,7 @@ jobs:
       - run: cargo check --all-targets -p ag-ui-client --all-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features toolkit
+      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui
       - run: cargo check --all-targets -p ag-ui-a2ui --all-features
       - run: cargo check --all-targets -p ag-ui-axum
 

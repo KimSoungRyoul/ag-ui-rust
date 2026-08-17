@@ -20,8 +20,8 @@
 //! ```
 
 use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
+use ag_ui_a2ui::find_prior_surface_in;
 use ag_ui_a2ui::toolkit::envelope::wrap_as_operations_envelope;
-use ag_ui_a2ui::toolkit::history::{HistoryMessage, find_prior_surface};
 use ag_ui_a2ui::toolkit::ops::{Intent, assemble_ops};
 use ag_ui_core::{Interrupt, JsonObject, Message, ResumeStatus, RunOutcome};
 use ag_ui_server::{Agent, Error, Result, RunContext};
@@ -348,15 +348,7 @@ fn render(ctx: &mut RunContext<Board>, intent: Intent) -> Result<()> {
 /// conversation the client sent: the toolkit replays the operations already in
 /// history and reports what the user is looking at.
 fn surface_intent(messages: &[Message]) -> Intent {
-    let history: Vec<HistoryMessage> = messages
-        .iter()
-        .filter_map(|message| match message {
-            Message::Tool(tool) => Some(HistoryMessage::text("tool", tool.content.clone())),
-            _ => None,
-        })
-        .collect();
-
-    match find_prior_surface(&history) {
+    match find_prior_surface_in(messages) {
         Some(prior) if !prior.deleted => Intent::Update,
         _ => Intent::Create,
     }

@@ -26,12 +26,16 @@
 //!   assembling prompts, parsing a model's output as it streams, recovering a
 //!   surface from conversation history, and the validate-and-retry loop around
 //!   a generating model.
+//! - [`agui`] (feature `ag-ui`) — the glue for an agent hosted on AG-UI:
+//!   history entries from [`ag_ui_core::Message`], toolkit tool definitions as
+//!   offerable [`ag_ui_core::Tool`]s.
 //!
 //! # Transport
 //!
-//! A2UI says nothing about how messages reach the renderer, and this crate
-//! keeps it that way: it depends on no transport crate, AG-UI included. What
-//! every toolkit does in practice is wrap a batch of operations in a
+//! A2UI says nothing about how messages reach the renderer, and everything
+//! outside [`agui`] keeps it that way — turn the `ag-ui` feature off and the
+//! dependency goes with it, leaving a crate you can drive over A2A or MCP.
+//! What every toolkit does in practice is wrap a batch of operations in a
 //! `{"a2ui_operations": [...]}` envelope and let the frontend sniff for that
 //! key; [`toolkit::envelope`] produces exactly that, as a plain JSON string
 //! that fits in an AG-UI assistant message, an A2A data part, or an MCP tool
@@ -89,6 +93,9 @@ pub mod validate;
 #[cfg(feature = "toolkit")]
 pub mod toolkit;
 
+#[cfg(feature = "ag-ui")]
+pub mod agui;
+
 // The front door: what a caller producing or checking A2UI reaches for first.
 // Everything else stays behind its module, because the modules are the map.
 pub use catalog::Catalog;
@@ -98,3 +105,6 @@ pub use validate::{ErrorCode, ValidateOptions, ValidationError, ValidationReport
 
 #[cfg(feature = "toolkit")]
 pub use toolkit::{StreamParser, wrap_as_operations_envelope, wrap_error_envelope};
+
+#[cfg(feature = "ag-ui")]
+pub use agui::find_prior_surface_in;

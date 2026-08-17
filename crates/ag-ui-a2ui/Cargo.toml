@@ -16,15 +16,20 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["toolkit"]
+default = ["ag-ui", "toolkit"]
 # Agent-side authoring: op builders, prompt assembly, recovery loop.
 toolkit = []
+# Interop with ag-ui-core: history entries from AG-UI messages, toolkit tool
+# definitions as offerable tools. Implies `toolkit`, because everything it
+# converts lives there. Turn it off to use A2UI standalone over A2A or MCP.
+ag-ui = ["dep:ag-ui-core", "toolkit"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 jsonptr.workspace = true
+ag-ui-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Reads the vendored upstream language-agnostic conformance suite

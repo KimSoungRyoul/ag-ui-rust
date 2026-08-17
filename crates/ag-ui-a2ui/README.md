@@ -61,10 +61,12 @@ was skipped, and why.
 | Feature | Default | What it adds |
 | --- | --- | --- |
 | `toolkit` | yes | Agent-side authoring: op builders, prompt assembly, recovery loop. |
+| `ag-ui` | yes | Interop with `ag-ui-core`: history entries from AG-UI messages, toolkit tool definitions as offerable tools. Implies `toolkit`. |
 
-This crate depends on no transport, AG-UI included. Wrapping operations for the wire is
-`toolkit::envelope`, which returns the `a2ui_operations` envelope as a JSON string that an
-AG-UI message, an A2A data part or an MCP tool result can all carry as-is.
+Nothing below `agui` knows what AG-UI is, so turning that feature off leaves a crate you
+can drive over A2A or MCP instead. Wrapping operations for the wire is `toolkit::envelope`
+either way: it returns the `a2ui_operations` envelope as a JSON string that an AG-UI
+message, an A2A data part or an MCP tool result can all carry as-is.
 
 See the [repository](https://github.com/KimSoungRyoul/ag-ui-rust) for the design rationale.
 
