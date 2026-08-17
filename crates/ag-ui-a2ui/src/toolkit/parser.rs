@@ -454,6 +454,43 @@ mod tests {
         assert!(parse_response(r#"<a2ui-jsonx>[]</a2ui-jsonx>"#).is_err());
     }
 
+    /// Two scanners, one grammar.
+    ///
+    /// [`match_open_tag`] matches a tag anchored at a position in a `&[char]`;
+    /// [`crate::toolkit::streaming`]'s searches for one by byte offset and
+    /// additionally has to recognise a tag that a chunk boundary cut in half.
+    /// Neither can be written in terms of the other, so what keeps them honest
+    /// is this: a tolerance added to one and forgotten in the other would mean
+    /// a model's output rendering on one path and vanishing on the other.
+    #[test]
+    fn the_streaming_scanner_opens_a_block_on_exactly_the_tags_this_one_does() {
+        const BODY: &str =
+            r#"[{"version":"v0.9","createSurface":{"surfaceId":"s1","catalogId":"c"}}]"#;
+
+        for tag in [
+            "<a2ui-json>",
+            "<A2UI-JSON>",
+            r#"<a2ui-json version="v0.9">"#,
+            "<a2ui-json  >",
+            "<a2ui-jsonx>",
+            "<a2ui-json_x>",
+            "<a2ui-jso>",
+            "<not-a2ui-json>",
+        ] {
+            let content = format!("hello {tag}{BODY}</a2ui-json>");
+
+            let whole = unwrap_response(&content).is_ok();
+            let streamed =
+                crate::toolkit::streaming::StreamParser::new(crate::catalog::Catalog::basic())
+                    .process_chunk(&content)
+                    .expect("a tag this scanner rejects is conversational text, not an error")
+                    .iter()
+                    .any(|part| part.a2ui.is_some());
+
+            assert_eq!(whole, streamed, "the two scanners disagree about {tag:?}");
+        }
+    }
+
     #[test]
     fn multiple_blocks_keep_their_leading_text() {
         let content = "Part 1\n<a2ui-json>\n[{\"id\": \"1\"}]\n</a2ui-json>\nPart 2\n\

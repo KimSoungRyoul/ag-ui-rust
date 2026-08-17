@@ -145,7 +145,7 @@ fn has_defs(schema: &Value) -> bool {
 
 /// Keeps only the named components, and the `anyComponent` branches that reach
 /// them.
-pub fn prune_components(catalog: &mut Value, allowed: &[String]) {
+pub(crate) fn prune_components(catalog: &mut Value, allowed: &[String]) {
     let allowed: BTreeSet<&str> = allowed.iter().map(String::as_str).collect();
     let Some(object) = catalog.as_object_mut() else {
         return;
@@ -176,7 +176,7 @@ pub fn prune_components(catalog: &mut Value, allowed: &[String]) {
 ///
 /// Handles both envelope shapes: a `oneOf` of `$ref`s, and a flat `properties`
 /// map keyed by message name.
-pub fn prune_messages(s2c: &mut Value, allowed: &[String]) {
+pub(crate) fn prune_messages(s2c: &mut Value, allowed: &[String]) {
     let allowed: BTreeSet<&str> = allowed.iter().map(String::as_str).collect();
     let Some(object) = s2c.as_object_mut() else {
         return;
@@ -213,7 +213,7 @@ pub fn prune_messages(s2c: &mut Value, allowed: &[String]) {
 }
 
 /// Keeps only the common types still referenced by the given documents.
-pub fn prune_common_types(common_types: &mut Value, referenced_by: &[&Value]) {
+pub(crate) fn prune_common_types(common_types: &mut Value, referenced_by: &[&Value]) {
     let Some(object) = common_types.as_object_mut() else {
         return;
     };
@@ -413,7 +413,7 @@ fn collect_matches(base: &Path, pattern: &str) -> Vec<PathBuf> {
 /// Supports `*`, `?`, character classes with ranges and `!` negation, and `**`
 /// for "any number of directories". `*` alone never crosses a `/`, which is
 /// what keeps `dir/*.json` from reaching into subdirectories.
-pub fn glob_match(pattern: &str, text: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     // `**/` matches zero or more directories, so try it both ways.
     if let Some(rest) = pattern.strip_prefix("**/") {
         if glob_match(rest, text) {
