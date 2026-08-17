@@ -25,6 +25,7 @@ dependencies = [
 name = "ag-ui-axum"
 version = "0.1.0"
 dependencies = [
+ "ag-ui-client",
  "ag-ui-core",
  "ag-ui-server",
  "axum",
