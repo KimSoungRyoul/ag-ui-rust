@@ -13,9 +13,12 @@ use ag_ui_a2ui::constants::{A2UI_OPERATIONS_KEY, BASIC_CATALOG_ID, PROTOCOL_VERS
 use ag_ui_a2ui::message::{AgentPayload, Component};
 use ag_ui_a2ui::toolkit::envelope::{wrap_as_operations_envelope, wrap_error_envelope};
 use ag_ui_a2ui::toolkit::history::{HistoryMessage, find_prior_surface};
+use ag_ui_a2ui::toolkit::negotiate::{ClientCapabilities, select_catalog_schema};
 use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
 use ag_ui_a2ui::toolkit::prompt::{PromptSpec, build_subagent_prompt};
 use ag_ui_a2ui::toolkit::recovery::{RecoveryOptions, generate_with_recovery};
+use ag_ui_a2ui::toolkit::schema::SchemaBundle;
+use ag_ui_a2ui::toolkit::streaming::StreamParser;
 use ag_ui_a2ui::validate::{ErrorCode, Validator};
 use serde_json::{Value, json};
 
@@ -246,4 +249,143 @@ fn a_custom_catalog_drives_validation_the_same_way() {
     assert_eq!(report.errors.len(), 1);
     assert_eq!(report.errors[0].code, ErrorCode::MissingRequiredProp);
     assert_eq!(report.errors[0].path, "components[1].label");
+}
+
+#[test]
+fn a_surface_renders_progressively_while_it_is_generated() {
+    // The same generation as the first test, but delivered in token-sized
+    // chunks: the user sees the tree fill in instead of waiting for the end.
+    let catalog = Catalog::basic();
+    let mut parser = StreamParser::new(catalog);
+
+    let mut seen_text = Vec::new();
+    let mut renders: Vec<Value> = Vec::new();
+    let mut cursor = 0;
+    while cursor < CREATE_RESPONSE.len() {
+        // A chunk boundary at an arbitrary character, including mid-token.
+        let mut end = (cursor + 37).min(CREATE_RESPONSE.len());
+        while !CREATE_RESPONSE.is_char_boundary(end) {
+            end += 1;
+        }
+        for part in parser
+            .process_chunk(&CREATE_RESPONSE[cursor..end])
+            .expect("the canned response streams cleanly")
+        {
+            if !part.text.is_empty() {
+                seen_text.push(part.text);
+            }
+            renders.extend(part.a2ui.into_iter().flatten());
+        }
+        cursor = end;
+    }
+
+    // Streaming text is passed through verbatim, newline and all: trimming it
+    // would swallow whitespace that separates one chunk from the next.
+    assert_eq!(
+        seen_text,
+        vec![
+            "Here is your order.
+"
+            .to_string()
+        ]
+    );
+
+    // The surface was created before any components arrived.
+    assert!(renders[0].get("createSurface").is_some());
+
+    // Something renderable was emitted well before the generation finished.
+    assert!(
+        renders.len() > 3,
+        "expected several progressive updates, got {}",
+        renders.len()
+    );
+
+    // Placeholders stood in for components still on the wire.
+    let placeholders: Vec<&Value> = renders
+        .iter()
+        .filter_map(|message| message.pointer("/updateComponents/components"))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter(|component| {
+            component
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("loading_"))
+        })
+        .collect();
+    assert!(!placeholders.is_empty(), "expected loading placeholders");
+
+    // The last component update is the finished tree, with no placeholders left.
+    let final_components = renders
+        .iter()
+        .rev()
+        .find_map(|message| message.pointer("/updateComponents/components"))
+        .and_then(Value::as_array)
+        .expect("a final component update");
+    let ids: Vec<&str> = final_components
+        .iter()
+        .filter_map(|component| component.get("id").and_then(Value::as_str))
+        .collect();
+    assert!(!ids.iter().any(|id| id.starts_with("loading_")), "{ids:?}");
+    for expected in ["root", "heading", "items", "row"] {
+        assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
+    }
+
+    // And what streamed out validates as a whole surface.
+    let components: Vec<Component> = final_components
+        .iter()
+        .map(|component| serde_json::from_value(component.clone()).expect("a component"))
+        .collect();
+    let data = renders
+        .iter()
+        .rev()
+        .find_map(|message| message.pointer("/updateDataModel/value"))
+        .cloned()
+        .expect("a data model update");
+    let report = Validator::new(&Catalog::basic()).validate_surface(&components, Some(&data));
+    assert!(report.is_valid(), "{:?}", report.errors);
+}
+
+#[test]
+fn a_catalog_is_negotiated_then_pruned_into_the_prompt() {
+    // The renderer prefers a catalog the agent has, and adds one component of
+    // its own.
+    let agent_catalogs = vec![json!({
+        "catalogId": "example.com:design-system",
+        "components": {
+            "Text": {"type": "object", "properties": {"component": {"const": "Text"}}},
+            "Chart": {"type": "object", "properties": {"component": {"const": "Chart"}}}
+        }
+    })];
+    let renderer = ClientCapabilities {
+        supported_catalog_ids: vec!["example.com:design-system".to_string()],
+        inline_catalogs: vec![json!({"components": {"Sparkline": {"type": "object"}}})],
+    };
+
+    let negotiated = select_catalog_schema(&agent_catalogs, &renderer, true).unwrap();
+    assert_eq!(negotiated["catalogId"], "example.com:design-system");
+    assert!(negotiated["components"]["Sparkline"].is_object());
+
+    // The prompt carries only the components this turn is allowed to use.
+    let bundle = SchemaBundle {
+        s2c: json!({"title": "envelope"}),
+        common_types: json!({"$defs": {"ComponentId": {"type": "string"}}}),
+        catalog: negotiated,
+        custom_cuttable_keys: None,
+    }
+    .prune(&["Text".to_string(), "Sparkline".to_string()], &[]);
+
+    assert!(bundle.catalog["components"]["Chart"].is_null());
+
+    let catalog = Catalog::empty("example.com:design-system");
+    let prompt = build_subagent_prompt(
+        &PromptSpec::new("You build UI.", "Chart my week.", &catalog).with_schemas(&bundle),
+    );
+    assert!(prompt.contains("## Workflow Description:"));
+    assert!(prompt.contains("---BEGIN A2UI JSON SCHEMA---"));
+    assert!(prompt.contains("Sparkline"));
+    assert!(
+        !prompt.contains("Chart\":"),
+        "the pruned component must be gone"
+    );
 }

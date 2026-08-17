@@ -557,12 +557,13 @@ impl Catalog {
         out
     }
 
-    /// Renders the catalog as instructions for a generating model.
+    /// Renders the catalog as a compact summary for a generating model.
     ///
     /// One line per component with its required and optional properties, plus
-    /// the function list — compact enough to sit in a system prompt without
-    /// pasting a whole JSON Schema.
-    pub fn render_llm_instructions(&self) -> String {
+    /// the function list. This is the cheap alternative to pasting the whole
+    /// JSON Schema; when a model needs the exact document instead, use
+    /// [`SchemaBundle::render_llm_instructions`](crate::toolkit::schema::SchemaBundle::render_llm_instructions).
+    pub fn render_summary(&self) -> String {
         let mut out = String::new();
         out.push_str("### Component catalog\n");
         out.push_str(&format!("catalogId: {}\n", self.catalog_id));
@@ -1319,8 +1320,8 @@ mod tests {
     }
 
     #[test]
-    fn llm_instructions_mention_every_component() {
-        let rendered = Catalog::basic().render_llm_instructions();
+    fn the_summary_mentions_every_component() {
+        let rendered = Catalog::basic().render_summary();
         for name in BASIC_COMPONENTS {
             assert!(rendered.contains(name), "instructions omit {name}");
         }

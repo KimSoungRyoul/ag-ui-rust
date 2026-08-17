@@ -13,20 +13,20 @@ upstream and are driven by `crates/ag-ui-a2ui/tests/conformance.rs`.
 Do not hand-edit these files. To update, re-copy from upstream at a newer commit
 and change the SHA here and in `UPSTREAM_COMMIT` in the harness.
 
-## What is vendored
+## Current standing: 114 passed, 79 skipped, 0 failed
 
-| File | Cases | Executed here |
+| File | Cases | Checks executed here |
 |---|---:|---|
-| `core/validator.yaml` | 45 | 16 checks — the v0.9 structural cases |
-| `core/catalog.yaml` | 24 | none |
+| `core/validator.yaml` | 45 | 17 of 51 — every v0.9 structural case |
+| `core/catalog.yaml` | 24 | 23 of 24 — prune, render, load, modifiers |
 | `core/accessibility.yaml` | 4 | none |
 | `agent/parser.yaml` | 19 | 19 — all of them |
-| `agent/inference_format.yaml` | 19 | none |
-| `agent/streaming_parser.yaml` | 76 | none |
-| `test_data/simplified_{catalog,common_types,s2c}_v09.json` | — | schema files two validator cases reference |
+| `agent/inference_format.yaml` | 19 | 17 of 19 — catalog negotiation, prompts |
+| `agent/streaming_parser.yaml` | 76 | 38 of 76 — every v0.9 case |
+| `test_data/` | — | fixtures the cases above load |
 
-The rest of upstream `test_data/` is not vendored: it feeds the `load` and
-`prune` cases, none of which this crate executes.
+A case with `steps` counts as one check per step, so the check totals exceed the
+case counts in places.
 
 ## Why cases are skipped
 
@@ -35,44 +35,43 @@ printed by the test. Nothing is silently ignored, and no case is counted as
 passing unless this crate actually produced the expected outcome. Run
 
 ```
-cargo test -p ag-ui-a2ui --no-default-features --features toolkit -- --nocapture
+cargo test -p ag-ui-a2ui --all-features -- --nocapture
 ```
 
 to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list every check by
 name.
 
-The skips fall into five groups:
+The 79 skips break down as:
 
-1. **v0.8 wire format** (25 validator cases). v0.8 nests component properties
-   under the type name (`component: {Text: {...}}`) and uses different message
-   names. This crate implements v0.9, where components are flat.
-2. **JSON Schema validation** (8 validator checks). Upstream validates envelopes
-   and component properties with a JSON Schema engine, and those cases assert its
-   error codes (`missing_field`, `type_mismatch`) or its messages (`123 is not of
-   type 'string'`). This crate has no JSON Schema engine; it does the *semantic*
-   checks a schema cannot express.
-3. **Depth and pointer-syntax limits** (4 validator checks). Recursion depth caps
-   and JSON Pointer escape validation are not implemented.
-4. **Renderer behaviour** (`core/accessibility.yaml`, `agent/streaming_parser.yaml`,
-   80 cases). Accessibility trees and incremental chunk parsing belong to a
-   renderer; this crate does not render.
-5. **Catalog tooling and prompt wording** (`core/catalog.yaml`,
-   `agent/inference_format.yaml`, 43 cases). Schema pruning, example loading,
-   catalog negotiation, and upstream's exact prompt text are not implemented.
+| Count | Reason |
+|---:|---|
+| 63 | **v0.8 wire format.** v0.8 nests component properties under the type name (`component: {Text: {...}}`) and uses different message names. This crate implements v0.9, where components are flat. |
+| 6 | **JSON Schema validation.** Upstream validates envelopes, component properties and example files with a JSON Schema engine, and these cases assert its error codes (`missing_field`, `type_mismatch`) or its messages (`123 is not of type 'string'`). This crate has no JSON Schema engine and adding one for six cases is not worth the dependency. |
+| 4 | **Renderer accessibility.** Accessibility trees and axe-core rules belong to a renderer; this crate does not render. |
+| 3 | **Depth limits.** Upstream caps logical nesting at 50 and function-call nesting at 5. This crate's validator is iterative and handles arbitrarily deep trees without a limit, so a depth cap would be policy rather than safety — and it has no code in the closed [`ErrorCode`] set. |
+| 2 | **v0.8 schema bundle in a prompt.** Two `generate_prompt` cases ask for the v0.8 schema documents to be embedded in the prompt; this crate ships v0.9. The other six prompt cases run. |
+| 1 | **Envelope-only payload.** One validator step carries no components, so there is nothing for a component validator to check. |
 
-## One deliberate difference in classification
+Version gating is applied only where the version actually matters. `validate`
+and `process_chunk` are wire-format operations and are gated; schema surgery
+(`prune`, `render`, `load`, `remove_strict_validation`) works on the shape of
+the documents rather than on the protocol, so those run for v0.8 cases too.
 
+## Two deliberate differences
+
+**Unreachable components are a warning, not an error.**
 `test_validate_orphaned_component_v09` expects an error when a component cannot
-be reached from `root`. This crate reports that as a **warning**
-(`ValidationReport::unreachable`) rather than an error, because the specification
-tells renderers to buffer components until their parent arrives, so an
-unreachable component is usually a half-streamed tree rather than a broken one.
-The harness therefore asserts the condition is *detected*, not that it is fatal.
-This is the only place the harness maps an upstream expectation onto a different
-severity, and it is called out in `classify_expectation`.
+be reached from `root`. This crate reports that as
+`ValidationReport::unreachable`, because the specification tells renderers to
+buffer components until their parent arrives, so an unreachable component is
+usually a half-streamed tree rather than a broken one. The harness therefore
+asserts the condition is *detected*, not that it is fatal. This is the only
+place the harness maps an upstream expectation onto a different severity, and it
+is called out in `classify_expectation`.
 
-Two further scoping notes on the validator cases the harness does run: it turns
-off component-type and required-property checking, because upstream delegates
-those to JSON Schema in the cases being compared, and it turns off data-binding
-checking, because upstream's structural validator does not look at bindings at
-all. Matching upstream's scope is what makes the comparison meaningful.
+**Validator cases run at upstream's scope.** For the `validate` cases the
+harness turns off component-type and required-property checking, because
+upstream delegates those to JSON Schema in the cases being compared, and turns
+off data-binding resolution, because upstream's structural validator does not
+look at bindings. Pointer *syntax* checking stays on, since upstream checks that
+too. Matching upstream's scope is what makes the comparison meaningful.

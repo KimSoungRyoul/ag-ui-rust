@@ -19,9 +19,17 @@
 //! - [`binding`] — JSON Pointer resolution, template scopes, and the
 //!   `formatString` interpolation grammar, so an agent can check its own
 //!   bindings before shipping them.
-//! - [`toolkit`] (feature `toolkit`) — building ops, assembling prompts,
-//!   recovering a surface from conversation history, and the validate-and-retry
-//!   loop around a generating model.
+//! - [`toolkit`] (feature `toolkit`) — building ops, negotiating a catalog,
+//!   assembling prompts, parsing a model's output as it streams, recovering a
+//!   surface from conversation history, and the validate-and-retry loop around
+//!   a generating model.
+//!
+//! # Conformance
+//!
+//! The A2UI project publishes a language-agnostic conformance suite as YAML.
+//! It is vendored under `tests/conformance/` and run as a normal test; the
+//! report prints what passed, what was skipped, and why. See the README there
+//! for the current standing.
 //!
 //! # Version
 //!

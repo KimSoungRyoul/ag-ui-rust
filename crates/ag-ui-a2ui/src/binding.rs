@@ -64,6 +64,15 @@ pub(crate) fn pointer_tokens(path: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether a string parses as an RFC 6901 JSON Pointer.
+///
+/// The rule that catches real mistakes is the escape alphabet: `~` may only be
+/// followed by `0` or `1`, so a path written with a raw `~` in a key is invalid
+/// rather than merely absent.
+pub(crate) fn pointer_is_valid(path: &str) -> bool {
+    Pointer::parse(path).is_ok()
+}
+
 /// Encodes one path segment for use inside a JSON Pointer.
 fn encode_token(token: &str) -> String {
     token.replace('~', "~0").replace('/', "~1")

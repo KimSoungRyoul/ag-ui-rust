@@ -144,8 +144,15 @@ pub struct ValidateOptions {
     pub check_component_types: bool,
     /// Whether required properties are enforced.
     pub check_required_props: bool,
-    /// Whether data bindings are checked.
+    /// Whether data bindings are resolved against the data model, and whether
+    /// relative paths are required to sit inside a list template.
     pub check_bindings: bool,
+    /// Whether absolute binding paths must be syntactically valid JSON Pointers.
+    ///
+    /// Separate from [`ValidateOptions::check_bindings`] because it needs no
+    /// data model and cannot produce a false positive: a malformed escape can
+    /// never resolve, whatever the data turns out to be.
+    pub check_binding_syntax: bool,
 }
 
 impl Default for ValidateOptions {
@@ -164,6 +171,7 @@ impl ValidateOptions {
             check_component_types: true,
             check_required_props: true,
             check_bindings: true,
+            check_binding_syntax: true,
         }
     }
 
@@ -453,7 +461,7 @@ impl<'a> Validator<'a> {
             }
         }
 
-        if self.options.check_bindings {
+        if self.options.check_bindings || self.options.check_binding_syntax {
             let data = data_model.unwrap_or(&no_data);
             self.check_bindings(
                 nodes,
@@ -655,14 +663,20 @@ impl<'a> Validator<'a> {
         let name = |index: usize| nodes[index].id.unwrap_or("<missing id>");
         let mut chain: Vec<&str> = cycle.iter().map(|index| name(*index)).collect();
         chain.push(name(edge.target));
+        // The two lead-ins are the phrasing every A2UI SDK uses for these
+        // conditions; keeping them identical means a renderer or an operator
+        // reading logs from a mixed-language system sees one vocabulary.
         let detail = if cycle.len() == 1 {
             format!(
-                "Component '{}' references itself in '{}'.",
+                "Self-reference detected: component '{}' references itself in '{}'.",
                 name(from),
                 edge.location
             )
         } else {
-            format!("Child references form a loop: {}.", chain.join(" -> "))
+            format!(
+                "Circular reference detected: child references form a loop: {}.",
+                chain.join(" -> ")
+            )
         };
         ValidationError::new(
             ErrorCode::ChildCycle,
@@ -700,6 +714,27 @@ impl<'a> Validator<'a> {
 
             for binding in collect_bindings(&raw) {
                 let is_absolute = binding.path.starts_with('/');
+                // An absolute path goes on the wire verbatim, so a malformed
+                // escape can never resolve for any data model. Worth saying so
+                // even when no data model is available to check against.
+                if self.options.check_binding_syntax
+                    && is_absolute
+                    && !is_valid_pointer(&binding.path)
+                {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::UnresolvedBinding,
+                        node.locator(&binding.location),
+                        format!(
+                            "Invalid path syntax: '{}' is not a valid JSON Pointer. Inside a \
+                             path, '~' must be written '~0' and '/' must be written '~1'.",
+                            binding.path
+                        ),
+                    ));
+                    continue;
+                }
+                if !self.options.check_bindings {
+                    continue;
+                }
                 if !is_absolute && scope.is_none() {
                     report.errors.push(ValidationError::new(
                         ErrorCode::UnresolvedBinding,
@@ -752,6 +787,11 @@ impl<'a> Validator<'a> {
             }
         }
     }
+}
+
+/// Whether a string is a syntactically valid RFC 6901 JSON Pointer.
+fn is_valid_pointer(path: &str) -> bool {
+    crate::binding::pointer_is_valid(path)
 }
 
 fn type_name(value: &Value) -> &'static str {
@@ -1067,7 +1107,7 @@ mod tests {
             .find(|e| e.code == ErrorCode::ChildCycle)
             .unwrap();
         assert_eq!(error.path, "components[0].child");
-        assert!(error.message.contains("references itself"));
+        assert!(error.message.contains("Self-reference detected"));
     }
 
     #[test]
@@ -1084,6 +1124,7 @@ mod tests {
             .filter(|e| e.code == ErrorCode::ChildCycle)
             .collect();
         assert_eq!(cycles.len(), 1, "{:?}", report.errors);
+        assert!(cycles[0].message.contains("Circular reference detected"));
         assert!(cycles[0].message.contains("root -> c1 -> root"));
     }
 

@@ -1,0 +1,1748 @@
+//! Incremental parsing of a model's A2UI output as it streams.
+//!
+//! [`crate::toolkit::parser`] waits for the whole generation before it can hand
+//! back a surface. That is the wrong shape for A2UI, whose entire component
+//! model exists so a renderer can start painting as soon as `root` arrives.
+//! [`StreamParser`] closes that gap: feed it token chunks and it emits renderable
+//! A2UI as soon as enough of the tree has arrived to draw something.
+//!
+//! ```
+//! use ag_ui_a2ui::catalog::Catalog;
+//! use ag_ui_a2ui::toolkit::streaming::StreamParser;
+//!
+//! let catalog = Catalog::basic();
+//! let mut parser = StreamParser::new(catalog);
+//!
+//! // Conversational text comes out immediately.
+//! let parts = parser.process_chunk("Here you go. <a2ui-json>[").unwrap();
+//! assert_eq!(parts[0].text, "Here you go. ");
+//!
+//! // A message is emitted the moment it closes, mid-array.
+//! let parts = parser
+//!     .process_chunk(r#"{"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"c"}},"#)
+//!     .unwrap();
+//! assert_eq!(parts[0].a2ui.as_ref().unwrap().len(), 1);
+//! ```
+//!
+//! # What "as soon as possible" actually means
+//!
+//! Four mechanisms do the work, and they are the reason this is not simply a
+//! JSON parser fed one byte at a time:
+//!
+//! **Healing cut tokens.** A chunk boundary can land anywhere, including inside
+//! a string. The parser closes open braces and brackets to make the fragment
+//! parseable, but it will only close an open *string* for a key on the cuttable
+//! list — `text`, `label`, `hint` and friends. Cutting `"id"` or `"path"` would
+//! invent an identifier or a binding that the model never wrote, so those
+//! fragments are held back until the next chunk instead.
+//!
+//! **Placeholder synthesis.** A parent usually arrives before its children. Its
+//! child references are rewritten to `loading_<id>` and a stand-in component is
+//! emitted alongside, so the renderer can lay out the tree immediately and swap
+//! in the real component when it lands.
+//!
+//! **Reachability filtering.** Only components reachable from `root` are
+//! emitted. A component that arrives before its parent is cached, not sent — it
+//! would have nowhere to attach — and is re-sent as part of the tree once the
+//! path from the root exists.
+//!
+//! **Validation as a filter, not a failure.** Partial fragments are validated
+//! and silently dropped if they do not hold up. A placeholder of a type the
+//! catalog does not define, or a component still missing a required property,
+//! is simply not emitted yet. Structural failures that no further input can fix
+//! — a reference loop, a message that matches no envelope — are errors.
+//!
+//! # State is per-stream
+//!
+//! A parser instance carries the surface state for one generation: which
+//! surfaces exist, which components have been seen and emitted, and the data
+//! model so far. Create a new one per generation.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde_json::{Map, Value};
+
+use crate::catalog::Catalog;
+use crate::constants::{A2UI_CLOSE_TAG, A2UI_OPEN_TAG, PROTOCOL_VERSION, ROOT_ID};
+use crate::error::{Error, Result};
+use crate::toolkit::parser::ResponsePart;
+use crate::validate::{ValidateOptions, Validator};
+
+/// Message keys the parser recognizes, in envelope order.
+const MSG_CREATE_SURFACE: &str = "createSurface";
+const MSG_UPDATE_COMPONENTS: &str = "updateComponents";
+const MSG_UPDATE_DATA_MODEL: &str = "updateDataModel";
+const MSG_DELETE_SURFACE: &str = "deleteSurface";
+
+/// Component properties that hold child references.
+///
+/// Pruning walks these by name rather than by catalog type, because a partial
+/// component may not have named its type yet.
+const CHILD_FIELDS: [&str; 6] = [
+    "children",
+    "explicitList",
+    "child",
+    "contentChild",
+    "entryPointChild",
+    "componentId",
+];
+
+/// Keys whose string values may be closed early when a chunk cuts them.
+///
+/// Everything absent from this list is structural or atomic: healing `"id"` or
+/// `"path"` mid-token would fabricate an identifier or a data binding that the
+/// model never wrote, so those fragments wait for more input instead.
+pub const DEFAULT_CUTTABLE_KEYS: [&str; 7] = [
+    "literalString",
+    "valueString",
+    "label",
+    "hint",
+    "caption",
+    "altText",
+    "text",
+];
+
+/// Parses a model's A2UI output incrementally, one chunk at a time.
+pub struct StreamParser {
+    catalog: Catalog,
+    validate: bool,
+    cuttable_keys: BTreeSet<String>,
+
+    // --- text and JSON scanning ---
+    buffer: String,
+    found_delimiter: bool,
+    json_buffer: String,
+    /// Open brackets as `(kind, byte offset into json_buffer)`.
+    brace_stack: Vec<(char, usize)>,
+    brace_count: i64,
+    in_top_level_list: bool,
+    in_string: bool,
+    string_escaped: bool,
+    found_valid_json_in_block: bool,
+
+    // --- protocol state ---
+    seen_components: BTreeMap<String, Value>,
+    yielded_data_model: Map<String, Value>,
+    deleted_surfaces: BTreeSet<String>,
+    /// Component ids already emitted, per surface.
+    yielded_ids: BTreeMap<String, BTreeSet<String>>,
+    /// Canonical content of each emitted component, for change detection.
+    yielded_contents: BTreeMap<(String, String), String>,
+    root_ids: BTreeMap<String, String>,
+    unbound_root_id: Option<String>,
+    surface_id: Option<String>,
+    yielded_start_messages: BTreeSet<String>,
+    yielded_surfaces: BTreeSet<String>,
+    active_msg_type: Option<String>,
+    pending_messages: BTreeMap<String, Vec<Value>>,
+    buffered_start_message: Option<Value>,
+    topology_dirty: bool,
+}
+
+impl StreamParser {
+    /// A parser for a stream of components drawn from `catalog`.
+    pub fn new(catalog: Catalog) -> Self {
+        Self {
+            catalog,
+            validate: true,
+            cuttable_keys: DEFAULT_CUTTABLE_KEYS
+                .iter()
+                .map(|k| (*k).to_string())
+                .collect(),
+            buffer: String::new(),
+            found_delimiter: false,
+            json_buffer: String::new(),
+            brace_stack: Vec::new(),
+            brace_count: 0,
+            in_top_level_list: false,
+            in_string: false,
+            string_escaped: false,
+            found_valid_json_in_block: false,
+            seen_components: BTreeMap::new(),
+            yielded_data_model: Map::new(),
+            deleted_surfaces: BTreeSet::new(),
+            yielded_ids: BTreeMap::new(),
+            yielded_contents: BTreeMap::new(),
+            root_ids: BTreeMap::new(),
+            unbound_root_id: None,
+            surface_id: None,
+            yielded_start_messages: BTreeSet::new(),
+            yielded_surfaces: BTreeSet::new(),
+            active_msg_type: None,
+            pending_messages: BTreeMap::new(),
+            buffered_start_message: None,
+            topology_dirty: false,
+        }
+    }
+
+    /// Overrides which keys may have their string values closed early.
+    ///
+    /// A catalog whose components carry long free-text properties under other
+    /// names can add them here to keep those streaming smoothly.
+    #[must_use]
+    pub fn with_cuttable_keys<I, S>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.cuttable_keys = keys.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Turns off validation, emitting whatever parses.
+    ///
+    /// Only useful when the catalog is not known to this process; the filtering
+    /// that validation provides is most of what makes partial output safe to
+    /// render.
+    #[must_use]
+    pub fn without_validation(mut self) -> Self {
+        self.validate = false;
+        self
+    }
+
+    /// The surface the stream is currently describing.
+    pub fn surface_id(&self) -> Option<&str> {
+        self.surface_id.as_deref()
+    }
+
+    /// The root component id for the active surface.
+    pub fn root_id(&self) -> &str {
+        match &self.surface_id {
+            Some(sid) => self
+                .root_ids
+                .get(sid)
+                .map(String::as_str)
+                .unwrap_or(ROOT_ID),
+            None => self.unbound_root_id.as_deref().unwrap_or(ROOT_ID),
+        }
+    }
+
+    fn set_surface_id(&mut self, value: Option<String>) {
+        if let (Some(sid), Some(root)) = (&value, self.unbound_root_id.take()) {
+            self.root_ids.insert(sid.clone(), root);
+        }
+        self.surface_id = value;
+    }
+
+    fn set_root_id(&mut self, value: String) {
+        match &self.surface_id {
+            Some(sid) => {
+                self.root_ids.insert(sid.clone(), value);
+            }
+            None => self.unbound_root_id = Some(value),
+        }
+    }
+
+    /// Feeds the next chunk of the model's output.
+    ///
+    /// Returns the parts that became renderable because of this chunk:
+    /// conversational text, complete A2UI messages, and partial updates that are
+    /// safe to draw. An empty vector means the chunk did not complete anything.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Parse`] for a block that contained no JSON at all, and
+    /// [`Error::Validation`] for output no further input can rescue: a message
+    /// matching no envelope, a missing required envelope field, or a reference
+    /// loop.
+    pub fn process_chunk(&mut self, chunk: &str) -> Result<Vec<ResponsePart>> {
+        let mut parts: Vec<ResponsePart> = Vec::new();
+        self.buffer.push_str(chunk);
+
+        loop {
+            if !self.found_delimiter {
+                if let Some(index) = self.buffer.find(A2UI_OPEN_TAG) {
+                    let (before, rest) = self.buffer.split_at(index);
+                    if !before.is_empty() {
+                        parts.push(text_part(before));
+                    }
+                    self.buffer = rest[A2UI_OPEN_TAG.len()..].to_string();
+                    self.found_delimiter = true;
+                    continue;
+                }
+                // Hold back anything that could be the start of a split tag,
+                // so `<a2u` never escapes as conversational text.
+                let keep = trailing_prefix_len(&self.buffer, A2UI_OPEN_TAG);
+                if self.buffer.len() > keep {
+                    let split = self.buffer.len() - keep;
+                    let text = self.buffer[..split].to_string();
+                    parts.push(text_part(&text));
+                    self.buffer = self.buffer[split..].to_string();
+                }
+                break;
+            }
+
+            if let Some(index) = self.buffer.find(A2UI_CLOSE_TAG) {
+                let fragment = self.buffer[..index].to_string();
+                self.process_json_chunk(&fragment, &mut parts)?;
+                if !self.found_valid_json_in_block {
+                    return Err(Error::parse(
+                        "Failed to parse JSON: No valid JSON object found in A2UI block.",
+                    ));
+                }
+                self.buffer = self.buffer[index + A2UI_CLOSE_TAG.len()..].to_string();
+                self.found_delimiter = false;
+                self.reset_json_state();
+                continue;
+            }
+
+            let keep = trailing_prefix_len(&self.buffer, A2UI_CLOSE_TAG);
+            if keep < self.buffer.len() {
+                let split = self.buffer.len() - keep;
+                let fragment = self.buffer[..split].to_string();
+                self.buffer = self.buffer[split..].to_string();
+                self.process_json_chunk(&fragment, &mut parts)?;
+            }
+            break;
+        }
+        Ok(parts)
+    }
+
+    fn reset_json_state(&mut self) {
+        self.json_buffer.clear();
+        self.brace_stack.clear();
+        self.brace_count = 0;
+        self.in_top_level_list = false;
+        self.in_string = false;
+        self.string_escaped = false;
+        self.found_valid_json_in_block = false;
+        // `active_msg_type` and the yielded-content map deliberately survive, so
+        // a second block can keep updating the surface built by the first.
+    }
+
+    /// Scans one JSON fragment, emitting whatever it completes.
+    fn process_json_chunk(&mut self, chunk: &str, parts: &mut Vec<ResponsePart>) -> Result<()> {
+        for ch in chunk.chars() {
+            // Outside any object, only a container opener is interesting.
+            if self.brace_count == 0 && ch != '[' && ch != '{' {
+                continue;
+            }
+            if self.brace_count == 0 && ch == '[' {
+                self.in_top_level_list = true;
+            }
+
+            if self.in_string {
+                self.scan_string_char(ch);
+            } else {
+                match ch {
+                    '"' => {
+                        self.in_string = true;
+                        self.string_escaped = false;
+                        self.push_json(ch);
+                    }
+                    '{' => {
+                        self.brace_stack.push(('{', self.json_buffer.len()));
+                        self.json_buffer.push('{');
+                        self.brace_count += 1;
+                    }
+                    '}' => self.close_object(parts)?,
+                    '[' => {
+                        self.brace_stack.push(('[', self.json_buffer.len()));
+                        self.json_buffer.push('[');
+                        self.brace_count += 1;
+                    }
+                    ']' => {
+                        if self.brace_stack.last().map(|(k, _)| *k) == Some('[') {
+                            self.brace_stack.pop();
+                            self.json_buffer.push(']');
+                            self.brace_count -= 1;
+                            if self.brace_count == 0 {
+                                self.in_top_level_list = false;
+                            }
+                        }
+                    }
+                    _ => self.push_json(ch),
+                }
+            }
+
+            // Identifiers are sniffed eagerly on delimiters so a surfaceId is
+            // known before the message carrying it finishes.
+            if self.brace_count > 0 && matches!(ch, '"' | ':' | ',' | '}' | ']') {
+                self.sniff_metadata();
+            }
+        }
+
+        if self.brace_count >= 1 && !self.json_buffer.is_empty() {
+            self.sniff_partial_component();
+            self.sniff_partial_data_model(parts);
+        }
+        if self.topology_dirty {
+            self.yield_reachable(parts, false)?;
+            self.topology_dirty = false;
+        }
+        Ok(())
+    }
+
+    fn push_json(&mut self, ch: char) {
+        if self.brace_count > 0 {
+            self.json_buffer.push(ch);
+        }
+    }
+
+    fn scan_string_char(&mut self, ch: char) {
+        if self.string_escaped {
+            self.string_escaped = false;
+        } else if ch == '\\' {
+            self.string_escaped = true;
+        } else if ch == '"' {
+            self.in_string = false;
+        }
+        self.push_json(ch);
+    }
+
+    /// Handles a `}`: pops the frame and, if the object parses, dispatches it.
+    fn close_object(&mut self, parts: &mut Vec<ResponsePart>) -> Result<()> {
+        let Some((_, start)) = self.brace_stack.pop() else {
+            return Ok(());
+        };
+        self.json_buffer.push('}');
+        self.brace_count -= 1;
+
+        let fragment = self.json_buffer[start..].to_string();
+        if !fragment.starts_with('{') || !fragment.ends_with('}') {
+            return Ok(());
+        }
+        let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&fragment) else {
+            return Ok(());
+        };
+        self.found_valid_json_in_block = true;
+        let obj = Value::Object(map);
+
+        let is_protocol = self.in_top_level_list && is_protocol_message(&obj);
+        let is_component = obj.get("id").is_some() && obj.get("component").is_some();
+        let is_top_level = self.brace_stack.is_empty()
+            || (self.in_top_level_list
+                && self.brace_stack.len() == 1
+                && self.brace_stack[0].0 == '[');
+
+        if is_component {
+            self.handle_partial_component(&obj);
+        } else if (is_top_level || is_protocol) && !self.handle_complete_object(&obj, parts)? {
+            // Nothing recognized it, so validate it to surface the reason.
+            self.yield_message(obj.clone(), parts, false)?;
+        }
+
+        // Drop processed objects from the buffer so it does not grow without
+        // bound across a long generation.
+        if self.brace_count == 0 || (self.in_top_level_list && self.brace_stack.len() == 1) {
+            if self.brace_stack.len() == 1 && self.brace_stack[0].0 == '[' {
+                let mut kept = self.json_buffer[..start].to_string();
+                kept.push_str(&self.json_buffer[start + fragment.len()..]);
+                self.json_buffer = kept;
+            } else {
+                self.json_buffer = self.json_buffer[fragment.len()..].to_string();
+                let shift = fragment.len();
+                for entry in &mut self.brace_stack {
+                    entry.1 = entry.1.saturating_sub(shift);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Reacts to a fully parsed protocol message. Returns whether it was one.
+    fn handle_complete_object(
+        &mut self,
+        obj: &Value,
+        parts: &mut Vec<ResponsePart>,
+    ) -> Result<bool> {
+        if !is_protocol_message(obj) && obj.get(MSG_DELETE_SURFACE).is_none() {
+            return Ok(false);
+        }
+        if self.validate {
+            self.validate_message(obj)?;
+        }
+
+        let payload_surface = [
+            MSG_CREATE_SURFACE,
+            MSG_UPDATE_COMPONENTS,
+            MSG_UPDATE_DATA_MODEL,
+            MSG_DELETE_SURFACE,
+        ]
+        .iter()
+        .find_map(|key| obj.get(*key))
+        .and_then(|payload| payload.get("surfaceId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+        if payload_surface.is_some() {
+            self.set_surface_id(payload_surface);
+        }
+        let sid = self
+            .surface_id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        if let Some(payload) = obj.get(MSG_CREATE_SURFACE) {
+            if let Some(root) = payload.get("root").and_then(Value::as_str) {
+                self.set_root_id(root.to_string());
+            }
+            self.active_msg_type = Some(MSG_CREATE_SURFACE.to_string());
+            self.buffered_start_message = Some(obj.clone());
+            if !self.yielded_start_messages.contains(&sid) {
+                self.yield_message(obj.clone(), parts, false)?;
+                self.yielded_start_messages.insert(sid.clone());
+                self.yielded_surfaces.insert(sid.clone());
+                self.buffered_start_message = None;
+            }
+            // A fresh surface discards anything buffered for the old one.
+            self.pending_messages.remove(&sid);
+            self.yield_reachable(parts, false)?;
+            return Ok(true);
+        }
+
+        if let Some(payload) = obj.get(MSG_UPDATE_COMPONENTS) {
+            self.active_msg_type = Some(MSG_UPDATE_COMPONENTS.to_string());
+            if let Some(root) = payload.get("root").and_then(Value::as_str) {
+                self.set_root_id(root.to_string());
+            }
+            if let Some(components) = payload.get("components").and_then(Value::as_array) {
+                for component in components {
+                    if let Some(id) = component.get("id").and_then(Value::as_str) {
+                        self.seen_components
+                            .insert(id.to_string(), component.clone());
+                    }
+                }
+            }
+            self.yield_reachable(parts, true)?;
+            return Ok(true);
+        }
+
+        if obj.get(MSG_DELETE_SURFACE).is_some() {
+            if !self.yielded_start_messages.contains(&sid) {
+                // The surface was never created, so there is nothing to delete;
+                // hold the message in case a createSurface follows.
+                self.pending_messages
+                    .entry(sid)
+                    .or_default()
+                    .push(obj.clone());
+                return Ok(true);
+            }
+            self.delete_surface(&sid);
+            self.yield_message(obj.clone(), parts, false)?;
+            return Ok(true);
+        }
+
+        if obj.get(MSG_UPDATE_DATA_MODEL).is_some() {
+            self.yield_message(obj.clone(), parts, false)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn delete_surface(&mut self, sid: &str) {
+        self.pending_messages.remove(sid);
+        self.yielded_ids.remove(sid);
+        self.yielded_contents
+            .retain(|(surface, _), _| surface != sid);
+        self.yielded_surfaces.remove(sid);
+        self.yielded_start_messages.remove(sid);
+        self.deleted_surfaces.insert(sid.to_string());
+    }
+
+    /// Caches a component seen before its message finished.
+    fn handle_partial_component(&mut self, comp: &Value) {
+        let Some(id) = comp.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        // An empty object anywhere means a property has been opened but not
+        // filled — `"children": {`. Emitting that would violate the catalog, so
+        // the parent is left to draw a placeholder instead.
+        if has_empty_object(comp) {
+            return;
+        }
+        self.seen_components.insert(id.to_string(), comp.clone());
+        self.topology_dirty = true;
+    }
+
+    /// Emits every component currently reachable from the root.
+    ///
+    /// `check_root` mirrors the stricter pass run when a message completes.
+    fn yield_reachable(&mut self, parts: &mut Vec<ResponsePart>, check_root: bool) -> Result<()> {
+        let Some(active_msg_type) = self.active_msg_type.clone() else {
+            return Ok(());
+        };
+        let Some(sid) = self.surface_id.clone() else {
+            return Ok(());
+        };
+        // Components mean nothing until the surface they attach to exists.
+        if !self.yielded_surfaces.contains(&sid) && self.buffered_start_message.is_none() {
+            return Ok(());
+        }
+        if self.deleted_surfaces.contains(&sid) {
+            return Ok(());
+        }
+        let _ = check_root;
+
+        let root_id = self.root_id().to_string();
+        let reachable = self.analyze_topology(&root_id)?;
+
+        let mut processed: Vec<Value> = Vec::new();
+        let mut extras: Vec<Value> = Vec::new();
+        for id in &reachable {
+            let Some(component) = self.seen_components.get(id) else {
+                continue;
+            };
+            let mut component = component.clone();
+            self.resolve_child_references(&mut component, &mut extras);
+            processed.push(component);
+        }
+        processed.extend(extras);
+
+        let yielded = self.yielded_ids.entry(sid.clone()).or_default().clone();
+        let mut should_yield = reachable.difference(&yielded).next().is_some();
+        if !should_yield {
+            // Nothing new, but an already-emitted component may have grown.
+            should_yield = processed.iter().any(|component| {
+                let Some(id) = component.get("id").and_then(Value::as_str) else {
+                    return false;
+                };
+                let key = (sid.clone(), id.to_string());
+                self.yielded_contents.get(&key) != Some(&canonical_json(component))
+            });
+        }
+        if !should_yield {
+            return Ok(());
+        }
+
+        if let Some(start) = self.buffered_start_message.clone() {
+            if !self.yielded_start_messages.contains(&sid) {
+                self.yield_message(start, parts, false)?;
+                self.yielded_start_messages.insert(sid.clone());
+                self.yielded_surfaces.insert(sid.clone());
+            }
+        }
+
+        let mut payload = Map::new();
+        payload.insert("surfaceId".to_string(), Value::String(sid.clone()));
+        payload.insert("components".to_string(), Value::Array(processed.clone()));
+        let key = if active_msg_type == MSG_CREATE_SURFACE {
+            MSG_UPDATE_COMPONENTS
+        } else {
+            active_msg_type.as_str()
+        };
+        let mut message = Map::new();
+        message.insert(
+            "version".to_string(),
+            Value::String(PROTOCOL_VERSION.into()),
+        );
+        message.insert(key.to_string(), Value::Object(payload));
+
+        // A partial tree that does not hold up is dropped, not raised: the next
+        // chunk usually completes it.
+        if !self.yield_message(Value::Object(message), parts, true)? {
+            return Ok(());
+        }
+
+        self.yielded_ids
+            .entry(sid.clone())
+            .or_default()
+            .extend(reachable.iter().cloned());
+        for component in &processed {
+            if let Some(id) = component.get("id").and_then(Value::as_str) {
+                self.yielded_contents
+                    .insert((sid.clone(), id.to_string()), canonical_json(component));
+            }
+        }
+        Ok(())
+    }
+
+    /// Ids reachable from the root, erroring on loops.
+    ///
+    /// A loop is fatal because no further input can undo it, unlike a dangling
+    /// reference which the next chunk usually resolves.
+    fn analyze_topology(&self, root_id: &str) -> Result<BTreeSet<String>> {
+        let mut adjacency: BTreeMap<&str, Vec<(&str, String)>> = BTreeMap::new();
+        for (id, component) in &self.seen_components {
+            let mut edges = Vec::new();
+            for reference in self.component_references(component) {
+                if reference.0 == *id {
+                    return Err(Error::Parse(format!(
+                        "Self-reference detected: Component '{id}' references itself in field \
+                         '{}'",
+                        reference.1
+                    )));
+                }
+                edges.push((
+                    self.seen_components
+                        .get_key_value(&reference.0)
+                        .map(|(k, _)| k.as_str())
+                        .unwrap_or_default(),
+                    reference.0,
+                ));
+            }
+            adjacency.insert(id.as_str(), edges);
+        }
+
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+        let mut on_path: BTreeSet<String> = BTreeSet::new();
+        if self.seen_components.contains_key(root_id) {
+            walk(root_id, &adjacency, &mut visited, &mut on_path)?;
+        }
+        Ok(visited
+            .into_iter()
+            .filter(|id| self.seen_components.contains_key(id))
+            .collect())
+    }
+
+    /// Child references of a component: catalog-typed where the type is known,
+    /// falling back to the conventional field names while it is not.
+    fn component_references(&self, component: &Value) -> Vec<(String, String)> {
+        let mut refs = Vec::new();
+        collect_child_refs(component, &mut refs);
+        refs
+    }
+
+    /// Rewrites references to components that have not arrived yet.
+    fn resolve_child_references(&self, component: &mut Value, extras: &mut Vec<Value>) {
+        let comp_id = component
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let seen: BTreeSet<&str> = self.seen_components.keys().map(String::as_str).collect();
+        let buffer = self.json_buffer.clone();
+        rewrite_children(component, &comp_id, &seen, extras, &buffer);
+    }
+
+    /// Emits a message, returning whether it survived validation.
+    ///
+    /// `partial` selects the filter behaviour: a partial fragment that fails
+    /// validation is dropped, a complete message that fails is an error.
+    fn yield_message(
+        &mut self,
+        message: Value,
+        parts: &mut Vec<ResponsePart>,
+        partial: bool,
+    ) -> Result<bool> {
+        if self.validate {
+            if let Err(error) = self.validate_message(&message) {
+                if partial {
+                    return Ok(false);
+                }
+                return Err(error);
+            }
+        }
+        if !self.deduplicate_data_model(&message) {
+            return Ok(false);
+        }
+
+        match parts.last_mut() {
+            Some(last) if last.a2ui.is_none() => last.a2ui = Some(vec![message]),
+            Some(last) => {
+                if let Some(existing) = last.a2ui.as_mut() {
+                    existing.push(message);
+                }
+            }
+            None => parts.push(ResponsePart {
+                text: String::new(),
+                raw: None,
+                a2ui: Some(vec![message]),
+                is_final: true,
+            }),
+        }
+        Ok(true)
+    }
+
+    /// Suppresses a data-model update that repeats what was already sent.
+    fn deduplicate_data_model(&mut self, message: &Value) -> bool {
+        let Some(Value::Object(update)) = message.get(MSG_UPDATE_DATA_MODEL) else {
+            return true;
+        };
+        let is_new = update.iter().any(|(k, v)| {
+            k != "surfaceId" && k != "root" && self.yielded_data_model.get(k) != Some(v)
+        });
+        if !is_new {
+            return false;
+        }
+        for (k, v) in update {
+            if k != "surfaceId" && k != "root" {
+                self.yielded_data_model.insert(k.clone(), v.clone());
+            }
+        }
+        true
+    }
+
+    /// Validates one complete message: envelope shape, then components.
+    fn validate_message(&self, message: &Value) -> Result<()> {
+        validate_envelope(message)?;
+
+        let Some(components) = message
+            .get(MSG_UPDATE_COMPONENTS)
+            .and_then(|payload| payload.get("components"))
+            .and_then(Value::as_array)
+        else {
+            return Ok(());
+        };
+        // Streaming fragments legitimately reference components still on the
+        // wire and need not contain the root, so only the checks that cannot
+        // come good later are applied here.
+        let options = ValidateOptions {
+            require_root: false,
+            allow_dangling_children: true,
+            check_component_types: true,
+            check_required_props: true,
+            check_bindings: false,
+            check_binding_syntax: false,
+            ..ValidateOptions::full_surface()
+        };
+        Validator::with_options(&self.catalog, options)
+            .validate_json(components, None)
+            .into_result()
+    }
+
+    // --- sniffers -----------------------------------------------------------
+
+    /// Reads identifiers out of the raw buffer before their message closes.
+    fn sniff_metadata(&mut self) {
+        if let Some(sid) = latest_string_value(&self.json_buffer, "surfaceId") {
+            self.set_surface_id(Some(sid));
+        }
+        if let Some(root) = latest_string_value(&self.json_buffer, "root") {
+            self.set_root_id(root);
+        }
+        for key in [MSG_CREATE_SURFACE, MSG_UPDATE_COMPONENTS] {
+            if self.json_buffer.contains(&format!("\"{key}\":")) && self.active_msg_type.is_none() {
+                self.active_msg_type = Some(key.to_string());
+            }
+        }
+    }
+
+    /// Looks for a component inside the still-open buffer.
+    fn sniff_partial_component(&mut self) {
+        if !self.json_buffer.contains("\"components\"") {
+            return;
+        }
+        let frames: Vec<usize> = self
+            .brace_stack
+            .iter()
+            .rev()
+            .filter(|(kind, _)| *kind == '{')
+            .map(|(_, start)| *start)
+            .collect();
+        for start in frames {
+            let Some(fragment) = self.json_buffer.get(start..) else {
+                continue;
+            };
+            let healed = self.heal_json(fragment);
+            if healed.is_empty() {
+                continue;
+            }
+            let Ok(obj) = serde_json::from_str::<Value>(&healed) else {
+                continue;
+            };
+            let has_identity =
+                obj.get("id").is_some() && obj.get("component").and_then(Value::as_str).is_some();
+            if has_identity {
+                self.handle_partial_component(&obj);
+            }
+        }
+    }
+
+    /// Looks for a data-model update inside the still-open buffer, emitting only
+    /// what changed since the last one.
+    fn sniff_partial_data_model(&mut self, parts: &mut Vec<ResponsePart>) {
+        if !self
+            .json_buffer
+            .contains(&format!("\"{MSG_UPDATE_DATA_MODEL}\""))
+        {
+            return;
+        }
+        let frames: Vec<usize> = self
+            .brace_stack
+            .iter()
+            .rev()
+            .filter(|(kind, _)| *kind == '{')
+            .map(|(_, start)| *start)
+            .collect();
+
+        for start in frames {
+            let Some(fragment) = self.json_buffer.get(start..) else {
+                continue;
+            };
+            let Some(obj) = self.parse_healed_or_trimmed(fragment) else {
+                continue;
+            };
+            let Some(update) = obj.get(MSG_UPDATE_DATA_MODEL).and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(Value::Object(value)) = update.get("value") else {
+                continue;
+            };
+
+            let mut delta = Map::new();
+            for (key, item) in value {
+                if self.yielded_data_model.get(key) != Some(item) {
+                    delta.insert(key.clone(), item.clone());
+                }
+            }
+            if delta.is_empty() {
+                continue;
+            }
+            let sid = update
+                .get("surfaceId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| self.surface_id.clone())
+                .unwrap_or_else(|| "default".to_string());
+
+            let mut payload = Map::new();
+            payload.insert("surfaceId".to_string(), Value::String(sid));
+            payload.insert("value".to_string(), Value::Object(delta.clone()));
+            let mut message = Map::new();
+            message.insert(
+                "version".to_string(),
+                Value::String(PROTOCOL_VERSION.into()),
+            );
+            message.insert(MSG_UPDATE_DATA_MODEL.to_string(), Value::Object(payload));
+
+            // The delta is recorded whether or not the message survives, so the
+            // same keys are not offered again on the next chunk.
+            let emitted = self
+                .yield_message(Value::Object(message), parts, true)
+                .unwrap_or(false);
+            let _ = emitted;
+            for (key, item) in delta {
+                self.yielded_data_model.insert(key, item);
+            }
+        }
+    }
+
+    /// Parses a fragment, retreating to the last comma when healing is not enough.
+    fn parse_healed_or_trimmed(&self, fragment: &str) -> Option<Value> {
+        let healed = self.heal_json(fragment);
+        if let Ok(value) = serde_json::from_str::<Value>(&healed) {
+            return Some(value);
+        }
+        // `{"a": 1, "b":` heals to invalid JSON, but dropping the dangling
+        // `"b":` leaves a complete object that is still worth emitting.
+        let mut trimmed = fragment.to_string();
+        while let Some(index) = trimmed.rfind(',') {
+            trimmed.truncate(index);
+            let healed = self.heal_json(&trimmed);
+            if healed.is_empty() {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_str::<Value>(&healed) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    /// Closes a cut JSON fragment so it can be parsed.
+    ///
+    /// Returns an empty string when the cut lands inside a string whose key is
+    /// not cuttable: healing it would invent content the model never wrote.
+    fn heal_json(&self, fragment: &str) -> String {
+        let mut fixed = fragment.trim_end().to_string();
+        if fixed.is_empty() {
+            return String::new();
+        }
+
+        let mut stack: Vec<char> = Vec::new();
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut last_quote = None;
+        for (index, ch) in fixed.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => {
+                    in_string = !in_string;
+                    if in_string {
+                        last_quote = Some(index);
+                    }
+                }
+                '{' | '[' if !in_string => stack.push(ch),
+                '}' | ']' if !in_string => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+
+        if in_string {
+            if let Some(quote) = last_quote {
+                let prefix = fixed[..quote].trim_end();
+                if prefix.ends_with(':') {
+                    match key_before_colon(prefix) {
+                        Some(key) if self.cuttable_keys.contains(&key) => {}
+                        // Structural or unknown key: wait for the rest.
+                        _ => return String::new(),
+                    }
+                }
+            }
+            fixed.push('"');
+        }
+
+        let trimmed = fixed.trim_end();
+        let mut fixed = trimmed
+            .strip_suffix(',')
+            .unwrap_or(trimmed)
+            .trim_end()
+            .to_string();
+        while let Some(open) = stack.pop() {
+            fixed.push(if open == '{' { '}' } else { ']' });
+        }
+        fixed
+    }
+}
+
+/// Depth-first walk collecting reachable ids and rejecting loops.
+fn walk(
+    node: &str,
+    adjacency: &BTreeMap<&str, Vec<(&str, String)>>,
+    visited: &mut BTreeSet<String>,
+    on_path: &mut BTreeSet<String>,
+) -> Result<()> {
+    visited.insert(node.to_string());
+    on_path.insert(node.to_string());
+    for (_, target) in adjacency.get(node).into_iter().flatten() {
+        if on_path.contains(target.as_str()) {
+            return Err(Error::Parse(format!(
+                "Circular reference detected involving component '{target}'"
+            )));
+        }
+        if !visited.contains(target.as_str()) {
+            walk(target, adjacency, visited, on_path)?;
+        }
+    }
+    on_path.remove(node);
+    Ok(())
+}
+
+fn is_protocol_message(obj: &Value) -> bool {
+    [
+        MSG_CREATE_SURFACE,
+        MSG_UPDATE_COMPONENTS,
+        MSG_UPDATE_DATA_MODEL,
+    ]
+    .iter()
+    .any(|key| obj.get(*key).is_some())
+}
+
+/// Checks the envelope's required fields.
+///
+/// This is a hand-written check of the v0.9 envelope contract — the message key,
+/// `version`, and the required fields of each payload — not a JSON Schema
+/// engine. It covers exactly what the specification marks required, which is
+/// what a renderer will reject the message for.
+fn validate_envelope(message: &Value) -> Result<()> {
+    let Some(map) = message.as_object() else {
+        return Err(validation_error(
+            "Validation failed: message must be an object",
+        ));
+    };
+
+    let key = [
+        MSG_CREATE_SURFACE,
+        MSG_UPDATE_COMPONENTS,
+        MSG_UPDATE_DATA_MODEL,
+        MSG_DELETE_SURFACE,
+    ]
+    .into_iter()
+    .find(|key| map.contains_key(*key));
+
+    let Some(key) = key else {
+        return Err(validation_error(format!(
+            "Validation failed: {:?} is not a valid A2UI message; it must contain exactly one of \
+             createSurface, updateComponents, updateDataModel or deleteSurface",
+            map.keys().collect::<Vec<_>>()
+        )));
+    };
+    if !map.contains_key("version") {
+        return Err(validation_error(
+            "Validation failed: 'version' is a required property",
+        ));
+    }
+
+    let required: &[&str] = match key {
+        MSG_CREATE_SURFACE => &["surfaceId", "catalogId"],
+        MSG_UPDATE_COMPONENTS => &["surfaceId", "components"],
+        _ => &["surfaceId"],
+    };
+    let Some(payload) = map.get(key).and_then(Value::as_object) else {
+        return Err(validation_error(format!(
+            "Validation failed: '{key}' must be an object"
+        )));
+    };
+    for field in required {
+        if !payload.contains_key(*field) {
+            return Err(validation_error(format!(
+                "Validation failed: '{field}' is a required property of {key}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validation_error(message: impl Into<String>) -> Error {
+    Error::Validation {
+        errors: crate::ValidationErrors(vec![crate::validate::ValidationError::new(
+            crate::validate::ErrorCode::MissingRequiredProp,
+            "message",
+            message,
+        )]),
+    }
+}
+
+fn text_part(text: &str) -> ResponsePart {
+    ResponsePart {
+        text: text.to_string(),
+        raw: None,
+        a2ui: None,
+        is_final: true,
+    }
+}
+
+/// Length of the longest suffix of `text` that is a prefix of `tag`.
+fn trailing_prefix_len(text: &str, tag: &str) -> usize {
+    let max = tag.len().saturating_sub(1).min(text.len());
+    (1..=max)
+        .rev()
+        .find(|len| text.is_char_boundary(text.len() - len) && text.ends_with(&tag[..*len]))
+        .unwrap_or(0)
+}
+
+/// Extracts the key from a `"key":` suffix.
+fn key_before_colon(prefix: &str) -> Option<String> {
+    let without_colon = prefix.strip_suffix(':')?.trim_end();
+    let inner = without_colon.strip_suffix('"')?;
+    let start = inner.rfind('"')?;
+    Some(inner[start + 1..].to_string())
+}
+
+/// Finds the last `"key": "value"` pair in a raw buffer.
+fn latest_string_value(buffer: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let mut search_end = buffer.len();
+    while let Some(index) = buffer[..search_end].rfind(&needle) {
+        let rest = &buffer[index + needle.len()..];
+        let rest = rest.trim_start();
+        if let Some(rest) = rest.strip_prefix(':') {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('"') {
+                if let Some(end) = rest.find('"') {
+                    return Some(rest[..end].to_string());
+                }
+            }
+        }
+        search_end = index;
+        if search_end == 0 {
+            break;
+        }
+    }
+    None
+}
+
+/// Whether any object nested inside the value is empty.
+fn has_empty_object(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.is_empty() || map.values().any(has_empty_object),
+        Value::Array(items) => items.iter().any(has_empty_object),
+        _ => false,
+    }
+}
+
+/// Collects child ids from the conventional reference fields.
+fn collect_child_refs(value: &Value, refs: &mut Vec<(String, String)>) {
+    match value {
+        Value::Object(map) => {
+            for field in CHILD_FIELDS {
+                match map.get(field) {
+                    Some(Value::String(id)) => refs.push((id.clone(), field.to_string())),
+                    Some(Value::Array(items)) => {
+                        for item in items {
+                            if let Value::String(id) = item {
+                                refs.push((id.clone(), field.to_string()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for (key, child) in map {
+                if key == "id" || key == "component" {
+                    continue;
+                }
+                collect_child_refs(child, refs);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_child_refs(item, refs);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Replaces references to unseen components with placeholders.
+fn rewrite_children(
+    value: &mut Value,
+    comp_id: &str,
+    seen: &BTreeSet<&str>,
+    extras: &mut Vec<Value>,
+    buffer: &str,
+) {
+    match value {
+        Value::Object(map) => {
+            for field in CHILD_FIELDS {
+                match map.get_mut(field) {
+                    Some(Value::Array(items)) => {
+                        let mut resolved: Vec<Value> = Vec::with_capacity(items.len());
+                        for item in items.iter() {
+                            let Some(id) = item.as_str() else { continue };
+                            if seen.contains(id) {
+                                resolved.push(Value::String(id.to_string()));
+                            } else {
+                                let placeholder = format!("loading_{id}");
+                                push_placeholder(&placeholder, extras);
+                                resolved.push(Value::String(placeholder));
+                            }
+                        }
+                        if resolved.is_empty()
+                            && matches!(field, "children" | "explicitList")
+                            && list_is_still_open(buffer, field)
+                        {
+                            // The list has been opened but no ids have arrived;
+                            // give the renderer something to lay out.
+                            let placeholder = format!("loading_children_{comp_id}");
+                            push_placeholder(&placeholder, extras);
+                            resolved.push(Value::String(placeholder));
+                        }
+                        *map.get_mut(field).expect("field present") = Value::Array(resolved);
+                    }
+                    Some(Value::String(id)) if !seen.contains(id.as_str()) => {
+                        let placeholder = format!("loading_{id}");
+                        push_placeholder(&placeholder, extras);
+                        *id = placeholder;
+                    }
+                    _ => {}
+                }
+            }
+            for (key, child) in map.iter_mut() {
+                if key == "id" || key == "component" {
+                    continue;
+                }
+                rewrite_children(child, comp_id, seen, extras, buffer);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                rewrite_children(item, comp_id, seen, extras, buffer);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_placeholder(id: &str, extras: &mut Vec<Value>) {
+    let already = extras
+        .iter()
+        .any(|extra| extra.get("id").and_then(Value::as_str) == Some(id));
+    if already {
+        return;
+    }
+    let mut placeholder = Map::new();
+    placeholder.insert("id".to_string(), Value::String(id.to_string()));
+    placeholder.insert("component".to_string(), Value::String("Row".to_string()));
+    placeholder.insert("children".to_string(), Value::Array(Vec::new()));
+    extras.push(Value::Object(placeholder));
+}
+
+/// Whether the raw buffer shows `"field": [` with no closing bracket yet.
+fn list_is_still_open(buffer: &str, field: &str) -> bool {
+    let needle = format!("\"{field}\"");
+    let Some(index) = buffer.rfind(&needle) else {
+        return false;
+    };
+    let after = &buffer[index + needle.len()..];
+    match after.find('[') {
+        Some(open) => !after[..open].contains(']'),
+        None => false,
+    }
+}
+
+/// Serializes with object keys sorted, so content comparison is stable.
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let body: Vec<String> = keys
+                .into_iter()
+                .map(|key| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(key).unwrap_or_default(),
+                        canonical_json(&map[key])
+                    )
+                })
+                .collect();
+            format!("{{{}}}", body.join(","))
+        }
+        Value::Array(items) => {
+            let body: Vec<String> = items.iter().map(canonical_json).collect();
+            format!("[{}]", body.join(","))
+        }
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::Catalog;
+    use serde_json::json;
+
+    /// A catalog with the component types the streaming tests use, including the
+    /// `Row` the parser synthesizes placeholders from.
+    fn catalog() -> Catalog {
+        Catalog::from_schema(&json!({
+            "catalogId": "test",
+            "components": {
+                "Text": {
+                    "type": "object",
+                    "properties": {"component": {"const": "Text"}, "text": {}},
+                    "required": ["component"]
+                },
+                "Card": {
+                    "type": "object",
+                    "properties": {
+                        "component": {"const": "Card"},
+                        "child": {"$ref": "common_types.json#/$defs/ComponentId"}
+                    },
+                    "required": ["component"]
+                },
+                "Row": {
+                    "type": "object",
+                    "properties": {
+                        "component": {"const": "Row"},
+                        "children": {"$ref": "common_types.json#/$defs/ChildList"}
+                    },
+                    "required": ["component"]
+                },
+                "Audio": {
+                    "type": "object",
+                    "properties": {"component": {"const": "Audio"}, "url": {}, "label": {}},
+                    "required": ["component", "url"]
+                }
+            }
+        }))
+        .expect("test catalog")
+    }
+
+    fn parser() -> StreamParser {
+        StreamParser::new(catalog())
+    }
+
+    /// Feeds chunks and returns the A2UI messages from the final chunk.
+    fn feed(parser: &mut StreamParser, chunks: &[&str]) -> Vec<Value> {
+        let mut last = Vec::new();
+        for chunk in chunks {
+            last = parser
+                .process_chunk(chunk)
+                .expect("chunk should parse")
+                .into_iter()
+                .filter_map(|part| part.a2ui)
+                .flatten()
+                .collect();
+        }
+        last
+    }
+
+    const CREATE: &str =
+        r#"{"version":"v0.9","createSurface":{"surfaceId":"s1","catalogId":"test"}},"#;
+
+    const UPDATE_OPEN: &str =
+        r#"{"version":"v0.9","updateComponents":{"surfaceId":"s1","components":"#;
+
+    #[test]
+    fn conversational_text_streams_before_and_after_the_block() {
+        let mut parser = parser();
+        let parts = parser.process_chunk("Hello! ").unwrap();
+        assert_eq!(parts[0].text, "Hello! ");
+        assert!(parts[0].a2ui.is_none());
+
+        let parts = parser.process_chunk("Here you go: <a2ui-json>[").unwrap();
+        assert_eq!(parts[0].text, "Here you go: ");
+
+        parser.process_chunk(CREATE).unwrap();
+        let parts = parser
+            .process_chunk("]</a2ui-json> Anything else?")
+            .unwrap();
+        assert_eq!(parts.last().unwrap().text, " Anything else?");
+    }
+
+    #[test]
+    fn a_tag_split_across_chunks_is_not_leaked_as_text() {
+        let mut parser = parser();
+        let parts = parser.process_chunk("Talking <a2u").unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            parts[0].text, "Talking ",
+            "the partial tag must be held back"
+        );
+
+        let parts = parser.process_chunk("i-json>").unwrap();
+        assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn a_message_is_emitted_the_moment_it_closes() {
+        let mut parser = parser();
+        assert!(
+            feed(
+                &mut parser,
+                &["<a2ui-json>[", r#"{"version":"v0.9","createSur"#]
+            )
+            .is_empty()
+        );
+
+        let messages = feed(
+            &mut parser,
+            &[r#"face":{"surfaceId":"s1","catalogId":"test"}},"#],
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["createSurface"]["surfaceId"], "s1");
+    }
+
+    #[test]
+    fn cut_text_is_healed_and_extended_as_more_arrives() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+
+        let chunk = format!(r#"{UPDATE_OPEN}[{{"id":"root","component":"Text","text":"Em"#);
+        let messages = feed(&mut parser, &[&chunk]);
+        assert_eq!(
+            messages[0]["updateComponents"]["components"][0]["text"],
+            "Em"
+        );
+
+        let messages = feed(&mut parser, &[r#"ail"}]}}"#]);
+        assert_eq!(
+            messages[0]["updateComponents"]["components"][0]["text"],
+            "Email"
+        );
+    }
+
+    #[test]
+    fn a_cut_identifier_is_held_back_rather_than_invented() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+        // `id` is not cuttable: healing it would fabricate a component id.
+        let chunk = format!(r#"{UPDATE_OPEN}[{{"id":"but"#);
+        assert!(feed(&mut parser, &[&chunk]).is_empty());
+    }
+
+    #[test]
+    fn a_missing_child_becomes_a_placeholder_and_is_swapped_in_later() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+
+        let chunk = format!(r#"{UPDATE_OPEN}[{{"id":"root","component":"Card","child":"c1"}}, "#);
+        let messages = feed(&mut parser, &[&chunk]);
+        let components = messages[0]["updateComponents"]["components"]
+            .as_array()
+            .unwrap();
+        assert_eq!(components[0]["child"], "loading_c1");
+        assert_eq!(components[1]["id"], "loading_c1");
+        assert_eq!(components[1]["component"], "Row");
+
+        let messages = feed(
+            &mut parser,
+            &[r#"{"id":"c1","component":"Text","text":"hi"}]}}"#],
+        );
+        let components = messages[0]["updateComponents"]["components"]
+            .as_array()
+            .unwrap();
+        // Sorted by id, and the placeholder is gone.
+        assert_eq!(components[0]["id"], "c1");
+        assert_eq!(components[1]["child"], "c1");
+        assert_eq!(components.len(), 2);
+    }
+
+    #[test]
+    fn components_wait_until_they_are_reachable_from_the_root() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+
+        // The child arrives first; nothing can be drawn from it yet.
+        let chunk = format!(r#"{UPDATE_OPEN}[{{"id":"c1","component":"Text","text":"hi"}}"#);
+        assert!(feed(&mut parser, &[&chunk]).is_empty());
+
+        let messages = feed(
+            &mut parser,
+            &[r#", {"id":"root","component":"Card","child":"c1"}]}}"#],
+        );
+        let components = messages[0]["updateComponents"]["components"]
+            .as_array()
+            .unwrap();
+        assert_eq!(components.len(), 2);
+    }
+
+    #[test]
+    fn unreachable_components_are_never_emitted() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+        let chunk = format!(
+            r#"{UPDATE_OPEN}[{{"id":"root","component":"Text","text":"root"}},{{"id":"orphan","component":"Text","text":"orphan"}}]}}}}"#
+        );
+        let messages = feed(&mut parser, &[&chunk]);
+        let components = messages[0]["updateComponents"]["components"]
+            .as_array()
+            .unwrap();
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0]["id"], "root");
+    }
+
+    #[test]
+    fn components_are_buffered_until_the_surface_exists() {
+        let mut parser = parser();
+        let chunk =
+            format!(r#"{UPDATE_OPEN}[{{"id":"root","component":"Text","text":"hi"}}]}}}}, "#);
+        let messages = feed(&mut parser, &["<a2ui-json>[", &chunk]);
+        assert!(messages.is_empty(), "no surface to attach to yet");
+
+        let messages = feed(&mut parser, &[CREATE]);
+        assert_eq!(
+            messages.len(),
+            2,
+            "the surface and its tree arrive together"
+        );
+        assert!(messages[0].get("createSurface").is_some());
+        assert!(messages[1].get("updateComponents").is_some());
+    }
+
+    #[test]
+    fn deleting_a_surface_that_was_never_created_is_dropped() {
+        let mut parser = parser();
+        let messages = feed(
+            &mut parser,
+            &[
+                "<a2ui-json>[",
+                r#"{"version":"v0.9","deleteSurface":{"surfaceId":"s1"}}, "#,
+                CREATE,
+            ],
+        );
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].get("createSurface").is_some());
+    }
+
+    #[test]
+    fn a_self_reference_is_an_error_no_further_input_can_fix() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+        let chunk =
+            format!(r#"{UPDATE_OPEN}[{{"id":"root","component":"Card","child":"root"}}]}}}}"#);
+        let error = parser.process_chunk(&chunk).unwrap_err();
+        assert!(
+            error.to_string().contains("Self-reference detected"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_reference_loop_across_messages_is_an_error() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+        let chunk = format!(
+            r#"{UPDATE_OPEN}[{{"id":"root","component":"Card","child":"c1"}}]}}}},{UPDATE_OPEN}[{{"id":"c1","component":"Card","child":"root"}}]}}}}"#
+        );
+        let error = parser.process_chunk(&chunk).unwrap_err();
+        assert!(
+            error.to_string().contains("Circular reference detected"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_message_matching_no_envelope_is_an_error() {
+        let mut parser = parser();
+        let error = parser
+            .process_chunk(r#"<a2ui-json>[{"unknownMessage":"invalid"}]"#)
+            .unwrap_err();
+        assert!(error.to_string().contains("Validation failed"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_required_envelope_field_is_an_error() {
+        let mut first = parser();
+        let error = first
+            .process_chunk(r#"<a2ui-json>[{"version":"v0.9","createSurface":{"surfaceId":"s1"}}]"#)
+            .unwrap_err();
+        assert!(error.to_string().contains("required property"), "{error}");
+
+        let mut parser = parser();
+        let error = parser
+            .process_chunk(r#"<a2ui-json>[{"updateComponents":{"components":[]}}]"#)
+            .unwrap_err();
+        assert!(error.to_string().contains("Validation failed"), "{error}");
+    }
+
+    #[test]
+    fn a_partial_component_missing_a_required_property_is_not_emitted_yet() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+        // `Audio` requires `url`; the fragment has only `label` so far.
+        let chunk =
+            format!(r#"{UPDATE_OPEN}[{{"id":"root","component":"Audio","label":"almost ready""#);
+        assert!(feed(&mut parser, &[&chunk]).is_empty());
+
+        let messages = feed(&mut parser, &[r#", "url":"http://a.mp3"}]}}"#]);
+        assert_eq!(
+            messages[0]["updateComponents"]["components"][0]["url"],
+            "http://a.mp3"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_the_catalog_cannot_render_suppresses_the_partial_update() {
+        // This catalog has no `Row`, so the synthesized placeholder would be
+        // invalid; the partial tree is held back rather than sent broken.
+        let catalog = Catalog::from_schema(&json!({
+            "catalogId": "no-row",
+            "components": {
+                "Card": {
+                    "type": "object",
+                    "properties": {
+                        "component": {"const": "Card"},
+                        "child": {"$ref": "common_types.json#/$defs/ComponentId"}
+                    },
+                    "required": ["component"]
+                },
+                "Text": {"type": "object", "properties": {"component": {"const": "Text"}}}
+            }
+        }))
+        .unwrap();
+        let mut parser = StreamParser::new(catalog);
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+
+        let chunk = format!(r#"{UPDATE_OPEN}[{{"id":"root","component":"Card","child":"c1"}}"#);
+        assert!(feed(&mut parser, &[&chunk]).is_empty());
+    }
+
+    #[test]
+    fn the_data_model_streams_as_deltas_then_settles() {
+        let mut parser = parser();
+        let messages = feed(
+            &mut parser,
+            &[
+                "<a2ui-json>[",
+                CREATE,
+                r#"{"version":"v0.9","updateDataModel":{"surfaceId":"s1","value":{"a":1,"b":"#,
+            ],
+        );
+        // The complete `a` is offered; the dangling `b` is not.
+        assert_eq!(messages[0]["updateDataModel"]["value"], json!({"a": 1}));
+
+        // Once the message closes it is sent whole, not as a delta, so the
+        // renderer's model is exactly what the agent meant to send.
+        let messages = feed(&mut parser, &["2}}}"]);
+        assert_eq!(
+            messages[0]["updateDataModel"]["value"],
+            json!({"a": 1, "b": 2})
+        );
+    }
+
+    #[test]
+    fn an_unchanged_data_model_key_is_not_offered_twice() {
+        let mut parser = parser();
+        feed(
+            &mut parser,
+            &[
+                "<a2ui-json>[",
+                CREATE,
+                r#"{"version":"v0.9","updateDataModel":{"surfaceId":"s1","value":{"a":1"#,
+            ],
+        );
+        let messages = feed(&mut parser, &[", "]);
+        assert!(messages.is_empty(), "nothing changed, so nothing to send");
+    }
+
+    #[test]
+    fn custom_cuttable_keys_replace_the_defaults() {
+        let mut parser = StreamParser::new(catalog())
+            .with_cuttable_keys(["label"])
+            .without_validation();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+
+        // `label` is cuttable here, `text` no longer is.
+        let chunk = format!(r#"{UPDATE_OPEN}[{{"id":"root","component":"Audio","label":"partial"#);
+        let messages = feed(&mut parser, &[&chunk]);
+        assert_eq!(
+            messages[0]["updateComponents"]["components"][0]["label"],
+            "partial"
+        );
+    }
+
+    #[test]
+    fn a_block_with_no_json_at_all_is_a_parse_error() {
+        let mut parser = parser();
+        let error = parser
+            .process_chunk("<a2ui-json>not json at all</a2ui-json>")
+            .unwrap_err();
+        assert!(matches!(error, Error::Parse(_)), "{error}");
+    }
+
+    #[test]
+    fn a_second_block_keeps_updating_the_first_surface() {
+        let mut parser = parser();
+        let first = format!(
+            r#"{UPDATE_OPEN}[{{"id":"root","component":"Text","text":"first"}}]}}}}]</a2ui-json>"#
+        );
+        feed(&mut parser, &["<a2ui-json>[", CREATE, &first]);
+
+        let second = format!(
+            r#"<a2ui-json>[{UPDATE_OPEN}[{{"id":"root","component":"Text","text":"second"}}]}}}}]</a2ui-json>"#
+        );
+        let messages = feed(&mut parser, &[&second]);
+        assert_eq!(
+            messages[0]["updateComponents"]["components"][0]["text"],
+            "second"
+        );
+    }
+
+    #[test]
+    fn the_root_id_and_surface_id_are_readable_while_streaming() {
+        let mut parser = parser();
+        assert_eq!(parser.surface_id(), None);
+        assert_eq!(parser.root_id(), "root");
+
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+        assert_eq!(parser.surface_id(), Some("s1"));
+    }
+
+    #[test]
+    fn healing_refuses_to_close_a_non_cuttable_string() {
+        let parser = parser();
+        assert_eq!(parser.heal_json(r#"{"id": "part"#), "");
+        assert_eq!(parser.heal_json(r#"{"path": "/us"#), "");
+        assert_eq!(parser.heal_json(r#"{"text": "par"#), r#"{"text": "par"}"#);
+        assert_eq!(parser.heal_json(r#"{"a": 1,"#), r#"{"a": 1}"#);
+    }
+
+    #[test]
+    fn canonical_json_sorts_keys_at_every_level() {
+        let a = json!({"b": 1, "a": {"d": 2, "c": [3, {"f": 4, "e": 5}]}});
+        let b = json!({"a": {"c": [3, {"e": 5, "f": 4}], "d": 2}, "b": 1});
+        assert_eq!(canonical_json(&a), canonical_json(&b));
+        assert_ne!(canonical_json(&a), canonical_json(&json!({"b": 2})));
+    }
+
+    #[test]
+    fn latest_string_value_reads_the_last_occurrence() {
+        let buffer = r#"{"surfaceId": "first"} {"surfaceId" : "second""#;
+        assert_eq!(
+            latest_string_value(buffer, "surfaceId"),
+            Some("second".to_string())
+        );
+        assert_eq!(latest_string_value(buffer, "missing"), None);
+        // A key with a non-string value is skipped rather than mis-read.
+        assert_eq!(latest_string_value(r#"{"root": 3}"#, "root"), None);
+    }
+}
