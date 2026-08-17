@@ -16,7 +16,7 @@ use ag_ui_client::Session;
 use ag_ui_client::transport::HttpTransport;
 use task_board::chat::Terminal;
 use task_board::llm::Voice;
-use task_board::{Board, ROUTE, TaskBoard, board, chat, router};
+use task_board::{ROUTE, TaskBoard, board, chat, router};
 
 /// Where `chat` looks unless told otherwise.
 const DEFAULT_URL: &str = "http://127.0.0.1:8080/agent";
@@ -128,7 +128,7 @@ async fn chat(args: impl Iterator<Item = String>) -> ExitCode {
 
     // The tools travel on every request; the agent reads them back out of
     // `ctx.tools()` and refuses to call one that is not there.
-    let mut session = Session::<_, Board>::builder(transport, thread.clone())
+    let mut session = Session::builder(transport, thread.clone())
         .tools(board::tools())
         .build();
 
