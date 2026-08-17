@@ -60,8 +60,11 @@ was skipped, and why.
 
 | Feature | Default | What it adds |
 | --- | --- | --- |
-| `ag-ui` | yes | AG-UI transport binding (`a2ui_operations` envelope detection). Turn it off to use A2UI standalone over A2A or MCP. |
 | `toolkit` | yes | Agent-side authoring: op builders, prompt assembly, recovery loop. |
+
+This crate depends on no transport, AG-UI included. Wrapping operations for the wire is
+`toolkit::envelope`, which returns the `a2ui_operations` envelope as a JSON string that an
+AG-UI message, an A2A data part or an MCP tool result can all carry as-is.
 
 See the [repository](https://github.com/KimSoungRyoul/ag-ui-rust) for the design rationale.
 
