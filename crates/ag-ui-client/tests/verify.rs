@@ -29,33 +29,110 @@ fn content_for_a_message_that_was_never_opened_is_rejected() {
 }
 
 #[test]
-fn content_for_a_different_message_than_the_open_one_is_rejected() {
+fn content_for_a_message_other_than_the_one_that_was_opened_is_rejected() {
     let said = complaint(&[
         Event::run_started("t", "r"),
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
         Event::text_message_content("msg-2", "wrong message"),
     ]);
     assert!(said.contains("msg-2"), "{said}");
-    assert!(said.contains("msg-1"), "{said}");
+    assert!(said.contains("never opened"), "{said}");
 }
 
 #[test]
-fn a_second_message_cannot_open_while_one_is_still_open() {
+fn two_message_ids_may_stream_at_once() {
+    // Upstream's verifier keys everything by id — `activeMessages` /
+    // `activeToolCalls` are maps, not single slots — and its test file has
+    // "should allow concurrent text messages with different IDs". A producer
+    // that streams two answers at once is well-formed, not broken.
+    verify_all(&[
+        Event::run_started("t", "r"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_start("msg-2", TextMessageRole::Assistant),
+        Event::text_message_content("msg-1", "one"),
+        Event::text_message_content("msg-2", "two"),
+        Event::text_message_content("msg-1", " more"),
+        Event::text_message_end("msg-2"),
+        Event::text_message_end("msg-1"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("two message ids may be open at once");
+}
+
+#[test]
+fn two_tool_calls_may_stream_at_once() {
+    // "should allow concurrent tool calls with different IDs" upstream, and the
+    // reason it matters: every provider that supports parallel tool calling
+    // interleaves the argument deltas of both.
+    verify_all(&[
+        Event::run_started("t", "r"),
+        Event::tool_call_start("call-1", "get_weather"),
+        Event::tool_call_start("call-2", "get_time"),
+        Event::tool_call_args("call-1", r#"{"city":"#),
+        Event::tool_call_args("call-2", r#"{"zone":"#),
+        Event::tool_call_args("call-1", r#""Seoul"}"#),
+        Event::tool_call_end("call-1"),
+        Event::tool_call_args("call-2", r#""KST"}"#),
+        Event::tool_call_end("call-2"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("two tool call ids may be open at once");
+}
+
+#[test]
+fn a_tool_call_may_open_inside_a_message() {
+    // "should allow overlapping text messages and tool calls" upstream. This is
+    // what an assistant turn that narrates while it calls a tool looks like.
+    verify_all(&[
+        Event::run_started("t", "r"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_content("msg-1", "Let me check."),
+        Event::tool_call_start("call-1", "get_weather"),
+        Event::tool_call_args("call-1", "{}"),
+        Event::tool_call_end("call-1"),
+        Event::text_message_end("msg-1"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("a tool call may overlap the message that narrates it");
+}
+
+#[test]
+fn the_same_message_id_cannot_open_twice() {
+    // The rule concurrency replaces: not "one at a time" but "one per id".
+    // Upstream: "A text message with ID 'msg-1' is already in progress."
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+    ]);
+    assert!(said.contains("msg-1"), "{said}");
+    assert!(said.contains("already open"), "{said}");
+}
+
+#[test]
+fn the_same_tool_call_id_cannot_open_twice() {
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::tool_call_start("call-1", "get_weather"),
+        Event::tool_call_start("call-1", "get_weather"),
+    ]);
+    assert!(said.contains("call-1"), "{said}");
+    assert!(said.contains("already open"), "{said}");
+}
+
+#[test]
+fn a_run_may_not_finish_with_any_of_several_open_messages() {
+    // Concurrency does not weaken the close-before-finish rule: upstream
+    // rejects RUN_FINISHED "while text messages are still active" by listing
+    // whatever is left in the map.
     let said = complaint(&[
         Event::run_started("t", "r"),
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
         Event::text_message_start("msg-2", TextMessageRole::Assistant),
+        Event::text_message_end("msg-1"),
+        Event::run_finished_success("t", "r"),
     ]);
-    assert!(said.contains("still open"), "{said}");
-}
-
-#[test]
-fn a_tool_call_cannot_open_inside_a_message() {
-    let said = complaint(&[
-        Event::run_started("t", "r"),
-        Event::text_message_start("msg-1", TextMessageRole::Assistant),
-        Event::tool_call_start("call-1", "t"),
-    ]);
+    assert!(said.contains("msg-2"), "{said}");
     assert!(said.contains("still open"), "{said}");
 }
 

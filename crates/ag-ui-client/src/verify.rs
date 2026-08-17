@@ -28,12 +28,10 @@
 //!    `CUSTOM` may precede it.
 //! 2. `RUN_FINISHED` and `RUN_ERROR` close it. Nothing may follow.
 //! 3. `TEXT_MESSAGE_CONTENT` and `TEXT_MESSAGE_END` require an open message
-//!    with the same id, and `TEXT_MESSAGE_START` may not open a second one.
+//!    with the same id, and `TEXT_MESSAGE_START` may not re-open an id that is
+//!    already open.
 //! 4. The same, for `TOOL_CALL_*` and for `REASONING_MESSAGE_*`.
-//! 5. While a message, tool call or reasoning message is open, no *other*
-//!    message-stream event may interleave. State, activity, step, raw and
-//!    custom events may: a producer that streams chunks legitimately publishes
-//!    state between two fragments of one message.
+//! 5. `TOOL_CALL_RESULT` may not answer a call that has not ended.
 //! 6. `STEP_FINISHED` requires a matching `STEP_STARTED`, and step names do not
 //!    nest with themselves.
 //! 7. Everything open must be closed before `RUN_FINISHED`.
@@ -41,10 +39,14 @@
 //!    the type system cannot express, checked by
 //!    [`RunOutcome::validate`](ag_ui_core::RunOutcome::validate).
 //!
-//! Rule 5 is deliberately narrower than the TypeScript verifier's, which
-//! forbids *any* event between a start and its end. That rule fails against
-//! real chunk-streaming producers, and a verifier that cries wolf gets turned
-//! off.
+//! What is deliberately *not* a rule: that one stream must close before the
+//! next opens. Everything here is keyed by id, exactly as the TypeScript
+//! verifier keys its `activeMessages` / `activeToolCalls` maps. Two messages
+//! may stream at once, two tool calls may stream at once, and a tool call may
+//! open inside the message that narrates it — which is what every provider
+//! doing parallel tool calls actually sends. Events outside these families
+//! (state, activity, step, raw, custom) are unordered and never close
+//! anything.
 
 // The THINKING_* events are deprecated but a verifier still has to recognise
 // them.
@@ -61,9 +63,12 @@ use crate::error::{Error, Result};
 pub struct Verifier {
     started: bool,
     finished: bool,
-    text: Option<MessageId>,
-    tool: Option<ToolCallId>,
-    reasoning: Option<MessageId>,
+    /// What is open, by id — several at once is legal, the same id twice is
+    /// not. `Vec` rather than a set so a complaint names whichever was opened
+    /// first, which is the one a human is looking for.
+    text: Vec<MessageId>,
+    tool: Vec<ToolCallId>,
+    reasoning: Vec<MessageId>,
     steps: Vec<StepName>,
 }
 
@@ -113,34 +118,44 @@ impl Verifier {
             }
 
             Event::TextMessageStart(e) => {
-                self.no_open_stream(kind)?;
-                self.text = Some(e.message_id.clone());
+                self.not_already_open(&self.text, &e.message_id, "message", kind)?;
+                self.text.push(e.message_id.clone());
             }
             Event::TextMessageContent(e) => self.expect_text(&e.message_id, kind)?,
             Event::TextMessageEnd(e) => {
                 self.expect_text(&e.message_id, kind)?;
-                self.text = None;
+                self.text.retain(|open| open != &e.message_id);
             }
 
             Event::ToolCallStart(e) => {
-                self.no_open_stream(kind)?;
-                self.tool = Some(e.tool_call_id.clone());
+                self.not_already_open(&self.tool, &e.tool_call_id, "tool call", kind)?;
+                self.tool.push(e.tool_call_id.clone());
             }
             Event::ToolCallArgs(e) => self.expect_tool(&e.tool_call_id, kind)?,
             Event::ToolCallEnd(e) => {
                 self.expect_tool(&e.tool_call_id, kind)?;
-                self.tool = None;
+                self.tool.retain(|open| open != &e.tool_call_id);
             }
-            Event::ToolCallResult(_) => self.no_open_stream(kind)?,
+            // The call this answers has to be over. Anything *else* still
+            // streaming is none of this event's business — a result arriving
+            // while the assistant keeps narrating is ordinary.
+            Event::ToolCallResult(e) => {
+                if self.tool.contains(&e.tool_call_id) {
+                    return Err(Error::protocol(format!(
+                        "{kind} for tool call {:?}, which has not ended yet",
+                        e.tool_call_id.as_str()
+                    )));
+                }
+            }
 
             Event::ReasoningMessageStart(e) => {
-                self.no_open_stream(kind)?;
-                self.reasoning = Some(e.message_id.clone());
+                self.not_already_open(&self.reasoning, &e.message_id, "reasoning message", kind)?;
+                self.reasoning.push(e.message_id.clone());
             }
             Event::ReasoningMessageContent(e) => self.expect_reasoning(&e.message_id, kind)?,
             Event::ReasoningMessageEnd(e) => {
                 self.expect_reasoning(&e.message_id, kind)?;
-                self.reasoning = None;
+                self.reasoning.retain(|open| open != &e.message_id);
             }
 
             Event::StepStarted(e) => {
@@ -211,87 +226,69 @@ impl Verifier {
     // ---- rules ----------------------------------------------------------
 
     fn expect_text(&self, id: &MessageId, kind: EventType) -> Result<()> {
-        match &self.text {
-            Some(open) if open == id => Ok(()),
-            Some(open) => Err(Error::protocol(format!(
-                "{kind} for message {:?}, but message {:?} is the open one",
-                id.as_str(),
-                open.as_str()
-            ))),
-            None => Err(Error::protocol(format!(
-                "{kind} for message {:?}, which was never opened",
-                id.as_str()
-            ))),
+        if self.text.contains(id) {
+            return Ok(());
         }
+        Err(Error::protocol(format!(
+            "{kind} for message {:?}, which was never opened",
+            id.as_str()
+        )))
     }
 
     fn expect_tool(&self, id: &ToolCallId, kind: EventType) -> Result<()> {
-        match &self.tool {
-            Some(open) if open == id => Ok(()),
-            Some(open) => Err(Error::protocol(format!(
-                "{kind} for tool call {:?}, but tool call {:?} is the open one",
-                id.as_str(),
-                open.as_str()
-            ))),
-            None => Err(Error::protocol(format!(
-                "{kind} for tool call {:?}, which was never opened",
-                id.as_str()
-            ))),
+        if self.tool.contains(id) {
+            return Ok(());
         }
+        Err(Error::protocol(format!(
+            "{kind} for tool call {:?}, which was never opened",
+            id.as_str()
+        )))
     }
 
     fn expect_reasoning(&self, id: &MessageId, kind: EventType) -> Result<()> {
-        match &self.reasoning {
-            Some(open) if open == id => Ok(()),
-            Some(open) => Err(Error::protocol(format!(
-                "{kind} for reasoning message {:?}, but reasoning message {:?} is the open one",
-                id.as_str(),
-                open.as_str()
-            ))),
-            None => Err(Error::protocol(format!(
-                "{kind} for reasoning message {:?}, which was never opened",
-                id.as_str()
-            ))),
+        if self.reasoning.contains(id) {
+            return Ok(());
         }
+        Err(Error::protocol(format!(
+            "{kind} for reasoning message {:?}, which was never opened",
+            id.as_str()
+        )))
     }
 
-    /// Rejects an event that opens a stream while another one is open.
-    fn no_open_stream(&self, kind: EventType) -> Result<()> {
-        if let Some(id) = &self.text {
+    /// Rejects a start for an id that is already streaming.
+    ///
+    /// The whole of the concurrency rule: two ids may overlap, one id may not
+    /// overlap itself.
+    fn not_already_open<T: PartialEq + AsRef<str>>(
+        &self,
+        open: &[T],
+        id: &T,
+        what: &str,
+        kind: EventType,
+    ) -> Result<()> {
+        if open.contains(id) {
             return Err(Error::protocol(format!(
-                "{kind} arrived while message {:?} was still open",
-                id.as_str()
-            )));
-        }
-        if let Some(id) = &self.tool {
-            return Err(Error::protocol(format!(
-                "{kind} arrived while tool call {:?} was still open",
-                id.as_str()
-            )));
-        }
-        if let Some(id) = &self.reasoning {
-            return Err(Error::protocol(format!(
-                "{kind} arrived while reasoning message {:?} was still open",
-                id.as_str()
+                "{kind} for {what} {:?}, which is already open",
+                id.as_ref()
             )));
         }
         Ok(())
     }
 
     fn expect_all_closed(&self, what: &str) -> Result<()> {
-        if let Some(id) = &self.text {
+        if let Some(id) = self.text.first() {
             return Err(Error::protocol(format!(
                 "{what} arrived while message {:?} was still open",
                 id.as_str()
             )));
         }
-        if let Some(id) = &self.tool {
+        if let Some(id) = self.tool.first() {
             return Err(Error::protocol(format!(
                 "{what} arrived while tool call {:?} was still open",
                 id.as_str()
             )));
         }
-        if let Some(id) = &self.reasoning {
+        if let Some(id) = self.reasoning.first() {
             return Err(Error::protocol(format!(
                 "{what} arrived while reasoning message {:?} was still open",
                 id.as_str()
