@@ -27,3 +27,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "syn
 # agent, unmodified. A client that only ever talks to its own fake server has
 # not been tested against anything.
 task-board = { path = "../task-board" }
+# `tests/live.rs` only, and only under `--ignored`: the round-one LLM agent, so
+# the client can be pointed at a real streaming model without this crate
+# growing a model client of its own.
+ag-ui-e2e = { path = "../../e2e" }

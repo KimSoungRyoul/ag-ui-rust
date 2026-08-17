@@ -438,6 +438,62 @@ async fn a_second_run_in_the_same_thread_carries_what_the_first_established() {
     );
 }
 
+/// An event emitted *inside* an open tool call loses its nesting on the way to
+/// the client.
+///
+/// `task-board` publishes state from inside the call — which the server's
+/// handles now allow — so the wire is `START ARGS STATE END RESULT`. An
+/// [`Update::State`](ag_ui_client::Update::State) carries no association with
+/// the call it arrived during, so a renderer that groups a call onto one line
+/// at `ToolCallEnded` prints the state *before* the call. Pinned in both
+/// directions: what the wire says, and what the client can say about it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_published_inside_a_call_loses_its_nesting() {
+    let url = serve_task_board().await;
+
+    // What the wire carries: the call opens, then the state, then the close.
+    let agent = HttpAgent::http(&url).expect("a valid endpoint URL");
+    let mut raw = Vec::new();
+    trace::trace(
+        &agent,
+        "nested",
+        "add one thing",
+        task_board::board::tools(),
+        false,
+        &mut raw,
+    )
+    .await
+    .expect("a Vec never fails to be written to");
+    let raw = String::from_utf8(raw).expect("UTF-8");
+
+    let position = |needle: &str| {
+        raw.find(needle)
+            .unwrap_or_else(|| panic!("{needle}:\n{raw}"))
+    };
+    assert!(
+        position("TOOL_CALL_START") < position("STATE_SNAPSHOT"),
+        "the state is published inside the open call:\n{raw}"
+    );
+    assert!(
+        position("STATE_SNAPSHOT") < position("TOOL_CALL_END"),
+        "…and before it closes:\n{raw}"
+    );
+
+    // What the assembled view can say: the call is one line, printed when it
+    // closes, so the state that happened during it comes first.
+    let mut session = configured(&url, "nested-watch", task_board::board::tools(), true);
+    let printed = transcript(&mut session, Watch::default(), "add one thing\n").await;
+    let seen = |needle: &str| {
+        printed
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle}:\n{printed}"))
+    };
+    assert!(
+        seen("  state  ") < seen("  call   add_task"),
+        "grouping a call onto one line reorders what happened inside it:\n{printed}"
+    );
+}
+
 /// The tools a client does not send are tools the agent does not have.
 ///
 /// There is no discovery in AG-UI: an agent cannot ask for a tool, so a generic
@@ -478,7 +534,7 @@ async fn the_low_level_stream_pauses_and_resumes_without_a_session() {
         .expect("a valid endpoint URL");
 
     let mut out = Vec::new();
-    let count = trace::trace(&agent, "low", "approve", true, &mut out)
+    let count = trace::trace(&agent, "low", "approve", Vec::new(), true, &mut out)
         .await
         .expect("a Vec never fails to be written to");
     let printed = String::from_utf8(out).expect("UTF-8");
@@ -499,7 +555,7 @@ async fn the_low_level_stream_does_not_assemble_chunks() {
     let agent = HttpAgent::http(format!("{url}{}", fake::ROUTE)).expect("a valid endpoint URL");
 
     let mut out = Vec::new();
-    trace::trace(&agent, "raw-chunks", "chunks", false, &mut out)
+    trace::trace(&agent, "raw-chunks", "chunks", Vec::new(), false, &mut out)
         .await
         .expect("a Vec never fails to be written to");
     let printed = String::from_utf8(out).expect("UTF-8");

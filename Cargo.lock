@@ -201,6 +201,7 @@ dependencies = [
  "ag-ui-axum",
  "ag-ui-client",
  "ag-ui-core",
+ "ag-ui-e2e",
  "ag-ui-server",
  "axum",
  "futures-util",

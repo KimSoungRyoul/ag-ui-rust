@@ -3,7 +3,7 @@
 //! ```text
 //! board-watch watch      [--url URL] [--thread ID] [--approve|--decline]
 //!                        [--fragments] [--no-verify] [--stop-after N]
-//! board-watch trace      [--url URL] [--thread ID] [--approve] SAID
+//! board-watch trace      [--url URL] [--thread ID] [--tools FILE] [--approve] SAID
 //! board-watch replay     FIXTURE [--fragments]
 //! board-watch serve-fake [--port 8090]
 //! ```
@@ -82,15 +82,9 @@ async fn run_watch(mut args: impl Iterator<Item = String>) -> ExitCode {
         }
     }
 
-    // The agent only sees the tools this client sends, and nothing in the
-    // protocol lets it ask for more. See `board_watch::load_tools`.
-    let tools = match &tools_path {
-        Some(path) => match std::fs::read_to_string(path).map(|json| load_tools(&json)) {
-            Ok(Ok(tools)) => tools,
-            Ok(Err(error)) => return fail(&format!("{path} is not a tool list: {error}")),
-            Err(error) => return fail(&format!("could not read {path}: {error}")),
-        },
-        None => Vec::new(),
+    let tools = match read_tools(tools_path.as_deref()) {
+        Ok(tools) => tools,
+        Err(message) => return fail(&message),
     };
 
     let transport = match HttpTransport::new(&url) {
@@ -122,6 +116,7 @@ async fn run_trace(mut args: impl Iterator<Item = String>) -> ExitCode {
     let mut url = DEFAULT_URL.to_owned();
     let mut thread = DEFAULT_THREAD.to_owned();
     let mut approve = false;
+    let mut tools_path = None;
     let mut said = Vec::new();
 
     while let Some(arg) = args.next() {
@@ -134,6 +129,10 @@ async fn run_trace(mut args: impl Iterator<Item = String>) -> ExitCode {
                 Some(value) => thread = value,
                 None => return fail("--thread needs an id"),
             },
+            "--tools" => match args.next() {
+                Some(value) => tools_path = Some(value),
+                None => return fail("--tools needs a path to a JSON array of tools"),
+            },
             "--approve" => approve = true,
             other => said.push(other.to_owned()),
         }
@@ -141,6 +140,11 @@ async fn run_trace(mut args: impl Iterator<Item = String>) -> ExitCode {
     if said.is_empty() {
         return fail("trace needs something to say");
     }
+
+    let tools = match read_tools(tools_path.as_deref()) {
+        Ok(tools) => tools,
+        Err(message) => return fail(&message),
+    };
 
     let agent = match HttpAgent::builder(&url)
         // Proves the header survives to the agent's `RunAgentInput` request —
@@ -153,7 +157,7 @@ async fn run_trace(mut args: impl Iterator<Item = String>) -> ExitCode {
     };
 
     let mut out = io::stdout().lock();
-    match trace::trace(&agent, &thread, &said.join(" "), approve, &mut out).await {
+    match trace::trace(&agent, &thread, &said.join(" "), tools, approve, &mut out).await {
         Ok(count) => {
             let _ = writeln!(out, "--- {count} events");
             ExitCode::SUCCESS
@@ -241,6 +245,19 @@ async fn run_serve(mut args: impl Iterator<Item = String>) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(&format!("the server stopped: {error}")),
     }
+}
+
+/// Reads the tool list a run offers, or an empty one.
+///
+/// The agent only ever sees the tools this client sends, and nothing in the
+/// protocol lets it ask for more. See [`board_watch::load_tools`].
+fn read_tools(path: Option<&str>) -> Result<Vec<ag_ui_core::Tool>, String> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let json =
+        std::fs::read_to_string(path).map_err(|error| format!("could not read {path}: {error}"))?;
+    load_tools(&json).map_err(|error| format!("{path} is not a tool list: {error}"))
 }
 
 /// A console over the real terminal, echoing only when the script is piped.

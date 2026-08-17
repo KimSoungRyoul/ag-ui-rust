@@ -13,24 +13,27 @@
 use std::io::{self, Write};
 
 use ag_ui_client::{HttpAgent, InterruptExt as _, RunParams, interrupts_of, resume_run};
-use ag_ui_core::{Event, EventType, ResumeEntry, RunAgentInput};
+use ag_ui_core::{Event, EventType, ResumeEntry, RunAgentInput, Tool};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 
 /// Streams one run and prints every event, then answers any pause and streams
 /// the resumed run too.
 ///
-/// `approve` decides what a pause is answered with. Returns how many events
-/// were printed across every run it drove.
+/// `approve` decides what a pause is answered with, and `tools` is what the
+/// agent is offered — an agent that needs one it was not sent fails the run.
+/// Returns how many events were printed across every run it drove.
 pub async fn trace(
     agent: &HttpAgent,
     thread: &str,
     said: &str,
+    tools: Vec<Tool>,
     approve: bool,
     out: &mut impl Write,
 ) -> io::Result<usize> {
     let mut input: RunAgentInput = RunParams::new(thread, format!("{thread}-run-1"))
         .user(format!("{thread}-msg-1"), said)
+        .tools(tools)
         .into();
 
     let mut printed = 0;

@@ -253,6 +253,18 @@ fn ended(end: &RunEnd) -> String {
 /// `Ended` produces one garbled line. Text is streamed inline anyway, because
 /// watching a reply type out is the point; a second text id simply closes the
 /// first line and opens another.
+///
+/// # What buffering costs
+///
+/// A call is printed when it *closes*, so anything the agent emitted while it
+/// was open — a `STATE_DELTA` published from inside the call, which
+/// `ag-ui-server`'s handles now allow — prints **before** the call line rather
+/// than inside it. That is not recoverable here: an [`Update::State`] carries
+/// no association with the call it arrived during, so the nesting the wire had
+/// is not in the update stream. Printing the header at `Started` instead would
+/// keep the order and lose the parallel case, and the parallel case is the one
+/// that corrupts data rather than merely misleading. `board-watch trace` shows
+/// the true order when it matters.
 #[derive(Debug, Default)]
 struct Open {
     /// The text message whose line is currently unterminated.
