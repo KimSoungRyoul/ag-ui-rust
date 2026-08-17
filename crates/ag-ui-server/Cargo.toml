@@ -12,6 +12,8 @@ readme = "README.md"
 
 [package.metadata.docs.rs]
 all-features = true
+# Sets the `docsrs` cfg the crate reads to label feature-gated items.
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["verify"]

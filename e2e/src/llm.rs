@@ -41,7 +41,7 @@
 //!   OpenAI, Ollama and Groq send it — but Gemini's compatibility endpoint
 //!   omits it entirely and puts two parallel calls in one frame, distinguished
 //!   only by `id`. Keying on `index` alone merges parallel calls into JSON
-//!   soup, so [`Calls`] falls back to `id`, then to array position.
+//!   soup, so `Calls` falls back to `id`, then to array position.
 //! - The stream ends at a **`data: [DONE]` sentinel**, unlike the native API,
 //!   which just EOFs.
 //! - `finish_reason` may arrive on a frame carrying no content, which must not
@@ -50,7 +50,7 @@
 //!   `toolCallId` as-is; one is synthesized only for a server that sends none.
 //! - Line terminators differ **between endpoints of the same vendor**: Gemini's
 //!   native SSE frames end `\r\n\r\n` and its OpenAI-compatible ones end
-//!   `\n\n`. Both are accepted — see [`take_block`].
+//!   `\n\n`. Both are accepted — see `take_block`.
 
 use std::fmt;
 use std::time::Duration;

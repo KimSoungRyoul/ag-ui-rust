@@ -50,6 +50,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
+// Stamps "Available on crate feature X" on every gated item in the rendered
+// docs. Only ever set by docs.rs and the `cargo doc` recipe in CONTRIBUTING, so
+// it costs a stable build nothing.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // The README is the crate's front page on crates.io, so its examples are
 // doctested: a stale one is a red build rather than a bad first impression.

@@ -101,6 +101,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
+// See `ag_ui_core`'s lib.rs: marks feature-gated items in the rendered docs.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // The README is the crate's front page on crates.io, so its examples are
 // doctested: a stale one is a red build rather than a bad first impression.

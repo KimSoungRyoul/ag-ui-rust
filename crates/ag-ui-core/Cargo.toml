@@ -14,6 +14,8 @@ readme = "README.md"
 # them all or the rendered API is a subset of the real one.
 [package.metadata.docs.rs]
 all-features = true
+# Sets the `docsrs` cfg the crate reads to label feature-gated items.
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["sse"]
