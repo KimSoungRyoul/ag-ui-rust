@@ -27,9 +27,40 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      # `cargo test`, not `cargo nextest`: nextest does not run doctests, and the
-      # crate-level examples and the READMEs are doctests.
+      # `cargo test`, not `cargo nextest run`. nextest does not run doctests at
+      # all, and a large part of what this workspace proves lives in them: every
+      # crate README, the workspace quickstart, and — in
+      # crates/ag-ui-server/src/emit/mod.rs — the `compile_fail` example that is
+      # the only executable proof of the typestate guarantee docs/DESIGN.md
+      # sells as a headline feature. The local loop is nextest, so "535 tests
+      # pass" locally silently excludes all of that.
       - run: cargo test --workspace --all-features
+      # Deliberately redundant with the line above. If someone ever swaps that
+      # for `cargo nextest run` to buy speed, this step is what keeps the
+      # doctests running instead of vanishing without a failing build.
+      - run: cargo test --doc --workspace --all-features
+
+  # `compile_fail` doctests may name the error they expect
+  # (```compile_fail,E0499```). Stable rustdoc parses that annotation and then
+  # ignores it: the example need only fail to compile, for any reason at all.
+  # Verified by putting `E0308` — mismatched types, nothing to do with the
+  # borrow-check example it labels — on the emit/mod.rs doctest, which still
+  # passed on stable and failed on nightly with "Some expected error codes were
+  # not found". So a typo that makes the example fail for an unrelated reason
+  # reads as a pass on stable, and the guarantee quietly stops being tested.
+  #
+  # This job is what makes those annotations mean something. It is the only use
+  # of nightly in CI; if nightly churn ever makes it more trouble than it is
+  # worth, delete the job rather than dropping the error codes.
+  doctest-error-codes:
+    name: doctest error codes (nightly)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --doc --workspace --all-features
 
   # The design guarantees core/server/client stay executor-agnostic.
   executor-agnostic:
