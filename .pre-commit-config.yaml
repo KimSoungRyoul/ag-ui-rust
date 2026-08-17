@@ -1,0 +1,90 @@
+# Pre-commit hygiene gate, run by prek (https://github.com/j178/prek) — a
+# drop-in pre-commit replacement that is a single Rust binary, so contributors
+# need no Python to use it. See the README for the two-command setup.
+#
+# Deliberately small. CI already owns fmt, clippy, tests, doctests, the feature
+# matrix, MSRV, docs, the wasm/dependency-graph checks and the drift check, and
+# repeating any of those here would only make every commit slower without
+# catching anything new. What lives here is the cheap file hygiene that has no
+# CI job at all, plus the two Rust gates worth catching before the code leaves
+# the machine rather than ten minutes later on a runner.
+
+# So that `prek install` wires up both shims: the pre-push one is what runs
+# clippy, and without it the clippy hook below would never fire locally.
+default_install_hook_types: [pre-commit, pre-push]
+
+# Files this repo has promised not to touch. Every one of them is either copied
+# from another project or written by a tool, and a fixer "improving" one is a
+# defect: the vendored conformance suite is compared against upstream by hand on
+# every re-copy, the insta snapshots are compared byte for byte by the tests
+# themselves, and the drift baseline is the protocol's own record. Found the
+# hard way — the first run of this config quietly added a trailing newline to
+# seventeen vendored fixtures.
+#
+# It also spares `check-json` the conformance suite's `bad_json/bad.json`, which
+# is invalid on purpose because a parse-error case is pointed at it.
+exclude: |
+  (?x)^(
+      crates/ag-ui-a2ui/tests/conformance/(agent|core|test_data)/
+    | crates/ag-ui-core/tests/snapshots/
+    | xtask/baseline/events\.json$
+  )
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # prek reimplements this whole hook set natively (`prek util
+      # list-builtins`), so none of these pull in a Python toolchain.
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        # Not `--fix=auto`, which would preserve a CRLF file that is already
+        # consistently CRLF. The tree is LF throughout and should stay that way.
+        args: [--fix=lf]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        # Nothing in the tree comes close. The vendored A2UI conformance
+        # fixtures are the biggest files in the repo — 107 KiB at the top — and
+        # they are excluded above, so this never sees them; the largest file it
+        # does see is crates/ag-ui-a2ui/src/validate.rs at 82 KiB. Pinned to the
+        # upstream default rather than left implicit, so a change to that
+        # default cannot start rejecting a file that has always been fine.
+        args: [--maxkb=500]
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.49.0
+    hooks:
+      - id: typos
+        # Upstream's default args are `[--write-changes, --force-exclude]`.
+        # Reporting, not rewriting: a spelling fix inside Rust source renames an
+        # identifier, and that is a change to read before applying, unlike the
+        # whitespace fixers above. `--force-exclude` is kept so that _typos.toml
+        # still applies when prek passes file paths explicitly.
+        args: [--force-exclude]
+
+  - repo: local
+    hooks:
+      # Fast (no compilation), so it runs on every commit: formatting debt never
+      # reaches a branch.
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Slow enough to be resented on every commit, so it runs at push time
+      # instead — still before CI sees the branch, which is the point. Cargo
+      # manifests are in `types_or` because a dependency or feature edit can
+      # break clippy with no .rs file touched at all.
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        language: system
+        types_or: [rust, toml]
+        pass_filenames: false
+        stages: [pre-push]

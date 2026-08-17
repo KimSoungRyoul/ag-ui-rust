@@ -1,0 +1,27 @@
+# Spell-check exceptions for the `typos` hook in .pre-commit-config.yaml.
+#
+# Every entry is a word the dictionary is right about in general and wrong about
+# here, with the reason on the line above it. An entry that stops being needed
+# should be deleted rather than left to accumulate.
+
+[default.extend-words]
+
+# A variant spelling rather than a misspelling, and the one this codebase uses
+# consistently — nine times across the crates, docs/QA.md and xtask. Changing it
+# would be churn in eight files to settle a coin flip.
+unparseable = "unparseable"
+
+# The hyphenated prefix in "mis-escaped" and "mis-read", which word splitting
+# hands to the dictionary on its own.
+mis = "mis"
+
+# Deliberately truncated payloads, which is the point of the tests they sit in:
+# "Hel" is half a "Hello" delta in the chunk-normalizer tests, and "Sur" is half
+# a "createSurface" op arriving mid-stream in the A2UI streaming parser.
+Hel = "Hel"
+Sur = "Sur"
+
+# A deliberately misspelled data binding. The component in
+# crates/ag-ui-a2ui/src/validate.rs is literally named `typo`, and exists so the
+# validator has an unresolvable binding to report.
+nmae = "nmae"

@@ -130,6 +130,21 @@ names `E0499`: **stable rustdoc ignores that error code**. The example need only
 compile, for any reason at all — including a typo that has nothing to do with the guarantee.
 CI therefore runs the doctests on nightly as well, which does enforce it.
 
+## Before you commit
+
+Hygiene is gated by [prek](https://github.com/j178/prek) — pre-commit's hook runner rebuilt
+as a single Rust binary, so there is no Python to install. Two commands, once:
+
+```sh
+brew install prek   # or: cargo install --locked prek
+prek install
+```
+
+That installs both shims. Whitespace, file syntax, spelling and
+`cargo fmt --all -- --check` run on every commit; clippy at `-D warnings` runs on every
+push, where the wait buys something. `prek run --all-files` runs the lot by hand, and CI's
+`hygiene` job runs exactly the same `.pre-commit-config.yaml`.
+
 ## Status
 
 Early. See `docs/` for the design rationale and the upstream analysis this is based on.
