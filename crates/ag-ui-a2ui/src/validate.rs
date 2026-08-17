@@ -320,6 +320,7 @@ impl ValidationReport {
 }
 
 /// Validates component trees against a catalog.
+#[derive(Clone, Debug)]
 pub struct Validator<'a> {
     catalog: &'a Catalog,
     options: ValidateOptions,
@@ -1148,8 +1149,8 @@ fn template_path(component: &Component, location: &str) -> Option<String> {
 /// port of the v0.9 wire format. Fields the specification leaves untyped (an
 /// `updateDataModel` value, a function's arguments) are simply absent: this is
 /// the envelope contract, not a schema for everything inside it.
-type EnvelopeField = (&'static str, PropType, bool);
-const OPERATIONS: [(&str, &[EnvelopeField]); 6] = [
+pub(crate) type EnvelopeField = (&'static str, PropType, bool);
+pub(crate) const OPERATIONS: [(&str, &[EnvelopeField]); 6] = [
     (
         "createSurface",
         &[

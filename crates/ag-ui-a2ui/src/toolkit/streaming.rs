@@ -66,13 +66,21 @@ use crate::catalog::Catalog;
 use crate::constants::{A2UI_CLOSE_TAG, A2UI_OPEN_TAG, PROTOCOL_VERSION, ROOT_ID};
 use crate::error::{Error, Result};
 use crate::toolkit::parser::ResponsePart;
-use crate::validate::{ValidateOptions, Validator};
+use crate::validate::{OPERATIONS, ValidateOptions, Validator};
 
 /// Message keys the parser recognizes, in envelope order.
 const MSG_CREATE_SURFACE: &str = "createSurface";
 const MSG_UPDATE_COMPONENTS: &str = "updateComponents";
 const MSG_UPDATE_DATA_MODEL: &str = "updateDataModel";
 const MSG_DELETE_SURFACE: &str = "deleteSurface";
+
+/// The four together, for the places that ask "is this a message, and which".
+const MESSAGE_KEYS: [&str; 4] = [
+    MSG_CREATE_SURFACE,
+    MSG_UPDATE_COMPONENTS,
+    MSG_UPDATE_DATA_MODEL,
+    MSG_DELETE_SURFACE,
+];
 
 /// Component properties that hold child references.
 ///
@@ -109,6 +117,7 @@ pub const DEFAULT_CUTTABLE_KEYS: [&str; 7] = [
 ];
 
 /// Parses a model's A2UI output incrementally, one chunk at a time.
+#[derive(Clone, Debug)]
 pub struct StreamParser {
     catalog: Catalog,
     validate: bool,
@@ -118,10 +127,10 @@ pub struct StreamParser {
     buffer: String,
     found_delimiter: bool,
     json_buffer: String,
-    /// Open brackets as `(kind, byte offset into json_buffer)`.
+    /// Open brackets as `(kind, byte offset into json_buffer)`. Its length is
+    /// the nesting depth and its first frame says whether the block opened with
+    /// the array of messages, so neither is tracked separately.
     brace_stack: Vec<(char, usize)>,
-    brace_count: i64,
-    in_top_level_list: bool,
     in_string: bool,
     string_escaped: bool,
     found_valid_json_in_block: bool,
@@ -145,7 +154,6 @@ pub struct StreamParser {
     yielded_start_messages: BTreeSet<String>,
     yielded_surfaces: BTreeSet<String>,
     active_msg_type: Option<String>,
-    pending_messages: BTreeMap<String, Vec<Value>>,
     buffered_start_message: Option<Value>,
     topology_dirty: bool,
 }
@@ -164,8 +172,6 @@ impl StreamParser {
             found_delimiter: false,
             json_buffer: String::new(),
             brace_stack: Vec::new(),
-            brace_count: 0,
-            in_top_level_list: false,
             in_string: false,
             string_escaped: false,
             found_valid_json_in_block: false,
@@ -181,7 +187,6 @@ impl StreamParser {
             yielded_start_messages: BTreeSet::new(),
             yielded_surfaces: BTreeSet::new(),
             active_msg_type: None,
-            pending_messages: BTreeMap::new(),
             buffered_start_message: None,
             topology_dirty: false,
         }
@@ -320,8 +325,6 @@ impl StreamParser {
     fn reset_json_state(&mut self) {
         self.json_buffer.clear();
         self.brace_stack.clear();
-        self.brace_count = 0;
-        self.in_top_level_list = false;
         self.in_string = false;
         self.string_escaped = false;
         self.found_valid_json_in_block = false;
@@ -330,15 +333,17 @@ impl StreamParser {
         // a second block can keep updating the surface built by the first.
     }
 
+    /// Whether the block's outermost open container is the array of messages.
+    fn in_top_level_list(&self) -> bool {
+        matches!(self.brace_stack.first(), Some(('[', _)))
+    }
+
     /// Scans one JSON fragment, emitting whatever it completes.
     fn process_json_chunk(&mut self, chunk: &str, parts: &mut Vec<ResponsePart>) -> Result<()> {
         for ch in chunk.chars() {
             // Outside any object, only a container opener is interesting.
-            if self.brace_count == 0 && ch != '[' && ch != '{' {
+            if self.brace_stack.is_empty() && ch != '[' && ch != '{' {
                 continue;
-            }
-            if self.brace_count == 0 && ch == '[' {
-                self.in_top_level_list = true;
             }
 
             if self.in_string {
@@ -350,25 +355,15 @@ impl StreamParser {
                         self.string_escaped = false;
                         self.push_json(ch);
                     }
-                    '{' => {
-                        self.brace_stack.push(('{', self.json_buffer.len()));
-                        self.json_buffer.push('{');
-                        self.brace_count += 1;
+                    '{' | '[' => {
+                        self.brace_stack.push((ch, self.json_buffer.len()));
+                        self.json_buffer.push(ch);
                     }
                     '}' => self.close_object(parts)?,
-                    '[' => {
-                        self.brace_stack.push(('[', self.json_buffer.len()));
-                        self.json_buffer.push('[');
-                        self.brace_count += 1;
-                    }
                     ']' => {
                         if self.brace_stack.last().map(|(k, _)| *k) == Some('[') {
                             self.brace_stack.pop();
                             self.json_buffer.push(']');
-                            self.brace_count -= 1;
-                            if self.brace_count == 0 {
-                                self.in_top_level_list = false;
-                            }
                         }
                     }
                     _ => self.push_json(ch),
@@ -377,24 +372,24 @@ impl StreamParser {
 
             // Identifiers are sniffed eagerly on delimiters so a surfaceId is
             // known before the message carrying it finishes.
-            if self.brace_count > 0 && matches!(ch, '"' | ':' | ',' | '}' | ']') {
+            if !self.brace_stack.is_empty() && matches!(ch, '"' | ':' | ',' | '}' | ']') {
                 self.sniff_metadata();
             }
         }
 
-        if self.brace_count >= 1 && !self.json_buffer.is_empty() {
+        if !self.brace_stack.is_empty() && !self.json_buffer.is_empty() {
             self.sniff_partial_component();
             self.sniff_partial_data_model(parts);
         }
         if self.topology_dirty {
-            self.yield_reachable(parts, false)?;
+            self.yield_reachable(parts)?;
             self.topology_dirty = false;
         }
         Ok(())
     }
 
     fn push_json(&mut self, ch: char) {
-        if self.brace_count > 0 {
+        if !self.brace_stack.is_empty() {
             self.json_buffer.push(ch);
         }
     }
@@ -416,7 +411,6 @@ impl StreamParser {
             return Ok(());
         };
         self.json_buffer.push('}');
-        self.brace_count -= 1;
 
         let fragment = self.json_buffer[start..].to_string();
         if !fragment.starts_with('{') || !fragment.ends_with('}') {
@@ -428,12 +422,10 @@ impl StreamParser {
         self.found_valid_json_in_block = true;
         let obj = Value::Object(map);
 
-        let is_protocol = self.in_top_level_list && is_protocol_message(&obj);
+        let is_protocol = self.in_top_level_list() && is_protocol_message(&obj);
         let is_component = obj.get("id").is_some() && obj.get("component").is_some();
         let is_top_level = self.brace_stack.is_empty()
-            || (self.in_top_level_list
-                && self.brace_stack.len() == 1
-                && self.brace_stack[0].0 == '[');
+            || (self.in_top_level_list() && self.brace_stack.len() == 1);
 
         if is_component {
             self.handle_partial_component(&obj);
@@ -444,8 +436,8 @@ impl StreamParser {
 
         // Drop processed objects from the buffer so it does not grow without
         // bound across a long generation.
-        if self.brace_count == 0 || (self.in_top_level_list && self.brace_stack.len() == 1) {
-            if self.brace_stack.len() == 1 && self.brace_stack[0].0 == '[' {
+        if is_top_level {
+            if self.in_top_level_list() && self.brace_stack.len() == 1 {
                 let mut kept = self.json_buffer[..start].to_string();
                 kept.push_str(&self.json_buffer[start + fragment.len()..]);
                 self.json_buffer = kept;
@@ -466,24 +458,19 @@ impl StreamParser {
         obj: &Value,
         parts: &mut Vec<ResponsePart>,
     ) -> Result<bool> {
-        if !is_protocol_message(obj) && obj.get(MSG_DELETE_SURFACE).is_none() {
+        if !is_protocol_message(obj) {
             return Ok(false);
         }
         if self.validate {
             self.validate_message(obj)?;
         }
 
-        let payload_surface = [
-            MSG_CREATE_SURFACE,
-            MSG_UPDATE_COMPONENTS,
-            MSG_UPDATE_DATA_MODEL,
-            MSG_DELETE_SURFACE,
-        ]
-        .iter()
-        .find_map(|key| obj.get(*key))
-        .and_then(|payload| payload.get("surfaceId"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
+        let payload_surface = MESSAGE_KEYS
+            .iter()
+            .find_map(|key| obj.get(*key))
+            .and_then(|payload| payload.get("surfaceId"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
         if payload_surface.is_some() {
             self.set_surface_id(payload_surface);
         }
@@ -504,13 +491,11 @@ impl StreamParser {
                 self.yielded_surfaces.insert(sid.clone());
                 self.buffered_start_message = None;
             }
-            // A fresh surface discards anything buffered for the old one, and
-            // is live again: replacing a surface is delete-then-create on the
-            // same id, and leaving it marked deleted would suppress every
-            // component that follows.
-            self.pending_messages.remove(&sid);
+            // A fresh surface is live again: replacing a surface is
+            // delete-then-create on the same id, and leaving it marked deleted
+            // would suppress every component that follows.
             self.deleted_surfaces.remove(&sid);
-            self.yield_reachable(parts, false)?;
+            self.yield_reachable(parts)?;
             return Ok(true);
         }
 
@@ -527,18 +512,15 @@ impl StreamParser {
                     }
                 }
             }
-            self.yield_reachable(parts, true)?;
+            self.yield_reachable(parts)?;
             return Ok(true);
         }
 
         if obj.get(MSG_DELETE_SURFACE).is_some() {
             if !self.yielded_start_messages.contains(&sid) {
-                // The surface was never created, so there is nothing to delete;
-                // hold the message in case a createSurface follows.
-                self.pending_messages
-                    .entry(sid)
-                    .or_default()
-                    .push(obj.clone());
+                // The surface was never created, so there is nothing to delete
+                // and nothing to forward: a renderer that never drew it would
+                // have to invent it in order to remove it.
                 return Ok(true);
             }
             self.delete_surface(&sid);
@@ -554,7 +536,6 @@ impl StreamParser {
     }
 
     fn delete_surface(&mut self, sid: &str) {
-        self.pending_messages.remove(sid);
         self.yielded_ids.remove(sid);
         self.yielded_contents
             .retain(|(surface, _), _| surface != sid);
@@ -579,9 +560,7 @@ impl StreamParser {
     }
 
     /// Emits every component currently reachable from the root.
-    ///
-    /// `check_root` mirrors the stricter pass run when a message completes.
-    fn yield_reachable(&mut self, parts: &mut Vec<ResponsePart>, check_root: bool) -> Result<()> {
+    fn yield_reachable(&mut self, parts: &mut Vec<ResponsePart>) -> Result<()> {
         let Some(active_msg_type) = self.active_msg_type.clone() else {
             return Ok(());
         };
@@ -595,7 +574,6 @@ impl StreamParser {
         if self.deleted_surfaces.contains(&sid) {
             return Ok(());
         }
-        let _ = check_root;
 
         let root_id = self.root_id().to_string();
         let reachable = self.analyze_topology(&root_id)?;
@@ -693,7 +671,9 @@ impl StreamParser {
         let mut adjacency: BTreeMap<&str, Vec<(&str, String)>> = BTreeMap::new();
         for (id, component) in &self.seen_components {
             let mut edges = Vec::new();
-            for reference in self.component_references(component) {
+            let mut references = Vec::new();
+            collect_child_refs(component, &mut references);
+            for reference in references {
                 if reference.0 == *id {
                     return Err(Error::Parse(format!(
                         "Self-reference detected: Component '{id}' references itself in field \
@@ -721,14 +701,6 @@ impl StreamParser {
             .into_iter()
             .filter(|id| self.seen_components.contains_key(id))
             .collect())
-    }
-
-    /// Child references of a component: catalog-typed where the type is known,
-    /// falling back to the conventional field names while it is not.
-    fn component_references(&self, component: &Value) -> Vec<(String, String)> {
-        let mut refs = Vec::new();
-        collect_child_refs(component, &mut refs);
-        refs
     }
 
     /// Emits a message, returning whether it survived validation.
@@ -819,8 +791,6 @@ impl StreamParser {
         let options = ValidateOptions {
             require_root: false,
             allow_dangling_children: true,
-            check_component_types: true,
-            check_required_props: true,
             check_bindings: false,
             check_binding_syntax: false,
             ..ValidateOptions::full_surface()
@@ -965,10 +935,7 @@ impl StreamParser {
 
             // The delta is recorded whether or not the message survives, so the
             // same keys are not offered again on the next chunk.
-            let emitted = self
-                .yield_message(Value::Object(message), parts, true)
-                .unwrap_or(false);
-            let _ = emitted;
+            let _ = self.yield_message(Value::Object(message), parts, true);
             let yielded = self.yielded_data_model.entry(sid).or_default();
             for (key, item) in delta {
                 yielded.insert(key, item);
@@ -1105,21 +1072,17 @@ fn walk<'a>(
 }
 
 fn is_protocol_message(obj: &Value) -> bool {
-    [
-        MSG_CREATE_SURFACE,
-        MSG_UPDATE_COMPONENTS,
-        MSG_UPDATE_DATA_MODEL,
-    ]
-    .iter()
-    .any(|key| obj.get(*key).is_some())
+    MESSAGE_KEYS.iter().any(|key| obj.get(*key).is_some())
 }
 
-/// Checks the envelope's required fields.
+/// Checks the envelope of a message this parser is about to emit.
 ///
-/// This is a hand-written check of the v0.9 envelope contract — the message key,
-/// `version`, and the required fields of each payload — not a JSON Schema
-/// engine. It covers exactly what the specification marks required, which is
-/// what a renderer will reject the message for.
+/// The *contract* — which operations exist and which of their fields are
+/// required — is read from [`crate::validate::OPERATIONS`], the one table this
+/// crate keeps the v0.9 envelope in. Only the rendering is local: the
+/// language-agnostic conformance suite matches on these exact strings, so this
+/// cannot simply forward the validator's report, which locates each failure by
+/// path instead.
 fn validate_envelope(message: &Value) -> Result<()> {
     let Some(map) = message.as_object() else {
         return Err(validation_error(
@@ -1127,20 +1090,12 @@ fn validate_envelope(message: &Value) -> Result<()> {
         ));
     };
 
-    let key = [
-        MSG_CREATE_SURFACE,
-        MSG_UPDATE_COMPONENTS,
-        MSG_UPDATE_DATA_MODEL,
-        MSG_DELETE_SURFACE,
-    ]
-    .into_iter()
-    .find(|key| map.contains_key(*key));
-
-    let Some(key) = key else {
+    let Some(key) = MESSAGE_KEYS.into_iter().find(|key| map.contains_key(*key)) else {
         return Err(validation_error(format!(
             "Validation failed: {:?} is not a valid A2UI message; it must contain exactly one of \
-             createSurface, updateComponents, updateDataModel or deleteSurface",
-            map.keys().collect::<Vec<_>>()
+             {}",
+            map.keys().collect::<Vec<_>>(),
+            MESSAGE_KEYS.join(", ")
         )));
     };
     if !map.contains_key("version") {
@@ -1149,18 +1104,17 @@ fn validate_envelope(message: &Value) -> Result<()> {
         ));
     }
 
-    let required: &[&str] = match key {
-        MSG_CREATE_SURFACE => &["surfaceId", "catalogId"],
-        MSG_UPDATE_COMPONENTS => &["surfaceId", "components"],
-        _ => &["surfaceId"],
-    };
     let Some(payload) = map.get(key).and_then(Value::as_object) else {
         return Err(validation_error(format!(
             "Validation failed: '{key}' must be an object"
         )));
     };
-    for field in required {
-        if !payload.contains_key(*field) {
+    let fields = OPERATIONS
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map_or(&[][..], |(_, fields)| *fields);
+    for (field, _, required) in fields {
+        if *required && !payload.contains_key(*field) {
             return Err(validation_error(format!(
                 "Validation failed: '{field}' is a required property of {key}"
             )));
@@ -1172,7 +1126,7 @@ fn validate_envelope(message: &Value) -> Result<()> {
 fn validation_error(message: impl Into<String>) -> Error {
     Error::Validation {
         errors: crate::ValidationErrors(vec![crate::validate::ValidationError::new(
-            crate::validate::ErrorCode::MissingRequiredProp,
+            crate::validate::ErrorCode::MissingField,
             "message",
             message,
         )]),
@@ -1794,6 +1748,38 @@ mod tests {
             .process_chunk(r#"<a2ui-json>[{"updateComponents":{"components":[]}}]"#)
             .unwrap_err();
         assert!(error.to_string().contains("Validation failed"), "{error}");
+    }
+
+    /// The streaming parser renders envelope failures in the wording the
+    /// conformance suite pins, but reads *which* fields are required from the
+    /// same table [`crate::validate`] uses — so a change to one operation's
+    /// contract cannot reach only one of the two paths.
+    #[test]
+    fn the_envelope_contract_is_the_validators_own_table() {
+        for (key, fields) in OPERATIONS {
+            let required: Vec<&str> = fields
+                .iter()
+                .filter(|(_, _, required)| *required)
+                .map(|(field, _, _)| *field)
+                .collect();
+            if !MESSAGE_KEYS.contains(&key) {
+                continue;
+            }
+            for omitted in &required {
+                let payload: Map<String, Value> = required
+                    .iter()
+                    .filter(|field| *field != omitted)
+                    .map(|field| ((*field).to_string(), json!("x")))
+                    .collect();
+                let message = json!({"version": "v0.9", key: payload});
+                let error = validate_envelope(&message)
+                    .expect_err("a message missing a required field must not validate");
+                assert!(
+                    error.to_string().contains(&format!("'{omitted}'")),
+                    "{key} without {omitted}: {error}"
+                );
+            }
+        }
     }
 
     #[test]
