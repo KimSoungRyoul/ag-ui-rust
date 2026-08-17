@@ -238,6 +238,15 @@ fn extract_operations(message: &HistoryMessage) -> Vec<AgentMessage> {
 }
 
 fn collect_from_value(value: &Value, out: &mut Vec<AgentMessage>) {
+    // `error` first, the way upstream's part converter reads it: a payload that
+    // reports a failure describes a surface that never reached the renderer,
+    // whether or not it also carries the operations key. This crate's own
+    // `wrap_error_envelope` no longer sends both, but producers that predate
+    // that split — and the other toolkits — still do. No agent → renderer
+    // message has a top-level `error`, so nothing legitimate is skipped here.
+    if value.get("error").is_some() {
+        return;
+    }
     if is_operations_envelope(value) {
         if let Ok(operations) = unwrap_operations_envelope(value) {
             out.extend(operations);
@@ -420,6 +429,33 @@ mod tests {
             find_prior_surface(&rendered_only)
         );
         assert_eq!(next_surface_id(&then_failed, "cart"), "cart-2");
+    }
+
+    #[test]
+    fn a_failure_that_also_carries_operations_is_still_not_a_surface() {
+        // Not this crate's own shape any more, but three producers still send
+        // it: this crate before the envelope split, and the TypeScript and .NET
+        // toolkits, whose part converters check `error` first and emit no A2UI
+        // at all. Reading the operations back would put a surface the user
+        // never saw into the next generation prompt.
+        let mut failed = serde_json::from_str::<Value>(
+            &wrap_as_operations_envelope(&crate::toolkit::ops::assemble_ops(
+                Intent::Create,
+                &SurfaceSpec::new("cart").with_components(vec![
+                    Component::new("root", "Text").with("text", json!("x")),
+                ]),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+
+        for error in [json!("could not build the surface"), json!({"code": "X"})] {
+            failed["error"] = error;
+            let as_data = HistoryMessage::data("tool", failed.clone());
+            let as_text = HistoryMessage::text("assistant", failed.to_string());
+            assert!(find_prior_surface(&[as_data]).is_none(), "{failed}");
+            assert!(find_prior_surface(&[as_text]).is_none(), "{failed}");
+        }
     }
 
     #[test]
