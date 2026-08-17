@@ -1,0 +1,28 @@
+[package]
+name = "ag-ui-a2ui"
+description = "A2UI (Agent-to-UI) protocol types, semantic validator, and agent-side authoring toolkit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["ag-ui", "toolkit"]
+# AG-UI transport binding (a2ui_operations envelope detection).
+# Disable to use A2UI standalone over A2A or MCP.
+ag-ui = ["dep:ag-ui-core"]
+# Agent-side authoring: op builders, prompt assembly, recovery loop.
+toolkit = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+jsonptr.workspace = true
+ag-ui-core = { workspace = true, optional = true }
+
+[dev-dependencies]
+insta.workspace = true

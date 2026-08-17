@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+description = "Repo automation: protocol drift detection against the upstream TypeScript source of truth."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json.workspace = true

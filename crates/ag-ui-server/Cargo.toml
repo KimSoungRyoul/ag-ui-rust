@@ -1,0 +1,29 @@
+[package]
+name = "ag-ui-server"
+description = "Server-side runtime for hosting AG-UI agents: agent trait, typestate event emitters, state deltas, and protocol verification. Executor-agnostic."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["verify"]
+# Protocol ordering verification. Enabled by default; cheap in release.
+verify = []
+
+[dependencies]
+ag-ui-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+futures-core.workspace = true
+futures-channel.workspace = true
+futures-util.workspace = true
+json-patch.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+futures-util = { workspace = true, features = ["std"] }
