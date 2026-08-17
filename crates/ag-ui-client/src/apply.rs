@@ -126,7 +126,8 @@ pub enum MessageChangeKind {
     },
     /// The message was closed; no more content will arrive for it.
     Ended,
-    /// A tool call was attached to the message.
+    /// A tool call was attached to the message. Several can be open at once —
+    /// a model asking for two things at once opens two.
     ToolCallStarted {
         /// The call's id.
         tool_call_id: ToolCallId,
@@ -134,6 +135,11 @@ pub enum MessageChangeKind {
         name: String,
     },
     /// Argument JSON was appended to a tool call.
+    ///
+    /// Parallel calls interleave their events, so consecutive `ToolCallArgs`
+    /// need not belong to the same call: `tool_call_id` is what separates them,
+    /// and arrival order is the only nesting there is — see the [session module
+    /// docs](crate::session).
     ToolCallArgs {
         /// The call being appended to.
         tool_call_id: ToolCallId,
