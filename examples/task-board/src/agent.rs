@@ -267,8 +267,11 @@ fn apply(
 
 /// Opens a tool call, having checked the client actually offered that tool.
 ///
-/// A run that names a tool the client never offered is a bug the client would
-/// otherwise discover as a widget it cannot draw.
+/// This is a rule this agent adopts, not one the protocol imposes: the offered
+/// list says what the client *can execute*, so calling something absent from it
+/// is legal and `render_a2ui` below does exactly that. But these four tools move
+/// the board on the client's behalf, so one the client cannot run is a bug it
+/// would otherwise discover as a widget it cannot draw.
 fn offered<'a>(
     ctx: &'a mut RunContext<Board>,
     name: &str,

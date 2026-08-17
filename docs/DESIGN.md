@@ -11,8 +11,28 @@ team acknowledged the situation on issue #2256.
 
 The concrete result: `ag-ui-core 0.1.0` declares 24 event variants against a spec with 32, is
 missing the entire `REASONING_*` family and both `ACTIVITY_*` events, and has no
-`RunFinished.outcome` field — which means human-in-the-loop is not expressible at all. And
-both published crates are client-side; there is no way to *host* an AG-UI agent in Rust.
+`RunFinished.outcome` field — which means human-in-the-loop is not expressible at all.
+
+That vacuum has since drawn other answers. As of August 2026 crates.io carries several
+independent Rust takes on AG-UI, and more than one of them can host an agent. An earlier draft
+of this document said there was no way to host an AG-UI agent in Rust; that was true when it
+was written and is not true now, and nothing here should be argued from scarcity again.
+
+So the case for this SDK is not that it is the only option. It is what it holds itself to,
+each of which is a decision the rest of this document explains and a test enforces:
+
+- **Emitters you cannot misuse.** Two overlapping messages are a borrow-check error, not a
+  runtime protocol violation, and a handle emits its terminator on `Drop` so it cannot be
+  forgotten.
+- **Ordering verified on the server**, on by default, so `TEXT_MESSAGE_CONTENT` without a
+  `START` is reported where it was caused rather than three network hops downstream.
+- **An exhaustive `Event`.** A protocol addition is a compile error for consumers instead of
+  something a `_` arm swallows.
+- **A drift check in CI.** `xtask drift-check` fails the build when upstream's event set moves,
+  so the port cannot quietly fall behind the way the community crate did.
+
+Those are quality claims rather than availability ones, which means they have to keep being
+earned.
 
 ## The source of truth is the TypeScript Zod schemas
 
@@ -138,6 +158,28 @@ Neither the TypeScript SDK (which verifies on the client) nor .NET (which does n
 all) checks event ordering on the server. Emitting `TEXT_MESSAGE_CONTENT` without a preceding
 `START` is a bug that currently surfaces as a confused frontend. `ag-ui-server` runs an ordering
 state machine, on by default, so it surfaces where it was caused.
+
+## The offered tool list is a capability list, not an allow-list
+
+`RunAgentInput.tools` says what the *client* can execute. It does not say what the agent may
+call, and nothing here treats it as an allow-list: emitting `TOOL_CALL_START` for a name absent
+from that list is a well-formed stream, and the ordering verifier says nothing about it.
+
+The case that settles it is a tool the agent answers itself. An A2UI agent emits `render_a2ui`
+to carry a surface to the frontend — the frontend draws it, and no client ever "offered" it
+because there is nothing for a client to execute. The same shape covers a server-side tool
+whose result the agent computes and reports within the run, and a call emitted purely so the
+transcript shows what the agent did.
+
+What a client does with a call it does not recognise is the client's decision: ignore it,
+render it as an activity, or report it. What the protocol constrains is the *ordering* —
+`TOOL_CALL_ARGS` with no `START`, a result before the end — and that is what the verifier
+checks.
+
+An agent that wants the stricter rule can have it in one line, because
+[`RunContext::tool`](../crates/ag-ui-server/src/context.rs) returns `None` for anything
+unoffered. `examples/task-board` does exactly that, but only for the tools it genuinely expects
+the client to run.
 
 ## A2UI pins to v0.9
 
