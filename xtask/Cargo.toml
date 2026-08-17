@@ -7,4 +7,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+serde.workspace = true
 serde_json.workspace = true
+# Only `--upstream` and `--refresh` reach the network; the CI gate is offline.
+ureq = "3.4.0"
