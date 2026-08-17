@@ -284,6 +284,54 @@ fn a_messages_snapshot_keeps_the_order_the_client_already_had() {
     assert_eq!(applier.text_of("msg-3"), Some("third"));
 }
 
+#[tokio::test]
+async fn a_bare_run_error_over_open_entities_ends_the_run_without_a_protocol_complaint() {
+    // The shape a peer server actually sends when an agent blows up: no
+    // terminators for anything it had open, just RUN_ERROR. Upstream's verifier
+    // allows it explicitly — `client/src/verify/verify.ts`, `case
+    // EventType.RUN_ERROR: // RUN_ERROR can happen at any time` — and the
+    // Python integrations yield exactly this out of an `except` block. A
+    // message, a chunk-streamed call and a step are all left hanging here.
+    let transport = ReplayTransport::new(vec![
+        Event::run_started("thread-1", "run-1"),
+        Event::step_started("plan"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_content("msg-1", "half a sen"),
+        Event::tool_call_chunk(
+            Some(ToolCallId::new("call-1")),
+            Some("get_weather".into()),
+            Some(r#"{"city":"#.into()),
+        ),
+        Event::run_error("the model hung up"),
+    ]);
+    let mut session = Session::<_>::new(transport, "thread-1");
+
+    let updates: Vec<_> = session.send("what is the weather?").collect().await;
+    let complaints: Vec<String> = updates
+        .iter()
+        .filter_map(|update| match update {
+            Update::Error(error) => Some(error.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    // Exactly one error, and it is the agent's — not an ordering complaint
+    // about the message and call the failure abandoned.
+    assert_eq!(complaints.len(), 1, "{complaints:?}");
+    assert!(
+        complaints[0].contains("the model hung up"),
+        "{complaints:?}"
+    );
+
+    let Some(Update::Done(RunEnd::Failed { message, .. })) = updates.last() else {
+        panic!("the run should end as failed: {updates:?}");
+    };
+    assert!(message.contains("the model hung up"), "{message}");
+
+    // The half-finished text still assembled, so a UI can show what there was.
+    assert_eq!(session.applier().text_of("msg-1"), Some("half a sen"));
+}
+
 #[test]
 fn an_encrypted_reasoning_blob_attaches_to_its_entity() {
     let mut applier = Applier::new();

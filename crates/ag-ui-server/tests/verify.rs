@@ -50,6 +50,36 @@ fn a_valid_stream_passes() {
 }
 
 #[test]
+fn parallel_tool_calls_and_overlapping_messages_are_accepted() {
+    // The typestate handles cannot express this — a second overlapping handle
+    // is a borrow-check error, which is the whole point of them — so parallel
+    // tool calling goes through `emit`. The verifier must not be the thing that
+    // stops it: upstream's client keys everything by id
+    // (`client/src/verify/verify.ts`, `activeMessages` / `activeToolCalls` as
+    // maps, and "should allow overlapping text messages and tool calls" in its
+    // tests), so this is the stream a provider doing parallel calls sends.
+    let (mut ctx, _events) = context();
+    for event in [
+        Event::run_started("t", "r"),
+        Event::text_message_start("m1", TextMessageRole::Assistant),
+        Event::text_message_content("m1", "Checking both."),
+        Event::tool_call_start("c1", "get_weather"),
+        Event::tool_call_start("c2", "get_time"),
+        Event::tool_call_args("c1", r#"{"city":"#),
+        Event::tool_call_args("c2", r#"{"zone":"#),
+        Event::tool_call_args("c1", r#""Seoul"}"#),
+        Event::tool_call_end("c1"),
+        Event::tool_call_args("c2", r#""KST"}"#),
+        Event::tool_call_end("c2"),
+        Event::text_message_end("m1"),
+        Event::run_finished_success("t", "r"),
+    ] {
+        ctx.emit(event.clone())
+            .unwrap_or_else(|error| panic!("{event:?} should be accepted: {error}"));
+    }
+}
+
+#[test]
 fn content_without_a_start_is_rejected() {
     let (mut ctx, _events) = context();
     let error = ctx

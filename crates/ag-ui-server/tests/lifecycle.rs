@@ -78,6 +78,48 @@ async fn an_error_becomes_run_error_and_not_a_panic() {
 }
 
 #[tokio::test]
+async fn failing_mid_message_closes_the_message_before_run_error() {
+    // What a peer AG-UI server sends here is not settled: upstream's own client
+    // verifier allows RUN_ERROR at any point — `client/src/verify/verify.ts`,
+    // `case EventType.RUN_ERROR: // RUN_ERROR can happen at any time` — and the
+    // Python integrations yield a bare RunErrorEvent out of an `except` block,
+    // leaving whatever was open open. Our verifier exempts RUN_ERROR from the
+    // open-at-finish rule so that stream is accepted from a peer.
+    //
+    // What we *emit* is the tidier end of that range, and not by choice: the
+    // message handle closes itself on `Drop`, so the `?` that ends the run
+    // unwinds through TEXT_MESSAGE_END on the way out. A client that tolerates
+    // the bare form tolerates this one too, so the strict output is the safe
+    // one to send.
+    struct FailsMidSentence;
+
+    impl Agent for FailsMidSentence {
+        type State = ();
+
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            let mut message = ctx.assistant_message()?;
+            message.delta("half a sen")?;
+            Err(Error::agent("the model hung up"))
+        }
+    }
+
+    let events = collect(FailsMidSentence, input()).await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::RunError,
+        ],
+        "the open message is closed on the way out, then the run reports"
+    );
+}
+
+#[tokio::test]
 async fn an_interrupt_outcome_rides_on_run_finished() {
     struct Asks;
 
