@@ -1,8 +1,18 @@
 //! Live smoke test: a real streaming model, mapped onto AG-UI, over real HTTP.
 //!
 //! ```text
-//! export GEMINI_API_KEY=…
-//! cargo test -p ag-ui-e2e --test live_gemini -- --ignored --test-threads=1 --nocapture
+//! export GEMINI_API_KEY=…            # or AG_UI_LLM_API_KEY
+//! cargo test -p ag-ui-e2e --test live_llm -- --ignored --test-threads=1 --nocapture
+//! ```
+//!
+//! Or against a model on your own machine, where nothing is rate limited and no
+//! key is needed at all:
+//!
+//! ```text
+//! ollama serve && ollama pull qwen3:4b
+//! export AG_UI_LLM_BASE_URL=http://localhost:11434/v1
+//! export AG_UI_LLM_MODEL=qwen3:4b
+//! cargo test -p ag-ui-e2e --test live_llm -- --ignored --test-threads=1 --nocapture
 //! ```
 //!
 //! `--nocapture` is worth typing: a run that skips, and the model's actual
@@ -10,22 +20,23 @@
 //! of a test that passed.
 //!
 //! Every test here is `#[ignore]`, so `cargo test` and CI never touch the
-//! network. Without the key the tests skip rather than fail — a contributor who
+//! network. Without a key the tests skip rather than fail — a contributor who
 //! has no key should still see a green run.
 //!
-//! **Expect the free tier to run out.** `gemini-2.5-flash-lite` allows only
-//! about **20 requests per day**, not just the 10 per minute the docs talk
-//! about, and both limits are shared with anything else using the same key. When
-//! the day's quota is gone this file falls back to sibling models, and when none
-//! of them can answer it **skips and says so** rather than failing — see below.
+//! **Expect a hosted free tier to run out.** Gemini's allows only about **20
+//! requests per model per day**, not just the 10 per minute the docs talk about,
+//! and both limits are shared with anything else using the same key. When the
+//! day's quota is gone this file falls back to sibling models, and when none of
+//! them can answer it **skips and says so** rather than failing.
 //!
 //! # What it proves that the deterministic tier cannot
 //!
-//! The mock agent in the deterministic suite emits whatever the test tells it
-//! to. This one goes through [`GeminiAgent`], which is `reqwest` and `serde` and
-//! nothing else, so a green run says two things: the protocol plumbing survives
-//! a model that streams on its own schedule, and the SDK genuinely needs no LLM
-//! crate to talk to one. See `docs/QA.md` for the mapping being checked and
+//! Not the mapping — `ag_ui_e2e::llm`'s own unit tests cover that, driven from
+//! recorded frames, and they are what actually protect the parsing and the
+//! argument accumulation. This file proves the wire is reachable: that the
+//! protocol plumbing survives a model streaming on its own schedule, and that
+//! the SDK genuinely needs no LLM crate to talk to one. [`LlmAgent`] is
+//! `reqwest` and `serde` and nothing else. See `docs/QA.md` for the mapping and
 //! `docs/DESIGN.md` for why the second claim matters.
 //!
 //! # A failure here must mean the mapping is wrong
@@ -42,12 +53,11 @@
 //! | `500`, `502`, `503`, `504` | Transient by definition — back off and retry, then try the next model |
 //! | `429` naming a per-day quota | Cannot be waited out; move to the next model |
 //! | `404` | That model does not exist here; move to the next |
+//! | Nothing answered on the socket | **Skip** — the endpoint is not up |
 //! | No model left | **Skip**, naming which model failed how |
 //! | Anything else | Fail loudly — a `400` or an agent error is ours |
 //!
 //! Quota is isolated per model, which is what makes falling back work at all.
-//! Only the harness does this; [`GeminiAgent`] and the example stay pinned to
-//! [`DEFAULT_MODEL`].
 //!
 //! # The rate limits shape this file
 //!
@@ -66,7 +76,7 @@ use std::time::Duration;
 use ag_ui_axum::RouterExt;
 use ag_ui_client::{HttpAgent, RunParams, verify_all};
 use ag_ui_core::{Event, EventType};
-use ag_ui_e2e::gemini::{DEFAULT_MODEL, GeminiAgent, WEATHER_TOOL};
+use ag_ui_e2e::llm::{DEFAULT_BASE_URL, LlmAgent, WEATHER_TOOL};
 use axum::Router;
 use futures_util::StreamExt as _;
 use serde_json::Value;
@@ -79,13 +89,15 @@ use serde_json::Value;
 /// async one.
 static LIVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// The models the harness may use, in preference order.
+/// Models to fall back to when the configured one will not answer, in
+/// preference order.
 ///
-/// Pinned ids, never a `*-latest` alias. The fallbacks exist because quota is
+/// Only used against the default endpoint, and only because quota there is
 /// isolated per model — verified: with flash-lite exhausted, both of these still
-/// answered. `gemini-2.5-flash` thinks by default and is therefore slower, but a
-/// slow live check beats no live check until the quota resets.
-const MODELS: [&str; 3] = [DEFAULT_MODEL, "gemini-2.5-flash", "gemini-3.1-flash-lite"];
+/// answered. A 3.x model is safe to fall back to now that the harness speaks the
+/// OpenAI-compatible format; on the native dialect it was a `400`, because 3.x
+/// requires a `thoughtSignature` echoed back and 2.5 sends none.
+const FALLBACKS: [&str; 2] = ["gemini-2.5-flash", "gemini-3.1-flash-lite"];
 
 /// How many times one model is asked before moving to the next.
 const MAX_ATTEMPTS: u32 = 3;
@@ -107,7 +119,7 @@ const WAIT_BUDGET: Duration = Duration::from_secs(150);
 /// A live run, streamed to the client, produces a well-ordered AG-UI stream
 /// with real text in it.
 #[tokio::test]
-#[ignore = "spends live Gemini quota; run with --ignored"]
+#[ignore = "spends live model quota; run with --ignored"]
 async fn text_streams_as_a_well_ordered_run() {
     let Some(live) = live().await else { return };
     let _serialized = LIVE.lock().await;
@@ -134,14 +146,15 @@ async fn text_streams_as_a_well_ordered_run() {
 
     let deltas = deltas(&events);
     assert!(!deltas.is_empty(), "no text arrived: {}", summary(&events));
-    // Gemini's last frame often carries `{"text": ""}` next to `finishReason`.
-    // An empty delta is not an update, and must not be forwarded as one.
+    // The final frame carries `finish_reason` and often no content at all. An
+    // empty delta is not an update, and must not be forwarded as one.
     assert!(
         deltas.iter().all(|delta| !delta.is_empty()),
         "an empty TEXT_MESSAGE_CONTENT went out: {deltas:?}"
     );
 
-    // `responseId` is stable for the whole stream, so one turn is one message.
+    // The completion id is stable for the whole stream, so one turn is one
+    // message.
     let ids: Vec<&str> = events
         .iter()
         .filter_map(|event| match event {
@@ -163,7 +176,7 @@ async fn text_streams_as_a_well_ordered_run() {
 /// streamed as AG-UI events, executed here, reported back, and the model's
 /// final answer uses the result.
 #[tokio::test]
-#[ignore = "spends live Gemini quota; run with --ignored"]
+#[ignore = "spends live model quota; run with --ignored"]
 async fn a_tool_call_round_trips_through_the_protocol() {
     let Some(live) = live().await else { return };
     let _serialized = LIVE.lock().await;
@@ -217,12 +230,12 @@ async fn a_tool_call_round_trips_through_the_protocol() {
         })
         .expect("the call was asserted above");
     assert_eq!(name, WEATHER_TOOL);
-    // 2.5-flash-lite sends no id of its own, so the agent has to make one and
-    // carry it across all four events.
-    assert!(!id.is_empty(), "the tool call id was not synthesized");
+    // On this wire format the id is the server's own, carried through all four
+    // events rather than invented here.
+    assert!(!id.is_empty(), "the tool call had no id");
 
-    // Gemini gives arguments as a JSON object; AG-UI carries them as a string,
-    // so the deltas have to concatenate back into parseable JSON.
+    // The arguments arrive as partial JSON spread across frames, so what the
+    // client receives has to concatenate back into something parseable.
     let arguments: String = events
         .iter()
         .filter_map(|event| match event {
@@ -251,8 +264,8 @@ async fn a_tool_call_round_trips_through_the_protocol() {
         .expect("the result was asserted above");
     assert!(result.contains("21"), "the tool's own reading: {result}");
 
-    // The second request fed `functionResponse` back, so the final answer
-    // should be about what the tool actually returned.
+    // The second request fed the tool message back, so the final answer should
+    // be about what the tool actually returned.
     let answer = deltas(&events).concat();
     assert!(
         !answer.trim().is_empty(),
@@ -268,9 +281,9 @@ async fn a_tool_call_round_trips_through_the_protocol() {
     eprintln!("live answer: {answer:?}");
 }
 
-/// One endpoint per model in [`MODELS`], all on one server.
+/// One endpoint per model to try, all on one server.
 struct Live {
-    endpoints: Vec<(&'static str, String)>,
+    endpoints: Vec<(String, String)>,
 }
 
 /// Mounts the agents on a real router and binds a real port, or skips.
@@ -279,14 +292,31 @@ struct Live {
 /// into the agent: the point is to exercise the whole stack, SSE encoding and
 /// decoding included.
 ///
-/// Every model is mounted up front because mounting costs nothing — a
-/// [`GeminiAgent`] makes no request until it is run — and because switching
+/// Every model is mounted up front because mounting costs nothing — an
+/// [`LlmAgent`] makes no request until it is run — and because switching
 /// afterwards would mean standing up a second server mid-test.
 async fn live() -> Option<Live> {
-    if let Err(error) = GeminiAgent::from_env() {
-        eprintln!("SKIPPED: {error}, so there is no live model to check against.");
-        return None;
+    let agent = match LlmAgent::from_env() {
+        Ok(agent) => agent,
+        Err(error) => {
+            // Names the variable, never a value.
+            eprintln!("SKIPPED: {error}");
+            return None;
+        }
+    };
+
+    // Fallbacks are a Gemini free-tier workaround. Anywhere else — a local
+    // server most of all — the configured model is the only one that exists.
+    let mut models = vec![agent.model_name().to_owned()];
+    if agent.base_url() == DEFAULT_BASE_URL {
+        models.extend(
+            FALLBACKS
+                .iter()
+                .filter(|model| **model != agent.model_name())
+                .map(|model| (*model).to_owned()),
+        );
     }
+    eprintln!("live endpoint: {} | models: {models:?}", agent.base_url());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -294,14 +324,14 @@ async fn live() -> Option<Live> {
     let address = listener.local_addr().expect("a bound address");
 
     let mut app = Router::new();
-    let mut endpoints = Vec::with_capacity(MODELS.len());
-    for (index, model) in MODELS.iter().enumerate() {
+    let mut endpoints = Vec::with_capacity(models.len());
+    for (index, model) in models.into_iter().enumerate() {
         let path = format!("/agent-{index}");
-        let agent = GeminiAgent::from_env()
-            .expect("the key was read a moment ago")
-            .model(*model);
+        let agent = LlmAgent::from_env()
+            .expect("the configuration was read a moment ago")
+            .model(model.clone());
         app = app.route_agui(&path, agent);
-        endpoints.push((*model, format!("http://{address}{path}")));
+        endpoints.push((model, format!("http://{address}{path}")));
     }
 
     tokio::spawn(async move {
@@ -393,10 +423,16 @@ enum Upstream {
 /// The provider's status and error body travel in the `RUN_ERROR` message,
 /// which is where they have to be read from: there are no `X-RateLimit-*`
 /// headers, and by the time the client sees the failure the HTTP exchange with
-/// Gemini is long over. [`GeminiAgent`] formats them as
-/// `gemini returned HTTP {status}: {body}`.
+/// the model is long over. [`LlmAgent`] formats them as
+/// `the model returned HTTP {status}: {body}`.
 fn classify(message: &str, attempt: u32) -> Upstream {
     let Some(status) = status_of(message) else {
+        // Nothing answered on the socket at all — a local server that is not
+        // running, or DNS. That is a misconfiguration, not a mapping bug, and
+        // reporting it as a failed assertion helps nobody.
+        if message.contains("error sending request") || message.contains("connect") {
+            return Upstream::Unavailable("the endpoint could not be reached".to_owned());
+        }
         return Upstream::Ours;
     };
 
@@ -418,7 +454,7 @@ fn classify(message: &str, attempt: u32) -> Upstream {
             delay: retry_after(message, BACKOFF * 2u32.pow(attempt - 1)),
             reason: format!("upstream capacity ({status})"),
         },
-        404 => Upstream::Unavailable("no such model on this key".to_owned()),
+        404 => Upstream::Unavailable("no such model on this endpoint".to_owned()),
         // A 400 is a request this harness built wrong, a 401/403 is the key.
         // Either way, somebody needs to look at it.
         _ => Upstream::Ours,
@@ -442,6 +478,9 @@ fn retry_after(message: &str, default: Duration) -> Duration {
 }
 
 /// Digs `details[].RetryInfo.retryDelay` out of the embedded provider body.
+///
+/// Gemini-shaped, and absent from every other provider's error body — which is
+/// what `default` is for.
 fn retry_info(message: &str) -> Option<Duration> {
     let start = message.find('{')?;
     // The body is followed by nothing, but a streaming parser is what reads a
@@ -499,12 +538,12 @@ mod classification {
     use super::*;
 
     /// Verbatim, from a run that hit it.
-    const HIGH_DEMAND: &str = r#"agent error: gemini returned HTTP 503: {"error": {"code": 503, "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary.", "status": "UNAVAILABLE"}}"#;
+    const HIGH_DEMAND: &str = r#"agent error: the model returned HTTP 503: {"error": {"code": 503, "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary.", "status": "UNAVAILABLE"}}"#;
 
     /// Verbatim, trimmed to the two `details` entries that matter.
-    const DAILY_QUOTA: &str = r#"agent error: gemini returned HTTP 429: {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"}]}, {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "58s"}]}}"#;
+    const DAILY_QUOTA: &str = r#"agent error: the model returned HTTP 429: {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"}]}, {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "58s"}]}}"#;
 
-    const PER_MINUTE_QUOTA: &str = r#"agent error: gemini returned HTTP 429: {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "10"}]}, {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "39s"}]}}"#;
+    const PER_MINUTE_QUOTA: &str = r#"agent error: the model returned HTTP 429: {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "10"}]}, {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "39s"}]}}"#;
 
     #[test]
     fn high_demand_is_waited_out_not_reported_as_a_bug() {
@@ -540,19 +579,30 @@ mod classification {
 
     #[test]
     fn an_unknown_model_is_skipped_over_rather_than_retried() {
-        let message = r#"agent error: gemini returned HTTP 404: {"error": {"code": 404, "message": "models/nope is not found", "status": "NOT_FOUND"}}"#;
+        let message = r#"agent error: the model returned HTTP 404: {"error": {"code": 404, "message": "models/nope is not found", "status": "NOT_FOUND"}}"#;
         assert!(matches!(classify(message, 1), Upstream::Unavailable(_)));
+    }
+
+    /// Pointing the harness at a local server that is not running is a
+    /// configuration mistake, not a mapping bug.
+    #[test]
+    fn an_endpoint_that_is_not_up_is_skipped_rather_than_failed() {
+        let message = "agent error: error sending request for url (http://localhost:11434/v1/chat/completions)";
+        let Upstream::Unavailable(reason) = classify(message, 1) else {
+            panic!("an unreachable endpoint says nothing about the mapping");
+        };
+        assert!(reason.contains("reached"), "{reason}");
     }
 
     /// The half that has to stay loud: nothing upstream refused anything.
     #[test]
     fn our_own_failures_are_still_ours() {
-        let malformed = r#"agent error: gemini returned HTTP 400: {"error": {"code": 400, "message": "Invalid JSON payload", "status": "INVALID_ARGUMENT"}}"#;
+        let malformed = r#"agent error: the model returned HTTP 400: {"error": {"code": 400, "message": "Invalid JSON payload", "status": "INVALID_ARGUMENT"}}"#;
         assert!(matches!(classify(malformed, 1), Upstream::Ours));
 
         for message in [
             "agent error: the model asked for tools 4 turns running",
-            "agent error: gemini sent a frame this agent could not read: EOF",
+            "agent error: the model sent a frame this agent could not read: EOF",
             "TEXT_MESSAGE_CONTENT breaks rule `not-open`",
         ] {
             assert!(

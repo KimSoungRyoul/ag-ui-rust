@@ -11,13 +11,14 @@ ag-ui-core.workspace = true
 ag-ui-server.workspace = true
 ag-ui-client = { workspace = true, features = ["http"] }
 ag-ui-a2ui.workspace = true
-ag-ui-axum = { path = "../crates/ag-ui-axum", version = "0.1.0" }
+ag-ui-axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures-util.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
-# The Gemini example talks to the model over plain HTTP. Nothing in the SDK
-# depends on an LLM crate, and this example is how that is demonstrated.
+# The live agent talks to an OpenAI-compatible endpoint over plain HTTP.
+# Nothing in the SDK depends on an LLM crate, and this is how that is
+# demonstrated — so this stays `reqwest`, not `async-openai`.
 reqwest = { workspace = true, features = ["stream"] }
 
 [dev-dependencies]
