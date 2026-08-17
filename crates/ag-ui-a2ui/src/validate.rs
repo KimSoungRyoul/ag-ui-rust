@@ -1,0 +1,1338 @@
+//! Semantic validation of a component tree.
+//!
+//! JSON Schema can say that `children` is an array of strings. It cannot say
+//! that every one of those strings names a component that exists, that the tree
+//! has a root, or that `a → b → a` is a loop the renderer will never finish
+//! drawing. That is what this module checks.
+//!
+//! Every failure is a [`ValidationError`] carrying a machine-readable
+//! [`ErrorCode`], a `path` locator into the components list, and a sentence
+//! written to be fed straight back to a model on retry. The validator collects
+//! *all* errors rather than stopping at the first, so one retry can fix
+//! everything at once.
+//!
+//! # Full surfaces and incremental updates
+//!
+//! A payload that creates a surface is held to the full contract: a `root` must
+//! exist and every child reference must resolve within the payload. An
+//! incremental `updateComponents` is not — its components may legitimately
+//! reference ids the renderer already holds, and it need not include the root.
+//! [`ValidateOptions::incremental_update`] relaxes exactly those two rules;
+//! duplicate ids and cycles still fail, because those are broken either way.
+//!
+//! ```
+//! use ag_ui_a2ui::{catalog::Catalog, message::Component, validate::{ErrorCode, Validator}};
+//! use serde_json::json;
+//!
+//! let catalog = Catalog::basic();
+//! let report = Validator::new(&catalog).validate(&[
+//!     Component::new("root", "Card").with("child", json!("nope")),
+//! ]);
+//! assert_eq!(report.errors[0].code, ErrorCode::UnresolvedChild);
+//! assert_eq!(report.errors[0].path, "components[0].child");
+//! ```
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use crate::binding::{Scope, collect_bindings};
+use crate::catalog::Catalog;
+use crate::constants::ROOT_ID;
+use crate::error::{Error, Result, ValidationErrors};
+use crate::message::{AgentMessage, AgentPayload, Component};
+
+/// The complete set of semantic failures this validator reports.
+///
+/// Deliberately closed: these codes are the contract with callers that route on
+/// them (a recovery loop, a renderer's error channel), so adding one is a
+/// breaking change. Composition-constraint failures have their own codes and
+/// live in [`crate::catalog::CompositionCode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ErrorCode {
+    /// The payload declares a surface but carries no components.
+    EmptyComponents,
+    /// A component has no usable `id`.
+    MissingId,
+    /// A component has no usable `component` type name.
+    MissingComponentType,
+    /// Two components share an `id`.
+    DuplicateId,
+    /// No component has the root id, so the renderer has nothing to draw from.
+    NoRoot,
+    /// A component's type is not defined by the surface's catalog.
+    UnknownComponent,
+    /// A property the catalog marks required is missing.
+    MissingRequiredProp,
+    /// A child reference names a component id that does not exist.
+    UnresolvedChild,
+    /// Following child references leads back to where it started.
+    ChildCycle,
+    /// A data binding cannot resolve against the surface's data model.
+    UnresolvedBinding,
+}
+
+impl ErrorCode {
+    /// The wire string for this code.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorCode::EmptyComponents => "empty_components",
+            ErrorCode::MissingId => "missing_id",
+            ErrorCode::MissingComponentType => "missing_component_type",
+            ErrorCode::DuplicateId => "duplicate_id",
+            ErrorCode::NoRoot => "no_root",
+            ErrorCode::UnknownComponent => "unknown_component",
+            ErrorCode::MissingRequiredProp => "missing_required_prop",
+            ErrorCode::UnresolvedChild => "unresolved_child",
+            ErrorCode::ChildCycle => "child_cycle",
+            ErrorCode::UnresolvedBinding => "unresolved_binding",
+        }
+    }
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One semantic failure, located and explained.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationError {
+    /// What kind of failure this is.
+    pub code: ErrorCode,
+    /// Where it is, e.g. `components[2].component` or `components[0].children[1]`.
+    pub path: String,
+    /// A sentence a human or a model can act on.
+    pub message: String,
+}
+
+impl ValidationError {
+    /// Builds an error.
+    pub fn new(code: ErrorCode, path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}] {}: {}", self.code, self.path, self.message)
+    }
+}
+
+/// What the validator should demand of a payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidateOptions {
+    /// Id the tree root must have. Defaults to [`ROOT_ID`].
+    pub root_id: String,
+    /// Whether a component with the root id must be present.
+    pub require_root: bool,
+    /// Whether child references may point outside this payload.
+    pub allow_dangling_children: bool,
+    /// Whether component types must exist in the catalog.
+    ///
+    /// Turned off automatically when the catalog defines no components at all,
+    /// since that means the caller has not supplied one.
+    pub check_component_types: bool,
+    /// Whether required properties are enforced.
+    pub check_required_props: bool,
+    /// Whether data bindings are checked.
+    pub check_bindings: bool,
+}
+
+impl Default for ValidateOptions {
+    fn default() -> Self {
+        Self::full_surface()
+    }
+}
+
+impl ValidateOptions {
+    /// The full contract, for a payload that creates a surface.
+    pub fn full_surface() -> Self {
+        Self {
+            root_id: ROOT_ID.to_string(),
+            require_root: true,
+            allow_dangling_children: false,
+            check_component_types: true,
+            check_required_props: true,
+            check_bindings: true,
+        }
+    }
+
+    /// The relaxed contract, for a payload that updates an existing surface.
+    ///
+    /// The root and the referenced components may already live on the renderer,
+    /// so their absence from this payload is not an error.
+    pub fn incremental_update() -> Self {
+        Self {
+            require_root: false,
+            allow_dangling_children: true,
+            ..Self::full_surface()
+        }
+    }
+
+    /// Overrides the root component id.
+    #[must_use]
+    pub fn with_root_id(mut self, root_id: impl Into<String>) -> Self {
+        self.root_id = root_id.into();
+        self
+    }
+}
+
+/// What a validation run found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValidationReport {
+    /// Failures, in discovery order.
+    pub errors: Vec<ValidationError>,
+    /// Ids that exist but cannot be reached from the root.
+    ///
+    /// Not an error: the specification tells renderers to buffer components
+    /// until their parent shows up, so an unreachable component is usually a
+    /// half-streamed tree rather than a broken one. It is still worth telling a
+    /// generating model about, so it is reported separately.
+    pub unreachable: Vec<String>,
+}
+
+impl ValidationReport {
+    /// Whether the payload is free of errors.
+    pub fn is_valid(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Turns the report into a `Result`, discarding warnings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Validation`] when any error was reported.
+    pub fn into_result(self) -> Result<()> {
+        if self.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Validation {
+                errors: ValidationErrors(self.errors),
+            })
+        }
+    }
+
+    /// The errors as a [`ValidationErrors`] list, for prompting or reporting.
+    pub fn errors(&self) -> ValidationErrors {
+        ValidationErrors(self.errors.clone())
+    }
+}
+
+/// Validates component trees against a catalog.
+pub struct Validator<'a> {
+    catalog: &'a Catalog,
+    options: ValidateOptions,
+}
+
+/// A component normalized for validation, from either typed or raw JSON input.
+struct Node<'a> {
+    index: usize,
+    id: Option<&'a str>,
+    kind: Option<&'a str>,
+    props: Option<&'a Map<String, Value>>,
+    /// Set when the caller handed us typed components.
+    borrowed: Option<&'a Component>,
+    /// Set when we rebuilt a typed component from raw JSON.
+    owned: Option<Component>,
+}
+
+impl<'a> Node<'a> {
+    fn from_component(index: usize, component: &'a Component) -> Self {
+        Self {
+            index,
+            id: (!component.id.is_empty()).then_some(component.id.as_str()),
+            kind: (!component.component.is_empty()).then_some(component.component.as_str()),
+            props: Some(&component.props),
+            borrowed: Some(component),
+            owned: None,
+        }
+    }
+
+    fn from_json(index: usize, value: &'a Value) -> Self {
+        let object = value.as_object();
+        let id = object
+            .and_then(|o| o.get("id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        let kind = object
+            .and_then(|o| o.get("component"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        // Rebuild a typed component so catalog reference extraction works on
+        // raw LLM output too.
+        let owned = match (id, kind) {
+            (Some(id), Some(kind)) => {
+                let mut props = object.cloned().unwrap_or_default();
+                props.remove("id");
+                props.remove("component");
+                Some(Component {
+                    id: id.to_string(),
+                    component: kind.to_string(),
+                    props,
+                })
+            }
+            _ => None,
+        };
+        Self {
+            index,
+            id,
+            kind,
+            props: object,
+            borrowed: None,
+            owned,
+        }
+    }
+
+    fn component(&self) -> Option<&Component> {
+        self.borrowed.or(self.owned.as_ref())
+    }
+
+    fn locator(&self, suffix: &str) -> String {
+        if suffix.is_empty() {
+            format!("components[{}]", self.index)
+        } else {
+            format!("components[{}].{suffix}", self.index)
+        }
+    }
+}
+
+impl<'a> Validator<'a> {
+    /// A validator holding a payload to the full-surface contract.
+    pub fn new(catalog: &'a Catalog) -> Self {
+        Self {
+            catalog,
+            options: ValidateOptions::full_surface(),
+        }
+    }
+
+    /// A validator for an incremental `updateComponents` payload.
+    pub fn incremental(catalog: &'a Catalog) -> Self {
+        Self {
+            catalog,
+            options: ValidateOptions::incremental_update(),
+        }
+    }
+
+    /// A validator with explicit options.
+    pub fn with_options(catalog: &'a Catalog, options: ValidateOptions) -> Self {
+        Self { catalog, options }
+    }
+
+    /// Validates typed components, with no data model to bind against.
+    pub fn validate(&self, components: &[Component]) -> ValidationReport {
+        self.validate_surface(components, None)
+    }
+
+    /// Validates typed components against a surface data model.
+    pub fn validate_surface(
+        &self,
+        components: &[Component],
+        data_model: Option<&Value>,
+    ) -> ValidationReport {
+        let nodes: Vec<Node<'_>> = components
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Node::from_component(i, c))
+            .collect();
+        self.run(&nodes, components, data_model)
+    }
+
+    /// Validates raw JSON components, as they arrive from a model.
+    ///
+    /// Unlike the typed entry points this can report [`ErrorCode::MissingId`]
+    /// and [`ErrorCode::MissingComponentType`], because raw objects are free to
+    /// omit them.
+    pub fn validate_json(
+        &self,
+        components: &[Value],
+        data_model: Option<&Value>,
+    ) -> ValidationReport {
+        let nodes: Vec<Node<'_>> = components
+            .iter()
+            .enumerate()
+            .map(|(i, v)| Node::from_json(i, v))
+            .collect();
+        let typed: Vec<Component> = nodes
+            .iter()
+            .filter_map(|n| n.component().cloned())
+            .collect();
+        self.run(&nodes, &typed, data_model)
+    }
+
+    /// Validates a whole operation stream.
+    ///
+    /// Components from every `createSurface` and `updateComponents` are folded
+    /// together, `updateDataModel` operations are replayed to reconstruct the
+    /// data model, and the contract is chosen automatically: a stream with no
+    /// `createSurface` is treated as an incremental update.
+    pub fn validate_messages(&self, messages: &[AgentMessage]) -> ValidationReport {
+        let mut components: Vec<Component> = Vec::new();
+        let mut data_model = Value::Null;
+        let mut has_create = false;
+
+        for message in messages {
+            match &message.payload {
+                AgentPayload::CreateSurface(_) => has_create = true,
+                AgentPayload::UpdateComponents(update) => {
+                    components.extend(update.components.iter().cloned());
+                }
+                AgentPayload::UpdateDataModel(update) => {
+                    // A malformed pointer is reported by the data-model layer,
+                    // not here; skip it and validate what we can.
+                    let _ = update.apply(&mut data_model);
+                }
+                _ => {}
+            }
+        }
+
+        let mut options = self.options.clone();
+        if !has_create {
+            options.require_root = false;
+            options.allow_dangling_children = true;
+        }
+        let data = (!data_model.is_null()).then_some(&data_model);
+        Validator::with_options(self.catalog, options).validate_surface(&components, data)
+    }
+
+    fn run(
+        &self,
+        nodes: &[Node<'_>],
+        typed: &[Component],
+        data_model: Option<&Value>,
+    ) -> ValidationReport {
+        let mut report = ValidationReport::default();
+        // Lives for the whole run so scopes derived from it can borrow it.
+        let no_data = Value::Null;
+
+        if nodes.is_empty() {
+            report.errors.push(ValidationError::new(
+                ErrorCode::EmptyComponents,
+                "components",
+                "The components list is empty. A surface needs at least a component with \
+                 id 'root'.",
+            ));
+            return report;
+        }
+
+        let ids = self.check_identity(nodes, &mut report);
+        self.check_types_and_props(nodes, &mut report);
+
+        if self.options.require_root && !ids.contains_key(self.options.root_id.as_str()) {
+            report.errors.push(ValidationError::new(
+                ErrorCode::NoRoot,
+                "components",
+                format!(
+                    "No component has id '{}'. Exactly one component must use that id; it is \
+                     the root the renderer draws from.",
+                    self.options.root_id
+                ),
+            ));
+        }
+
+        let adjacency = self.build_adjacency(nodes, &ids, &mut report);
+        self.check_cycles(nodes, &adjacency, &mut report);
+
+        let reachable = reachable_from_root(&ids, &adjacency, &self.options.root_id);
+        if let Some(reachable) = &reachable {
+            for node in nodes {
+                if let Some(id) = node.id {
+                    if !reachable.contains(&node.index) {
+                        report.unreachable.push(id.to_string());
+                    }
+                }
+            }
+        }
+
+        if self.options.check_bindings {
+            let data = data_model.unwrap_or(&no_data);
+            self.check_bindings(
+                nodes,
+                typed,
+                &ids,
+                &adjacency,
+                data,
+                data_model.is_some(),
+                &mut report,
+            );
+        }
+        report
+    }
+
+    /// Ids, types and duplicates. Returns id → node index for resolved ids.
+    fn check_identity<'n>(
+        &self,
+        nodes: &'n [Node<'n>],
+        report: &mut ValidationReport,
+    ) -> BTreeMap<&'n str, usize> {
+        let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
+        for node in nodes {
+            let Some(id) = node.id else {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::MissingId,
+                    node.locator("id"),
+                    "Every component needs a non-empty string 'id'; other components reference \
+                     it by that id.",
+                ));
+                continue;
+            };
+            if let Some(first) = ids.get(id) {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::DuplicateId,
+                    node.locator("id"),
+                    format!(
+                        "Component id '{id}' is already used by components[{first}]. Ids must be \
+                         unique within a surface; rename this one."
+                    ),
+                ));
+                continue;
+            }
+            ids.insert(id, node.index);
+        }
+        ids
+    }
+
+    fn check_types_and_props(&self, nodes: &[Node<'_>], report: &mut ValidationReport) {
+        let catalog_is_usable = !self.catalog.components.is_empty();
+        for node in nodes {
+            let Some(kind) = node.kind else {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::MissingComponentType,
+                    node.locator("component"),
+                    "Every component needs a 'component' field naming its type, e.g. \
+                     \"component\": \"Text\".",
+                ));
+                continue;
+            };
+            if !catalog_is_usable || !self.options.check_component_types {
+                continue;
+            }
+            let Some(def) = self.catalog.component(kind) else {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::UnknownComponent,
+                    node.locator("component"),
+                    format!(
+                        "Component type '{kind}' is not in catalog '{}'. Use one of: {}.",
+                        self.catalog.catalog_id,
+                        self.catalog
+                            .components_in_order()
+                            .map(|d| d.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+                continue;
+            };
+            if !self.options.check_required_props {
+                continue;
+            }
+            for required in &def.required {
+                let present = node
+                    .props
+                    .is_some_and(|props| props.get(required).is_some_and(|v| !v.is_null()));
+                if !present {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::MissingRequiredProp,
+                        node.locator(required),
+                        format!("'{kind}' requires the property '{required}'."),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Child edges, reporting references that do not resolve.
+    fn build_adjacency(
+        &self,
+        nodes: &[Node<'_>],
+        ids: &BTreeMap<&str, usize>,
+        report: &mut ValidationReport,
+    ) -> Vec<Vec<Edge>> {
+        let mut adjacency: Vec<Vec<Edge>> = vec![Vec::new(); nodes.len()];
+        for node in nodes {
+            let Some(component) = node.component() else {
+                continue;
+            };
+            for reference in self.catalog.references(component) {
+                match ids.get(reference.id.as_str()) {
+                    Some(&target) => adjacency[node.index].push(Edge {
+                        target,
+                        location: reference.location,
+                    }),
+                    None if self.options.allow_dangling_children => {}
+                    None => report.errors.push(ValidationError::new(
+                        ErrorCode::UnresolvedChild,
+                        node.locator(&reference.location),
+                        format!(
+                            "Component '{}' references '{}', which is not defined in this \
+                             payload. Add a component with that id, or point at one that exists.",
+                            component.id, reference.id
+                        ),
+                    )),
+                }
+            }
+        }
+        adjacency
+    }
+
+    /// Iterative depth-first search reporting each distinct cycle once.
+    ///
+    /// Iterative rather than recursive because the input is model-generated and
+    /// may be arbitrarily deep. A back edge to a node still on the current path
+    /// closes a cycle; a self-reference is the one-node case of the same thing.
+    fn check_cycles(
+        &self,
+        nodes: &[Node<'_>],
+        adjacency: &[Vec<Edge>],
+        report: &mut ValidationReport,
+    ) {
+        const WHITE: u8 = 0;
+        const GRAY: u8 = 1;
+        const BLACK: u8 = 2;
+
+        let mut color = vec![WHITE; nodes.len()];
+        let mut reported: BTreeSet<Vec<usize>> = BTreeSet::new();
+
+        for start in 0..nodes.len() {
+            if color[start] != WHITE {
+                continue;
+            }
+            color[start] = GRAY;
+            let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+
+            while let Some(&(node, edge_index)) = stack.last() {
+                if edge_index >= adjacency[node].len() {
+                    color[node] = BLACK;
+                    stack.pop();
+                    continue;
+                }
+                if let Some(top) = stack.last_mut() {
+                    top.1 += 1;
+                }
+                let edge = &adjacency[node][edge_index];
+                match color[edge.target] {
+                    WHITE => {
+                        color[edge.target] = GRAY;
+                        stack.push((edge.target, 0));
+                    }
+                    GRAY => {
+                        // Back edge: the cycle is the current path from the
+                        // target onwards, closed by this edge.
+                        let path: Vec<usize> = stack.iter().map(|(n, _)| *n).collect();
+                        let start_of_cycle =
+                            path.iter().position(|n| *n == edge.target).unwrap_or(0);
+                        let cycle = &path[start_of_cycle..];
+                        let mut key = cycle.to_vec();
+                        key.sort_unstable();
+                        if reported.insert(key) {
+                            report
+                                .errors
+                                .push(self.cycle_error(nodes, cycle, node, edge));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn cycle_error(
+        &self,
+        nodes: &[Node<'_>],
+        cycle: &[usize],
+        from: usize,
+        edge: &Edge,
+    ) -> ValidationError {
+        let name = |index: usize| nodes[index].id.unwrap_or("<missing id>");
+        let mut chain: Vec<&str> = cycle.iter().map(|index| name(*index)).collect();
+        chain.push(name(edge.target));
+        let detail = if cycle.len() == 1 {
+            format!(
+                "Component '{}' references itself in '{}'.",
+                name(from),
+                edge.location
+            )
+        } else {
+            format!("Child references form a loop: {}.", chain.join(" -> "))
+        };
+        ValidationError::new(
+            ErrorCode::ChildCycle,
+            nodes[from].locator(&edge.location),
+            format!(
+                "{detail} A component tree must be acyclic; break the loop by pointing at a \
+                 different component."
+            ),
+        )
+    }
+
+    /// Data bindings: relative paths need a collection scope, and every path
+    /// must resolve when a data model is available.
+    #[allow(clippy::too_many_arguments)]
+    fn check_bindings(
+        &self,
+        nodes: &[Node<'_>],
+        typed: &[Component],
+        ids: &BTreeMap<&str, usize>,
+        adjacency: &[Vec<Edge>],
+        data: &Value,
+        has_data: bool,
+        report: &mut ValidationReport,
+    ) {
+        let scopes = collection_scopes(typed, ids, adjacency, self.catalog, data, has_data);
+
+        for node in nodes {
+            let Some(component) = node.component() else {
+                continue;
+            };
+            let Ok(raw) = serde_json::to_value(component) else {
+                continue;
+            };
+            let scope = scopes.get(&node.index);
+
+            for binding in collect_bindings(&raw) {
+                let is_absolute = binding.path.starts_with('/');
+                if !is_absolute && scope.is_none() {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::UnresolvedBinding,
+                        node.locator(&binding.location),
+                        format!(
+                            "Relative path '{}' has nothing to resolve against: component '{}' \
+                             is not inside a list template. Use an absolute path starting with \
+                             '/'.",
+                            binding.path, component.id
+                        ),
+                    ));
+                    continue;
+                }
+                if !has_data {
+                    continue;
+                }
+                let resolver = match scope {
+                    Some(CollectionScope::Resolved(item)) => item.clone(),
+                    // The enclosing collection is missing or empty, so there is
+                    // no item to resolve a relative path against. The
+                    // collection itself is reported on its container.
+                    Some(CollectionScope::Unresolvable) if !is_absolute => continue,
+                    _ => Scope::root(data),
+                };
+                let resolved = resolver.resolve(&binding.path);
+                match (binding.is_collection, resolved) {
+                    (_, None) => report.errors.push(ValidationError::new(
+                        ErrorCode::UnresolvedBinding,
+                        node.locator(&binding.location),
+                        format!(
+                            "Path '{}' does not exist in the data model. Add the value with \
+                             updateDataModel, or bind to a path that exists.",
+                            binding.path
+                        ),
+                    )),
+                    (true, Some(value)) if !value.is_array() => {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::UnresolvedBinding,
+                            node.locator(&binding.location),
+                            format!(
+                                "Template path '{}' must point at an array to iterate; it points \
+                                 at {}.",
+                                binding.path,
+                                type_name(value)
+                            ),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Edge {
+    target: usize,
+    location: String,
+}
+
+/// The collection scope a component sits in, if any.
+enum CollectionScope<'a> {
+    /// Relative paths resolve against this item scope.
+    Resolved(Scope<'a>),
+    /// Inside a template whose collection could not be resolved, so relative
+    /// paths cannot be checked here.
+    Unresolvable,
+}
+
+/// Assigns a collection scope to every component reachable through a template.
+///
+/// A `ChildList` template opens one scope per element of the bound array. For
+/// validation we resolve relative paths against the **first** element, which is
+/// enough to catch typos without iterating data that may be huge or absent.
+/// Subtrees under a template inherit its scope; nested templates compose.
+fn collection_scopes<'a>(
+    components: &[Component],
+    ids: &BTreeMap<&str, usize>,
+    adjacency: &[Vec<Edge>],
+    catalog: &Catalog,
+    data: &'a Value,
+    has_data: bool,
+) -> BTreeMap<usize, CollectionScope<'a>> {
+    let mut scopes: BTreeMap<usize, CollectionScope<'a>> = BTreeMap::new();
+    let mut queue: Vec<(usize, Option<Scope<'a>>)> = Vec::new();
+
+    // Seed from every template edge.
+    for component in components {
+        let Some(&index) = ids.get(component.id.as_str()) else {
+            continue;
+        };
+        for reference in catalog.references(component) {
+            let Some(collection_path) = template_path(component, &reference.location) else {
+                continue;
+            };
+            let Some(&target) = ids.get(reference.id.as_str()) else {
+                continue;
+            };
+            // Templates nested inside another template resolve their collection
+            // path in the outer scope.
+            let base = match scopes.get(&index) {
+                Some(CollectionScope::Resolved(outer)) => outer.clone(),
+                Some(CollectionScope::Unresolvable) | None => Scope::root(data),
+            };
+            let item = base.item(&collection_path, 0);
+            let resolvable = has_data
+                && base
+                    .resolve(&collection_path)
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| !items.is_empty());
+            queue.push((target, resolvable.then_some(item)));
+        }
+    }
+
+    // Propagate scopes down the subtree under each template.
+    let mut guard = 0usize;
+    while let Some((index, scope)) = queue.pop() {
+        guard += 1;
+        if guard > adjacency.len() * adjacency.len() + adjacency.len() {
+            break; // Cyclic input; cycles are reported separately.
+        }
+        let entry = match &scope {
+            Some(item) => CollectionScope::Resolved(item.clone()),
+            None => CollectionScope::Unresolvable,
+        };
+        if scopes.insert(index, entry).is_some() {
+            continue;
+        }
+        for edge in &adjacency[index] {
+            queue.push((edge.target, scope.clone()));
+        }
+    }
+    scopes
+}
+
+/// The collection path of a template edge, if this reference is one.
+fn template_path(component: &Component, location: &str) -> Option<String> {
+    let prop = location.strip_suffix(".componentId")?;
+    component
+        .props
+        .get(prop)?
+        .as_object()?
+        .get("path")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Node indices reachable from the root, or `None` when there is no root.
+fn reachable_from_root(
+    ids: &BTreeMap<&str, usize>,
+    adjacency: &[Vec<Edge>],
+    root_id: &str,
+) -> Option<BTreeSet<usize>> {
+    let root = *ids.get(root_id)?;
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        for edge in &adjacency[node] {
+            stack.push(edge.target);
+        }
+    }
+    Some(seen)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn basic() -> Catalog {
+        Catalog::basic()
+    }
+
+    fn codes(report: &ValidationReport) -> Vec<ErrorCode> {
+        report.errors.iter().map(|e| e.code).collect()
+    }
+
+    #[test]
+    fn a_well_formed_surface_validates_clean() {
+        let catalog = basic();
+        let components = vec![
+            Component::new("root", "Column").with("children", json!(["title", "cta"])),
+            Component::new("title", "Text").with("text", json!("Hello")),
+            Component::new("cta", "Button")
+                .with("child", json!("title"))
+                .with("action", json!({"event": {"name": "go"}})),
+        ];
+        let report = Validator::new(&catalog).validate(&components);
+        assert!(report.is_valid(), "{:?}", report.errors);
+        assert!(report.unreachable.is_empty());
+    }
+
+    #[test]
+    fn empty_components_is_reported_once() {
+        let report = Validator::new(&basic()).validate(&[]);
+        assert_eq!(codes(&report), vec![ErrorCode::EmptyComponents]);
+        assert_eq!(report.errors[0].path, "components");
+    }
+
+    #[test]
+    fn missing_id_and_type_come_from_raw_json() {
+        let catalog = basic();
+        let report = Validator::new(&catalog).validate_json(
+            &[
+                json!({"component": "Text", "text": "x"}),
+                json!({"id": "b"}),
+            ],
+            None,
+        );
+        assert!(codes(&report).contains(&ErrorCode::MissingId));
+        assert!(codes(&report).contains(&ErrorCode::MissingComponentType));
+        assert_eq!(
+            report
+                .errors
+                .iter()
+                .find(|e| e.code == ErrorCode::MissingId)
+                .unwrap()
+                .path,
+            "components[0].id"
+        );
+        assert_eq!(
+            report
+                .errors
+                .iter()
+                .find(|e| e.code == ErrorCode::MissingComponentType)
+                .unwrap()
+                .path,
+            "components[1].component"
+        );
+    }
+
+    #[test]
+    fn duplicate_ids_point_at_the_later_component() {
+        let catalog = basic();
+        let components = vec![
+            Component::new("root", "Text").with("text", json!("a")),
+            Component::new("dup", "Text").with("text", json!("b")),
+            Component::new("dup", "Text").with("text", json!("c")),
+        ];
+        let report = Validator::new(&catalog).validate(&components);
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::DuplicateId)
+            .unwrap();
+        assert_eq!(error.path, "components[2].id");
+        assert!(error.message.contains("components[1]"));
+    }
+
+    #[test]
+    fn a_missing_root_is_reported_for_full_surfaces_only() {
+        let catalog = basic();
+        let components = vec![Component::new("c1", "Text").with("text", json!("hi"))];
+        assert!(
+            codes(&Validator::new(&catalog).validate(&components)).contains(&ErrorCode::NoRoot)
+        );
+        assert!(
+            Validator::incremental(&catalog)
+                .validate(&components)
+                .is_valid()
+        );
+    }
+
+    #[test]
+    fn unknown_component_types_are_rejected_against_the_catalog() {
+        let catalog = basic();
+        let report = Validator::new(&catalog)
+            .validate(&[Component::new("root", "Sparkline").with("data", json!([1, 2]))]);
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::UnknownComponent)
+            .unwrap();
+        assert_eq!(error.path, "components[0].component");
+        assert!(error.message.contains("Text"));
+    }
+
+    #[test]
+    fn required_props_are_enforced_per_component_type() {
+        let catalog = basic();
+        let report = Validator::new(&catalog).validate(&[
+            Component::new("root", "Column").with("children", json!(["t"])),
+            Component::new("t", "Text"),
+        ]);
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::MissingRequiredProp)
+            .unwrap();
+        assert_eq!(error.path, "components[1].text");
+    }
+
+    #[test]
+    fn unresolved_children_are_located_precisely() {
+        let catalog = basic();
+        let report = Validator::new(&catalog).validate(&[
+            Component::new("root", "Row").with("children", json!(["there", "gone"])),
+            Component::new("there", "Text").with("text", json!("x")),
+        ]);
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::UnresolvedChild)
+            .unwrap();
+        assert_eq!(error.path, "components[0].children[1]");
+        assert!(error.message.contains("'gone'"));
+    }
+
+    #[test]
+    fn template_references_are_resolved_like_any_other_child() {
+        let catalog = basic();
+        let ok = Validator::new(&catalog).validate(&[
+            Component::new("root", "List")
+                .with("children", json!({"componentId": "tpl", "path": "/items"})),
+            Component::new("tpl", "Text").with("text", json!({"path": "label"})),
+        ]);
+        assert!(ok.is_valid(), "{:?}", ok.errors);
+
+        let broken = Validator::new(&catalog).validate(&[Component::new("root", "List").with(
+            "children",
+            json!({"componentId": "missing", "path": "/items"}),
+        )]);
+        let error = broken
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::UnresolvedChild)
+            .unwrap();
+        assert_eq!(error.path, "components[0].children.componentId");
+    }
+
+    #[test]
+    fn dangling_children_are_allowed_for_incremental_updates() {
+        let catalog = basic();
+        let components = vec![Component::new("card", "Card").with("child", json!("elsewhere"))];
+        assert!(!Validator::new(&catalog).validate(&components).is_valid());
+        assert!(
+            Validator::incremental(&catalog)
+                .validate(&components)
+                .is_valid()
+        );
+    }
+
+    #[test]
+    fn self_reference_is_a_cycle_even_in_incremental_updates() {
+        let catalog = basic();
+        let components = vec![Component::new("card", "Card").with("child", json!("card"))];
+        let report = Validator::incremental(&catalog).validate(&components);
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::ChildCycle)
+            .unwrap();
+        assert_eq!(error.path, "components[0].child");
+        assert!(error.message.contains("references itself"));
+    }
+
+    #[test]
+    fn two_node_cycles_are_reported_once_with_the_chain() {
+        let catalog = basic();
+        let components = vec![
+            Component::new("root", "Card").with("child", json!("c1")),
+            Component::new("c1", "Card").with("child", json!("root")),
+        ];
+        let report = Validator::new(&catalog).validate(&components);
+        let cycles: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|e| e.code == ErrorCode::ChildCycle)
+            .collect();
+        assert_eq!(cycles.len(), 1, "{:?}", report.errors);
+        assert!(cycles[0].message.contains("root -> c1 -> root"));
+    }
+
+    #[test]
+    fn cycles_are_found_when_they_are_unreachable_from_the_root() {
+        let catalog = basic();
+        let components = vec![
+            Component::new("root", "Text").with("text", json!("hi")),
+            Component::new("a", "Card").with("child", json!("b")),
+            Component::new("b", "Card").with("child", json!("a")),
+        ];
+        let report = Validator::new(&catalog).validate(&components);
+        assert_eq!(
+            report
+                .errors
+                .iter()
+                .filter(|e| e.code == ErrorCode::ChildCycle)
+                .count(),
+            1
+        );
+        assert_eq!(report.unreachable, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn distinct_cycles_are_each_reported() {
+        let catalog = basic();
+        let components = vec![
+            Component::new("root", "Row").with("children", json!(["a", "c"])),
+            Component::new("a", "Card").with("child", json!("b")),
+            Component::new("b", "Card").with("child", json!("a")),
+            Component::new("c", "Card").with("child", json!("c")),
+        ];
+        let report = Validator::new(&catalog).validate(&components);
+        assert_eq!(
+            report
+                .errors
+                .iter()
+                .filter(|e| e.code == ErrorCode::ChildCycle)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_deep_chain_does_not_blow_the_stack() {
+        let catalog = basic();
+        let depth = 20_000;
+        let mut components = Vec::with_capacity(depth + 1);
+        components.push(Component::new("root", "Card").with("child", json!("n0")));
+        for i in 0..depth {
+            let next = if i + 1 == depth {
+                json!("leaf")
+            } else {
+                json!(format!("n{}", i + 1))
+            };
+            components.push(Component::new(format!("n{i}"), "Card").with("child", next));
+        }
+        components.push(Component::new("leaf", "Text").with("text", json!("end")));
+        let report = Validator::new(&catalog).validate(&components);
+        assert!(
+            report.is_valid(),
+            "{:?}",
+            &report.errors[..report.errors.len().min(3)]
+        );
+    }
+
+    #[test]
+    fn unreachable_components_are_warnings_not_errors() {
+        let catalog = basic();
+        let report = Validator::new(&catalog).validate(&[
+            Component::new("root", "Text").with("text", json!("root")),
+            Component::new("orphan", "Text").with("text", json!("nobody points here")),
+        ]);
+        assert!(report.is_valid(), "{:?}", report.errors);
+        assert_eq!(report.unreachable, vec!["orphan".to_string()]);
+    }
+
+    #[test]
+    fn relative_paths_outside_a_template_are_unresolved_bindings() {
+        let catalog = basic();
+        let report = Validator::new(&catalog)
+            .validate(&[Component::new("root", "Text").with("text", json!({"path": "name"}))]);
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::UnresolvedBinding)
+            .unwrap();
+        assert_eq!(error.path, "components[0].text");
+        assert!(error.message.contains("not inside a list template"));
+    }
+
+    #[test]
+    fn relative_paths_inside_a_template_are_accepted() {
+        let catalog = basic();
+        let report = Validator::new(&catalog).validate(&[
+            Component::new("root", "List")
+                .with("children", json!({"componentId": "row", "path": "/people"})),
+            Component::new("row", "Text").with("text", json!({"path": "name"})),
+        ]);
+        assert!(report.is_valid(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn bindings_are_resolved_against_a_supplied_data_model() {
+        let catalog = basic();
+        let components = vec![
+            Component::new("root", "Column").with("children", json!(["a", "b"])),
+            Component::new("a", "Text").with("text", json!({"path": "/user/name"})),
+            Component::new("b", "Text").with("text", json!({"path": "/user/nope"})),
+        ];
+        let data = json!({"user": {"name": "Ada"}});
+        let report = Validator::new(&catalog).validate_surface(&components, Some(&data));
+        let errors: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|e| e.code == ErrorCode::UnresolvedBinding)
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", report.errors);
+        assert_eq!(errors[0].path, "components[2].text");
+    }
+
+    #[test]
+    fn template_paths_must_point_at_an_array() {
+        let catalog = basic();
+        let components = vec![
+            Component::new("root", "List")
+                .with("children", json!({"componentId": "row", "path": "/people"})),
+            Component::new("row", "Text").with("text", json!({"path": "name"})),
+        ];
+        let data = json!({"people": {"not": "an array"}});
+        let report = Validator::new(&catalog).validate_surface(&components, Some(&data));
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::UnresolvedBinding)
+            .unwrap();
+        assert_eq!(error.path, "components[0].children");
+        assert!(error.message.contains("must point at an array"));
+    }
+
+    #[test]
+    fn relative_paths_resolve_against_the_first_collection_item() {
+        let catalog = basic();
+        let components = vec![
+            Component::new("root", "List")
+                .with("children", json!({"componentId": "row", "path": "/people"})),
+            Component::new("row", "Column").with("children", json!(["name", "typo"])),
+            Component::new("name", "Text").with("text", json!({"path": "name"})),
+            Component::new("typo", "Text").with("text", json!({"path": "nmae"})),
+        ];
+        let data = json!({"people": [{"name": "Ada"}]});
+        let report = Validator::new(&catalog).validate_surface(&components, Some(&data));
+        let errors: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|e| e.code == ErrorCode::UnresolvedBinding)
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", report.errors);
+        assert_eq!(errors[0].path, "components[3].text");
+    }
+
+    #[test]
+    fn every_error_code_has_a_stable_wire_string() {
+        let all = [
+            (ErrorCode::EmptyComponents, "empty_components"),
+            (ErrorCode::MissingId, "missing_id"),
+            (ErrorCode::MissingComponentType, "missing_component_type"),
+            (ErrorCode::DuplicateId, "duplicate_id"),
+            (ErrorCode::NoRoot, "no_root"),
+            (ErrorCode::UnknownComponent, "unknown_component"),
+            (ErrorCode::MissingRequiredProp, "missing_required_prop"),
+            (ErrorCode::UnresolvedChild, "unresolved_child"),
+            (ErrorCode::ChildCycle, "child_cycle"),
+            (ErrorCode::UnresolvedBinding, "unresolved_binding"),
+        ];
+        for (code, wire) in all {
+            assert_eq!(code.as_str(), wire);
+            assert_eq!(serde_json::to_value(code).unwrap(), json!(wire));
+        }
+    }
+
+    #[test]
+    fn validate_messages_picks_the_contract_from_the_stream() {
+        let catalog = basic();
+        let validator = Validator::new(&catalog);
+
+        let incremental = vec![AgentMessage::update_components(
+            "s",
+            vec![Component::new("c", "Card").with("child", json!("already-there"))],
+        )];
+        assert!(validator.validate_messages(&incremental).is_valid());
+
+        let full = vec![
+            AgentMessage::create_surface("s", "cat"),
+            AgentMessage::update_components(
+                "s",
+                vec![Component::new("c", "Card").with("child", json!("gone"))],
+            ),
+        ];
+        let report = validator.validate_messages(&full);
+        assert!(codes(&report).contains(&ErrorCode::NoRoot));
+        assert!(codes(&report).contains(&ErrorCode::UnresolvedChild));
+    }
+
+    #[test]
+    fn validate_messages_replays_the_data_model() {
+        let catalog = basic();
+        let messages = vec![
+            AgentMessage::create_surface("s", "cat"),
+            AgentMessage::update_components(
+                "s",
+                vec![Component::new("root", "Text").with("text", json!({"path": "/user/name"}))],
+            ),
+            AgentMessage::update_data_model("s", "/user/name", json!("Ada")),
+        ];
+        assert!(
+            Validator::new(&catalog)
+                .validate_messages(&messages)
+                .is_valid()
+        );
+
+        let messages = vec![
+            AgentMessage::create_surface("s", "cat"),
+            AgentMessage::update_components(
+                "s",
+                vec![Component::new("root", "Text").with("text", json!({"path": "/user/name"}))],
+            ),
+            AgentMessage::update_data_model("s", "/user/other", json!("Ada")),
+        ];
+        let report = Validator::new(&catalog).validate_messages(&messages);
+        assert!(codes(&report).contains(&ErrorCode::UnresolvedBinding));
+    }
+
+    #[test]
+    fn an_empty_catalog_skips_type_checks() {
+        let catalog = Catalog::empty("none");
+        let report = Validator::new(&catalog)
+            .validate(&[Component::new("root", "Whatever").with("x", json!(1))]);
+        assert!(report.is_valid(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn report_converts_into_a_result_carrying_every_error() {
+        let catalog = basic();
+        let report = Validator::new(&catalog).validate(&[]);
+        let Err(Error::Validation { errors }) = report.into_result() else {
+            panic!("expected a validation error");
+        };
+        assert_eq!(errors.len(), 1);
+        assert!(errors.to_string().contains("empty_components"));
+    }
+}

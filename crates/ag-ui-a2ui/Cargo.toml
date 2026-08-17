@@ -26,3 +26,6 @@ ag-ui-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta.workspace = true
+# Reads the vendored upstream language-agnostic conformance suite
+# (tests/conformance/**). Maintained fork of the deprecated `serde_yaml`.
+serde_norway = "0.9.42"
