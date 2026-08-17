@@ -19,8 +19,11 @@ all-features = true
 default = ["sse"]
 # Server-Sent Events framing. No extra dependencies.
 sse = []
-# Binary transport. NOTE: events.proto only covers 18 of 32 event types.
-protobuf = ["dep:prost", "dep:bytes"]
+# Binary transport: the media type and content negotiation only. There is no
+# encoder — events.proto covers 18 of the protocol's 33 event types, so encoding
+# would drop events silently. See `encode::protobuf`. Deliberately pulls in no
+# dependency: it would be a `prost` build for a module that never calls it.
+protobuf = []
 # Opt-in schema derives (see ag-ui-protocol/ag-ui#1407).
 schemars = ["dep:schemars"]
 utoipa = ["dep:utoipa"]
@@ -29,8 +32,6 @@ utoipa = ["dep:utoipa"]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-prost = { workspace = true, optional = true }
-bytes = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 utoipa = { workspace = true, optional = true }
 

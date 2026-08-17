@@ -33,21 +33,16 @@ jsonptr = "0.8.1"
 # ---- runtime: web binding (tokio enters here only) ----
 axum = "0.8.9"
 tokio = { version = "1.53.1", features = ["rt", "sync", "macros"] }
-tokio-util = "0.7.19"
 tower = "0.5.3"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "stream", "rustls", "charset", "http2"] }
 
 # ---- optional runtime (feature-gated) ----
 schemars = "1.2.2"
 utoipa = "5.5.0"
-prost = "0.14.4"
-bytes = "1.12.1"
 
 # ---- compile-time only (proc-macro / dev) ----
 thiserror = "2.0.20"
-tracing = "0.1.44"
 insta = { version = "1", features = ["json"] }
-tokio-test = "0.4"
 
 [profile.release]
 lto = "thin"
