@@ -13,11 +13,11 @@ upstream and are driven by `crates/ag-ui-a2ui/tests/conformance.rs`.
 Do not hand-edit these files. To update, re-copy from upstream at a newer commit
 and change the SHA here and in `UPSTREAM_COMMIT` in the harness.
 
-## Current standing: 118 passed, 75 skipped, 0 failed
+## Current standing: 123 passed, 70 skipped, 0 failed
 
 | File | Cases | Checks executed here |
 |---|---:|---|
-| `core/validator.yaml` | 45 | 21 of 51 — every v0.9 structural case, plus the depth limits |
+| `core/validator.yaml` | 45 | 26 of 51 — every v0.9 structural case, the depth limits, the message envelope, and declared property types |
 | `core/catalog.yaml` | 24 | 23 of 24 — prune, render, load, modifiers |
 | `core/accessibility.yaml` | 4 | none |
 | `agent/parser.yaml` | 19 | 19 — all of them |
@@ -41,14 +41,21 @@ cargo test -p ag-ui-a2ui --all-features -- --nocapture
 to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list every check by
 name.
 
-The 75 skips break down as:
+The 70 skips break down as:
 
 | Count | Reason |
 |---:|---|
 | 63 | **v0.8 wire format.** v0.8 nests component properties under the type name (`component: {Text: {...}}`) and uses different message names. This crate implements v0.9, where components are flat. |
-| 6 | **JSON Schema validation.** Upstream validates envelopes, component properties and example files with a JSON Schema engine, and these cases assert its error codes (`missing_field`, `type_mismatch`) or its messages (`123 is not of type 'string'`). This crate has no JSON Schema engine and adding one for six cases is not worth the dependency. |
 | 4 | **Renderer accessibility.** Accessibility trees and axe-core rules belong to a renderer; this crate does not render. |
 | 2 | **v0.8 schema bundle in a prompt.** Two `generate_prompt` cases ask for the v0.8 schema documents to be embedded in the prompt; this crate ships v0.9. The other six prompt cases run. |
+| 1 | **JSON Schema validation of an example file.** `test_load_examples_validation_fails_on_schema_error` asks `load_examples` to validate each example against an arbitrary `s2c_schema` — a whole JSON Schema engine over a document the caller supplies, which is the one part of upstream's schema story this crate does not reproduce. |
+
+The other five JSON Schema cases now run. Upstream validates the message
+envelope and component property types with a JSON Schema engine; this crate
+checks both natively — the envelope against the v0.9 contract it pins, property
+values against the types the catalog declares (`PropType`) — and reports the same
+codes (`missing_field`, `invalid_value`, `type_mismatch`), so the cases asserting
+those codes and messages are executed rather than skipped.
 
 The depth-limit cases now pass: `ValidateOptions::max_depth` defaults to 50 and
 `max_function_call_depth` to 5, matching every other toolkit, and a payload past
@@ -76,4 +83,6 @@ harness turns off component-type and required-property checking, because
 upstream delegates those to JSON Schema in the cases being compared, and turns
 off data-binding resolution, because upstream's structural validator does not
 look at bindings. Pointer *syntax* checking stays on, since upstream checks that
-too. Matching upstream's scope is what makes the comparison meaningful.
+too, as do the envelope and property-type checks, since those are what the cases
+delegated to JSON Schema assert. Matching upstream's scope is what makes the
+comparison meaningful.

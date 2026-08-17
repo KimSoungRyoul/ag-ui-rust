@@ -9,8 +9,8 @@
 //! # Skips are counted, not hidden
 //!
 //! Parts of the suite exercise behaviour this crate does not implement — the
-//! v0.8 wire format, JSON Schema validation, renderer accessibility. Those cases
-//! are **skipped with a reason and counted**, and the
+//! v0.8 wire format, JSON Schema validation of example files, renderer
+//! accessibility. Those cases are **skipped with a reason and counted**, and the
 //! counts are printed by [`conformance_suite`]. Nothing is silently ignored, and
 //! a case is never counted as passing unless this crate actually produced the
 //! expected outcome.
@@ -142,11 +142,22 @@ fn conformance_suite() {
         total.failed,
         total.failures.join("\n")
     );
-    // Guards against a refactor that quietly turns executed cases into skips.
+    // Two ratchets, because an executed check can be lost in either direction.
+    // It can start failing, which the assertion above catches — or it can
+    // quietly become a *skip*, which nothing catches: the report still reads "0
+    // failed" while the suite silently stops testing anything. A rising skip
+    // count is that failure mode, so it is a failure here.
     assert!(
-        total.passed >= 110,
-        "expected at least 110 executed conformance checks, got {}",
+        total.passed >= 123,
+        "expected at least 123 executed conformance checks, got {}",
         total.passed
+    );
+    assert!(
+        total.skipped <= 70,
+        "expected at most 70 skipped conformance checks, got {}; a rising skip count means \
+         vectors are falling out of execution:\n{:#?}",
+        total.skipped,
+        total.skip_reasons
     );
 }
 
@@ -669,8 +680,8 @@ fn run_validate_step(
         return Outcome::Skipped("step has no payload".to_string());
     };
     let expectation = classify_expectation(expect_error);
-    if let Expectation::Unsupported(reason) = expectation {
-        return Outcome::Skipped(reason);
+    if let Expectation::Unsupported(reason) = &expectation {
+        return Outcome::Skipped(reason.clone());
     }
 
     let messages: Vec<Value> = match payload {
@@ -679,11 +690,11 @@ fn run_validate_step(
     };
 
     // Upstream's structural validator checks references, roots, cycles and
-    // nesting depth; type and required-property checking is JSON Schema's job
-    // there, and data bindings are not checked at all. Matching that scope keeps
-    // the comparison honest rather than failing cases on checks upstream never
-    // ran. The root and dangling-reference contract is chosen from the payload
-    // by `validate_json_messages`, exactly as upstream chooses it.
+    // nesting depth; required-property checking is JSON Schema's job there, and
+    // data bindings are not checked at all. Matching that scope keeps the
+    // comparison honest rather than failing cases on checks upstream never ran.
+    // The root and dangling-reference contract is chosen from the payload by
+    // `validate_json_messages`, exactly as upstream chooses it.
     let options = ValidateOptions {
         check_component_types: false,
         check_required_props: false,
@@ -691,12 +702,37 @@ fn run_validate_step(
         // Pointer syntax is checked: upstream's structural validator checks it
         // too, and it needs no data model.
         check_binding_syntax: true,
+        // The envelope and the declared property types are what upstream hands
+        // to a JSON Schema engine. This crate checks both natively, so the cases
+        // that assert those failures run here rather than being skipped.
+        check_envelope: true,
+        check_prop_types: true,
         ..ValidateOptions::full_surface()
     };
     let report = Validator::with_options(catalog, options).validate_json_messages(&messages);
 
     match expectation {
         Expectation::Unsupported(reason) => Outcome::Skipped(reason),
+        Expectation::Details(details) => {
+            let missing: Vec<String> = details
+                .iter()
+                .filter(|want| {
+                    !report
+                        .errors
+                        .iter()
+                        .any(|error| error.code == want.code && error.path == want.path)
+                })
+                .map(|want| format!("{} at {}", want.code, want.path))
+                .collect();
+            if missing.is_empty() {
+                Outcome::Passed
+            } else {
+                Outcome::Failed(format!(
+                    "expected {missing:?}, got {:?}",
+                    located_codes(&report)
+                ))
+            }
+        }
         Expectation::Valid => {
             if report.is_valid() && report.unreachable.is_empty() {
                 Outcome::Passed
@@ -735,12 +771,27 @@ fn codes(report: &ValidationReport) -> Vec<&'static str> {
     report.errors.iter().map(|e| e.code.as_str()).collect()
 }
 
+fn located_codes(report: &ValidationReport) -> Vec<String> {
+    report
+        .errors
+        .iter()
+        .map(|e| format!("{} at {}", e.code, e.path))
+        .collect()
+}
+
 /// What a conformance expectation means for this crate.
 enum Expectation {
     /// The payload should validate cleanly.
     Valid,
     /// The payload should produce this error code.
     Code(ErrorCode),
+    /// The payload should produce each of these coded failures, at these paths.
+    ///
+    /// Not an equality check: this crate may report more than upstream's engine
+    /// did for the same payload, and reporting more is not a conformance
+    /// failure. Every failure upstream pins has to be there, code and locator
+    /// both.
+    Details(Vec<ExpectedDetail>),
     /// The payload should leave a component unreachable from the root.
     ///
     /// Upstream raises this as an error. This crate reports it as a warning,
@@ -761,13 +812,31 @@ fn classify_expectation(expect_error: Option<&Value>) -> Expectation {
         return Expectation::Valid;
     };
 
-    // A `details` list pins exact JSON Schema error codes (missing_field,
-    // type_mismatch, ...) produced by envelope validation.
-    if expect_error.get("details").is_some() {
-        return Expectation::Unsupported(
-            "expects JSON Schema envelope error details (no JSON Schema validator here)"
-                .to_string(),
-        );
+    // A `details` list pins exact error codes and paths from envelope
+    // validation. This crate reports the envelope contract natively and uses the
+    // same code spellings, so each detail is matched on both.
+    if let Some(details) = expect_error.get("details").and_then(Value::as_array) {
+        let mut wanted = Vec::new();
+        for detail in details {
+            let code = detail
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let Some(code) = detail_code(code) else {
+                return Expectation::Unsupported(format!(
+                    "expects the JSON Schema error code {code:?}, which this crate does not report"
+                ));
+            };
+            let path = detail
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            wanted.push(ExpectedDetail {
+                code,
+                path: bracket_indices(path),
+            });
+        }
+        return Expectation::Details(wanted);
     }
 
     let message = match expect_error {
@@ -795,6 +864,9 @@ fn classify_expectation(expect_error: Option<&Value>) -> Expectation {
         Expectation::Code(ErrorCode::MaxDepthExceeded)
     } else if message.contains("Invalid path syntax") {
         Expectation::Code(ErrorCode::UnresolvedBinding)
+    } else if message.contains("is not of type") {
+        // JSON Schema's wording for a value whose type the catalog rejects.
+        Expectation::Code(ErrorCode::TypeMismatch)
     } else if message.is_empty() {
         Expectation::Unsupported(
             "expects an error with no message to match on (category only)".to_string(),
@@ -805,6 +877,48 @@ fn classify_expectation(expect_error: Option<&Value>) -> Expectation {
             truncate(&message)
         ))
     }
+}
+
+/// One entry of an upstream `expect_error.details` list.
+struct ExpectedDetail {
+    code: ErrorCode,
+    path: String,
+}
+
+/// Maps an upstream JSON Schema error code onto this crate's.
+///
+/// The three below are the ones the envelope produces. Anything else is a
+/// constraint this crate does not evaluate, and the case is skipped rather than
+/// stretched to fit.
+fn detail_code(code: &str) -> Option<ErrorCode> {
+    match code {
+        "missing_field" => Some(ErrorCode::MissingField),
+        "invalid_value" => Some(ErrorCode::InvalidValue),
+        "type_mismatch" => Some(ErrorCode::TypeMismatch),
+        _ => None,
+    }
+}
+
+/// Rewrites an upstream locator into this crate's dialect.
+///
+/// Upstream separates every segment with a dot, list indices included
+/// (`messages.0.version`); this crate brackets indices (`messages[0].version`).
+/// Same locator, different spelling.
+fn bracket_indices(path: &str) -> String {
+    let mut out = String::new();
+    for segment in path.split('.') {
+        if segment.parse::<usize>().is_ok() {
+            out.push('[');
+            out.push_str(segment);
+            out.push(']');
+        } else {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            out.push_str(segment);
+        }
+    }
+    out
 }
 
 fn truncate(text: &str) -> String {

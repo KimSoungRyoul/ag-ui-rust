@@ -15,7 +15,10 @@
 //! - [`catalog`] — what a surface may contain, including the standard
 //!   18-component basic catalog.
 //! - [`validate`] — the semantic checks JSON Schema cannot express: does every
-//!   child reference resolve, is there a root, is the tree acyclic.
+//!   child reference resolve, is there a root, is the tree acyclic. Plus the two
+//!   a generating model gets wrong often enough to be worth checking without a
+//!   schema engine: the message envelope, and property values against the type
+//!   the catalog declares.
 //! - [`binding`] — JSON Pointer resolution, template scopes, and the
 //!   `formatString` interpolation grammar, so an agent can check its own
 //!   bindings before shipping them.

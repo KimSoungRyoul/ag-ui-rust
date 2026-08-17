@@ -48,8 +48,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::binding::{Scope, collect_bindings};
-use crate::catalog::Catalog;
-use crate::constants::ROOT_ID;
+use crate::catalog::{Catalog, ComponentDef, PropType};
+use crate::constants::{PROTOCOL_VERSION, ROOT_ID};
 use crate::error::{Error, Result, ValidationErrors};
 use crate::message::{AgentMessage, Component};
 
@@ -89,6 +89,18 @@ pub enum ErrorCode {
     UnknownComponent,
     /// A property the catalog marks required is missing.
     MissingRequiredProp,
+    /// A field the protocol requires on a message envelope is missing.
+    ///
+    /// Distinct from [`ErrorCode::MissingRequiredProp`], which is about a
+    /// component property a *catalog* declares: this one is fixed by the wire
+    /// format and holds whatever catalog is in play.
+    MissingField,
+    /// A value has the right shape but is not one the protocol permits, such as
+    /// a `version` naming a protocol revision this crate does not speak.
+    InvalidValue,
+    /// A value is of the wrong JSON type — `"3"` where a number is required, or
+    /// a number where the catalog declares a string.
+    TypeMismatch,
     /// A child reference names a component id that does not exist.
     UnresolvedChild,
     /// Following child references leads back to where it started.
@@ -116,6 +128,12 @@ impl ErrorCode {
             ErrorCode::NoRoot => "no_root",
             ErrorCode::UnknownComponent => "unknown_component",
             ErrorCode::MissingRequiredProp => "missing_required_prop",
+            // These three are spelled the way the conformance suite spells
+            // them, so a caller routing on codes sees the same strings from
+            // every A2UI toolkit.
+            ErrorCode::MissingField => "missing_field",
+            ErrorCode::InvalidValue => "invalid_value",
+            ErrorCode::TypeMismatch => "type_mismatch",
             ErrorCode::UnresolvedChild => "unresolved_child",
             ErrorCode::ChildCycle => "child_cycle",
             ErrorCode::UnresolvedBinding => "unresolved_binding",
@@ -174,6 +192,20 @@ pub struct ValidateOptions {
     pub check_component_types: bool,
     /// Whether required properties are enforced.
     pub check_required_props: bool,
+    /// Whether property values must match the JSON type the catalog declares.
+    ///
+    /// Only properties the catalog pins to one type are checked, and a value the
+    /// renderer resolves — a `{"path": …}` binding or a function call — is never
+    /// checked, because its type on the wire says nothing about the type it
+    /// will have. See [`PropType`].
+    pub check_prop_types: bool,
+    /// Whether message envelopes must satisfy the v0.9 wire contract.
+    ///
+    /// Applies only to the raw-message entry points
+    /// ([`Validator::validate_json_messages`] and
+    /// [`Validator::validate_messages`]); the component entry points are handed
+    /// components directly and have no envelope to check.
+    pub check_envelope: bool,
     /// Whether data bindings are resolved against the data model, and whether
     /// relative paths are required to sit inside a list template.
     pub check_bindings: bool,
@@ -210,6 +242,8 @@ impl ValidateOptions {
             allow_dangling_children: false,
             check_component_types: true,
             check_required_props: true,
+            check_prop_types: true,
+            check_envelope: true,
             check_bindings: true,
             check_binding_syntax: true,
             max_depth: MAX_DEPTH,
@@ -443,21 +477,26 @@ impl<'a> Validator<'a> {
     /// Validates raw protocol messages, as they arrive on the wire.
     ///
     /// The same folding as [`Validator::validate_messages`], plus the checks
-    /// that only make sense on the raw JSON: how deeply the message nests, and
-    /// how long a chain of function calls it carries. Neither survives
-    /// deserialization into typed messages, because both are properties of the
-    /// document rather than of any one component.
+    /// that only make sense on the raw JSON: the message envelope, how deeply
+    /// the message nests, and how long a chain of function calls it carries.
+    /// None of the three survives deserialization into typed messages, because
+    /// all three are properties of the document rather than of any one
+    /// component.
     pub fn validate_json_messages(&self, messages: &[Value]) -> ValidationReport {
-        let mut depth_report = ValidationReport::default();
+        let mut message_report = ValidationReport::default();
         for (index, message) in messages.iter().enumerate() {
+            let locator = format!("messages[{index}]");
+            if self.options.check_envelope {
+                check_envelope(message, &locator, &mut message_report);
+            }
             check_value_depth(
                 message,
-                &format!("messages[{index}]"),
+                &locator,
                 // The enclosing array is depth 0, so a message sits at 1.
                 1,
                 self.options.max_depth,
                 self.options.max_function_call_depth,
-                &mut depth_report,
+                &mut message_report,
             );
         }
 
@@ -494,14 +533,14 @@ impl<'a> Validator<'a> {
         }
         // A payload that is nothing but data still gets its depth checked.
         if components.is_empty() {
-            return depth_report;
+            return message_report;
         }
 
         let data = (!data_model.is_null()).then_some(&data_model);
         let mut report =
             Validator::with_options(self.catalog, options).validate_json(&components, data);
-        report.errors.splice(0..0, depth_report.errors);
-        report.unreachable.extend(depth_report.unreachable);
+        report.errors.splice(0..0, message_report.errors);
+        report.unreachable.extend(message_report.unreachable);
         report
     }
 
@@ -615,40 +654,84 @@ impl<'a> Validator<'a> {
                 ));
                 continue;
             };
-            if !catalog_is_usable || !self.options.check_component_types {
+            if !catalog_is_usable {
                 continue;
             }
             let Some(def) = self.catalog.component(kind) else {
-                report.errors.push(ValidationError::new(
-                    ErrorCode::UnknownComponent,
-                    node.locator("component"),
-                    format!(
-                        "Component type '{kind}' is not in catalog '{}'. Use one of: {}.",
-                        self.catalog.catalog_id,
-                        self.catalog
-                            .components_in_order()
-                            .map(|d| d.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                ));
-                continue;
-            };
-            if !self.options.check_required_props {
-                continue;
-            }
-            for required in &def.required {
-                let present = node
-                    .props
-                    .is_some_and(|props| props.get(required).is_some_and(|v| !v.is_null()));
-                if !present {
+                // Whether an unfamiliar type is itself an error is the caller's
+                // choice; either way there is no definition to check against, so
+                // this component is done.
+                if self.options.check_component_types {
                     report.errors.push(ValidationError::new(
-                        ErrorCode::MissingRequiredProp,
-                        node.locator(required),
-                        format!("'{kind}' requires the property '{required}'."),
+                        ErrorCode::UnknownComponent,
+                        node.locator("component"),
+                        format!(
+                            "Component type '{kind}' is not in catalog '{}'. Use one of: {}.",
+                            self.catalog.catalog_id,
+                            self.catalog
+                                .components_in_order()
+                                .map(|d| d.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
                     ));
                 }
+                continue;
+            };
+            if self.options.check_required_props {
+                for required in &def.required {
+                    let present = node
+                        .props
+                        .is_some_and(|props| props.get(required).is_some_and(|v| !v.is_null()));
+                    if !present {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::MissingRequiredProp,
+                            node.locator(required),
+                            format!("'{kind}' requires the property '{required}'."),
+                        ));
+                    }
+                }
             }
+            if self.options.check_prop_types {
+                self.check_prop_types(node, kind, def, report);
+            }
+        }
+    }
+
+    /// Property values against the JSON types the catalog declares.
+    ///
+    /// Walks the *definition* rather than the value, so a property the catalog
+    /// says nothing about costs nothing and is never rejected: an unknown
+    /// property is the catalog's business (or the schema's), not this check's.
+    fn check_prop_types(
+        &self,
+        node: &Node<'_>,
+        kind: &str,
+        def: &ComponentDef,
+        report: &mut ValidationReport,
+    ) {
+        let Some(props) = node.props else { return };
+        for prop in def.props.values() {
+            if prop.value_type == PropType::Unconstrained {
+                continue;
+            }
+            let Some(value) = props.get(&prop.name) else {
+                continue;
+            };
+            if resolves_at_render_time(value) || prop.value_type.accepts(value) {
+                continue;
+            }
+            report.errors.push(ValidationError::new(
+                ErrorCode::TypeMismatch,
+                node.locator(&prop.name),
+                format!(
+                    "'{kind}' expects '{}' to be {}, not {}. Write a literal of that type, or \
+                     bind it with {{\"path\": \"/...\"}}.",
+                    prop.name,
+                    prop.value_type.describe(),
+                    type_name(value)
+                ),
+            ));
         }
     }
 
@@ -938,6 +1021,22 @@ fn is_valid_pointer(path: &str) -> bool {
     crate::binding::pointer_is_valid(path)
 }
 
+/// Whether the renderer computes this value rather than reading it literally.
+///
+/// A `{"path": …}` binding and a `{"call": …}` / `{"functionCall": …}` invocation
+/// both carry something other than the property's own value, so the type they
+/// have on the wire says nothing about the type the renderer will see.
+/// `{componentId, path}` is excluded: that is a child template, and its `path`
+/// names a collection rather than a value.
+fn resolves_at_render_time(value: &Value) -> bool {
+    let Some(map) = value.as_object() else {
+        return false;
+    };
+    (map.contains_key("path") && !map.contains_key("componentId"))
+        || map.contains_key("call")
+        || map.contains_key("functionCall")
+}
+
 fn type_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -1040,6 +1139,141 @@ fn template_path(component: &Component, location: &str) -> Option<String> {
         .get("path")?
         .as_str()
         .map(str::to_string)
+}
+
+/// Fields of each agent → renderer operation: name, JSON type, and whether the
+/// protocol requires it.
+///
+/// Transcribed from the payload structs in [`crate::message`], which are the
+/// port of the v0.9 wire format. Fields the specification leaves untyped (an
+/// `updateDataModel` value, a function's arguments) are simply absent: this is
+/// the envelope contract, not a schema for everything inside it.
+type EnvelopeField = (&'static str, PropType, bool);
+const OPERATIONS: [(&str, &[EnvelopeField]); 6] = [
+    (
+        "createSurface",
+        &[
+            ("surfaceId", PropType::String, true),
+            ("catalogId", PropType::String, true),
+            ("theme", PropType::Object, false),
+            ("sendDataModel", PropType::Boolean, false),
+        ],
+    ),
+    (
+        "updateComponents",
+        &[
+            ("surfaceId", PropType::String, true),
+            ("components", PropType::Array, true),
+        ],
+    ),
+    (
+        "updateDataModel",
+        &[
+            ("surfaceId", PropType::String, true),
+            ("path", PropType::String, false),
+        ],
+    ),
+    ("deleteSurface", &[("surfaceId", PropType::String, true)]),
+    (
+        "callRendererFunction",
+        &[
+            ("functionCallId", PropType::String, true),
+            ("callFunction", PropType::Object, true),
+        ],
+    ),
+    (
+        "agentFunctionResponse",
+        &[("functionCallId", PropType::String, true)],
+    ),
+];
+
+/// Checks one message against the v0.9 envelope contract.
+///
+/// Every other toolkit gets this from `server_to_client.json` through a JSON
+/// Schema engine. This crate speaks exactly one protocol version (see
+/// `docs/DESIGN.md`), so the contract is a table rather than a document — and a
+/// table is what lets a failure carry a locator into the message the caller
+/// sent, rather than a path into a schema the caller never saw. The codes match
+/// the ones the schema-driven toolkits report, because callers route on them.
+///
+/// Only agent → renderer messages belong here: a renderer's reply is not agent
+/// output and is not part of a payload this validator is asked about.
+fn check_envelope(message: &Value, locator: &str, report: &mut ValidationReport) {
+    let Some(map) = message.as_object() else {
+        report.errors.push(ValidationError::new(
+            ErrorCode::TypeMismatch,
+            locator,
+            format!("A message must be an object, not {}.", type_name(message)),
+        ));
+        return;
+    };
+
+    match map.get("version") {
+        Some(Value::String(version)) if version == PROTOCOL_VERSION => {}
+        Some(version) => report.errors.push(ValidationError::new(
+            ErrorCode::InvalidValue,
+            format!("{locator}.version"),
+            format!(
+                "This crate speaks A2UI {PROTOCOL_VERSION}, but the message declares {version}. \
+                 Every message in a stream carries the same version."
+            ),
+        )),
+        None => report.errors.push(ValidationError::new(
+            ErrorCode::MissingField,
+            format!("{locator}.version"),
+            format!("Every message needs \"version\": \"{PROTOCOL_VERSION}\"."),
+        )),
+    }
+
+    let Some((key, fields)) = OPERATIONS
+        .iter()
+        .find(|(key, _)| map.contains_key(*key))
+        .copied()
+    else {
+        let names: Vec<&str> = OPERATIONS.iter().map(|(key, _)| *key).collect();
+        report.errors.push(ValidationError::new(
+            ErrorCode::MissingField,
+            locator.to_string(),
+            format!(
+                "A message must carry one of {}. This one carries {:?}.",
+                names.join(", "),
+                map.keys().collect::<Vec<_>>()
+            ),
+        ));
+        return;
+    };
+
+    let Some(payload) = map[key].as_object() else {
+        report.errors.push(ValidationError::new(
+            ErrorCode::TypeMismatch,
+            format!("{locator}.{key}"),
+            format!("'{key}' must be an object, not {}.", type_name(&map[key])),
+        ));
+        return;
+    };
+    for (field, value_type, required) in fields {
+        match payload.get(*field) {
+            Some(value) if !value.is_null() => {
+                if !value_type.accepts(value) {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::TypeMismatch,
+                        format!("{locator}.{key}.{field}"),
+                        format!(
+                            "'{field}' of '{key}' must be {}, not {}.",
+                            value_type.describe(),
+                            type_name(value)
+                        ),
+                    ));
+                }
+            }
+            _ if *required => report.errors.push(ValidationError::new(
+                ErrorCode::MissingField,
+                format!("{locator}.{key}.{field}"),
+                format!("'{key}' requires the field '{field}'."),
+            )),
+            _ => {}
+        }
+    }
 }
 
 /// Reports JSON nesting and function-call chains that run past their limits.
@@ -1677,14 +1911,181 @@ mod tests {
             (ErrorCode::NoRoot, "no_root"),
             (ErrorCode::UnknownComponent, "unknown_component"),
             (ErrorCode::MissingRequiredProp, "missing_required_prop"),
+            (ErrorCode::MissingField, "missing_field"),
+            (ErrorCode::InvalidValue, "invalid_value"),
+            (ErrorCode::TypeMismatch, "type_mismatch"),
             (ErrorCode::UnresolvedChild, "unresolved_child"),
             (ErrorCode::ChildCycle, "child_cycle"),
             (ErrorCode::UnresolvedBinding, "unresolved_binding"),
+            (ErrorCode::MaxDepthExceeded, "max_depth_exceeded"),
         ];
         for (code, wire) in all {
             assert_eq!(code.as_str(), wire);
             assert_eq!(serde_json::to_value(code).unwrap(), json!(wire));
         }
+    }
+
+    #[test]
+    fn a_property_of_the_wrong_json_type_is_reported_against_the_catalog() {
+        let catalog = basic();
+        let report = Validator::new(&catalog).validate(&[
+            Component::new("root", "Column").with("children", json!(["count"])),
+            // The catalog says Slider.value is a number and Slider.label a
+            // string; a model that swaps them produces a surface no renderer can
+            // draw, and nothing before this caught it.
+            Component::new("count", "Slider")
+                .with("value", json!("seven"))
+                .with("max", json!(10))
+                .with("label", json!(3)),
+        ]);
+        let mismatches: Vec<&str> = report
+            .errors
+            .iter()
+            .filter(|e| e.code == ErrorCode::TypeMismatch)
+            .map(|e| e.path.as_str())
+            .collect();
+        assert_eq!(
+            mismatches,
+            vec!["components[1].label", "components[1].value"]
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.contains("not a string")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn a_value_the_renderer_computes_is_never_type_checked() {
+        let catalog = basic();
+        // Every one of these is legal in a string property: a binding, a
+        // function call, and the wrapper spelling of a call. Their type on the
+        // wire is an object, and rejecting them would break every real surface.
+        let report = Validator::new(&catalog).validate(&[
+            Component::new("root", "Column").with("children", json!(["a", "b", "c"])),
+            Component::new("a", "Text").with("text", json!({"path": "/user/name"})),
+            Component::new("b", "Text").with(
+                "text",
+                json!({"call": "formatString", "args": {"value": "hi"}}),
+            ),
+            Component::new("c", "Text").with("text", json!({"functionCall": {"call": "now"}})),
+        ]);
+        assert!(report.is_valid(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn a_property_the_catalog_leaves_untyped_accepts_anything() {
+        let catalog = basic();
+        // `Icon.name` is a string, an `{svgPath}` object, or a binding, so the
+        // catalog pins no type and this crate demands none.
+        let report = Validator::new(&catalog)
+            .validate(&[Component::new("root", "Icon").with("name", json!({"svgPath": "M0 0"}))]);
+        assert!(report.is_valid(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn type_checking_can_be_switched_off() {
+        let catalog = basic();
+        let options = ValidateOptions {
+            check_prop_types: false,
+            ..ValidateOptions::full_surface()
+        };
+        let report = Validator::with_options(&catalog, options)
+            .validate(&[Component::new("root", "Text").with("text", json!(123))]);
+        assert!(report.is_valid(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn a_message_without_a_version_is_reported_as_a_missing_field() {
+        let catalog = basic();
+        let messages = vec![json!({"createSurface": {"surfaceId": "s", "catalogId": "c"}})];
+        let report = Validator::new(&catalog).validate_json_messages(&messages);
+        assert_eq!(codes(&report), vec![ErrorCode::MissingField]);
+        assert_eq!(report.errors[0].path, "messages[0].version");
+    }
+
+    #[test]
+    fn a_message_from_another_protocol_version_is_reported_as_an_invalid_value() {
+        let catalog = basic();
+        let messages = vec![json!({
+            "version": "v0.8",
+            "createSurface": {"surfaceId": "s", "catalogId": "c"}
+        })];
+        let report = Validator::new(&catalog).validate_json_messages(&messages);
+        assert_eq!(codes(&report), vec![ErrorCode::InvalidValue]);
+        assert_eq!(report.errors[0].path, "messages[0].version");
+    }
+
+    #[test]
+    fn an_operation_is_held_to_its_own_required_fields_and_types() {
+        let catalog = basic();
+        let messages = vec![
+            json!({"version": "v0.9", "createSurface": {"surfaceId": "s"}}),
+            json!({"version": "v0.9", "deleteSurface": {"surfaceId": 123}}),
+        ];
+        let report = Validator::new(&catalog).validate_json_messages(&messages);
+        let located: Vec<(ErrorCode, &str)> = report
+            .errors
+            .iter()
+            .map(|e| (e.code, e.path.as_str()))
+            .collect();
+        assert_eq!(
+            located,
+            vec![
+                (
+                    ErrorCode::MissingField,
+                    "messages[0].createSurface.catalogId"
+                ),
+                (
+                    ErrorCode::TypeMismatch,
+                    "messages[1].deleteSurface.surfaceId"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_message_carrying_no_operation_at_all_is_reported() {
+        let catalog = basic();
+        let messages = vec![json!({"version": "v0.9", "action": {"name": "go"}})];
+        let report = Validator::new(&catalog).validate_json_messages(&messages);
+        assert_eq!(codes(&report), vec![ErrorCode::MissingField]);
+        assert_eq!(report.errors[0].path, "messages[0]");
+    }
+
+    #[test]
+    fn envelope_checking_can_be_switched_off() {
+        let catalog = basic();
+        let options = ValidateOptions {
+            check_envelope: false,
+            ..ValidateOptions::incremental_update()
+        };
+        let messages = vec![
+            json!({"updateComponents": {"surfaceId": "s", "components": [
+                {"id": "root", "component": "Text", "text": "hi"}
+            ]}}),
+        ];
+        let report = Validator::with_options(&catalog, options).validate_json_messages(&messages);
+        assert!(report.is_valid(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn every_message_this_crate_emits_satisfies_its_own_envelope_check() {
+        let catalog = basic();
+        let messages = vec![
+            AgentMessage::create_surface("s", "cat"),
+            AgentMessage::update_components(
+                "s",
+                vec![Component::new(ROOT_ID, "Text").with("text", json!("hi"))],
+            ),
+            AgentMessage::update_data_model("s", "/user", json!({"name": "Ada"})),
+            AgentMessage::delete_surface("s"),
+        ];
+        let report = Validator::new(&catalog).validate_messages(&messages);
+        assert!(report.is_valid(), "{:?}", report.errors);
     }
 
     #[test]

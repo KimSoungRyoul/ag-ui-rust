@@ -19,6 +19,16 @@
 //! references. A raw `"type": "string"` is treated as static text (a URL, a
 //! label) and its target is never checked. [`PropKind`] preserves that
 //! distinction.
+//!
+//! # Property types are carried, not interpreted
+//!
+//! Each property also keeps the JSON type its schema pins it to ([`PropType`]),
+//! which is what lets [`crate::validate`] reject `{"columns": "three"}` where the
+//! catalog says integer. That is one constraint out of JSON Schema, not an
+//! engine: `pattern`, `minimum`, `additionalProperties` and the rest are left to
+//! whatever validates the document itself. A property whose schema states no
+//! type, or states several, is [`PropType::Unconstrained`] and is never rejected
+//! — a catalog this crate reads loosely must not turn into false failures.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -164,6 +174,83 @@ impl PropKind {
     }
 }
 
+/// The JSON type a property's schema pins its value to.
+///
+/// Populated from a bare `"type"` in the property schema, or from a `$ref` to
+/// one of the common types, which name a JSON type and a data binding together:
+/// `DynamicString` is "a string *or* a `{"path": …}`". The binding half needs no
+/// representation here because a binding carries the renderer's value, not the
+/// property's, so [`crate::validate`] skips bound values entirely.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PropType {
+    /// The schema pins no single type, so no value is ever rejected.
+    #[default]
+    Unconstrained,
+    /// `"type": "string"`, `ComponentId`, `DynamicString`.
+    String,
+    /// `"type": "number"`, `DynamicNumber`.
+    Number,
+    /// `"type": "integer"`, which also accepts a whole number written `2.0`.
+    Integer,
+    /// `"type": "boolean"`, `DynamicBoolean`.
+    Boolean,
+    /// `"type": "object"`, `Action`.
+    Object,
+    /// `"type": "array"`, `DynamicStringList`.
+    Array,
+}
+
+impl PropType {
+    /// Whether `value` satisfies this type.
+    ///
+    /// An [`PropType::Unconstrained`] property accepts anything. `null` is
+    /// accepted by every type: an explicit null is how a payload clears an
+    /// optional property, and a required one missing is
+    /// [`ErrorCode::MissingRequiredProp`](crate::validate::ErrorCode) rather
+    /// than a type failure.
+    pub fn accepts(self, value: &Value) -> bool {
+        match self {
+            PropType::Unconstrained => true,
+            _ if value.is_null() => true,
+            PropType::String => value.is_string(),
+            PropType::Number => value.is_number(),
+            // Matches JSON Schema, where 2.0 is an integer and 2.5 is not.
+            PropType::Integer => value.as_f64().is_some_and(|n| n.fract() == 0.0),
+            PropType::Boolean => value.is_boolean(),
+            PropType::Object => value.is_object(),
+            PropType::Array => value.is_array(),
+        }
+    }
+
+    /// The type as a noun phrase, for error messages.
+    pub fn describe(self) -> &'static str {
+        match self {
+            PropType::Unconstrained => "any value",
+            PropType::String => "a string",
+            PropType::Number => "a number",
+            PropType::Integer => "an integer",
+            PropType::Boolean => "a boolean",
+            PropType::Object => "an object",
+            PropType::Array => "an array",
+        }
+    }
+
+    /// Reads the JSON Schema spelling of a type.
+    fn from_schema_name(name: &str) -> Self {
+        match name {
+            "string" => PropType::String,
+            "number" => PropType::Number,
+            "integer" => PropType::Integer,
+            "boolean" => PropType::Boolean,
+            "object" => PropType::Object,
+            "array" => PropType::Array,
+            // Includes "null": a property that may only be null constrains
+            // nothing worth reporting.
+            _ => PropType::Unconstrained,
+        }
+    }
+}
+
 /// One property of a component type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropDef {
@@ -171,6 +258,8 @@ pub struct PropDef {
     pub name: String,
     /// Whether the property holds data or component references.
     pub kind: PropKind,
+    /// The JSON type the schema pins the value to, if it pins one.
+    pub value_type: PropType,
     /// Human-readable description, carried into generated prompts.
     pub description: Option<String>,
     /// Permitted values, when the schema constrains them to an enum.
@@ -184,10 +273,16 @@ impl PropDef {
         Self {
             name: name.to_string(),
             kind,
+            value_type: PropType::Unconstrained,
             description: None,
             enum_values: Vec::new(),
             required,
         }
+    }
+
+    fn typed(mut self, value_type: PropType) -> Self {
+        self.value_type = value_type;
+        self
     }
 
     fn described(mut self, description: &str) -> Self {
@@ -719,6 +814,7 @@ fn component_def_from_schema(name: &str, schema: &Value) -> ComponentDef {
                     PropDef {
                         name: prop_name.clone(),
                         kind: prop_kind_from_schema(prop_schema),
+                        value_type: prop_type_from_schema(prop_schema),
                         description: string_field(prop_schema.get("description")),
                         enum_values: string_list(prop_schema.get("enum")).unwrap_or_default(),
                         required: false,
@@ -813,6 +909,60 @@ fn ref_kind(reference: Option<&Value>) -> Option<PropKind> {
     }
 }
 
+/// Reads the JSON type a property schema pins its value to.
+///
+/// Deliberately narrow. A `$ref` is resolved by the *name* of its target rather
+/// than by following it, because the common types are a fixed, published set and
+/// a catalog is free to reference them across documents this crate never loads.
+/// An unrecognized target constrains nothing.
+fn prop_type_from_schema(schema: &Value) -> PropType {
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        return ref_type(reference);
+    }
+    if let Some(name) = schema.get("type").and_then(Value::as_str) {
+        return PropType::from_schema_name(name);
+    }
+    // `allOf` members all have to hold, so any one of them that states a type
+    // states the type. `oneOf` / `anyOf` members are alternatives, so they only
+    // pin a type when every arm agrees — `DynamicString` spelled out inline is
+    // `anyOf: [string, DataBinding]`, which pins nothing.
+    if let Some(Value::Array(members)) = schema.get("allOf") {
+        if let Some(found) = members
+            .iter()
+            .map(prop_type_from_schema)
+            .find(|found| *found != PropType::Unconstrained)
+        {
+            return found;
+        }
+    }
+    for key in ["oneOf", "anyOf"] {
+        let Some(Value::Array(members)) = schema.get(key) else {
+            continue;
+        };
+        let mut arms = members.iter().map(prop_type_from_schema);
+        if let Some(first) = arms.next() {
+            if first != PropType::Unconstrained && arms.all(|arm| arm == first) {
+                return first;
+            }
+        }
+    }
+    PropType::Unconstrained
+}
+
+/// The JSON type behind a `$ref` to one of the published common types.
+fn ref_type(reference: &str) -> PropType {
+    match reference.rsplit('/').next().unwrap_or_default() {
+        "ComponentId" | "DynamicString" => PropType::String,
+        "DynamicNumber" => PropType::Number,
+        "DynamicBoolean" => PropType::Boolean,
+        "DynamicStringList" => PropType::Array,
+        "Action" | "DataBinding" | "AccessibilityAttributes" => PropType::Object,
+        // `ChildList` is an array or a template object; `DynamicValue` is
+        // anything at all. Neither narrows to one type.
+        _ => PropType::Unconstrained,
+    }
+}
+
 const BASIC_FUNCTION_DEFS: [(&str, &str, &str); 14] = [
     (
         "required",
@@ -866,8 +1016,15 @@ const BASIC_FUNCTION_DEFS: [(&str, &str, &str); 14] = [
     ("not", "Logical NOT of a boolean value.", "boolean"),
 ];
 
+/// The standard catalog's component definitions, transcribed from
+/// `basic_catalog.json` of the v0.9 specification.
+///
+/// Property types come from that document, and
+/// `the_built_in_basic_catalog_types_match_the_vendored_specification_document`
+/// in this module's tests is what keeps the transcription honest.
 fn basic_component_defs() -> Vec<ComponentDef> {
     use PropKind::{ChildList, ComponentRef, ObjectListRefs, Value as Val};
+    use PropType::{Array as Arr, Boolean as Bool, Number as Num, Object as Obj, String as Str};
 
     let align = ["start", "center", "end", "stretch"];
     let justify = [
@@ -889,8 +1046,11 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "Text",
             "Displays text. Supports simple Markdown.",
             vec![
-                PropDef::new("text", Val, true).described("The text content to display."),
+                PropDef::new("text", Val, true)
+                    .typed(Str)
+                    .described("The text content to display."),
                 PropDef::new("variant", Val, false)
+                    .typed(Str)
                     .described("A hint for the base text style.")
                     .with_enum(&["h1", "h2", "h3", "h4", "h5", "caption", "body"]),
             ],
@@ -899,17 +1059,20 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "Image",
             "Displays an image from a URL.",
             vec![
-                PropDef::new("url", Val, true).described("The image URL."),
+                PropDef::new("url", Val, true)
+                    .typed(Str)
+                    .described("The image URL."),
                 PropDef::new("description", Val, false)
+                    .typed(Str)
                     .described("Alternative text describing the image."),
-                PropDef::new("fit", Val, false).with_enum(&[
+                PropDef::new("fit", Val, false).typed(Str).with_enum(&[
                     "contain",
                     "cover",
                     "fill",
                     "none",
                     "scaleDown",
                 ]),
-                PropDef::new("variant", Val, false).with_enum(&[
+                PropDef::new("variant", Val, false).typed(Str).with_enum(&[
                     "icon",
                     "avatar",
                     "smallFeature",
@@ -931,14 +1094,21 @@ fn basic_component_defs() -> Vec<ComponentDef> {
         ComponentDef::new(
             "Video",
             "Displays a video from a URL.",
-            vec![PropDef::new("url", Val, true).described("The video URL.")],
+            vec![
+                PropDef::new("url", Val, true)
+                    .typed(Str)
+                    .described("The video URL."),
+            ],
         ),
         ComponentDef::new(
             "AudioPlayer",
             "A player for audio content from a URL.",
             vec![
-                PropDef::new("url", Val, true).described("The audio URL."),
+                PropDef::new("url", Val, true)
+                    .typed(Str)
+                    .described("The audio URL."),
                 PropDef::new("description", Val, false)
+                    .typed(Str)
                     .described("Text describing the audio content."),
             ],
         ),
@@ -948,9 +1118,11 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             vec![
                 PropDef::new("children", ChildList, true),
                 PropDef::new("justify", Val, false)
+                    .typed(Str)
                     .described("Arrangement along the main (horizontal) axis.")
                     .with_enum(&justify),
                 PropDef::new("align", Val, false)
+                    .typed(Str)
                     .described("Alignment along the cross (vertical) axis.")
                     .with_enum(&align),
             ],
@@ -960,8 +1132,12 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "A layout container that arranges its children vertically.",
             vec![
                 PropDef::new("children", ChildList, true),
-                PropDef::new("justify", Val, false).with_enum(&justify),
-                PropDef::new("align", Val, false).with_enum(&align),
+                PropDef::new("justify", Val, false)
+                    .typed(Str)
+                    .with_enum(&justify),
+                PropDef::new("align", Val, false)
+                    .typed(Str)
+                    .with_enum(&align),
             ],
         ),
         ComponentDef::new(
@@ -969,17 +1145,25 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "A scrollable list of components.",
             vec![
                 PropDef::new("children", ChildList, true),
-                PropDef::new("direction", Val, false).with_enum(&["vertical", "horizontal"]),
-                PropDef::new("align", Val, false).with_enum(&align),
+                PropDef::new("direction", Val, false)
+                    .typed(Str)
+                    .with_enum(&["vertical", "horizontal"]),
+                PropDef::new("align", Val, false)
+                    .typed(Str)
+                    .with_enum(&align),
             ],
         ),
         ComponentDef::new(
             "Card",
             "A container with card-like styling.",
-            vec![PropDef::new("child", ComponentRef, true).described(
-                "The single child to render inside the card. Wrap multiple elements in a \
+            vec![
+                PropDef::new("child", ComponentRef, true)
+                    .typed(Str)
+                    .described(
+                        "The single child to render inside the card. Wrap multiple elements in a \
                  Row or Column and pass that container's id.",
-            )],
+                    ),
+            ],
         ),
         ComponentDef::new(
             "Tabs",
@@ -992,21 +1176,28 @@ fn basic_component_defs() -> Vec<ComponentDef> {
                     },
                     true,
                 )
+                .typed(Arr)
                 .described("Array of {title, child} objects."),
             ],
         ),
         ComponentDef::new(
             "Divider",
             "A horizontal or vertical dividing line.",
-            vec![PropDef::new("axis", Val, false).with_enum(&["horizontal", "vertical"])],
+            vec![
+                PropDef::new("axis", Val, false)
+                    .typed(Str)
+                    .with_enum(&["horizontal", "vertical"]),
+            ],
         ),
         ComponentDef::new(
             "Modal",
             "A dialog shown over the main content, opened by a trigger component.",
             vec![
                 PropDef::new("trigger", ComponentRef, true)
+                    .typed(Str)
                     .described("The component that opens the modal."),
                 PropDef::new("content", ComponentRef, true)
+                    .typed(Str)
                     .described("The component shown inside the modal."),
             ],
         ),
@@ -1015,10 +1206,12 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "A clickable button that dispatches an action.",
             vec![
                 PropDef::new("child", ComponentRef, true)
+                    .typed(Str)
                     .described("The button's label component, usually a Text."),
                 PropDef::new("action", Val, true)
+                    .typed(Obj)
                     .described("An {event} sent to the agent, or a local {functionCall}."),
-                PropDef::new("variant", Val, false).with_enum(&[
+                PropDef::new("variant", Val, false).typed(Str).with_enum(&[
                     "default",
                     "primary",
                     "borderless",
@@ -1030,8 +1223,9 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "CheckBox",
             "A checkbox with a label and a boolean value.",
             vec![
-                PropDef::new("label", Val, true),
+                PropDef::new("label", Val, true).typed(Str),
                 PropDef::new("value", Val, true)
+                    .typed(Bool)
                     .described("Two-way bound boolean, usually {\"path\": ...}."),
                 checks(),
             ],
@@ -1040,16 +1234,17 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "TextField",
             "A field for user text input.",
             vec![
-                PropDef::new("label", Val, true),
+                PropDef::new("label", Val, true).typed(Str),
                 PropDef::new("value", Val, false)
+                    .typed(Str)
                     .described("Two-way bound string, usually {\"path\": ...}."),
-                PropDef::new("variant", Val, false).with_enum(&[
+                PropDef::new("variant", Val, false).typed(Str).with_enum(&[
                     "shortText",
                     "longText",
                     "number",
                     "obscured",
                 ]),
-                PropDef::new("validationRegexp", Val, false),
+                PropDef::new("validationRegexp", Val, false).typed(Str),
                 checks(),
             ],
         ),
@@ -1057,12 +1252,17 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "DateTimeInput",
             "An input for a date and/or a time.",
             vec![
-                PropDef::new("value", Val, true).described("ISO 8601 value, two-way bound."),
-                PropDef::new("label", Val, false),
-                PropDef::new("enableDate", Val, false),
-                PropDef::new("enableTime", Val, false),
-                PropDef::new("min", Val, false),
-                PropDef::new("max", Val, false),
+                PropDef::new("value", Val, true)
+                    .typed(Str)
+                    .described("ISO 8601 value, two-way bound."),
+                PropDef::new("label", Val, false).typed(Str),
+                PropDef::new("enableDate", Val, false).typed(Bool),
+                PropDef::new("enableTime", Val, false).typed(Bool),
+                // ISO 8601 bounds. The specification narrows the format further
+                // (`date`, `time` or `date-time`); this crate checks the type
+                // only, which is the part a generating model gets wrong.
+                PropDef::new("min", Val, false).typed(Str),
+                PropDef::new("max", Val, false).typed(Str),
                 checks(),
             ],
         ),
@@ -1070,14 +1270,20 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "ChoicePicker",
             "Selects one or more options from a list.",
             vec![
-                PropDef::new("options", Val, true).described("Array of {label, value} options."),
+                PropDef::new("options", Val, true)
+                    .typed(Arr)
+                    .described("Array of {label, value} options."),
                 PropDef::new("value", Val, true)
+                    .typed(Arr)
                     .described("Selected values as a string array, two-way bound."),
-                PropDef::new("label", Val, false),
+                PropDef::new("label", Val, false).typed(Str),
                 PropDef::new("variant", Val, false)
+                    .typed(Str)
                     .with_enum(&["mutuallyExclusive", "multipleSelection"]),
-                PropDef::new("displayStyle", Val, false).with_enum(&["checkbox", "chips"]),
-                PropDef::new("filterable", Val, false),
+                PropDef::new("displayStyle", Val, false)
+                    .typed(Str)
+                    .with_enum(&["checkbox", "chips"]),
+                PropDef::new("filterable", Val, false).typed(Bool),
                 checks(),
             ],
         ),
@@ -1085,10 +1291,12 @@ fn basic_component_defs() -> Vec<ComponentDef> {
             "Slider",
             "A slider for selecting a numeric value within a range.",
             vec![
-                PropDef::new("value", Val, true).described("Two-way bound number."),
-                PropDef::new("max", Val, true),
-                PropDef::new("min", Val, false),
-                PropDef::new("label", Val, false),
+                PropDef::new("value", Val, true)
+                    .typed(Num)
+                    .described("Two-way bound number."),
+                PropDef::new("max", Val, true).typed(Num),
+                PropDef::new("min", Val, false).typed(Num),
+                PropDef::new("label", Val, false).typed(Str),
                 checks(),
             ],
         ),
@@ -1221,6 +1429,88 @@ mod tests {
             catalog.functions["now"].return_type.as_deref(),
             Some("string")
         );
+    }
+
+    #[test]
+    fn from_schema_reads_the_type_each_property_declares() {
+        let schema = json!({
+            "catalogId": "test",
+            "components": {
+                "Chart": {
+                    "type": "object",
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "columns": {"type": "integer"},
+                                "ratio": {"type": "number"},
+                                "stacked": {"type": "boolean"},
+                                "series": {"type": "array"},
+                                "legend": {"type": "object"}
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "title": {"$ref": "common_types.json#/$defs/DynamicString"},
+                                "caption": {"anyOf": [{"type": "string"}, {"type": "number"}]},
+                                "anything": {"description": "no type at all"}
+                            }
+                        }
+                    ]
+                }
+            }
+        });
+        let catalog = Catalog::from_schema(&schema).unwrap();
+        let chart = catalog.component("Chart").unwrap();
+        let type_of = |name: &str| chart.props[name].value_type;
+        assert_eq!(type_of("columns"), PropType::Integer);
+        assert_eq!(type_of("ratio"), PropType::Number);
+        assert_eq!(type_of("stacked"), PropType::Boolean);
+        assert_eq!(type_of("series"), PropType::Array);
+        assert_eq!(type_of("legend"), PropType::Object);
+        // A `Dynamic*` reference is its underlying type; a binding in its place
+        // is skipped by the validator rather than described here.
+        assert_eq!(type_of("title"), PropType::String);
+        // Alternatives that disagree, and a schema with no type at all, pin
+        // nothing rather than guessing.
+        assert_eq!(type_of("caption"), PropType::Unconstrained);
+        assert_eq!(type_of("anything"), PropType::Unconstrained);
+    }
+
+    #[test]
+    fn the_built_in_basic_catalog_types_match_the_vendored_specification_document() {
+        // `Catalog::basic()` is hand-transcribed so it costs no parsing at
+        // startup. This is what keeps the transcription honest: the vendored
+        // v0.9 `basic_catalog.json` is the source it was copied from, so parsing
+        // that document has to produce the same types.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/spec_v0_9/basic_catalog.json");
+        let document: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+            .expect("the vendored basic catalog is JSON");
+        let parsed = Catalog::from_schema(&document).unwrap();
+        let built_in = Catalog::basic();
+
+        let mut compared = 0;
+        for def in built_in.components_in_order() {
+            let from_spec = parsed
+                .component(&def.name)
+                .unwrap_or_else(|| panic!("the specification catalog has no '{}'", def.name));
+            for prop in def.props_in_order() {
+                // `checks` is declared per input component here but is not in
+                // the specification document; nothing to compare it against.
+                let Some(spec_prop) = from_spec.props.get(&prop.name) else {
+                    continue;
+                };
+                assert_eq!(
+                    prop.value_type, spec_prop.value_type,
+                    "{}.{} is {:?} here and {:?} in the specification",
+                    def.name, prop.name, prop.value_type, spec_prop.value_type
+                );
+                compared += 1;
+            }
+        }
+        assert!(compared > 40, "only {compared} properties were compared");
     }
 
     #[test]
