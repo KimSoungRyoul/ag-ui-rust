@@ -338,7 +338,12 @@ impl<'a> Scope<'a> {
                 .ok_or_else(|| Error::binding("@index", "offset must be an integer"))?,
             Some(_) => return Err(Error::binding("@index", "offset must be a number")),
         };
-        Ok(index + offset)
+        // The template comes from the model, so the offset is remote input.
+        // A wrapping add would hand the renderer a nonsense index; a plain one
+        // would abort the process on a debug build.
+        index
+            .checked_add(offset)
+            .ok_or_else(|| Error::binding("@index", "offset is out of range"))
     }
 
     /// Interpolates a `formatString` template against this scope.
@@ -757,6 +762,30 @@ mod tests {
         assert_eq!(scope.format_string("#${@index()}").unwrap(), "#1");
         assert_eq!(scope.format_string("#${@index(offset: 1)}").unwrap(), "#2");
         assert_eq!(scope.format_string("${${name}}").unwrap(), "Bob");
+    }
+
+    #[test]
+    fn an_index_offset_that_would_overflow_is_reported_rather_than_wrapping() {
+        let data = model();
+        let root = Scope::root(&data);
+        let scope = root.item("/employees", 1);
+        // The template is model output, so the offset is remote input: an
+        // extreme one must not take the process down (debug) or silently wrap
+        // to a nonsense index (release).
+        let error = scope
+            .format_string("${@index(offset: 9223372036854775807)}")
+            .unwrap_err();
+        assert!(matches!(error, Error::Binding { .. }), "{error}");
+
+        // Everything that does fit still evaluates, in both directions.
+        assert_eq!(scope.format_string("${@index(offset: -1)}").unwrap(), "0");
+        assert_eq!(scope.format_string("${@index(offset: 1)}").unwrap(), "2");
+        assert_eq!(
+            scope
+                .format_string("${@index(offset: -9223372036854775808)}")
+                .unwrap(),
+            "-9223372036854775807"
+        );
     }
 
     #[test]

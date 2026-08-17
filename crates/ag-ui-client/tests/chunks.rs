@@ -194,6 +194,11 @@ fn an_explicit_end_is_not_duplicated() {
 
 #[test]
 fn an_explicit_message_absorbs_a_following_bare_chunk() {
+    // Deliberately more tolerant than upstream. `transformChunks` tracks only
+    // the streams it opened itself — an explicit TEXT_MESSAGE_START never sets
+    // its `mode` — so upstream throws "First TEXT_MESSAGE_CHUNK must have a
+    // messageId" here. There is exactly one message open and the chunk can only
+    // mean that one, so accepting is the interoperable reading.
     let events = normalize_all([
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
         Event::text_message_content("msg-1", "Hel"),
@@ -223,6 +228,15 @@ fn an_explicit_message_absorbs_a_following_bare_chunk() {
 fn events_between_chunks_do_not_split_the_message() {
     // A producer that streams chunks may well publish state between two
     // fragments of one message. Ending the message there would be wrong.
+    //
+    // Upstream's `transformChunks` does end it: every event outside its
+    // passthrough list runs `closePendingEvent()` first, so a STATE_SNAPSHOT
+    // between two fragments closes the message and the next fragment re-opens
+    // it. The assembled message is the same either way — see
+    // `splitting_a_message_on_an_intervening_event_assembles_the_same_text` —
+    // but ours does not fire a spurious "message complete" at the halfway
+    // point, and a *bare* fragment after the intervening event still lands in
+    // the right message rather than throwing.
     let events = normalize_all([
         text_chunk(Some("msg-1"), Some("Hel")),
         Event::state_snapshot(serde_json::json!({ "progress": 0.5 })),
@@ -236,6 +250,109 @@ fn events_between_chunks_do_not_split_the_message() {
             EventType::TextMessageStart,
             EventType::TextMessageContent,
             EventType::StateSnapshot,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+        ]
+    );
+}
+
+#[test]
+fn splitting_a_message_on_an_intervening_event_assembles_the_same_text() {
+    // The stream upstream's transform would have produced for the fixture in
+    // the test above, written out by hand. Applying it has to land in the same
+    // place as applying ours, or the two SDKs disagree about what the user
+    // said — which is the part that actually has to interoperate.
+    let upstream = [
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_content("msg-1", "Hel"),
+        Event::text_message_end("msg-1"),
+        Event::state_snapshot(serde_json::json!({ "progress": 0.5 })),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_content("msg-1", "lo"),
+        Event::text_message_end("msg-1"),
+    ];
+    let ours = normalize_all([
+        text_chunk(Some("msg-1"), Some("Hel")),
+        Event::state_snapshot(serde_json::json!({ "progress": 0.5 })),
+        text_chunk(Some("msg-1"), Some("lo")),
+    ])
+    .expect("normalizes");
+
+    let assemble = |events: &[Event]| {
+        let mut applier = Applier::new();
+        for event in events {
+            applier.apply(event).expect("applies");
+        }
+        (
+            applier.messages().len(),
+            applier.text_of("msg-1").map(str::to_owned),
+        )
+    };
+
+    assert_eq!(assemble(&upstream), (1, Some("Hello".to_owned())));
+    assert_eq!(assemble(&ours), assemble(&upstream));
+}
+
+#[test]
+fn two_messages_and_two_calls_interleaved_expand_exactly_as_upstream_does() {
+    // The fixture from upstream's `chunks/__tests__/transform.test.ts`,
+    // "should handle interleaved chunks with different message and tool call
+    // IDs", down to its counts: re-opening an id the stream has already closed
+    // is a *new* bracket, not a continuation, so six starts, six ends, six
+    // payloads and the terminal event — nineteen events.
+    let events = normalize_all([
+        // Upstream's fixture starts at the first chunk; a real stream has to
+        // open, and the verification below needs it to.
+        Event::run_started("thread-1", "run-1"),
+        text_chunk(Some("msg-1"), Some("First message part 1")),
+        tool_chunk(Some("tool-1"), Some("firstTool"), Some(r#"{"arg1":"#)),
+        text_chunk(Some("msg-1"), Some("First message part 2")),
+        text_chunk(Some("msg-2"), Some("Second message")),
+        tool_chunk(Some("tool-2"), Some("secondTool"), Some(r#"{"arg2":"#)),
+        tool_chunk(Some("tool-1"), Some("firstTool"), Some(r#""more"}"#)),
+        Event::run_finished_success("thread-1", "run-1"),
+    ])
+    .expect("normalizes");
+
+    let count = |kind: EventType| types(&events).iter().filter(|t| **t == kind).count();
+    assert_eq!(count(EventType::TextMessageStart), 3);
+    assert_eq!(count(EventType::TextMessageEnd), 3);
+    assert_eq!(count(EventType::TextMessageContent), 3);
+    assert_eq!(count(EventType::ToolCallStart), 3);
+    assert_eq!(count(EventType::ToolCallEnd), 3);
+    assert_eq!(count(EventType::ToolCallArgs), 3);
+    assert_eq!(count(EventType::RunFinished), 1);
+    assert_eq!(events.len(), 20, "upstream's nineteen, plus RUN_STARTED");
+
+    // The terminator for the last call goes out *before* RUN_FINISHED, so the
+    // stream a verifier sees never has a call open at the end.
+    assert_eq!(
+        types(&events)[18..],
+        [EventType::ToolCallEnd, EventType::RunFinished]
+    );
+    verify_all(&events).expect("the expansion should be a valid stream");
+}
+
+#[test]
+fn events_outside_the_protocols_ordering_never_close_a_chunk_stream() {
+    // Upstream returns `[event]` for exactly RAW, ACTIVITY_SNAPSHOT,
+    // ACTIVITY_DELTA and REASONING_ENCRYPTED_VALUE — the only four that skip
+    // `closePendingEvent()`. Ours must not close on them either.
+    let events = normalize_all([
+        text_chunk(Some("msg-1"), Some("Hel")),
+        Event::raw(serde_json::json!({ "provider": "anything" })),
+        Event::activity_snapshot("act-1", "web_search", serde_json::Map::new()),
+        text_chunk(Some("msg-1"), Some("lo")),
+    ])
+    .expect("normalizes");
+
+    assert_eq!(
+        types(&events),
+        [
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::Raw,
+            EventType::ActivitySnapshot,
             EventType::TextMessageContent,
             EventType::TextMessageEnd,
         ]
