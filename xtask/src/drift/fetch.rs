@@ -41,9 +41,10 @@ pub fn events_ts() -> Result<Fetched, String> {
         .unwrap_or("")
         .to_string();
 
-    let text = get(&format!(
-        "https://raw.githubusercontent.com/{UPSTREAM_REPO}/{commit}/{UPSTREAM_PATH}"
-    ))?;
+    let url = format!("https://raw.githubusercontent.com/{UPSTREAM_REPO}/{commit}/{UPSTREAM_PATH}");
+    let text = get(&url)?;
+    looks_like_events_ts(&text)
+        .map_err(|why| format!("{url} did not return {UPSTREAM_PATH}: {why}"))?;
 
     Ok(Fetched {
         text,
@@ -55,6 +56,48 @@ pub fn events_ts() -> Result<Fetched, String> {
             fetched_at: today_utc(),
         },
     })
+}
+
+/// Rejects a response body that is not the upstream module.
+///
+/// ureq already turns a 4xx/5xx into an error, so this is about the responses
+/// that arrive with status 200 and are still not the file: a captive portal or
+/// corporate proxy interstitial, a GitHub maintenance page, an HTML 404 from a
+/// CDN in front of raw.githubusercontent.com, or a body that was cut short
+/// before the interesting part. Left alone, all of those reach `extract()`,
+/// which reports the far less helpful "`enum EventType` not found".
+fn looks_like_events_ts(text: &str) -> Result<(), String> {
+    let head = text.trim_start();
+    if head.is_empty() {
+        return Err("the response body was empty".to_string());
+    }
+    if head.starts_with('<') {
+        return Err(format!(
+            "the response is markup, not TypeScript — probably an error page or a proxy \
+             interstitial. It starts: {}",
+            snippet(head)
+        ));
+    }
+    if !text.contains("EventType") {
+        return Err(format!(
+            "the response never mentions `EventType`, so it is not the events module (or it was \
+             truncated before reaching it). {} bytes, starting: {}",
+            text.len(),
+            snippet(head)
+        ));
+    }
+    Ok(())
+}
+
+/// The first line or so of a body, for an error message.
+fn snippet(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("").trim();
+    let cut: String = line.chars().take(80).collect();
+    if cut.chars().count() < line.chars().count() {
+        format!("`{cut}...`")
+    } else {
+        format!("`{cut}`")
+    }
 }
 
 fn get(url: &str) -> Result<String, String> {
@@ -124,7 +167,45 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::civil_from_days;
+    use super::{civil_from_days, looks_like_events_ts};
+
+    #[test]
+    fn accepts_the_real_module() {
+        let source = "import { z } from \"zod\";\n\nexport enum EventType {\n  RAW = \"RAW\",\n}\n";
+        assert!(looks_like_events_ts(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_an_html_error_page() {
+        let error =
+            looks_like_events_ts("<!DOCTYPE html>\n<title>404 Not Found</title>\n").unwrap_err();
+        assert!(error.contains("markup, not TypeScript"), "{error}");
+        assert!(error.contains("<!DOCTYPE html>"), "{error}");
+    }
+
+    #[test]
+    fn rejects_a_proxy_interstitial_with_leading_whitespace() {
+        let error = looks_like_events_ts("\n\n  <html><body>Sign in to continue</body></html>")
+            .unwrap_err();
+        assert!(error.contains("markup, not TypeScript"), "{error}");
+    }
+
+    #[test]
+    fn rejects_an_empty_body() {
+        assert!(
+            looks_like_events_ts("   \n  ")
+                .unwrap_err()
+                .contains("empty")
+        );
+    }
+
+    /// A body cut short before the enum is TypeScript and still useless.
+    #[test]
+    fn rejects_a_response_truncated_before_the_enum() {
+        let error = looks_like_events_ts("import { z } from \"zod\";\n\nexport const Role = z.")
+            .unwrap_err();
+        assert!(error.contains("never mentions `EventType`"), "{error}");
+    }
 
     #[test]
     fn converts_known_days() {

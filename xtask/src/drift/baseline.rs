@@ -111,14 +111,71 @@ impl Baseline {
         Ok(baseline)
     }
 
+    /// Refuses to persist a snapshot that cannot do the job of a baseline.
+    ///
+    /// `--refresh` replaces a human-reviewed file with whatever came back over
+    /// the network, and the dangerous failure is not a loud one. A response
+    /// truncated after the `EventType` enum but before the schemas parses
+    /// perfectly well: every event type is still found, every schema is
+    /// recorded `unparsed`, and because unparsed schemas are deliberately
+    /// warnings rather than failures, the resulting baseline agrees with any
+    /// Rust source at all. The gate would go quiet instead of going red, which
+    /// is the one outcome this crate exists to prevent.
+    ///
+    /// So a baseline must name at least one event type, carry one entry per
+    /// event type, and have read a majority of the schemas. A healthy capture
+    /// reads all of them; half is slack for upstream reformatting, not for a
+    /// half-delivered file.
+    fn validate(&self) -> Result<(), String> {
+        if self.event_types.is_empty() {
+            return Err("it names no event types".to_string());
+        }
+        if self.events.len() != self.event_types.len() {
+            return Err(format!(
+                "it names {} event types but carries {} entries",
+                self.event_types.len(),
+                self.events.len()
+            ));
+        }
+        let readable = self.events.iter().filter(|e| e.unparsed.is_none()).count();
+        if readable * 2 <= self.events.len() {
+            return Err(format!(
+                "only {readable} of {} schemas could be read. A baseline of unreadable schemas \
+                 compares equal to anything, so it would silently disable the drift gate rather \
+                 than fail it",
+                self.events.len()
+            ));
+        }
+        Ok(())
+    }
+
     pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.validate().map_err(|why| {
+            format!(
+                "refusing to write {}: {why}.\n\
+                 This is what a truncated or substituted upstream response looks like. Check \
+                 https://github.com/{UPSTREAM_REPO}/blob/main/{UPSTREAM_PATH} and re-run; the \
+                 existing baseline has been left untouched.",
+                path.display()
+            )
+        })?;
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let mut json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("cannot serialise the baseline: {e}"))?;
         json.push('\n');
-        std::fs::write(path, json).map_err(|e| format!("{}: {e}", path.display()))
+
+        // Write-then-rename, so an interrupted write cannot leave a half-written
+        // baseline where a reviewed one used to be. The temporary file sits next
+        // to the target to keep the rename on one filesystem.
+        let temp = path.with_extension("json.tmp");
+        std::fs::write(&temp, json).map_err(|e| format!("{}: {e}", temp.display()))?;
+        std::fs::rename(&temp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&temp);
+            format!("cannot move {} into place: {e}", temp.display())
+        })
     }
 
     pub fn event(&self, event_type: &str) -> Option<&Event> {
@@ -130,5 +187,184 @@ fn field(f: &upstream::Field) -> Field {
     Field {
         name: f.name.clone(),
         required: f.required,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn temp_path() -> std::path::PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "xtask-baseline-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("events.json")
+    }
+
+    fn baseline(events: Vec<Event>) -> Baseline {
+        Baseline {
+            note: NOTE.to_string(),
+            format: FORMAT,
+            source: Source {
+                repo: UPSTREAM_REPO.into(),
+                path: UPSTREAM_PATH.into(),
+                commit: "0123456789abcdef".into(),
+                commit_date: "2026-08-01".into(),
+                fetched_at: "2026-08-01".into(),
+            },
+            base_event_fields: vec![],
+            event_types: events.iter().map(|e| e.event_type.clone()).collect(),
+            events,
+        }
+    }
+
+    fn event(ty: &str) -> Event {
+        Event {
+            event_type: ty.into(),
+            schema: Some(format!("{ty}Schema")),
+            fields: vec![Field {
+                name: "messageId".into(),
+                required: true,
+            }],
+            unparsed: None,
+        }
+    }
+
+    fn unreadable(ty: &str) -> Event {
+        Event {
+            unparsed: Some("no Zod schema found for this event type".into()),
+            fields: vec![],
+            ..event(ty)
+        }
+    }
+
+    #[test]
+    fn a_healthy_baseline_round_trips() {
+        let path = temp_path();
+        let written = baseline(vec![event("RAW"), event("TEXT_MESSAGE_START")]);
+        written.save(&path).unwrap();
+        let read = Baseline::load(&path).unwrap();
+        assert_eq!(read.event_types, ["RAW", "TEXT_MESSAGE_START"]);
+        assert_eq!(read.events.len(), 2);
+    }
+
+    /// The truncated-fetch case: every event type still parses, every schema is
+    /// `unparsed`, and such a baseline compares equal to any Rust source. It
+    /// must never reach disk.
+    #[test]
+    fn a_baseline_of_unreadable_schemas_is_refused() {
+        let path = temp_path();
+        let error = baseline(vec![unreadable("RAW"), unreadable("TEXT_MESSAGE_START")])
+            .save(&path)
+            .unwrap_err();
+        assert!(error.contains("0 of 2 schemas"), "{error}");
+        assert!(error.contains("silently disable the drift gate"), "{error}");
+        assert!(!path.exists(), "the baseline must not have been written");
+    }
+
+    #[test]
+    fn a_baseline_that_lost_half_its_schemas_is_refused() {
+        let path = temp_path();
+        let error = baseline(vec![event("RAW"), unreadable("TEXT_MESSAGE_START")])
+            .save(&path)
+            .unwrap_err();
+        assert!(error.contains("only 1 of 2 schemas"), "{error}");
+    }
+
+    #[test]
+    fn an_empty_baseline_is_refused() {
+        let path = temp_path();
+        let error = baseline(vec![]).save(&path).unwrap_err();
+        assert!(error.contains("names no event types"), "{error}");
+        assert!(!path.exists());
+    }
+
+    /// A refused write must leave the reviewed file exactly as it was, rather
+    /// than truncating it on the way to failing.
+    #[test]
+    fn a_refused_write_leaves_the_previous_baseline_intact() {
+        let path = temp_path();
+        let good = baseline(vec![event("RAW"), event("TEXT_MESSAGE_START")]);
+        good.save(&path).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        baseline(vec![unreadable("RAW"), unreadable("TEXT_MESSAGE_START")])
+            .save(&path)
+            .unwrap_err();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "no temporary file should be left behind"
+        );
+    }
+
+    #[test]
+    fn a_baseline_from_an_older_format_is_reported_not_misread() {
+        let path = temp_path();
+        let mut old = baseline(vec![event("RAW")]);
+        old.format = FORMAT + 1;
+        // `save` guards content, not format, so write the file directly.
+        let mut json = serde_json::to_string_pretty(&old).unwrap();
+        json.push('\n');
+        std::fs::write(&path, json).unwrap();
+
+        let error = Baseline::load(&path).unwrap_err();
+        assert!(error.contains("was written in format"), "{error}");
+    }
+
+    #[test]
+    fn a_baseline_that_is_not_json_is_reported() {
+        let path = temp_path();
+        std::fs::write(&path, "<!DOCTYPE html><title>404</title>").unwrap();
+        let error = Baseline::load(&path).unwrap_err();
+        assert!(error.contains("is not a valid baseline"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_baseline_says_how_to_make_one() {
+        let error = Baseline::load(Path::new("/nonexistent/events.json")).unwrap_err();
+        assert!(error.contains("drift-check --refresh"), "{error}");
+    }
+
+    /// End to end for the failure that motivates [`Baseline::validate`]: a
+    /// response cut off after the enum parses cleanly all the way through
+    /// `from_upstream`, and is caught only at the point of writing.
+    #[test]
+    fn a_response_truncated_after_the_enum_never_reaches_disk() {
+        let truncated = r#"
+import { z } from "zod";
+
+export enum EventType {
+  TEXT_MESSAGE_START = "TEXT_MESSAGE_START",
+  TEXT_MESSAGE_END = "TEXT_MESSAGE_END",
+  RAW = "RAW",
+}
+"#;
+        // It parses: the event types are all there.
+        let extracted = upstream::extract(truncated).unwrap();
+        assert_eq!(extracted.event_types.len(), 3);
+        // ...and every schema is unreadable, which the comparison treats as a
+        // warning, so nothing downstream would have objected.
+        assert!(extracted.events.iter().all(|e| e.unparsed.is_some()));
+
+        let path = temp_path();
+        let source = Source {
+            repo: UPSTREAM_REPO.into(),
+            path: UPSTREAM_PATH.into(),
+            commit: "0123456789abcdef".into(),
+            commit_date: "2026-08-01".into(),
+            fetched_at: "2026-08-01".into(),
+        };
+        let error = Baseline::from_upstream(&extracted, source)
+            .save(&path)
+            .unwrap_err();
+        assert!(error.contains("0 of 3 schemas"), "{error}");
+        assert!(!path.exists());
     }
 }
