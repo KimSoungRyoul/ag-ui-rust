@@ -263,23 +263,30 @@ impl StreamParser {
 
         loop {
             if !self.found_delimiter {
-                if let Some(index) = self.buffer.find(A2UI_OPEN_TAG) {
-                    let (before, rest) = self.buffer.split_at(index);
-                    if !before.is_empty() {
-                        parts.push(text_part(before));
+                match find_open_tag(&self.buffer) {
+                    Some((start, Some(end))) => {
+                        if start > 0 {
+                            parts.push(text_part(&self.buffer[..start]));
+                        }
+                        self.buffer = self.buffer[end..].to_string();
+                        self.found_delimiter = true;
+                        continue;
                     }
-                    self.buffer = rest[A2UI_OPEN_TAG.len()..].to_string();
-                    self.found_delimiter = true;
-                    continue;
-                }
-                // Hold back anything that could be the start of a split tag,
-                // so `<a2u` never escapes as conversational text.
-                let keep = trailing_prefix_len(&self.buffer, A2UI_OPEN_TAG);
-                if self.buffer.len() > keep {
-                    let split = self.buffer.len() - keep;
-                    let text = self.buffer[..split].to_string();
-                    parts.push(text_part(&text));
-                    self.buffer = self.buffer[split..].to_string();
+                    // A tag has started but has not closed. Hold it back, so
+                    // `<a2u` or a half-written attribute list never escapes as
+                    // conversational text.
+                    Some((start, None)) => {
+                        if start > 0 {
+                            parts.push(text_part(&self.buffer[..start]));
+                            self.buffer = self.buffer[start..].to_string();
+                        }
+                    }
+                    None => {
+                        if !self.buffer.is_empty() {
+                            parts.push(text_part(&self.buffer));
+                            self.buffer.clear();
+                        }
+                    }
                 }
                 break;
             }
@@ -1181,6 +1188,48 @@ fn text_part(text: &str) -> ResponsePart {
     }
 }
 
+/// Locates an `<a2ui-json ...>` open tag, as byte offsets into `text`.
+///
+/// Matches what [`crate::toolkit::parser`]'s scanner accepts, which is what a
+/// model actually writes: attributes are tolerated, the match is
+/// case-insensitive, and the tag name must end on a word boundary so
+/// `<a2ui-jsonx>` is not one.
+///
+/// `Some((start, Some(end)))` is a complete tag occupying `start..end`.
+/// `Some((start, None))` means a tag has begun at `start` but its `>` has not
+/// arrived, so the caller must hold everything from there back for the next
+/// chunk rather than emitting it as conversational text.
+fn find_open_tag(text: &str) -> Option<(usize, Option<usize>)> {
+    // `A2UI_OPEN_TAG` without its angle brackets.
+    let name = &A2UI_OPEN_TAG[1..A2UI_OPEN_TAG.len() - 1];
+
+    for (start, _) in text.match_indices('<') {
+        let rest = &text[start + 1..];
+        if rest.len() < name.len() {
+            if name.as_bytes()[..rest.len()].eq_ignore_ascii_case(rest.as_bytes()) {
+                return Some((start, None));
+            }
+            continue;
+        }
+        if !rest.as_bytes()[..name.len()].eq_ignore_ascii_case(name.as_bytes()) {
+            continue;
+        }
+        let after = &rest[name.len()..];
+        match after.chars().next() {
+            None => return Some((start, None)),
+            Some(c) if c.is_alphanumeric() || c == '_' => continue,
+            Some(_) => {}
+        }
+        return Some((
+            start,
+            after
+                .find('>')
+                .map(|close| start + 1 + name.len() + close + 1),
+        ));
+    }
+    None
+}
+
 /// Length of the longest suffix of `text` that is a prefix of `tag`.
 fn trailing_prefix_len(text: &str, tag: &str) -> usize {
     let max = tag.len().saturating_sub(1).min(text.len());
@@ -1499,6 +1548,36 @@ mod tests {
 
         let parts = parser.process_chunk("i-json>").unwrap();
         assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn an_open_tag_carrying_attributes_still_opens_a_block() {
+        // `parse_response` accepts these; the streaming path used to look for
+        // the bare tag literally, so an attributed one matched nothing and the
+        // whole surface streamed out as conversational text for the user to
+        // read as raw JSON.
+        for open in [
+            r#"<a2ui-json version="v0.9">"#,
+            "<a2ui-json >",
+            "<A2UI-JSON>",
+        ] {
+            let mut parser = parser();
+            let mut messages = Vec::new();
+            for chunk in [open, "[", CREATE, "]</a2ui-json>"] {
+                messages.extend(feed(&mut parser, &[chunk]));
+            }
+            assert!(
+                messages.iter().any(|m| m.get("createSurface").is_some()),
+                "{open} did not open a block"
+            );
+        }
+
+        // A lookalike is still not the tag, in either parser.
+        let mut parser = parser();
+        let parts = parser
+            .process_chunk(r#"<a2ui-jsonx>[{"id":"t"}]</a2ui-jsonx>"#)
+            .unwrap();
+        assert_eq!(parts[0].text, r#"<a2ui-jsonx>[{"id":"t"}]</a2ui-jsonx>"#);
     }
 
     #[test]
