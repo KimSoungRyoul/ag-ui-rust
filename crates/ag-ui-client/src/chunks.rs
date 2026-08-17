@@ -119,25 +119,45 @@ impl ChunkNormalizer {
 
     // ---- chunk families -------------------------------------------------
 
+    /// The stream a chunk belongs to: the one it names, or the open one of its
+    /// kind.
+    ///
+    /// `missing` is the message for the third case — no id on the chunk and
+    /// nothing open — which is a protocol violation rather than something to
+    /// guess at.
+    fn stream_id(&self, kind: Kind, named: Option<&str>, missing: &str) -> Result<String> {
+        match named {
+            Some(id) => Ok(id.to_owned()),
+            None => self
+                .current(kind)
+                .ok_or_else(|| Error::protocol(missing.to_owned())),
+        }
+    }
+
+    /// Closes whatever was open, emits `start`, and takes on the debt for the
+    /// matching end event.
+    fn begin(&mut self, kind: Kind, id: &str, start: Event, out: &mut Vec<Event>) {
+        self.close(out);
+        out.push(start);
+        self.open = Some(Open {
+            kind,
+            id: id.to_owned(),
+            owed: true,
+        });
+    }
+
     fn text_chunk(&mut self, chunk: TextMessageChunkEvent, out: &mut Vec<Event>) -> Result<()> {
-        let id = match chunk.message_id {
-            Some(id) => id,
-            None => MessageId::new(self.current(Kind::Text).ok_or_else(|| {
-                Error::protocol("TEXT_MESSAGE_CHUNK carries no messageId and no message is open")
-            })?),
-        };
+        let id = MessageId::new(self.stream_id(
+            Kind::Text,
+            chunk.message_id.as_ref().map(MessageId::as_str),
+            "TEXT_MESSAGE_CHUNK carries no messageId and no message is open",
+        )?);
 
         if self.current(Kind::Text).as_deref() != Some(id.as_str()) {
-            self.close(out);
             let mut start = TextMessageStartEvent::new(id.clone(), chunk.role.unwrap_or_default());
             start.name = chunk.name;
             start.base = chunk.base.clone();
-            out.push(start.into());
-            self.open = Some(Open {
-                kind: Kind::Text,
-                id: id.to_string(),
-                owed: true,
-            });
+            self.begin(Kind::Text, id.as_str(), start.into(), out);
         }
 
         if let Some(delta) = chunk.delta {
@@ -149,29 +169,25 @@ impl ChunkNormalizer {
     }
 
     fn tool_chunk(&mut self, chunk: ToolCallChunkEvent, out: &mut Vec<Event>) -> Result<()> {
-        let id = match chunk.tool_call_id {
-            Some(id) => id,
-            None => ToolCallId::new(self.current(Kind::Tool).ok_or_else(|| {
-                Error::protocol("TOOL_CALL_CHUNK carries no toolCallId and no call is open")
-            })?),
-        };
+        let id = ToolCallId::new(self.stream_id(
+            Kind::Tool,
+            chunk.tool_call_id.as_ref().map(ToolCallId::as_str),
+            "TOOL_CALL_CHUNK carries no toolCallId and no call is open",
+        )?);
 
         if self.current(Kind::Tool).as_deref() != Some(id.as_str()) {
+            // Checked before anything is emitted: a call with no name cannot be
+            // opened, and the previous stream should not be closed on the way
+            // to finding that out.
             let Some(name) = chunk.tool_call_name else {
                 return Err(Error::protocol(format!(
                     "TOOL_CALL_CHUNK opens tool call {id:?} without a toolCallName"
                 )));
             };
-            self.close(out);
             let mut start = ToolCallStartEvent::new(id.clone(), name);
             start.parent_message_id = chunk.parent_message_id;
             start.base = chunk.base.clone();
-            out.push(start.into());
-            self.open = Some(Open {
-                kind: Kind::Tool,
-                id: id.to_string(),
-                owed: true,
-            });
+            self.begin(Kind::Tool, id.as_str(), start.into(), out);
         }
 
         if let Some(delta) = chunk.delta {
@@ -187,25 +203,16 @@ impl ChunkNormalizer {
         chunk: ReasoningMessageChunkEvent,
         out: &mut Vec<Event>,
     ) -> Result<()> {
-        let id = match chunk.message_id {
-            Some(id) => id,
-            None => MessageId::new(self.current(Kind::Reasoning).ok_or_else(|| {
-                Error::protocol(
-                    "REASONING_MESSAGE_CHUNK carries no messageId and no reasoning message is open",
-                )
-            })?),
-        };
+        let id = MessageId::new(self.stream_id(
+            Kind::Reasoning,
+            chunk.message_id.as_ref().map(MessageId::as_str),
+            "REASONING_MESSAGE_CHUNK carries no messageId and no reasoning message is open",
+        )?);
 
         if self.current(Kind::Reasoning).as_deref() != Some(id.as_str()) {
-            self.close(out);
             let mut start = ag_ui_core::ReasoningMessageStartEvent::new(id.clone());
             start.base = chunk.base.clone();
-            out.push(start.into());
-            self.open = Some(Open {
-                kind: Kind::Reasoning,
-                id: id.to_string(),
-                owed: true,
-            });
+            self.begin(Kind::Reasoning, id.as_str(), start.into(), out);
         }
 
         if let Some(delta) = chunk.delta {

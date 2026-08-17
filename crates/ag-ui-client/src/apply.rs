@@ -47,9 +47,10 @@ use std::collections::HashMap;
 use ag_ui_core::{
     ActivityDeltaEvent, ActivityMessage, ActivitySnapshotEvent, AssistantMessage, DeveloperMessage,
     Event, InputContent, Interrupt, JsonObject, Message, MessageId, PatchOperation,
-    ReasoningEncryptedValueEvent, ReasoningEncryptedValueSubtype, ReasoningMessage, RunId,
-    RunOutcome, SystemMessage, TextInputContent, TextMessageRole, ThreadId, ToolCall,
-    ToolCallChunkEvent, ToolCallId, ToolMessage, UserContent, UserMessage,
+    ReasoningEncryptedValueEvent, ReasoningEncryptedValueSubtype, ReasoningMessage,
+    ReasoningMessageChunkEvent, RunId, RunOutcome, SystemMessage, TextInputContent,
+    TextMessageChunkEvent, TextMessageRole, ThreadId, ToolCall, ToolCallChunkEvent, ToolCallId,
+    ToolMessage, UserContent, UserMessage,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -373,20 +374,7 @@ impl Applier {
             }
             Event::TextMessageContent(e) => self.text_content(&e.message_id, &e.delta),
             Event::TextMessageEnd(e) => Ok(self.text_end(&e.message_id)),
-            Event::TextMessageChunk(e) => {
-                let Some(id) = e.message_id.clone().or_else(|| self.open_text.clone()) else {
-                    return Err(Error::protocol(
-                        "TEXT_MESSAGE_CHUNK carries no messageId and no message is open",
-                    ));
-                };
-                if self.open_text.as_ref() != Some(&id) {
-                    self.text_start(id.clone(), e.role.unwrap_or_default(), e.name.clone());
-                }
-                match &e.delta {
-                    Some(delta) => self.text_content(&id, delta),
-                    None => Ok(self.message_change(&id, MessageChangeKind::Started)),
-                }
-            }
+            Event::TextMessageChunk(e) => self.text_chunk(e),
 
             Event::ToolCallStart(e) => Ok(self.tool_call_start(
                 e.tool_call_id.clone(),
@@ -425,51 +413,22 @@ impl Applier {
             }
             Event::ReasoningMessageEnd(e) => Ok(self.reasoning_end(&e.message_id)),
             Event::ReasoningEnd(e) => Ok(self.reasoning_end(&e.message_id)),
-            Event::ReasoningMessageChunk(e) => {
-                let Some(id) = e.message_id.clone().or_else(|| self.open_reasoning.clone()) else {
-                    return Err(Error::protocol(
-                        "REASONING_MESSAGE_CHUNK carries no messageId and no reasoning message is open",
-                    ));
-                };
-                if self.open_reasoning.as_ref() != Some(&id) {
-                    self.reasoning_start(id.clone());
-                }
-                Ok(match &e.delta {
-                    Some(delta) => self.reasoning_content(&id, delta),
-                    None => Changed::Reasoning(ReasoningChange {
-                        id,
-                        kind: ReasoningChangeKind::Started,
-                    }),
-                })
-            }
+            Event::ReasoningMessageChunk(e) => self.reasoning_chunk(e),
             Event::ReasoningEncryptedValue(e) => Ok(self.encrypted_value(e)),
 
             Event::ThinkingStart(_) => {
-                self.thinking_counter += 1;
-                let id = MessageId::new(format!("thinking-{}", self.thinking_counter));
+                let id = self.mint_thinking_id();
                 Ok(self.reasoning_start(id))
             }
-            Event::ThinkingTextMessageStart(_) => Ok(match self.open_reasoning.clone() {
-                Some(id) => Changed::Reasoning(ReasoningChange {
+            Event::ThinkingTextMessageStart(_) => {
+                let id = self.open_thinking();
+                Ok(Changed::Reasoning(ReasoningChange {
                     id,
                     kind: ReasoningChangeKind::Started,
-                }),
-                None => {
-                    self.thinking_counter += 1;
-                    let id = MessageId::new(format!("thinking-{}", self.thinking_counter));
-                    self.reasoning_start(id)
-                }
-            }),
+                }))
+            }
             Event::ThinkingTextMessageContent(e) => {
-                let id = match self.open_reasoning.clone() {
-                    Some(id) => id,
-                    None => {
-                        self.thinking_counter += 1;
-                        let id = MessageId::new(format!("thinking-{}", self.thinking_counter));
-                        self.reasoning_start(id.clone());
-                        id
-                    }
-                };
+                let id = self.open_thinking();
                 Ok(self.reasoning_content(&id, &e.delta))
             }
             Event::ThinkingTextMessageEnd(_) | Event::ThinkingEnd(_) => {
@@ -651,6 +610,33 @@ impl Applier {
             self.open_text = None;
         }
         self.message_change(id, MessageChangeKind::Ended)
+    }
+
+    /// A `TEXT_MESSAGE_CHUNK` applied directly.
+    ///
+    /// Reachable only for a caller driving the applier itself: a
+    /// [`Session`](crate::Session) puts a
+    /// [`ChunkNormalizer`](crate::ChunkNormalizer) in front, which expands
+    /// chunks before they get here. The difference is that the normalizer also
+    /// synthesizes the *end* of a chunk stream; this does not, because an
+    /// applier never invents an event nobody sent.
+    fn text_chunk(&mut self, event: &TextMessageChunkEvent) -> Result<Changed> {
+        let Some(id) = event.message_id.clone().or_else(|| self.open_text.clone()) else {
+            return Err(Error::protocol(
+                "TEXT_MESSAGE_CHUNK carries no messageId and no message is open",
+            ));
+        };
+        if self.open_text.as_ref() != Some(&id) {
+            self.text_start(
+                id.clone(),
+                event.role.unwrap_or_default(),
+                event.name.clone(),
+            );
+        }
+        match &event.delta {
+            Some(delta) => self.text_content(&id, delta),
+            None => Ok(self.message_change(&id, MessageChangeKind::Started)),
+        }
     }
 
     // ---- tool calls -----------------------------------------------------
@@ -873,6 +859,27 @@ impl Applier {
         })
     }
 
+    /// A fresh id for a `THINKING_*` block.
+    ///
+    /// Those events carry no `messageId` at all, so the applier has to invent
+    /// one — and it has to be the same one for the whole block, which is what
+    /// [`Applier::open_thinking`] is for.
+    fn mint_thinking_id(&mut self) -> MessageId {
+        self.thinking_counter += 1;
+        MessageId::new(format!("thinking-{}", self.thinking_counter))
+    }
+
+    /// The reasoning message a `THINKING_*` event belongs to, opening one if
+    /// the producer sent content before its `THINKING_START`.
+    fn open_thinking(&mut self) -> MessageId {
+        if let Some(id) = self.open_reasoning.clone() {
+            return id;
+        }
+        let id = self.mint_thinking_id();
+        self.reasoning_start(id.clone());
+        id
+    }
+
     fn reasoning_content(&mut self, id: &MessageId, delta: &str) -> Changed {
         if !self.reasoning_by_id.contains_key(id) {
             self.reasoning_start(id.clone());
@@ -889,6 +896,30 @@ impl Applier {
             kind: ReasoningChangeKind::Content {
                 delta: delta.to_owned(),
             },
+        })
+    }
+
+    /// A `REASONING_MESSAGE_CHUNK` applied directly. See
+    /// [`Applier::text_chunk`] for when that happens.
+    fn reasoning_chunk(&mut self, event: &ReasoningMessageChunkEvent) -> Result<Changed> {
+        let Some(id) = event
+            .message_id
+            .clone()
+            .or_else(|| self.open_reasoning.clone())
+        else {
+            return Err(Error::protocol(
+                "REASONING_MESSAGE_CHUNK carries no messageId and no reasoning message is open",
+            ));
+        };
+        if self.open_reasoning.as_ref() != Some(&id) {
+            self.reasoning_start(id.clone());
+        }
+        Ok(match &event.delta {
+            Some(delta) => self.reasoning_content(&id, delta),
+            None => Changed::Reasoning(ReasoningChange {
+                id,
+                kind: ReasoningChangeKind::Started,
+            }),
         })
     }
 
