@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, build]
   pull_request:
+  schedule:
+    # Upstream freshness needs the network, so it runs on a timer rather than
+    # as a required check. Monday morning, off the hour to dodge the rush.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,6 +18,7 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -21,43 +27,174 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # `cargo test`, not `cargo nextest`: nextest does not run doctests, and the
+      # crate-level examples and the READMEs are doctests.
       - run: cargo test --workspace --all-features
 
   # The design guarantees core/server/client stay executor-agnostic.
-  # Building them for wasm is how that claim gets enforced rather than asserted.
-  wasm:
-    name: wasm (no tokio below the web binding)
+  executor-agnostic:
+    name: executor-agnostic (no tokio below the web binding)
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p ag-ui-core --target wasm32-unknown-unknown --no-default-features --features sse
-      - run: cargo check -p ag-ui-server --target wasm32-unknown-unknown
+
+      # Building for wasm proves the crates carry no native-only assumptions.
+      - run: cargo check -p ag-ui-core --target wasm32-unknown-unknown --no-default-features
+      - run: cargo check -p ag-ui-core --target wasm32-unknown-unknown --all-features
+      - run: cargo check -p ag-ui-server --target wasm32-unknown-unknown --all-features
       - run: cargo check -p ag-ui-client --target wasm32-unknown-unknown --no-default-features
+      - run: cargo check -p ag-ui-a2ui --target wasm32-unknown-unknown --all-features
+
+      # ...but it does NOT prove the tokio ban, which is the actual commitment in
+      # docs/DESIGN.md ("Executor-agnostic below the web binding"). tokio's `rt`,
+      # `sync`, `macros`, `io-util` and `time` features all compile for
+      # wasm32-unknown-unknown, so adding `tokio.workspace = true` to
+      # ag-ui-server's [dependencies] passes every check above. Verified by
+      # doing exactly that: the wasm build stayed green.
+      #
+      # The dependency graph is what carries the guarantee, so assert on that.
+      # `-e normal` excludes dev-dependencies, which may use tokio freely.
+      - name: tokio is absent from the dependency graph
+        run: |
+          set -uo pipefail
+          status=0
+          forbid_tokio() {
+            crate="$1"; shift
+            echo "--- $crate $* ---"
+            tree=$(cargo tree -p "$crate" -e normal --prefix none --no-dedupe "$@") || exit 2
+            # No `grep -q`: an early close would SIGPIPE `cargo tree` and, under
+            # pipefail, turn a real hit into a silent pass.
+            if printf '%s\n' "$tree" | grep -E '^tokio v'; then
+              echo "::error title=Executor-agnostic violation::$crate depends on tokio. docs/DESIGN.md keeps core/server/client on futures primitives (futures::channel::mpsc, not tokio::sync::mpsc) so wasm and non-tokio executors stay viable. tokio belongs in ag-ui-axum and nowhere else. Move the dependency, or change the design doc first."
+              status=1
+            fi
+          }
+          forbid_tokio ag-ui-core --all-features
+          forbid_tokio ag-ui-server --all-features
+          forbid_tokio ag-ui-a2ui --all-features
+          # `http` deliberately pulls reqwest, which pulls tokio; the crate is
+          # executor-agnostic only with that feature off.
+          forbid_tokio ag-ui-client --no-default-features
+          exit $status
 
   features:
     name: feature matrix
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p ag-ui-core --no-default-features
-      - run: cargo check -p ag-ui-core --features schemars,utoipa
-      - run: cargo check -p ag-ui-a2ui --no-default-features
-      - run: cargo check -p ag-ui-a2ui --no-default-features --features toolkit
-      - run: cargo check -p ag-ui-client --no-default-features
+      # Every feature alone and every crate with its defaults off. A powerset
+      # would be 2^4 for core alone and would not buy much: the features are
+      # additive and independent. `--all-targets` so feature-gated tests are
+      # compiled too, not just the library.
+      - run: cargo check --all-targets -p ag-ui-core --no-default-features
+      - run: cargo check --all-targets -p ag-ui-core --no-default-features --features sse
+      - run: cargo check --all-targets -p ag-ui-core --no-default-features --features protobuf
+      - run: cargo check --all-targets -p ag-ui-core --no-default-features --features schemars
+      - run: cargo check --all-targets -p ag-ui-core --no-default-features --features utoipa
+      - run: cargo check --all-targets -p ag-ui-core --all-features
+      - run: cargo check --all-targets -p ag-ui-server --no-default-features
+      - run: cargo check --all-targets -p ag-ui-server --all-features
+      - run: cargo check --all-targets -p ag-ui-client --no-default-features
+      - run: cargo check --all-targets -p ag-ui-client --all-features
+      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features
+      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui
+      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features toolkit
+      - run: cargo check --all-targets -p ag-ui-a2ui --all-features
+      - run: cargo check --all-targets -p ag-ui-axum
+
+  # `rust-version = "1.85"` is a promise to anyone pinning an older toolchain,
+  # and edition 2024 stabilised in exactly 1.85, so there is no slack in it.
+  msrv:
+    name: MSRV 1.85
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-features --all-targets
+
+  # The public API is the product, so a broken intra-doc link is a defect in the
+  # deliverable rather than a cosmetic warning.
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --all-features --no-deps
+
+  # Every published crate must carry the metadata and files crates.io needs, and
+  # must not ship anything it should not. `--list` is offline and does not
+  # publish; it is the cheapest way to notice a README that stopped being
+  # packaged or a stray file that started being.
+  package:
+    name: package manifest
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: every published crate packages its README and LICENSE
+        run: |
+          set -uo pipefail
+          status=0
+          for crate in ag-ui-core ag-ui-server ag-ui-client ag-ui-axum ag-ui-a2ui; do
+            echo "--- $crate ---"
+            files=$(cargo package --list -p "$crate") || exit 2
+            printf '%s\n' "$files"
+            for required in README.md LICENSE; do
+              if ! printf '%s\n' "$files" | grep -Fxq "$required"; then
+                echo "::error title=Missing from package::$crate would publish without $required. crates.io renders the README as the crate's front page; without it the page is blank."
+                status=1
+              fi
+            done
+          done
+          exit $status
 
   # The community SDK fell behind because the port was hand-written with no
   # mechanical link to upstream. This job is that link.
+  #
+  # Offline and deterministic: it compares the vendored baseline against the
+  # Rust source and never opens a socket, so it cannot be reddened by a network
+  # blip. Exit 1 is drift; exit 2 is a missing baseline or a moved event module,
+  # which is a genuine repo defect and should fail too.
   drift:
     name: protocol drift vs upstream
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run -p xtask -- drift-check
+
+  # The other half of the link: is the *baseline* still current? This one does
+  # hit GitHub, so it is scheduled rather than required. `--upstream` keeps the
+  # offline verdict and merely reports when the fetch fails, so a rate limit or
+  # an outage cannot fail the run either — only real upstream movement can.
+  upstream-freshness:
+    name: upstream freshness (scheduled)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p xtask -- drift-check --upstream
+        env:
+          # Lifts the 60-requests/hour/IP unauthenticated limit.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
