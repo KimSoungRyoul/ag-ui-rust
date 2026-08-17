@@ -11,7 +11,7 @@
 mod common;
 
 use ag_ui_axum::AgentEndpoint;
-use ag_ui_client::{Agent as ClientAgent, Session, Update};
+use ag_ui_client::{RemoteAgent, Session, Update};
 use ag_ui_core::{
     ActivityMessage, AssistantMessage, Context, Event, InputContent, InputContentSource,
     MediaInputContent, Message, PatchOperation, RunAgentInput, RunOutcome, TextInputContent, Tool,
@@ -110,7 +110,7 @@ fn conversation() -> Vec<Message> {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_request_the_client_sent_is_the_request_the_agent_received() {
     let url = serve_endpoint(AgentEndpoint::new(Quiet).echo_input(true)).await;
-    let client = ClientAgent::new(transport(&url));
+    let client = RemoteAgent::new(transport(&url));
 
     let sent = request();
     let mut events = client.run(sent.clone());

@@ -56,9 +56,10 @@ async fn main() {
 
 ## Two levels
 
-`Agent` is the low level: `agent.run(params)` gives you the events exactly as the agent
-sent them, unassembled. That is what a proxy, a recorder or a bridge to another protocol
-wants.
+`RemoteAgent` is the low level: `agent.run(params)` gives you the events exactly as the
+agent sent them, unassembled. That is what a proxy, a recorder or a bridge to another
+protocol wants. (It is `RemoteAgent` and not `Agent` because `ag-ui-server::Agent` is the
+trait you implement to *be* an agent, and an agent that calls another agent imports both.)
 
 `Session` is the high level: a thread, its accumulated messages, and typed state.
 `session.send(text)` yields `Update`s — "this message grew", "the state changed", "the

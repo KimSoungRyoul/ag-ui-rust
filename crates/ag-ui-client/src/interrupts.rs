@@ -42,7 +42,7 @@
 //! # });
 //! ```
 //!
-//! Without one — a proxy, or anything driving [`crate::Agent`] directly —
+//! Without one — a proxy, or anything driving [`crate::RemoteAgent`] directly —
 //! [`interrupts_of`] finds the interrupts on the event and [`resume_run`]
 //! builds the next request.
 

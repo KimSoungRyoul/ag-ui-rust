@@ -9,7 +9,7 @@
 
 mod common;
 
-use ag_ui_client::{Agent as ClientAgent, RunParams, Session, Update};
+use ag_ui_client::{RemoteAgent, RunParams, Session, Update};
 use ag_ui_core::{AssistantMessage, Event, EventType, Message, MessageId, RunOutcome, ToolCallId};
 use ag_ui_server::{Agent, Result, RunContext};
 use common::{serve, transport};
@@ -96,7 +96,7 @@ fn chunk_reasoning(id: Option<&str>, delta: &str) -> Event {
 #[tokio::test(flavor = "multi_thread")]
 async fn chunks_travel_as_chunks_and_only_the_first_names_its_stream() {
     let url = serve(Chunky).await;
-    let agent = ClientAgent::new(transport(&url));
+    let agent = RemoteAgent::new(transport(&url));
 
     let mut events = Vec::new();
     let mut stream = agent.run(RunParams::new("chunky", "chunky-run-1"));

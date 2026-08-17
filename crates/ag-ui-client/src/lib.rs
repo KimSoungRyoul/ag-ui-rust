@@ -49,9 +49,17 @@
 //!
 //! # Two levels
 //!
-//! [`Agent`] is the low level: [`agent.run(params)`](Agent::run) gives you the
-//! events exactly as the agent sent them, unassembled. That is what a proxy, a
-//! recorder or a bridge to another protocol wants.
+//! [`RemoteAgent`] is the low level:
+//! [`agent.run(params)`](RemoteAgent::run) gives you the events exactly as the
+//! agent sent them, unassembled. That is what a proxy, a recorder or a bridge
+//! to another protocol wants.
+//!
+//! It is called `RemoteAgent` and not `Agent` because the other half of this
+//! SDK already owns that word from the other side:
+//! [`ag_ui_server::Agent`] is the trait you implement to *be* an agent, and an
+//! agent that calls another agent imports both.
+//!
+//! [`ag_ui_server::Agent`]: https://docs.rs/ag-ui-server/latest/ag_ui_server/trait.Agent.html
 //!
 //! [`Session`] is the high level: a thread, its accumulated messages, and typed
 //! state. [`session.send(text)`](Session::send) yields [`Update`]s — "this
@@ -92,6 +100,7 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
 
 // The README is the crate's front page on crates.io, so its examples are
 // doctested: a stale one is a red build rather than a bad first impression.
@@ -108,7 +117,7 @@ pub mod session;
 pub mod transport;
 pub mod verify;
 
-pub use agent::{Agent, RunParams};
+pub use agent::{RemoteAgent, RunParams};
 pub use apply::{
     Applier, Changed, MessageChange, MessageChangeKind, ReasoningChange, ReasoningChangeKind,
 };

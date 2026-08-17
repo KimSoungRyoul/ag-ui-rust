@@ -11,9 +11,7 @@ mod common;
 
 use std::time::Duration;
 
-use ag_ui_client::{
-    Agent as ClientAgent, Error as ClientError, RunEnd, RunParams, Session, Update,
-};
+use ag_ui_client::{Error as ClientError, RemoteAgent, RunEnd, RunParams, Session, Update};
 use ag_ui_core::{Event, EventType, Message, RunOutcome, TextMessageRole};
 use ag_ui_server::{Agent, Error, Result, RunContext};
 use common::{serve, transport};
@@ -84,7 +82,7 @@ const DEADLINE: Duration = Duration::from_secs(10);
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failing_agent_ends_its_stream_with_run_error() {
     let url = serve(Broken).await;
-    let agent = ClientAgent::new(transport(&url));
+    let agent = RemoteAgent::new(transport(&url));
 
     let events: Vec<Event> = timeout(DEADLINE, async {
         agent
@@ -263,7 +261,7 @@ async fn a_panicking_agent_ends_the_clients_run_rather_than_hanging_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_state_the_agent_cannot_decode_fails_the_run_rather_than_the_request() {
     let url = serve(Picky).await;
-    let client = ClientAgent::new(transport(&url));
+    let client = RemoteAgent::new(transport(&url));
 
     let events: Vec<Event> = client
         .run(RunParams::new("picky", "picky-run-1").state(json!({"not": "a number"})))

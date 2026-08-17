@@ -2,7 +2,7 @@
 
 use ag_ui_client::transport::ReplayTransport;
 use ag_ui_client::{
-    Agent, InterruptExt, ResumeBuilder, RunEnd, RunParams, Session, Update, interrupts_of,
+    InterruptExt, RemoteAgent, ResumeBuilder, RunEnd, RunParams, Session, Update, interrupts_of,
     resume_run,
 };
 use ag_ui_core::{Event, Interrupt, Message, ResumeStatus, RunAgentInput, TextMessageRole};
@@ -166,7 +166,7 @@ async fn several_interrupts_are_answered_in_one_request() {
 async fn the_low_level_api_can_do_the_round_trip_without_a_session() {
     // A proxy holds the raw events and builds the resuming request itself.
     let transport = paused_then_resumed();
-    let agent = Agent::new(transport.clone());
+    let agent = RemoteAgent::new(transport.clone());
 
     let first = RunParams::new("thread-1", "run-1")
         .user("msg-1", "drop the staging database")

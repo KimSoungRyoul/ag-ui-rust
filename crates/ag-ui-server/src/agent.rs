@@ -27,6 +27,13 @@ impl<T> AgentState for T where T: Serialize + DeserializeOwned + Default + Send 
 
 /// An agent that can serve one AG-UI run.
 ///
+/// This is the *hosting* side of the word. The consuming side —
+/// a handle onto somebody else's agent — is
+/// [`ag_ui_client::RemoteAgent`], deliberately spelled differently so that an
+/// agent which calls another agent can import both.
+///
+/// [`ag_ui_client::RemoteAgent`]: https://docs.rs/ag-ui-client/latest/ag_ui_client/struct.RemoteAgent.html
+///
 /// ```
 /// use ag_ui_core::RunOutcome;
 /// use ag_ui_server::{Agent, Result, RunContext};

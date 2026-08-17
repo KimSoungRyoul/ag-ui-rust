@@ -1,7 +1,7 @@
 //! The low-level API: start a run, get its events.
 //!
-//! [`Agent`] adds almost nothing to [`Transport`] — a request builder, and a
-//! stream that flattens connecting into streaming. That is the point. Anything
+//! [`RemoteAgent`] adds almost nothing to [`Transport`] — a request builder, and
+//! a stream that flattens connecting into streaming. That is the point. Anything
 //! that wants the events *as they were sent* — a proxy, a recorder, a bridge to
 //! another protocol, a test — should stay at this level.
 //!
@@ -146,12 +146,24 @@ impl From<RunAgentInput> for RunParams {
 /// [`HttpAgent`] is this over HTTP; the type is generic so that a wasm
 /// transport, an in-process agent, or a recorded fixture substitutes without
 /// anything above noticing.
+///
+/// # Not [`ag_ui_server::Agent`]
+///
+/// The two crates sit on opposite ends of the same wire, and the word "agent"
+/// means the opposite thing at each end, so they do not share a name.
+/// [`ag_ui_server::Agent`] is a *trait you implement* to be an agent;
+/// `RemoteAgent` is a *handle you hold* onto someone else's. An agent that calls
+/// another agent — the composition case — needs both in one file, and
+/// `impl Agent for X { … self.upstream: RemoteAgent<_> … }` reads correctly
+/// only because they are spelled differently.
+///
+/// [`ag_ui_server::Agent`]: https://docs.rs/ag-ui-server/latest/ag_ui_server/trait.Agent.html
 #[derive(Clone, Debug, Default)]
-pub struct Agent<T> {
+pub struct RemoteAgent<T> {
     transport: T,
 }
 
-impl<T> Agent<T> {
+impl<T> RemoteAgent<T> {
     /// An agent reached through `transport`.
     pub fn new(transport: T) -> Self {
         Self { transport }
@@ -168,7 +180,7 @@ impl<T> Agent<T> {
     }
 }
 
-impl<T: Transport> Agent<T> {
+impl<T: Transport> RemoteAgent<T> {
     /// Starts a run and streams its events, exactly as the agent sent them.
     ///
     /// Nothing is normalized, verified or assembled here — chunk events arrive
@@ -185,10 +197,10 @@ impl<T: Transport> Agent<T> {
 
 /// An agent reached over HTTP.
 #[cfg(feature = "http")]
-pub type HttpAgent = Agent<HttpTransport>;
+pub type HttpAgent = RemoteAgent<HttpTransport>;
 
 #[cfg(feature = "http")]
-impl Agent<HttpTransport> {
+impl RemoteAgent<HttpTransport> {
     /// A builder for an agent at `url`.
     pub fn builder(url: impl AsRef<str>) -> HttpAgentBuilder {
         HttpAgentBuilder {
@@ -261,6 +273,6 @@ impl HttpAgentBuilder {
     /// [`Error::Config`](crate::Error::Config) when the URL or a header is not
     /// valid.
     pub fn build(self) -> Result<HttpAgent> {
-        Ok(Agent::new(self.transport.build()?))
+        Ok(RemoteAgent::new(self.transport.build()?))
     }
 }

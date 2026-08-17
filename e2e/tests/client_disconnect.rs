@@ -11,7 +11,7 @@ mod common;
 
 use std::time::Duration;
 
-use ag_ui_client::{Agent as ClientAgent, RunParams, Session};
+use ag_ui_client::{RemoteAgent, RunParams, Session};
 use ag_ui_core::{EventType, RunOutcome};
 use ag_ui_server::{Agent, CancellationToken, Result, RunContext};
 use common::{serve, transport};
@@ -96,7 +96,7 @@ async fn dropping_the_event_stream_mid_run_cancels_the_agent() {
     .await;
 
     {
-        let client = ClientAgent::new(transport(&url));
+        let client = RemoteAgent::new(transport(&url));
         let mut events = client.run(RunParams::new("patient", "patient-run-1"));
 
         // Read until the agent has finished speaking, so the run is
@@ -175,7 +175,7 @@ async fn a_run_that_completes_is_never_reported_as_cancelled() {
     let (exit_tx, mut exit_rx) = unbounded_channel();
     let url = serve(Prompt { exit: exit_tx }).await;
 
-    let client = ClientAgent::new(transport(&url));
+    let client = RemoteAgent::new(transport(&url));
     let events: Vec<EventType> = client
         .run(RunParams::new("prompt", "prompt-run-1"))
         .map(|event| event.expect("the stream should not break").event_type())

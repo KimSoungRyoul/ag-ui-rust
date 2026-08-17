@@ -16,9 +16,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use ag_ui_client::{
-    Agent as ClientAgent, Error as ClientError, RunEnd, RunParams, Session, Update,
-};
+use ag_ui_client::{Error as ClientError, RemoteAgent, RunEnd, RunParams, Session, Update};
 use ag_ui_core::{Event, EventType, PatchOperation, RunOutcome};
 use ag_ui_server::{Agent, Result, RunContext};
 use common::{serve, transport};
@@ -111,7 +109,7 @@ fn published() -> Vec<Board> {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_server_picks_snapshots_and_deltas_and_both_reach_the_client() {
     let url = serve(Editor).await;
-    let agent = ClientAgent::new(transport(&url));
+    let agent = RemoteAgent::new(transport(&url));
 
     let mut encodings = Vec::new();
     let mut events = agent.run(RunParams::new("board", "board-run-1"));

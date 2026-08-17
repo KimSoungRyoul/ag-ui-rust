@@ -1,6 +1,6 @@
 //! The high-level API: a conversation you send text to.
 //!
-//! [`Agent`] gives you events. A UI does not want events — it
+//! [`RemoteAgent`] gives you events. A UI does not want events — it
 //! wants "this message grew by three characters", "the state changed, here it
 //! is typed", "the agent is waiting for you to approve something". A [`Session`]
 //! is the thread, its accumulated messages and its typed state, and it yields
@@ -52,7 +52,7 @@ use futures_core::Stream;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::agent::Agent;
+use crate::agent::RemoteAgent;
 use crate::apply::{Applier, Changed, MessageChangeKind, ReasoningChangeKind};
 use crate::chunks::ChunkNormalizer;
 use crate::error::Error;
@@ -154,7 +154,7 @@ pub enum RunEnd {
 /// all that takes.
 #[derive(Debug)]
 pub struct Session<T, S = Value> {
-    agent: Agent<T>,
+    agent: RemoteAgent<T>,
     thread_id: ThreadId,
     applier: Applier,
     state: Option<S>,
@@ -220,7 +220,7 @@ impl<T, S> Session<T, S> {
     }
 
     /// The low-level agent underneath.
-    pub fn agent(&self) -> &Agent<T> {
+    pub fn agent(&self) -> &RemoteAgent<T> {
         &self.agent
     }
 
@@ -428,7 +428,7 @@ impl<T, S> SessionBuilder<T, S> {
     /// Builds the session.
     pub fn build(self) -> Session<T, S> {
         Session {
-            agent: Agent::new(self.transport),
+            agent: RemoteAgent::new(self.transport),
             thread_id: self.thread_id,
             applier: Applier::new()
                 .with_messages(self.messages)
