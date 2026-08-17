@@ -4,8 +4,8 @@
 //! one stream is only knowable from the start of the next. The client's
 //! normalizer is the thing that remembers; this drives real chunk events over
 //! real HTTP and checks what comes out the other side — including two message
-//! streams in one run, a return to the first one, and all three chunk families
-//! interleaved.
+//! streams in one run, a return to the first one, all three chunk families
+//! interleaved, and a chunk-streamed tool call the agent answers itself.
 
 mod common;
 
@@ -53,6 +53,32 @@ impl Agent for Chunky {
         // appended to rather than duplicated.
         ctx.emit(chunk_text(Some("say-1"), "!"))?;
 
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// Chunk-streams a tool call and then answers it — what an adapter does when
+/// the tool runs on the agent's side.
+struct ChunkyToolUser;
+
+impl Agent for ChunkyToolUser {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        ctx.emit(Event::tool_call_chunk(
+            Some(ToolCallId::new("call-1")),
+            Some("get_weather".to_owned()),
+            Some(r#"{"city":"#.to_owned()),
+        ))?;
+        ctx.emit(Event::tool_call_chunk(
+            None,
+            None,
+            Some(r#""Seoul"}"#.to_owned()),
+        ))?;
+        // No `TOOL_CALL_END`: a chunk-streamed call has none of its own, and
+        // the server's verifier accepts the result all the same.
+        ctx.emit(Event::tool_call_result("msg-1", "call-1", r#"{"temp":21}"#))?;
+        ctx.emit(chunk_text(Some("say-1"), "It is 21 degrees."))?;
         Ok(RunOutcome::Success)
     }
 }
@@ -154,6 +180,49 @@ async fn interleaved_chunk_streams_reassemble_into_separate_messages() {
             )]),
             ..Default::default()
         }),
+    ];
+    assert_eq!(session.messages(), expected.as_slice());
+}
+
+/// The two halves have to agree about a chunk-streamed call and its result.
+///
+/// The server's verifier accepts a `TOOL_CALL_RESULT` for a call opened by a
+/// chunk — there is no `TOOL_CALL_END` to wait for — so the client's normalizer
+/// has to emit the terminator it owes *before* passing the result on. When it
+/// did not, the client's own verifier rejected the result, the rejected event
+/// was never applied, and the tool message vanished from a run the client still
+/// reported a success. Nothing short of both halves running together catches a
+/// disagreement between them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunk_streamed_call_answered_by_the_agent_survives_the_round_trip() {
+    let url = serve(ChunkyToolUser).await;
+    let mut session = Session::<_>::new(transport(&url), "chunky");
+
+    let mut errors = Vec::new();
+    {
+        let mut run = session.send("what is the weather?");
+        while let Some(update) = run.next().await {
+            if let Update::Error(error) = update {
+                errors.push(error.to_string());
+            }
+        }
+    }
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+
+    let expected = vec![
+        Message::user("chunky-msg-1", "what is the weather?"),
+        Message::Assistant(AssistantMessage {
+            id: "call-1-message".into(),
+            content: None,
+            tool_calls: Some(vec![ag_ui_core::ToolCall::new(
+                "call-1",
+                "get_weather",
+                r#"{"city":"Seoul"}"#,
+            )]),
+            ..Default::default()
+        }),
+        Message::tool("msg-1", "call-1", r#"{"temp":21}"#),
+        Message::assistant("say-1", "It is 21 degrees."),
     ];
     assert_eq!(session.messages(), expected.as_slice());
 }

@@ -326,6 +326,72 @@ async fn a_session_yields_updates_and_keeps_the_conversation() {
 }
 
 #[tokio::test]
+async fn a_chunk_streamed_tool_call_keeps_its_result_in_the_conversation() {
+    // The whole cost of the normalizer letting a result overtake the
+    // `TOOL_CALL_END` it owes: the verifier rejects the out-of-order result,
+    // a rejected event is not applied, and the tool message is gone from the
+    // conversation the next run carries — with the run still reported a
+    // success. This is the normal path for every chunk-streaming adapter.
+    let transport = ReplayTransport::with_runs([
+        vec![
+            Event::run_started("thread-1", "run-1"),
+            Event::tool_call_chunk(
+                Some(ToolCallId::new("call-1")),
+                Some("get_weather".into()),
+                Some(r#"{"city":"Seoul"}"#.into()),
+            ),
+            Event::tool_call_result("msg-2", "call-1", r#"{"temp":21}"#),
+            Event::run_finished_success("thread-1", "run-1"),
+        ],
+        vec![
+            Event::run_started("thread-1", "run-2"),
+            Event::run_finished_success("thread-1", "run-2"),
+        ],
+    ]);
+    let mut session = Session::<_>::new(transport.clone(), "thread-1");
+
+    let updates: Vec<_> = session.send("what is the weather?").collect().await;
+    let errors: Vec<_> = updates
+        .iter()
+        .filter_map(|update| match update {
+            Update::Error(error) => Some(error.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(matches!(
+        updates.last(),
+        Some(Update::Done(RunEnd::Success { .. }))
+    ));
+
+    // The user's turn, the message the call hangs off, and the result.
+    assert_eq!(session.messages().len(), 3);
+    let Some(Message::Tool(result)) = session.messages().last() else {
+        panic!(
+            "the tool result should be in the conversation: {:?}",
+            session.messages()
+        );
+    };
+    assert_eq!(result.tool_call_id, "call-1");
+    assert_eq!(result.content, r#"{"temp":21}"#);
+
+    // And the next run carries it, which is what lets the model see its own
+    // tool's answer.
+    let mut second = session.send("and tomorrow?");
+    while second.next().await.is_some() {}
+    drop(second);
+    let request = transport.last_request().expect("a second request");
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|message| matches!(message, Message::Tool(tool) if tool.tool_call_id == "call-1")),
+        "the tool result should be sent back to the agent: {:?}",
+        request.messages
+    );
+}
+
+#[tokio::test]
 async fn a_second_run_carries_the_first_run_s_history_and_state() {
     let transport = ReplayTransport::with_runs([
         vec![
@@ -474,6 +540,9 @@ async fn a_transport_that_breaks_mid_run_still_ends_the_run() {
 async fn a_truncated_stream_ends_the_run_even_with_verification_off() {
     // With no verifier there is nothing to notice the truncation, but the run
     // is over either way and a caller that is never told waits forever.
+    // Verification off buys a producer's quirks, not silence about a dead run:
+    // `RunEnd::Failed` promises the matching `Update::Error` came first, and
+    // that has to hold on this path too.
     let transport = ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
@@ -483,10 +552,21 @@ async fn a_truncated_stream_ends_the_run_even_with_verification_off() {
         .build();
 
     let updates: Vec<_> = session.send("hi").collect().await;
-    assert!(matches!(
-        updates.last(),
-        Some(Update::Done(RunEnd::Failed { .. }))
-    ));
+    let complaint = updates
+        .iter()
+        .find_map(|update| match update {
+            Update::Error(error) => Some(error.to_string()),
+            _ => None,
+        })
+        .expect("the truncation should be reported without a verifier too");
+    assert!(
+        complaint.contains("ended before RUN_FINISHED"),
+        "unexpected error: {complaint}"
+    );
+    let Some(Update::Done(RunEnd::Failed { message, .. })) = updates.last() else {
+        panic!("a truncated run must still end with Done: {updates:?}");
+    };
+    assert_eq!(message, &complaint, "the two should say the same thing");
 }
 
 #[tokio::test]

@@ -393,6 +393,81 @@ fn a_tool_result_closes_the_chunk_streamed_call_it_answers() {
 }
 
 #[test]
+fn parallel_chunk_streamed_calls_each_close_before_their_own_result() {
+    // What a provider adapter actually emits when the model asks for three
+    // tools at once: the calls stream one after another, and the results come
+    // back in whatever order the tools finished — here, not the order asked.
+    // Every call must be closed before the first result, and each `TOOL_CALL_END`
+    // must precede the result that answers it.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        tool_chunk(Some("call-1"), Some("search"), Some(r#"{"q":"#)),
+        tool_chunk(None, None, Some(r#""seoul"}"#)),
+        tool_chunk(Some("call-2"), Some("lookup"), Some("{}")),
+        Event::tool_call_result("msg-1", "call-1", "sunny"),
+        tool_chunk(Some("call-3"), Some("geocode"), Some("{}")),
+        Event::tool_call_result("msg-2", "call-3", "37.5"),
+        Event::tool_call_result("msg-3", "call-2", "found"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalizes");
+
+    assert_eq!(
+        types(&events),
+        [
+            EventType::RunStarted,
+            EventType::ToolCallStart,  // call-1
+            EventType::ToolCallArgs,   // {"q":
+            EventType::ToolCallArgs,   // "seoul"}
+            EventType::ToolCallEnd,    // call-1, closed by call-2 opening
+            EventType::ToolCallStart,  // call-2
+            EventType::ToolCallArgs,   // {}
+            EventType::ToolCallEnd,    // call-2, closed by call-1's result
+            EventType::ToolCallResult, // call-1
+            EventType::ToolCallStart,  // call-3
+            EventType::ToolCallArgs,   // {}
+            EventType::ToolCallEnd,    // call-3, closed by its own result
+            EventType::ToolCallResult, // call-3
+            EventType::ToolCallResult, // call-2
+            EventType::RunFinished,
+        ]
+    );
+    verify_all(&events).expect("the normalized stream should verify");
+
+    // The ordering, per call, spelled out: an assertion on the type sequence
+    // alone would still pass if the ends came out against the wrong ids.
+    for id in ["call-1", "call-2", "call-3"] {
+        let end = events
+            .iter()
+            .position(|event| matches!(event, Event::ToolCallEnd(e) if e.tool_call_id == id))
+            .unwrap_or_else(|| panic!("{id} was never closed"));
+        let result = events
+            .iter()
+            .position(|event| matches!(event, Event::ToolCallResult(e) if e.tool_call_id == id))
+            .unwrap_or_else(|| panic!("{id} got no result"));
+        assert!(
+            end < result,
+            "{id} was closed at {end}, after its result at {result}"
+        );
+    }
+
+    // And the arguments survived being split across two chunks.
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    let ag_ui_core::Message::Assistant(assistant) = &applier.messages()[0] else {
+        panic!("expected the first call's message");
+    };
+    assert_eq!(
+        assistant.tool_calls.as_ref().expect("calls")[0]
+            .function
+            .arguments,
+        r#"{"q":"seoul"}"#
+    );
+}
+
+#[test]
 fn a_tool_result_closes_a_chunk_streamed_message_too() {
     // The other stream a result can arrive underneath: it may not interleave
     // with an open message either.

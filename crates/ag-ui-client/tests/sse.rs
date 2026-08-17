@@ -178,54 +178,43 @@ fn the_cap_still_stops_a_frame_built_from_many_small_data_lines() {
     let mut decoder = SseDecoder::new().with_max_frame_size(256);
     let body = "data: xxxxxxxx\n".repeat(200);
 
-    let error = decoder
+    decoder
         .push(body.as_bytes())
-        .and_then(|()| decoder.next_frame())
+        .expect("nothing here is an unterminated line, so the push is fine");
+    let error = decoder
+        .next_frame()
         .expect_err("the accumulated payload should hit the cap");
+    // Named specifically: the push-time check would also say "limit", and it
+    // saying so is the bug this pair of tests brackets.
     assert!(
-        error.to_string().contains("limit"),
+        error.to_string().contains("across its data lines"),
         "unexpected error: {error}"
     );
 }
 
 #[test]
-fn many_frames_in_one_chunk_decode_in_linear_time() {
-    // Taking a line used to `split_off` the remainder of the buffer, copying
-    // everything still unread once per line. A 300 KB read of small frames —
-    // one slow second of a chatty agent — then cost tens of milliseconds of
-    // pure memcpy, and the cost grew with the square of the frame count.
-    fn decode(frames: usize) -> std::time::Duration {
-        let mut body = String::new();
-        for i in 0..frames {
-            body.push_str(&format!(
-                "data: {{\"type\":\"CUSTOM\",\"name\":\"n{i}\"}}\n\n"
-            ));
-        }
-        let start = std::time::Instant::now();
-        let mut decoder = SseDecoder::new();
-        decoder.push(body.as_bytes()).expect("pushes");
-        let mut decoded = 0;
-        while decoder.next_frame().expect("decodes").is_some() {
-            decoded += 1;
-        }
-        assert_eq!(decoded, frames);
-        start.elapsed()
+fn many_frames_in_one_chunk_all_come_back_out() {
+    // The other half of the cursor arrangement: reading through a large chunk
+    // one line at a time has to leave the frames intact and in order. That the
+    // reading does not recopy the remainder as it goes is asserted in the
+    // decoder's own unit tests, where the cursor is visible.
+    let mut body = String::new();
+    for i in 0..2_000 {
+        body.push_str(&format!(
+            "data: {{\"type\":\"CUSTOM\",\"name\":\"n{i}\"}}\n\n"
+        ));
     }
 
-    // Warm up, so the first allocation does not land on the measurement.
-    decode(2_000);
-    let small = decode(2_000);
-    let large = decode(16_000);
+    let mut decoder = SseDecoder::new();
+    decoder.push(body.as_bytes()).expect("pushes");
+    let mut decoded = Vec::new();
+    while let Some(frame) = decoder.next_frame().expect("decodes") {
+        decoded.push(frame.data);
+    }
 
-    // Eight times the frames, so linear is 8x and quadratic is 64x. The bound
-    // is loose enough to survive a loaded CI box and tight enough that the
-    // quadratic version — which measured over 100x here — cannot pass.
-    let ratio = large.as_secs_f64() / small.as_secs_f64().max(f64::EPSILON);
-    assert!(
-        ratio < 30.0,
-        "decoding 8x the frames took {ratio:.1}x the time ({small:?} -> {large:?}), \
-         which is not linear"
-    );
+    assert_eq!(decoded.len(), 2_000);
+    assert_eq!(decoded[0], r#"{"type":"CUSTOM","name":"n0"}"#);
+    assert_eq!(decoded[1_999], r#"{"type":"CUSTOM","name":"n1999"}"#);
 }
 
 #[test]

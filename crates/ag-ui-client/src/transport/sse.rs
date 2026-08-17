@@ -388,3 +388,69 @@ struct Decoding<S> {
     ready: VecDeque<Result<Event>>,
     done: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SseDecoder;
+
+    /// A body of `frames` identical two-line frames, and the size of one.
+    fn body(frames: usize) -> (String, usize) {
+        let frame = "data: {\"type\":\"CUSTOM\"}\n\n";
+        (frame.repeat(frames), frame.len())
+    }
+
+    #[test]
+    fn taking_a_line_moves_the_cursor_instead_of_the_bytes_behind_it() {
+        // `take_line` used to `split_off` the remainder of the buffer, copying
+        // every byte still unread once per line. One read carrying a thousand
+        // frames — a fast agent filling a TCP window — then cost a thousand
+        // copies of a shrinking buffer, and the total grew with the square of
+        // the frame count. The cursor is what makes it linear, and the buffer
+        // holding still while frames come out of it is how that is visible
+        // without timing anything.
+        let (body, frame_size) = body(64);
+        let mut decoder = SseDecoder::new();
+        decoder.push(body.as_bytes()).expect("pushes");
+        let pushed = decoder.buffer.len();
+
+        for taken in 1..=32 {
+            decoder
+                .next_frame()
+                .expect("decodes")
+                .expect("64 frames went in");
+            assert_eq!(
+                decoder.buffer.len(),
+                pushed,
+                "the unread remainder was recopied after {taken} frames"
+            );
+            assert_eq!(decoder.consumed, taken * frame_size);
+        }
+
+        // The consumed prefix is dropped once, on the next push, rather than
+        // once per line.
+        decoder.push(b"data: x\n\n").expect("pushes");
+        assert_eq!(decoder.consumed, 0);
+        assert_eq!(decoder.buffer.len(), pushed - 32 * frame_size + 9);
+    }
+
+    #[test]
+    fn dropping_the_consumed_prefix_does_not_disturb_what_is_still_buffered() {
+        // That drop rewrites the offset every remaining byte sits at, so the
+        // frames either side of a push have to come out whole and in order.
+        let (body, _) = body(4);
+        let mut decoder = SseDecoder::new();
+        decoder.push(body.as_bytes()).expect("pushes");
+        decoder.next_frame().expect("decodes").expect("a frame");
+        decoder.next_frame().expect("decodes").expect("a frame");
+
+        decoder.push(b"data: last\n\n").expect("pushes");
+        let mut rest = Vec::new();
+        while let Some(frame) = decoder.next_frame().expect("decodes") {
+            rest.push(frame.data);
+        }
+        assert_eq!(
+            rest,
+            [r#"{"type":"CUSTOM"}"#, r#"{"type":"CUSTOM"}"#, "last"]
+        );
+    }
+}

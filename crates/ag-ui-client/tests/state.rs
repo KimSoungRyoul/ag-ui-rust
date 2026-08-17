@@ -96,6 +96,26 @@ fn a_malformed_json_pointer_is_rejected_before_anything_is_mutated() {
 }
 
 #[test]
+fn a_delta_whose_value_the_producer_dropped_applies_as_null() {
+    // `JSON.stringify` drops a key holding `undefined`, so a JavaScript agent
+    // diffing state over such a key emits `{"op":"add","path":"/draft"}` with no
+    // `value` at all. It has to arrive off the wire: building the operation in
+    // Rust cannot reproduce the omission. Rejecting it took the whole
+    // STATE_DELTA down, and in an SSE stream a failed event is a failed run.
+    let event: Event = serde_json::from_str(
+        r#"{"type":"STATE_DELTA","delta":[{"op":"add","path":"/draft"},{"op":"replace","path":"/count"}]}"#,
+    )
+    .expect("a producer's dropped value must not fail the event");
+
+    let mut applier = Applier::new().with_state(json!({ "count": 1 }));
+    applier.apply(&event).expect("applies");
+
+    // Null, which is what the JavaScript patch libraries would have written —
+    // not the key left untouched and not the key removed.
+    assert_eq!(applier.state(), &json!({ "draft": null, "count": null }));
+}
+
+#[test]
 fn an_activity_patch_that_cannot_apply_is_an_error_naming_the_activity() {
     let mut applier = Applier::new();
     let mut content = ag_ui_core::JsonObject::new();
@@ -159,6 +179,32 @@ fn an_activity_patch_that_replaces_the_whole_document_is_refused() {
         json!(40),
         "the activity must keep the content it had"
     );
+}
+
+#[test]
+fn an_activity_patch_may_replace_the_whole_document_with_another_object() {
+    // The other side of that check: targeting the root is legal RFC 6902 and
+    // an object is a content an activity can hold, so this one lands. Refusing
+    // every root-targeting operation would be the easy over-correction.
+    let mut applier = Applier::new();
+    let mut content = ag_ui_core::JsonObject::new();
+    content.insert("percent".into(), json!(40));
+    applier
+        .apply(&Event::activity_snapshot("act-1", "progress", content))
+        .expect("applies");
+
+    applier
+        .apply(&Event::activity_delta(
+            "act-1",
+            "progress",
+            vec![PatchOperation::replace("", json!({ "percent": 100 }))],
+        ))
+        .expect("replacing the root with an object is fine");
+
+    let ag_ui_core::Message::Activity(activity) = &applier.messages()[0] else {
+        panic!("expected an activity message");
+    };
+    assert_eq!(activity.content["percent"], json!(100));
 }
 
 #[test]

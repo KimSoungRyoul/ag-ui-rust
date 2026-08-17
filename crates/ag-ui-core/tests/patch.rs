@@ -128,25 +128,33 @@ fn an_omitted_value_reads_as_null_rather_than_failing_the_event() {
     // `undefined` there. Upstream types the patch as `z.array(z.any())` and
     // accepts it; rejecting it here would take down the whole STATE_DELTA event,
     // and with it the run.
-    for (wire, expected) in [
+    for (wire, expected, op) in [
         (
             r#"{"op":"add","path":"/x"}"#,
             PatchOperation::add("/x", serde_json::Value::Null),
+            "add",
         ),
         (
             r#"{"op":"replace","path":"/x"}"#,
             PatchOperation::replace("/x", serde_json::Value::Null),
+            "replace",
         ),
         (
             r#"{"op":"test","path":"/x"}"#,
             PatchOperation::test("/x", serde_json::Value::Null),
+            "test",
         ),
     ] {
         let parsed: PatchOperation = serde_json::from_str(wire).expect(wire);
         assert_eq!(parsed, expected);
-        // Re-serialization makes the null explicit; the applier then sees the
-        // same value a JavaScript patch library would have written.
         assert_eq!(parsed.value(), Some(&serde_json::Value::Null));
+        // And going back out the null is explicit, so a Rust proxy hands the
+        // next consumer the value a JavaScript patch library would have applied
+        // rather than the omission it received.
+        assert_eq!(
+            serde_json::to_string(&parsed).expect("serializes"),
+            format!(r#"{{"op":"{op}","path":"/x","value":null}}"#)
+        );
     }
 
     // And a whole event survives it.

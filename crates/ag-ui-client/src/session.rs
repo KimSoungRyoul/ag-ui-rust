@@ -454,9 +454,11 @@ impl<T, S> SessionBuilder<T, S> {
 ///
 /// Every run ends with exactly one [`Update::Done`], and the stream ends
 /// there. A transport that stops early is reported as an [`Update::Error`] —
-/// naming the truncation when verification is on, and the transport's own
-/// failure otherwise — followed by [`RunEnd::Failed`]: a view that re-enables
-/// its input on `Done` must not be left waiting by a dropped connection.
+/// naming the truncation when the body simply stopped, and the transport's own
+/// failure when it broke — followed by [`RunEnd::Failed`]: a view that
+/// re-enables its input on `Done` must not be left waiting by a dropped
+/// connection. Turning verification off changes how precisely the truncation is
+/// described, not whether it is reported.
 pub struct RunStream<'a, T, S = Value> {
     session: &'a mut Session<T, S>,
     events: EventStream,
@@ -599,20 +601,16 @@ where
         // Getting here means no terminal event was applied, because applying
         // one queues the run's `Done` and stops the stream before this. So the
         // run ended without saying how, and this is where that is said.
-        let message = match self.verifier.as_ref().map(Verifier::finish) {
-            Some(Err(error)) => {
-                let message = error.to_string();
-                self.ready.push_back(Update::Error(error));
-                message
-            }
+        let error = match self.verifier.as_ref().map(Verifier::finish) {
+            // The verifier says it more precisely: it knows whether the run
+            // ever started.
+            Some(Err(error)) => error,
             // Unverified, or verified and somehow tidy: either way the producer
-            // never sent a terminal event.
-            _ => TRUNCATED.to_owned(),
+            // never sent a terminal event. Turning verification off buys a
+            // caller a producer's quirks, not silence about a dead run.
+            _ => Error::protocol(TRUNCATED),
         };
-        self.ready.push_back(Update::Done(RunEnd::Failed {
-            message,
-            code: None,
-        }));
+        self.fail(error);
     }
 
     /// Emits the terminators the normalizer still owes.
@@ -633,6 +631,15 @@ where
     fn transport_failed(&mut self, error: Error) {
         self.done = true;
         self.close_open_streams();
+        self.fail(error);
+    }
+
+    /// Ends a run that stopped without the agent saying how: the error, and
+    /// then the [`Update::Done`] every run owes its caller.
+    ///
+    /// Both in that order, on every path, so that [`RunEnd::Failed`] always has
+    /// the matching [`Update::Error`] in front of it.
+    fn fail(&mut self, error: Error) {
         let message = error.to_string();
         self.ready.push_back(Update::Error(error));
         self.ready.push_back(Update::Done(RunEnd::Failed {
