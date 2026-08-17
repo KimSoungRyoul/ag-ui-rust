@@ -39,6 +39,32 @@
 //! assert_eq!(session.messages().len(), 2);
 //! # });
 //! ```
+//!
+//! # One update is one event, and the order is the nesting
+//!
+//! The stream is per *event*, not per entity. A reply that streams in forty
+//! deltas is forty [`Update::Message`]s under one id; two tool calls in flight
+//! — which a model produces whenever it asks for two things at once —
+//! interleave, and only their ids separate them.
+//!
+//! So whatever the run *nested* survives as arrival order and nothing else. An
+//! agent that publishes state while a tool call is open (which
+//! [`ag-ui-server`]'s handles support, and the protocol allows because
+//! `STATE_*` is unordered) puts the `STATE_*` event between that call's
+//! `TOOL_CALL_ARGS` and its `TOOL_CALL_END` — and the [`Update::State`] that
+//! comes out carries no mention of the call. That is not an omission to be
+//! fixed by adding a field: under parallel calls two calls are open at once and
+//! the wire itself does not say which one the state belongs to, so any
+//! attribution would be invented. **The ordering is the contract.**
+//!
+//! A renderer that draws in arrival order therefore shows what happened. One
+//! that buffers by entity — collecting a call's arguments so it can draw the
+//! call on one line when it closes — is choosing to reorder: everything that
+//! arrived while the call was open now draws before it. For a terminal that is
+//! often the right trade, and `examples/board-watch` makes it deliberately and
+//! pins the consequence in a test. It is only a bug when it is an accident.
+//!
+//! [`ag-ui-server`]: https://docs.rs/ag-ui-server
 
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -73,6 +99,11 @@ pub enum Update<S = Value> {
     /// disappeared, so redraw all of it.
     Messages(Vec<Message>),
     /// The application state changed, and here it is in the caller's type.
+    ///
+    /// Carries no association with whatever was open when it arrived — a tool
+    /// call, a message — because the wire carries none either. Where it lands
+    /// in the stream is the only nesting there is; see the [module
+    /// docs](self).
     State(S),
     /// Reasoning text arrived. Kept separate from the reply.
     Reasoning(ReasoningUpdate),
@@ -128,6 +159,14 @@ pub struct ReasoningUpdate {
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunEnd {
     /// The agent finished.
+    ///
+    /// Meaning "the agent said the run succeeded", not "nothing went wrong".
+    /// The two come apart: a protocol violation the verifier caught, or a state
+    /// patch that would not apply, arrives as an [`Update::Error`] and the run
+    /// carries on to end here — those are the *client's* diagnostics, and the
+    /// agent is neither told nor asked. A view that routes on
+    /// [`Update::Done`] alone will call such a run clean; track the errors as
+    /// they arrive if the difference matters to you.
     Success {
         /// The agent's return value, if it sent one.
         result: Option<Value>,
@@ -441,6 +480,9 @@ impl<T, S> SessionBuilder<T, S> {
     }
 
     /// Offers tools on every run.
+    ///
+    /// The client's responsibility, not the agent's: there is no discovery in
+    /// AG-UI. See the [crate docs](crate#tools-are-yours-to-offer).
     #[must_use]
     pub fn tools(mut self, tools: impl Into<Vec<Tool>>) -> Self {
         self.tools = tools.into();

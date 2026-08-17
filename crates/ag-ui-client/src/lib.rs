@@ -79,6 +79,18 @@
 //! chunk normalization, protocol verification and delta application already
 //! done.
 //!
+//! # Tools are yours to offer
+//!
+//! AG-UI has no tool discovery and no negotiation. The tool set travels on
+//! every request, from the client, and an agent cannot ask for one it was not
+//! sent — so offering none to an agent that needs one does not produce a
+//! missing-tool error from this crate. It produces the *agent's* own error
+//! ("the client offered no add_task tool", or whatever that agent says),
+//! arriving as an ordinary failed run, which reads like a bug in the agent and
+//! is not one. A client written against no particular agent therefore has to be
+//! configured with a tool set the way it is configured with a URL:
+//! [`SessionBuilder::tools`], or [`Session::set_tools`] from the next run on.
+//!
 //! # The pieces underneath
 //!
 //! - [`apply`] — the event applier. Deltas in, materialised messages and state
