@@ -149,6 +149,37 @@ impl<S> RunContext<S> {
         &self.input.messages
     }
 
+    /// What the user said last, as text.
+    ///
+    /// The turn an agent is almost always answering. Non-text parts of a
+    /// multimodal message are dropped — see
+    /// [`UserContent::to_text`](ag_ui_core::UserContent::to_text); reach into
+    /// [`RunContext::messages`] directly if the images matter.
+    ///
+    /// `None` when the history holds no user message at all, which is distinct
+    /// from a user who sent an empty one.
+    ///
+    /// ```
+    /// # use ag_ui_core::{RunAgentInput, Message};
+    /// # use ag_ui_server::RunContext;
+    /// let mut input = RunAgentInput::new("thread-1", "run-1");
+    /// input.messages = vec![Message::user("msg-1", "add milk")];
+    /// let (ctx, _events) = RunContext::<()>::new(input)?;
+    ///
+    /// assert_eq!(ctx.last_user_text().as_deref(), Some("add milk"));
+    /// # Ok::<(), ag_ui_server::Error>(())
+    /// ```
+    pub fn last_user_text(&self) -> Option<String> {
+        self.input
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                Message::User(user) => Some(user.content.to_text()),
+                _ => None,
+            })
+    }
+
     /// Tools the client is offering for this run.
     pub fn tools(&self) -> &[Tool] {
         &self.input.tools
@@ -414,6 +445,21 @@ mod tests {
         assert_eq!(ctx.new_message_id().as_str(), "run-7-msg-1");
         assert_eq!(ctx.new_message_id().as_str(), "run-7-msg-2");
         assert_eq!(ctx.new_tool_call_id().as_str(), "run-7-call-1");
+    }
+
+    #[test]
+    fn the_last_user_turn_is_the_one_returned_and_absence_is_not_emptiness() {
+        let (ctx, _events) = context::<()>(RunAgentInput::new("t", "r"));
+        assert_eq!(ctx.last_user_text(), None, "no user message is not \"\"");
+
+        let mut input = RunAgentInput::new("t", "r");
+        input.messages = vec![
+            Message::user("m-1", "add milk"),
+            Message::assistant("m-2", "milk it is"),
+            Message::user("m-3", "and bread"),
+        ];
+        let (ctx, _events) = context::<()>(input);
+        assert_eq!(ctx.last_user_text().as_deref(), Some("and bread"));
     }
 
     #[test]

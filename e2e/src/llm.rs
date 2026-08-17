@@ -55,9 +55,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use ag_ui_core::{
-    InputContent, Message, MessageId, RunOutcome, TextMessageRole, Tool, ToolCallId, UserContent,
-};
+use ag_ui_core::{Message, MessageId, RunOutcome, TextMessageRole, Tool, ToolCallId};
 use ag_ui_server::{Agent, Error, Result, RunContext};
 use futures_util::stream::{Stream, StreamExt as _};
 use serde::Deserialize;
@@ -584,7 +582,7 @@ fn messages_of(messages: &[Message]) -> Vec<Value> {
             }
 
             Message::User(message) => {
-                Some(json!({"role": "user", "content": text_of(&message.content)}))
+                Some(json!({"role": "user", "content": message.content.to_text()}))
             }
 
             Message::Assistant(message) => {
@@ -632,20 +630,6 @@ fn messages_of(messages: &[Message]) -> Vec<Value> {
 
 /// The text of a user message. Non-text parts are dropped: this agent does not
 /// claim to be multimodal.
-fn text_of(content: &UserContent) -> String {
-    match content {
-        UserContent::Text(text) => text.clone(),
-        UserContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|part| match part {
-                InputContent::Text(part) => Some(part.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
-}
-
 /// Tool calls being reassembled from the fragments of a stream.
 ///
 /// # Why this is not just a `HashMap<u64, _>`

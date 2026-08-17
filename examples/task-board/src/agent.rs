@@ -23,9 +23,7 @@ use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
 use ag_ui_a2ui::toolkit::envelope::wrap_as_operations_envelope;
 use ag_ui_a2ui::toolkit::history::{HistoryMessage, find_prior_surface};
 use ag_ui_a2ui::toolkit::ops::{Intent, assemble_ops};
-use ag_ui_core::{
-    InputContent, Interrupt, JsonObject, Message, ResumeStatus, RunOutcome, UserContent,
-};
+use ag_ui_core::{Interrupt, JsonObject, Message, ResumeStatus, RunOutcome};
 use ag_ui_server::{Agent, Error, Result, RunContext};
 use serde_json::json;
 
@@ -58,7 +56,7 @@ impl Agent for TaskBoard {
     type State = Board;
 
     async fn run(&self, ctx: &mut RunContext<Board>) -> Result<RunOutcome> {
-        let said = last_user_text(ctx.messages());
+        let said = ctx.last_user_text().unwrap_or_default();
         let command = Command::parse(&said);
         let intent = surface_intent(ctx.messages());
 
@@ -361,33 +359,6 @@ fn surface_intent(messages: &[Message]) -> Intent {
     match find_prior_surface(&history) {
         Some(prior) if !prior.deleted => Intent::Update,
         _ => Intent::Create,
-    }
-}
-
-/// The last thing the user said, with non-text parts dropped.
-fn last_user_text(messages: &[Message]) -> String {
-    messages
-        .iter()
-        .rev()
-        .find_map(|message| match message {
-            Message::User(user) => Some(text_of(&user.content)),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-/// The text of a user message. This agent does not claim to be multimodal.
-fn text_of(content: &UserContent) -> String {
-    match content {
-        UserContent::Text(text) => text.clone(),
-        UserContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|part| match part {
-                InputContent::Text(part) => Some(part.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
     }
 }
 

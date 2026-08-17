@@ -182,6 +182,58 @@ pub enum UserContent {
     Parts(Vec<InputContent>),
 }
 
+impl UserContent {
+    /// The text, when the content is a plain string.
+    ///
+    /// `None` for multimodal content, even when every part of it happens to be
+    /// text: this borrows, and joining parts cannot. Reach for
+    /// [`UserContent::to_text`] when any text will do.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Parts(_) => None,
+        }
+    }
+
+    /// Every text part, in order, joined with newlines.
+    ///
+    /// Non-text parts are dropped rather than described: an agent that does not
+    /// handle images wants the caption, not a placeholder it has to strip.
+    ///
+    /// ```
+    /// use ag_ui_core::{InputContent, InputContentSource, MediaInputContent, UserContent};
+    ///
+    /// let plain = UserContent::from("what is the weather?");
+    /// assert_eq!(plain.as_text(), Some("what is the weather?"));
+    /// assert_eq!(plain.to_text(), "what is the weather?");
+    ///
+    /// let image = MediaInputContent::new(InputContentSource::Url {
+    ///     value: "https://example.com/cat.png".into(),
+    ///     mime_type: None,
+    /// });
+    /// let mixed = UserContent::from(vec![
+    ///     InputContent::text("what is this?"),
+    ///     InputContent::Image(image),
+    ///     InputContent::text("be brief"),
+    /// ]);
+    /// assert_eq!(mixed.as_text(), None);
+    /// assert_eq!(mixed.to_text(), "what is this?\nbe brief");
+    /// ```
+    pub fn to_text(&self) -> String {
+        match self {
+            Self::Text(text) => text.clone(),
+            Self::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    InputContent::Text(part) => Some(part.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+}
+
 impl Default for UserContent {
     fn default() -> Self {
         Self::Text(String::new())
