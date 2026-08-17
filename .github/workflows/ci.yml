@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main, build]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+
+  # The design guarantees core/server/client stay executor-agnostic.
+  # Building them for wasm is how that claim gets enforced rather than asserted.
+  wasm:
+    name: wasm (no tokio below the web binding)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p ag-ui-core --target wasm32-unknown-unknown --no-default-features --features sse
+      - run: cargo check -p ag-ui-server --target wasm32-unknown-unknown
+      - run: cargo check -p ag-ui-client --target wasm32-unknown-unknown --no-default-features
+
+  features:
+    name: feature matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p ag-ui-core --no-default-features
+      - run: cargo check -p ag-ui-core --features schemars,utoipa
+      - run: cargo check -p ag-ui-a2ui --no-default-features
+      - run: cargo check -p ag-ui-a2ui --no-default-features --features toolkit
+      - run: cargo check -p ag-ui-client --no-default-features
+
+  # The community SDK fell behind because the port was hand-written with no
+  # mechanical link to upstream. This job is that link.
+  drift:
+    name: protocol drift vs upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p xtask -- drift-check
