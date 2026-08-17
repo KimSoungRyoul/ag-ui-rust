@@ -1,0 +1,27 @@
+[package]
+name = "ag-ui-e2e"
+description = "Cross-crate end-to-end tests and runnable examples. Not published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ag-ui-core.workspace = true
+ag-ui-server.workspace = true
+ag-ui-client = { workspace = true, features = ["http"] }
+ag-ui-a2ui.workspace = true
+ag-ui-axum = { path = "../crates/ag-ui-axum", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+# The Gemini example talks to the model over plain HTTP. Nothing in the SDK
+# depends on an LLM crate, and this example is how that is demonstrated.
+reqwest = { workspace = true, features = ["stream"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+# The end-to-end tests mount the agent on a real router and bind a real port,
+# so they build the `axum::Router` and drive `axum::serve` themselves.
+axum.workspace = true

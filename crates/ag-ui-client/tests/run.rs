@@ -411,6 +411,82 @@ async fn a_truncated_stream_is_reported_rather_than_looking_like_a_short_answer(
     );
     // What did arrive is still there.
     assert_eq!(session.applier().text_of("msg-1"), Some("Half a sen"));
+
+    // And the run said it was over. A view that re-enables its input on `Done`
+    // was otherwise left disabled by a dropped connection — the commonest way
+    // a run fails, and the one nobody sees in a test against a scripted
+    // transport that always plays to the end.
+    let Some(Update::Done(RunEnd::Failed { message, .. })) = updates.last() else {
+        panic!("a truncated run must still end with Done: {updates:?}");
+    };
+    assert!(message.contains("ended before RUN_FINISHED"), "{message}");
+}
+
+#[tokio::test]
+async fn a_truncated_stream_ends_the_message_it_was_streaming() {
+    // The producer never sent `TEXT_MESSAGE_END`, so the normalizer owes one.
+    // Without it a typing indicator keyed on `Ended` spins forever.
+    let transport = ReplayTransport::new([
+        Event::run_started("thread-1", "run-1"),
+        Event::text_message_chunk(
+            Some(ag_ui_core::MessageId::new("msg-1")),
+            Some("Half a sen".into()),
+        ),
+    ]);
+    let mut session = Session::<_>::new(transport, "thread-1");
+
+    let updates: Vec<_> = session.send("hi").collect().await;
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            Update::Message(message) if message.change == MessageChangeKind::Ended
+        )),
+        "the streamed message should have been closed: {updates:?}"
+    );
+    assert!(matches!(updates.last(), Some(Update::Done(_))));
+}
+
+#[tokio::test]
+async fn a_transport_that_breaks_mid_run_still_ends_the_run() {
+    // The replay script runs out, so the second run's transport fails to
+    // connect: an error item in the stream rather than a truncated body.
+    let transport = ReplayTransport::new([
+        Event::run_started("thread-1", "run-1"),
+        Event::run_finished_success("thread-1", "run-1"),
+    ]);
+    let mut session = Session::<_>::new(transport, "thread-1");
+    session.send("hi").collect::<Vec<_>>().await;
+
+    let updates: Vec<_> = session.send("again").collect().await;
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, Update::Error(_))),
+        "the transport failure should be reported: {updates:?}"
+    );
+    let Some(Update::Done(RunEnd::Failed { message, .. })) = updates.last() else {
+        panic!("a broken transport must still end the run: {updates:?}");
+    };
+    assert!(!message.is_empty(), "the failure should say something");
+}
+
+#[tokio::test]
+async fn a_truncated_stream_ends_the_run_even_with_verification_off() {
+    // With no verifier there is nothing to notice the truncation, but the run
+    // is over either way and a caller that is never told waits forever.
+    let transport = ReplayTransport::new([
+        Event::run_started("thread-1", "run-1"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+    ]);
+    let mut session = Session::<_>::builder(transport, "thread-1")
+        .verify(false)
+        .build();
+
+    let updates: Vec<_> = session.send("hi").collect().await;
+    assert!(matches!(
+        updates.last(),
+        Some(Update::Done(RunEnd::Failed { .. }))
+    ));
 }
 
 #[tokio::test]

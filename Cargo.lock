@@ -65,6 +65,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ag-ui-e2e"
+version = "0.1.0"
+dependencies = [
+ "ag-ui-a2ui",
+ "ag-ui-axum",
+ "ag-ui-client",
+ "ag-ui-core",
+ "ag-ui-server",
+ "axum",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ag-ui-server"
 version = "0.1.0"
 dependencies = [

@@ -82,9 +82,12 @@ pub enum Update<S = Value> {
     /// Something went wrong: a malformed stream, a patch that would not apply,
     /// a transport failure, a `RUN_ERROR`.
     ///
-    /// Not necessarily fatal. A run that ends also yields [`Update::Done`].
+    /// Not necessarily fatal — a run survives a patch it could not apply. When
+    /// it is fatal, the matching [`Update::Done`] follows.
     Error(Error),
-    /// The run ended. Always the last update of a run.
+    /// The run ended, and how. Always the last update of a run, on every path
+    /// out: the agent finishing, the agent failing, and the transport dying
+    /// mid-sentence.
     Done(RunEnd),
 }
 
@@ -128,7 +131,8 @@ pub enum RunEnd {
         /// What the agent is waiting for.
         interrupts: Vec<Interrupt>,
     },
-    /// The run failed. The matching [`Update::Error`] came first.
+    /// The run failed, or the transport stopped before it could finish. The
+    /// matching [`Update::Error`] came first.
     Failed {
         /// What went wrong, for a human.
         message: String,
@@ -448,9 +452,11 @@ impl<T, S> SessionBuilder<T, S> {
 /// updated as the stream is polled, which is what makes
 /// [`Session::messages`] correct the moment the run ends.
 ///
-/// The stream ends after [`Update::Done`]. It also ends if the transport stops
-/// early, in which case verification (when on) reports the truncation as an
-/// [`Update::Error`] first.
+/// Every run ends with exactly one [`Update::Done`], and the stream ends
+/// there. A transport that stops early is reported as an [`Update::Error`] —
+/// naming the truncation when verification is on, and the transport's own
+/// failure otherwise — followed by [`RunEnd::Failed`]: a view that re-enables
+/// its input on `Done` must not be left waiting by a dropped connection.
 pub struct RunStream<'a, T, S = Value> {
     session: &'a mut Session<T, S>,
     events: EventStream,
@@ -588,6 +594,32 @@ where
     /// report a truncated stream.
     fn end_of_stream(&mut self) {
         self.done = true;
+        self.close_open_streams();
+
+        // Getting here means no terminal event was applied, because applying
+        // one queues the run's `Done` and stops the stream before this. So the
+        // run ended without saying how, and this is where that is said.
+        let message = match self.verifier.as_ref().map(Verifier::finish) {
+            Some(Err(error)) => {
+                let message = error.to_string();
+                self.ready.push_back(Update::Error(error));
+                message
+            }
+            // Unverified, or verified and somehow tidy: either way the producer
+            // never sent a terminal event.
+            _ => TRUNCATED.to_owned(),
+        };
+        self.ready.push_back(Update::Done(RunEnd::Failed {
+            message,
+            code: None,
+        }));
+    }
+
+    /// Emits the terminators the normalizer still owes.
+    ///
+    /// A view that hides its typing indicator on [`MessageChangeKind::Ended`]
+    /// would otherwise spin forever on a message the producer never closed.
+    fn close_open_streams(&mut self) {
         let mut expanded = std::mem::take(&mut self.expanded);
         expanded.clear();
         self.normalizer.finish(&mut expanded);
@@ -595,14 +627,24 @@ where
             self.handle(event);
         }
         self.expanded = expanded;
+    }
 
-        if let Some(verifier) = &self.verifier {
-            if let Err(error) = verifier.finish() {
-                self.ready.push_back(Update::Error(error));
-            }
-        }
+    /// The transport itself failed. Nothing more will arrive on this run.
+    fn transport_failed(&mut self, error: Error) {
+        self.done = true;
+        self.close_open_streams();
+        let message = error.to_string();
+        self.ready.push_back(Update::Error(error));
+        self.ready.push_back(Update::Done(RunEnd::Failed {
+            message,
+            code: None,
+        }));
     }
 }
+
+/// What a run that simply stopped is reported as, when there is no verifier to
+/// describe it more precisely.
+const TRUNCATED: &str = "the stream ended before RUN_FINISHED or RUN_ERROR";
 
 // `S: Unpin` because the queued updates hold an `S` and this stream is polled
 // through a `&mut`. Every type that deserializes from JSON is `Unpin` in
@@ -627,11 +669,8 @@ where
             match this.events.as_mut().poll_next(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Some(Ok(event))) => this.ingest(event),
-                Poll::Ready(Some(Err(error))) => {
-                    // A broken transport cannot recover, so this ends the run.
-                    this.ready.push_back(Update::Error(error));
-                    this.done = true;
-                }
+                // A broken transport cannot recover, so this ends the run.
+                Poll::Ready(Some(Err(error))) => this.transport_failed(error),
                 Poll::Ready(None) => this.end_of_stream(),
             }
         }

@@ -1,0 +1,228 @@
+//! An agent that returns `Err` must still produce a well-formed stream.
+//!
+//! By the time an agent can fail, the `200` and the content type are long sent,
+//! so the failure has nowhere to go but *into* the stream. The three things
+//! that must not happen — a dropped connection, a panic, a hang — all look the
+//! same to a client, and all three are ruled out here: the run ends in
+//! `RUN_ERROR`, the client reports it as an error, and everything the agent
+//! managed to say first is still in the transcript.
+
+mod common;
+
+use std::time::Duration;
+
+use ag_ui_client::{
+    Agent as ClientAgent, Error as ClientError, RunEnd, RunParams, Session, Update,
+};
+use ag_ui_core::{Event, EventType, Message, RunOutcome, TextMessageRole};
+use ag_ui_server::{Agent, Error, Result, RunContext};
+use common::{serve, transport};
+use futures_util::StreamExt as _;
+use serde_json::json;
+use tokio::time::timeout;
+
+/// Fails halfway through a sentence. The handle's `Drop` still closes the
+/// message.
+struct Broken;
+
+impl Agent for Broken {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        let mut message = ctx.assistant_message()?;
+        message.delta("Looking that up")?;
+        Err(Error::agent("the weather service is down"))
+    }
+}
+
+/// Fails with a message it opened by hand and never closed — the case
+/// `RUN_ERROR` is exempt from the ordering rules for.
+struct Abrupt;
+
+impl Agent for Abrupt {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        ctx.emit(Event::text_message_start(
+            "half",
+            TextMessageRole::Assistant,
+        ))?;
+        ctx.emit(Event::text_message_content("half", "I was saying"))?;
+        Err(Error::agent("the connection to the model dropped"))
+    }
+}
+
+/// Never gets to run: the state it is typed against will not decode.
+struct Picky;
+
+impl Agent for Picky {
+    type State = u32;
+
+    async fn run(&self, ctx: &mut RunContext<u32>) -> Result<RunOutcome> {
+        ctx.say("this should never be reached")?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// Every test here has a deadline: a hang is one of the failures being ruled
+/// out, and it would otherwise present as a test that never returns.
+const DEADLINE: Duration = Duration::from_secs(10);
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failing_agent_ends_its_stream_with_run_error() {
+    let url = serve(Broken).await;
+    let agent = ClientAgent::new(transport(&url));
+
+    let events: Vec<Event> = timeout(DEADLINE, async {
+        agent
+            .run(RunParams::new("broken", "broken-run-1"))
+            .map(|event| event.expect("a failing agent is not a broken stream"))
+            .collect()
+            .await
+    })
+    .await
+    .expect("a failing agent must not hang");
+
+    let types: Vec<EventType> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            // Emitted by the handle's Drop, on the way out of the `?`.
+            EventType::TextMessageEnd,
+            EventType::RunError,
+        ]
+    );
+
+    let Some(Event::RunError(error)) = events.last() else {
+        panic!("the stream must end with RUN_ERROR: {types:?}");
+    };
+    assert_eq!(error.code.as_deref(), Some("AGENT_ERROR"));
+    assert!(
+        error.message.contains("the weather service is down"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_surfaces_the_failure_as_an_error_and_a_failed_ending() {
+    let url = serve(Broken).await;
+    let mut session = Session::<_>::new(transport(&url), "broken");
+
+    let updates = timeout(DEADLINE, async {
+        let mut updates = Vec::new();
+        let mut run = session.send("what is the weather?");
+        while let Some(update) = run.next().await {
+            updates.push(update);
+        }
+        updates
+    })
+    .await
+    .expect("a failing agent must not hang");
+
+    let mut tail = updates.iter().rev();
+    match tail.next() {
+        Some(Update::Done(RunEnd::Failed { message, code })) => {
+            assert!(message.contains("the weather service is down"), "{message}");
+            assert_eq!(code.as_deref(), Some("AGENT_ERROR"));
+        }
+        other => panic!("the run must end as Failed, not {other:?}"),
+    }
+    match tail.next() {
+        Some(Update::Error(ClientError::Run { message, code })) => {
+            assert!(message.contains("the weather service is down"), "{message}");
+            assert_eq!(code.as_deref(), Some("AGENT_ERROR"));
+        }
+        other => panic!("the failure must arrive as an error update too, not {other:?}"),
+    }
+
+    // A `RUN_ERROR` is a report, not a truncation: nothing here should look
+    // like a broken transport or a stream that stopped early.
+    for update in &updates {
+        if let Update::Error(error) = update {
+            assert!(
+                matches!(error, ClientError::Run { .. }),
+                "the only error should be the agent's own: {error}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn what_the_agent_managed_to_say_before_failing_is_kept() {
+    let url = serve(Broken).await;
+    let mut session = Session::<_>::new(transport(&url), "broken");
+
+    {
+        let mut run = session.send("what is the weather?");
+        while run.next().await.is_some() {}
+    }
+
+    assert_eq!(
+        session.messages().last(),
+        Some(&Message::assistant("broken-run-1-msg-1", "Looking that up"))
+    );
+}
+
+/// `RUN_ERROR` is exempt from "everything opened must be closed", on both
+/// sides — a run that blew up mid-message could not have closed it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failure_with_a_message_still_open_is_still_a_clean_stream() {
+    let url = serve(Abrupt).await;
+    let mut session = Session::<_>::new(transport(&url), "abrupt");
+
+    let updates = timeout(DEADLINE, async {
+        let mut updates = Vec::new();
+        let mut run = session.send("go on");
+        while let Some(update) = run.next().await {
+            updates.push(update);
+        }
+        updates
+    })
+    .await
+    .expect("an unclosed message must not hang the client");
+
+    let errors: Vec<&ClientError> = updates
+        .iter()
+        .filter_map(|update| match update {
+            Update::Error(error) => Some(error),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(errors.len(), 1, "only the agent's failure: {errors:?}");
+    assert!(matches!(errors[0], ClientError::Run { .. }), "{errors:?}");
+
+    assert!(matches!(
+        updates.last(),
+        Some(Update::Done(RunEnd::Failed { .. }))
+    ));
+    assert_eq!(
+        session.messages().last(),
+        Some(&Message::assistant("half", "I was saying"))
+    );
+}
+
+/// The request is well-formed AG-UI but its state does not fit the agent's
+/// type. That is decided before the agent body runs, and by then the `200` has
+/// gone out — so it is a `RUN_ERROR` too, not a `400`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_state_the_agent_cannot_decode_fails_the_run_rather_than_the_request() {
+    let url = serve(Picky).await;
+    let client = ClientAgent::new(transport(&url));
+
+    let events: Vec<Event> = client
+        .run(RunParams::new("picky", "picky-run-1").state(json!({"not": "a number"})))
+        .map(|event| event.expect("a rejected state is not a broken stream"))
+        .collect()
+        .await;
+
+    let types: Vec<EventType> = events.iter().map(Event::event_type).collect();
+    assert_eq!(types, [EventType::RunStarted, EventType::RunError]);
+
+    let Some(Event::RunError(error)) = events.last() else {
+        panic!("the stream must end with RUN_ERROR: {types:?}");
+    };
+    assert_eq!(error.code.as_deref(), Some("SERIALIZATION"));
+}
