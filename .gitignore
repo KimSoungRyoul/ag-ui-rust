@@ -1,4 +1,11 @@
-/target
+# Build output. Not anchored to the root: a stray `cargo build` inside a crate
+# directory makes its own target/, and that should not be committable either.
+target/
+
+# Scratch git worktrees. They live inside the repo, so without this they show up
+# as untracked in the main checkout.
+/.claude/worktrees/
+
 **/*.rs.bk
 *.pdb
 .DS_Store

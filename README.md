@@ -17,6 +17,61 @@ spec. This project fills the gap, with the server story as the priority.
 | `ag-ui-client` | Consume a remote agent: transport, event application, materialised messages and state. |
 | `ag-ui-a2ui` | [A2UI](https://a2ui.org) protocol types, semantic validator, and agent-side authoring toolkit. |
 
+## Quickstart
+
+Serving an agent. Implement `Agent`, mount it, and the endpoint speaks AG-UI:
+
+```rust
+use ag_ui_axum::RouterExt;
+use ag_ui_core::RunOutcome;
+use ag_ui_server::{Agent, Result, RunContext};
+use axum::Router;
+
+struct Greeter;
+
+impl Agent for Greeter {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        // Streams as TEXT_MESSAGE_START / _CONTENT / _END.
+        let mut message = ctx.assistant_message()?;
+        message.delta("Hello from Rust.")?;
+        message.end()?;
+
+        Ok(RunOutcome::Success)
+    }
+}
+
+let app: Router = Router::new().route_agui("/agent", Greeter);
+```
+
+Consuming one. `Session` folds the delta stream back into messages and state:
+
+```rust,no_run
+use ag_ui_client::{Session, Update, transport::HttpTransport};
+use futures_util::StreamExt;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let transport = HttpTransport::new("http://localhost:3000/agent")?;
+    let mut session = Session::<_>::new(transport, "thread-1");
+
+    let mut run = session.send("hello");
+    while let Some(update) = run.next().await {
+        if let Update::Message(message) = update {
+            println!("{:?}", message.change);
+        }
+    }
+    drop(run);
+
+    println!("{} messages so far", session.messages().len());
+    Ok(())
+}
+```
+
+Both snippets are compiled by the test suite (`e2e/src/lib.rs` doctests this file), so a
+stale quickstart is a red build.
+
 ## Design commitments
 
 **The `Agent` trait is the boundary.** The .NET SDK builds on `Microsoft.Extensions.AI`
@@ -26,7 +81,9 @@ your own client; implement `Agent`.
 
 **Executor-agnostic below the web binding.** `core`, `server`, and `client` use
 `futures` primitives rather than tokio, so wasm targets and non-tokio executors keep working.
-tokio enters at `ag-ui-axum` and nowhere else.
+tokio enters at `ag-ui-axum` and nowhere else. CI enforces this two ways: by building those
+crates for `wasm32-unknown-unknown`, and — because tokio itself compiles for wasm — by
+asserting tokio is absent from their dependency graphs.
 
 **Protocol misuse should not compile.** Event ordering (`Start` → `Content*` → `End`) is
 enforced by typestate handles that borrow the run context, so interleaving two messages is a
@@ -36,6 +93,14 @@ checker cannot catch, a runtime ordering verifier catches in debug builds.
 
 **IDs are strings.** `ThreadId`, `RunId`, and friends are newtypes over `String`, not `Uuid`.
 The spec says string; real backends such as LangGraph send arbitrary strings.
+
+## Keeping up with the spec
+
+The port is hand-written against the upstream TypeScript Zod schemas, so nothing in the
+compiler links the two. `cargo run -p xtask -- drift-check` is that link: it compares a
+vendored snapshot of the upstream event surface against the Rust types and fails the build
+when they diverge. It is offline and deterministic, so it runs on every pull request; a
+scheduled job additionally asks GitHub whether the snapshot itself has gone stale.
 
 ## Status
 
