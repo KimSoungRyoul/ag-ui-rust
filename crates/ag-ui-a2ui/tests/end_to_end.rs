@@ -186,14 +186,19 @@ fn a_surface_that_cannot_be_fixed_ships_as_an_error_envelope() {
     };
     assert_eq!(last.as_slice()[0].code, ErrorCode::UnresolvedChild);
 
-    // The frontend still receives a payload it recognizes, carrying the reason.
+    // The frontend receives the reason, and nothing that looks like a surface.
     let envelope =
         wrap_error_envelope("order", "Could not build the surface.", last.as_slice()).unwrap();
     let value: Value = serde_json::from_str(&envelope).unwrap();
-    assert_eq!(value[A2UI_OPERATIONS_KEY], json!([]));
-    assert_eq!(value["error"]["code"], "VALIDATION_FAILED");
-    assert_eq!(value["error"]["path"], "components[0].child");
-    assert_eq!(value["error"]["details"][0]["code"], "unresolved_child");
+    assert!(value.get(A2UI_OPERATIONS_KEY).is_none(), "{value}");
+    assert_eq!(value["error"], "Could not build the surface.");
+    assert_eq!(value["code"], "VALIDATION_FAILED");
+    assert_eq!(value["path"], "components[0].child");
+    assert_eq!(value["details"][0]["code"], "unresolved_child");
+
+    // So the next turn does not offer the surface that was never built as the
+    // one the user is looking at.
+    assert!(find_prior_surface(&[HistoryMessage::text("assistant", envelope)]).is_none());
 }
 
 #[test]

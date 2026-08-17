@@ -18,6 +18,7 @@ use ag_ui_a2ui::toolkit::envelope::{
     is_operations_envelope, unwrap_operations_envelope, wrap_as_operations_envelope,
     wrap_error_envelope,
 };
+use ag_ui_a2ui::toolkit::history::{HistoryMessage, find_prior_surface};
 use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
 use ag_ui_a2ui::validate::Validator;
 use ag_ui_client::{Session, Update};
@@ -70,8 +71,8 @@ impl Agent for Merchant {
     }
 }
 
-/// Authors a surface that does not validate, and ships the failure in the
-/// shape a renderer keyed on the envelope key can still recognise.
+/// Authors a surface that does not validate, and ships the failure instead of
+/// the surface.
 struct Butterfingers;
 
 impl Agent for Butterfingers {
@@ -210,15 +211,43 @@ async fn the_tool_call_carrying_the_surface_arrives_with_it() {
     assert_eq!(result.tool_call_id, call.id, "result answers the call");
 }
 
-/// A surface that could not be built still has to reach the renderer as A2UI,
-/// or the frontend is left with pending state it can never clear.
+/// A surface that could not be built has to reach the frontend as a failure and
+/// not as A2UI. The reason it travels the same tool result is exactly why it
+/// matters: the sniff is all that separates the two.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_failed_surface_ships_as_an_error_envelope_the_frontend_still_recognises() {
+async fn a_failed_surface_arrives_as_a_failure_and_not_as_a_surface() {
     let (_messages, value) = ship(Butterfingers).await;
 
-    assert!(is_operations_envelope(&value), "{value}");
-    assert_eq!(value[A2UI_OPERATIONS_KEY], json!([]));
-    assert_eq!(value["error"]["code"], "VALIDATION_FAILED");
-    assert_eq!(value["error"]["surfaceId"], SURFACE_ID);
-    assert_eq!(value["error"]["details"][0]["code"], "unresolved_child");
+    assert!(!is_operations_envelope(&value), "{value}");
+    assert!(value.get(A2UI_OPERATIONS_KEY).is_none(), "{value}");
+    assert_eq!(value["error"], "could not build the surface");
+    assert_eq!(value["code"], "VALIDATION_FAILED");
+    assert_eq!(value["surfaceId"], SURFACE_ID);
+    assert_eq!(value["details"][0]["code"], "unresolved_child");
+}
+
+/// The failure rides in the conversation from here on, so the next turn's prompt
+/// must not describe it as the surface the user is looking at.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_surface_is_not_recovered_from_history_as_a_prior_surface() {
+    let (_messages, rendered) = ship(Merchant).await;
+    let (_messages, failed) = ship(Butterfingers).await;
+
+    assert!(find_prior_surface(&[HistoryMessage::data("tool", failed.clone())]).is_none());
+
+    // Both name `cart`, so a failure that got picked up would silently stand in
+    // for the surface that really is on screen.
+    let rendered_only = vec![HistoryMessage::data("tool", rendered)];
+    let mut then_failed = rendered_only.clone();
+    then_failed.push(HistoryMessage::data("tool", failed));
+    assert_eq!(
+        find_prior_surface(&then_failed),
+        find_prior_surface(&rendered_only)
+    );
+    assert_eq!(
+        find_prior_surface(&then_failed)
+            .expect("the cart")
+            .components,
+        spec().components
+    );
 }

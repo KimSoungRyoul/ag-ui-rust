@@ -17,6 +17,11 @@
 //! [`A2UI_OPERATIONS_KEY`](crate::constants::A2UI_OPERATIONS_KEY) transport
 //! envelope, and raw `<a2ui-json>` blocks in an assistant turn. A message may
 //! also be the envelope itself rather than text containing one.
+//!
+//! A generation that failed is deliberately none of those — see
+//! [`wrap_error_envelope`](crate::toolkit::envelope::wrap_error_envelope) — so
+//! it contributes no operations and cannot be recovered as a surface that was
+//! never on screen.
 
 use std::collections::BTreeMap;
 
@@ -259,7 +264,7 @@ fn collect_from_value(value: &Value, out: &mut Vec<AgentMessage>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::toolkit::envelope::wrap_as_operations_envelope;
+    use crate::toolkit::envelope::{wrap_as_operations_envelope, wrap_error_envelope};
     use crate::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
     use serde_json::json;
 
@@ -392,6 +397,29 @@ mod tests {
         let prior = find_prior_surface(&history).unwrap();
         assert_eq!(prior.data_model, json!({"title": "new"}));
         assert_eq!(prior.components.len(), 2);
+    }
+
+    #[test]
+    fn a_failed_surface_is_never_read_back_as_a_prior_one() {
+        let failure = wrap_error_envelope("cart", "could not build the surface", &[]).unwrap();
+        let as_text = HistoryMessage::text("assistant", failure.as_str());
+        let as_data = HistoryMessage::data("tool", serde_json::from_str(&failure).unwrap());
+
+        // Whichever way the transport carried it, it describes a surface that
+        // was never rendered, so there is nothing to recover.
+        assert!(find_prior_surface(std::slice::from_ref(&as_text)).is_none());
+        assert!(find_prior_surface(&[as_data]).is_none());
+        assert!(find_prior_surface_by_id(std::slice::from_ref(&as_text), Some("cart")).is_none());
+
+        // And arriving after a real surface, it leaves that surface alone —
+        // including its id, which the failure names too.
+        let rendered_only = vec![rendered("cart", "Your cart")];
+        let then_failed = vec![rendered("cart", "Your cart"), as_text];
+        assert_eq!(
+            find_prior_surface(&then_failed),
+            find_prior_surface(&rendered_only)
+        );
+        assert_eq!(next_surface_id(&then_failed, "cart"), "cart-2");
     }
 
     #[test]

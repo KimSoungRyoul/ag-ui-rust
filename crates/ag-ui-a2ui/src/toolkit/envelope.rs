@@ -6,6 +6,10 @@
 //! decide whether a payload is A2UI. The envelope is emitted as a JSON *string*
 //! because that is what fits in a tool result, an assistant message, or an A2A
 //! data part without further wrapping.
+//!
+//! Failure is the other shape, and it is a different object rather than an empty
+//! envelope: see [`wrap_error_envelope`] for why a surface that could not be
+//! built must not answer the sniff.
 
 use serde_json::{Map, Value, json};
 
@@ -45,14 +49,29 @@ pub fn operations_envelope(operations: &[AgentMessage]) -> Result<Value> {
     Ok(Value::Object(envelope))
 }
 
-/// Builds an envelope reporting that a surface could not be produced.
+/// Builds the payload reporting that a surface could not be produced.
 ///
-/// The operations list is present but empty so a frontend keyed on
-/// [`A2UI_OPERATIONS_KEY`] still recognizes the payload and can clear any
-/// pending state, with the failure carried alongside in the shape the
-/// specification defines for renderer-bound errors: `code`, `surfaceId`, `path`
-/// and `message`, plus the full validation list under `details` for callers that
-/// want to route on the codes.
+/// Deliberately *not* an operations envelope. [`A2UI_OPERATIONS_KEY`] is the
+/// content sniff, so carrying it — even with an empty list — leaves a failed
+/// generation indistinguishable from a rendered one to every consumer that keys
+/// on it, [`history`](crate::toolkit::history) included. Upstream draws the same
+/// line: its tool returns the validated operations under one key on success and
+/// `error` on failure, never both, and its part converter checks `error` first
+/// and emits no A2UI at all.
+///
+/// `error` is therefore the human-readable message, the way upstream sends it.
+/// The specification's structured validation fields sit *alongside* it rather
+/// than nested under it, since `error` is already the spec's `message`, with the
+/// full validation list under `details` for callers that route on the codes.
+///
+/// ```
+/// use ag_ui_a2ui::toolkit::envelope::{is_operations_envelope, wrap_error_envelope};
+///
+/// let json = wrap_error_envelope("s1", "could not build the surface", &[]).unwrap();
+/// let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+/// assert_eq!(value["error"], "could not build the surface");
+/// assert!(!is_operations_envelope(&value));
+/// ```
 ///
 /// # Errors
 ///
@@ -63,27 +82,25 @@ pub fn wrap_error_envelope(
     message: &str,
     errors: &[ValidationError],
 ) -> Result<String> {
-    let mut error = Map::new();
-    error.insert("code".to_string(), json!("VALIDATION_FAILED"));
-    error.insert("surfaceId".to_string(), json!(surface_id));
-    error.insert("message".to_string(), json!(message));
+    let mut envelope = Map::new();
+    envelope.insert("error".to_string(), json!(message));
+    envelope.insert("code".to_string(), json!("VALIDATION_FAILED"));
+    envelope.insert("surfaceId".to_string(), json!(surface_id));
     // The spec's `path` is a single locator; use the first failure's, which is
     // the one a reader should look at first.
-    error.insert(
+    envelope.insert(
         "path".to_string(),
         json!(errors.first().map_or("components", |e| e.path.as_str())),
     );
-    error.insert("details".to_string(), serde_json::to_value(errors)?);
-
-    let mut envelope = Map::new();
-    envelope.insert(A2UI_OPERATIONS_KEY.to_string(), json!([]));
-    envelope.insert("error".to_string(), Value::Object(error));
+    envelope.insert("details".to_string(), serde_json::to_value(errors)?);
     Ok(serde_json::to_string(&Value::Object(envelope))?)
 }
 
 /// Whether a value is an A2UI operations envelope.
 ///
 /// This is the frontend's content sniff: presence of the key, carrying an array.
+/// A payload from [`wrap_error_envelope`] does not have the key and so does not
+/// match, which is what keeps a failure from being mistaken for a surface.
 pub fn is_operations_envelope(value: &Value) -> bool {
     value.get(A2UI_OPERATIONS_KEY).is_some_and(Value::is_array)
 }
@@ -141,9 +158,8 @@ mod tests {
         assert_eq!(json, r#"{"a2ui_operations":[]}"#);
     }
 
-    #[test]
-    fn the_error_envelope_keeps_the_key_and_carries_the_codes() {
-        let errors = vec![
+    fn errors() -> Vec<ValidationError> {
+        vec![
             ValidationError::new(
                 ErrorCode::NoRoot,
                 "components",
@@ -154,23 +170,38 @@ mod tests {
                 "components[1].child",
                 "'gone' is not defined.",
             ),
-        ];
-        let json = wrap_error_envelope("s1", "could not build the surface", &errors).unwrap();
-        let value: Value = serde_json::from_str(&json).unwrap();
-
-        assert!(is_operations_envelope(&value));
-        assert_eq!(value["a2ui_operations"], json!([]));
-        assert_eq!(value["error"]["code"], "VALIDATION_FAILED");
-        assert_eq!(value["error"]["surfaceId"], "s1");
-        assert_eq!(value["error"]["path"], "components");
-        assert_eq!(value["error"]["details"][1]["code"], "unresolved_child");
+        ]
     }
 
     #[test]
-    fn an_error_envelope_with_no_errors_still_has_a_path() {
+    fn the_error_payload_is_a_message_with_the_codes_beside_it() {
+        let json = wrap_error_envelope("s1", "could not build the surface", &errors()).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(value["error"], "could not build the surface");
+        assert_eq!(value["code"], "VALIDATION_FAILED");
+        assert_eq!(value["surfaceId"], "s1");
+        assert_eq!(value["path"], "components");
+        assert_eq!(value["details"][1]["code"], "unresolved_child");
+    }
+
+    #[test]
+    fn a_failed_surface_does_not_satisfy_the_frontend_sniff() {
+        let json = wrap_error_envelope("s1", "could not build the surface", &errors()).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+
+        // The whole point: a failure that carried the key would clear pending
+        // state *and* be replayed later as a surface that was never rendered.
+        assert!(!is_operations_envelope(&value), "{value}");
+        assert!(value.get(A2UI_OPERATIONS_KEY).is_none(), "{value}");
+        assert!(unwrap_operations_envelope(&value).is_err());
+    }
+
+    #[test]
+    fn an_error_payload_with_no_errors_still_has_a_path() {
         let json = wrap_error_envelope("s1", "model returned nothing", &[]).unwrap();
         let value: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["error"]["path"], "components");
+        assert_eq!(value["path"], "components");
     }
 
     #[test]
