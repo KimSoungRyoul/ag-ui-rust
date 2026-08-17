@@ -758,16 +758,24 @@ impl Applier {
     fn activity_delta(&mut self, event: &ActivityDeltaEvent) -> Result<Changed> {
         let index = self.activity_index(&event.message_id, &event.activity_type);
         if let Some(Message::Activity(activity)) = self.messages.get_mut(index) {
-            let mut content = Value::Object(std::mem::take(&mut activity.content));
-            let outcome = apply_patch(
-                &mut content,
-                &event.patch,
-                &format!("activity {}", event.message_id),
-            );
-            if let Value::Object(object) = content {
-                activity.content = object;
-            }
-            outcome?;
+            let what = format!("activity {}", event.message_id);
+            // Patched on a copy, and committed only once the result is still an
+            // object. An activity's content is an object by definition, so a
+            // whole-document operation — `{"op":"replace","path":"","value":7}`
+            // — has nowhere to land; taking the content out first would leave
+            // the activity holding nothing at all.
+            let mut content = Value::Object(activity.content.clone());
+            apply_patch(&mut content, &event.patch, &what)?;
+            let Value::Object(object) = content else {
+                return Err(Error::Patch {
+                    target: what,
+                    message: format!(
+                        "patch replaced the whole activity with {}, which is not an object",
+                        kind_of(&content)
+                    ),
+                });
+            };
+            activity.content = object;
         }
         Ok(Changed::Message(MessageChange {
             index,
@@ -904,6 +912,18 @@ fn apply_patch(target: &mut Value, operations: &[PatchOperation], what: &str) ->
         target: what.to_owned(),
         message: error.to_string(),
     })
+}
+
+/// Names a JSON value's type, for an error message.
+fn kind_of(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
 }
 
 /// Builds the empty message a `TEXT_MESSAGE_START` opens.

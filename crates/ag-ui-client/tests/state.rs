@@ -125,6 +125,43 @@ fn an_activity_patch_that_cannot_apply_is_an_error_naming_the_activity() {
 }
 
 #[test]
+fn an_activity_patch_that_replaces_the_whole_document_is_refused() {
+    // RFC 6902 lets an operation target the root, but an activity's content is
+    // an object and a number cannot be one. Applying it used to succeed and
+    // leave the activity holding `{}` — the content silently gone, with
+    // `Ok(..)` returned and nothing to tell a view it had happened.
+    let mut applier = Applier::new();
+    let mut content = ag_ui_core::JsonObject::new();
+    content.insert("percent".into(), json!(40));
+    applier
+        .apply(&Event::activity_snapshot("act-1", "progress", content))
+        .expect("applies");
+
+    let error = applier
+        .apply(&Event::activity_delta(
+            "act-1",
+            "progress",
+            vec![PatchOperation::replace("", json!("wiped"))],
+        ))
+        .expect_err("replacing the root with a string must fail");
+
+    assert!(
+        matches!(&error, Error::Patch { target, .. } if target == "activity act-1"),
+        "unexpected error: {error:?}"
+    );
+    assert!(error.to_string().contains("a string"), "{error}");
+
+    let ag_ui_core::Message::Activity(activity) = &applier.messages()[0] else {
+        panic!("expected an activity message");
+    };
+    assert_eq!(
+        activity.content["percent"],
+        json!(40),
+        "the activity must keep the content it had"
+    );
+}
+
+#[test]
 fn an_activity_snapshot_can_merge_instead_of_replacing() {
     let mut applier = Applier::new();
     let mut first = ag_ui_core::JsonObject::new();
