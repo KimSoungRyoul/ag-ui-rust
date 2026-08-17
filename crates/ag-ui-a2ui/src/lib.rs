@@ -27,6 +27,16 @@
 //!   surface from conversation history, and the validate-and-retry loop around
 //!   a generating model.
 //!
+//! # Transport
+//!
+//! A2UI says nothing about how messages reach the renderer, and this crate
+//! keeps it that way: it depends on no transport crate, AG-UI included. What
+//! every toolkit does in practice is wrap a batch of operations in a
+//! `{"a2ui_operations": [...]}` envelope and let the frontend sniff for that
+//! key; [`toolkit::envelope`] produces exactly that, as a plain JSON string
+//! that fits in an AG-UI assistant message, an A2A data part, or an MCP tool
+//! result without further wrapping.
+//!
 //! # Conformance
 //!
 //! The A2UI project publishes a language-agnostic conformance suite as YAML.
@@ -44,7 +54,7 @@
 //! # Example
 //!
 //! ```
-//! use ag_ui_a2ui::{catalog::Catalog, message::Component, validate::Validator};
+//! use ag_ui_a2ui::{Catalog, Component, Validator};
 //! use serde_json::json;
 //!
 //! let catalog = Catalog::basic();
@@ -59,6 +69,7 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
 
 // The README is the crate's front page on crates.io, so its examples are
 // doctested: a stale one is a red build rather than a bad first impression.
@@ -73,10 +84,15 @@ pub mod error;
 pub mod message;
 pub mod validate;
 
-#[cfg(feature = "ag-ui")]
-pub mod agui;
-
 #[cfg(feature = "toolkit")]
 pub mod toolkit;
 
+// The front door: what a caller producing or checking A2UI reaches for first.
+// Everything else stays behind its module, because the modules are the map.
+pub use catalog::Catalog;
 pub use error::{Error, Result, ValidationErrors};
+pub use message::{AgentMessage, AgentPayload, Component, RendererMessage, RendererPayload};
+pub use validate::{ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator};
+
+#[cfg(feature = "toolkit")]
+pub use toolkit::{StreamParser, wrap_as_operations_envelope, wrap_error_envelope};
