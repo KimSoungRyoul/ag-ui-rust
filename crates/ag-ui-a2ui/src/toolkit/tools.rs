@@ -34,8 +34,16 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
-    /// Renders the definition as `{name, description, input_schema}`.
-    pub fn to_value(&self) -> Value {
+    /// Renders the definition in Anthropic's Messages API shape:
+    /// `{name, description, input_schema}`.
+    ///
+    /// Named for the provider because the key is: Anthropic calls the schema
+    /// `input_schema`, OpenAI nests it under `function.parameters`, and Gemini
+    /// wants `parameters` with a restricted subset of JSON Schema. The struct's
+    /// own fields are the provider-neutral form; reach for those, or for
+    /// [`ag_ui_core::Tool`](https://docs.rs/ag-ui-core/latest/ag_ui_core/struct.Tool.html)
+    /// via `From` under the `ag-ui` feature, when the target is anything else.
+    pub fn to_anthropic_value(&self) -> Value {
         json!({
             "name": self.name,
             "description": self.description,
@@ -224,7 +232,7 @@ mod tests {
 
     #[test]
     fn definitions_render_for_an_api_payload() {
-        let value = generate_a2ui_tool().to_value();
+        let value = generate_a2ui_tool().to_anthropic_value();
         assert_eq!(value["name"], "generate_a2ui");
         assert_eq!(value["input_schema"]["type"], "object");
         assert_eq!(tool_definitions(None).len(), 2);
