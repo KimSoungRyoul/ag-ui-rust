@@ -136,12 +136,11 @@ async fn turn<T: Transport>(
 
 /// Consumes one run, printing it, and reports the interrupt it paused on.
 async fn drive<T: Transport>(
-    run: RunStream<'_, T, Board>,
+    mut run: RunStream<'_, T, Board>,
     output: &mut impl Write,
 ) -> io::Result<Option<Interrupt>> {
     let mut pending = None;
     let mut printed = None;
-    let mut run = std::pin::pin!(run);
 
     while let Some(update) = run.next().await {
         match update {
