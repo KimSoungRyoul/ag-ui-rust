@@ -21,7 +21,9 @@
 //!
 //! What it refuses: invalid UTF-8, and a single frame larger than
 //! [`SseDecoder::max_frame_size`] — an unterminated line is otherwise an
-//! unbounded allocation driven by the other end.
+//! unbounded allocation driven by the other end. The cap is on the frame, not
+//! on the chunk: one read carrying a thousand complete frames is ordinary, and
+//! counting it against a per-frame limit would refuse a well-behaved server.
 //!
 //! ```
 //! use ag_ui_client::transport::SseDecoder;
@@ -75,6 +77,12 @@ impl SseFrame {
 #[derive(Clone, Debug)]
 pub struct SseDecoder {
     buffer: Vec<u8>,
+    /// How much of `buffer` has already been handed out as lines.
+    ///
+    /// The consumed prefix is dropped on the next push rather than as each line
+    /// is taken: shifting the remainder once per read instead of once per line
+    /// is what keeps a chunk carrying a thousand frames linear.
+    consumed: usize,
     data: String,
     event: Option<String>,
     id: Option<String>,
@@ -94,6 +102,7 @@ impl SseDecoder {
     pub fn new() -> Self {
         Self {
             buffer: Vec::new(),
+            consumed: 0,
             data: String::new(),
             event: None,
             id: None,
@@ -119,18 +128,43 @@ impl SseDecoder {
     ///
     /// # Errors
     ///
-    /// [`Error::Decode`] when the buffered frame exceeds
+    /// [`Error::Decode`] when the frame being assembled exceeds
     /// [`SseDecoder::max_frame_size`] — a server that never sends a line break
     /// would otherwise grow this buffer without bound.
     pub fn push(&mut self, bytes: &[u8]) -> Result<()> {
-        let size = self.buffer.len() + self.data.len() + bytes.len();
-        if size > self.max_frame_size {
+        if self.consumed > 0 {
+            self.buffer.drain(..self.consumed);
+            self.consumed = 0;
+        }
+        self.buffer.extend_from_slice(bytes);
+        self.check_frame_size()
+    }
+
+    /// The bytes pushed but not yet handed out as lines.
+    fn pending(&self) -> &[u8] {
+        &self.buffer[self.consumed..]
+    }
+
+    /// Checks the frame under construction against the cap.
+    ///
+    /// What counts is the payload accumulated so far plus the bytes that cannot
+    /// yet *become* a line — everything up to the last line terminator is a
+    /// complete line [`next_frame`](Self::next_frame) will drain, so it does
+    /// not. The cap is on one frame, not on how much a transport happens to
+    /// hand over at once: a single 1 MiB chunk of complete frames is ordinary,
+    /// and rejecting it would break a perfectly well-behaved server.
+    fn check_frame_size(&self) -> Result<()> {
+        let pending = self.pending();
+        let unterminated = match pending.iter().rposition(|b| *b == b'\n' || *b == b'\r') {
+            Some(position) => pending.len() - position - 1,
+            None => pending.len(),
+        };
+        if unterminated + self.data.len() > self.max_frame_size {
             return Err(Error::decode(format!(
                 "frame exceeded the {} byte limit before a line break",
                 self.max_frame_size
             )));
         }
-        self.buffer.extend_from_slice(bytes);
         Ok(())
     }
 
@@ -143,6 +177,14 @@ impl SseDecoder {
         while let Some(line) = self.take_line(false)? {
             if let Some(frame) = self.process(&line) {
                 return Ok(Some(frame));
+            }
+            // A frame made of ten million `data:` lines never reaches
+            // [`push`]'s check, because every one of them is terminated.
+            if self.data.len() > self.max_frame_size {
+                return Err(Error::decode(format!(
+                    "frame exceeded the {} byte limit across its data lines",
+                    self.max_frame_size
+                )));
             }
         }
         Ok(None)
@@ -177,27 +219,28 @@ impl SseDecoder {
     /// Otherwise a `\r` at the very end of the buffer is held back: it may yet
     /// turn out to be the first half of a `\r\n` split across two chunks.
     fn take_line(&mut self, eof: bool) -> Result<Option<String>> {
-        let Some(position) = self.buffer.iter().position(|b| *b == b'\n' || *b == b'\r') else {
-            if eof && !self.buffer.is_empty() {
-                let line = std::mem::take(&mut self.buffer);
+        let pending = self.pending();
+        let Some(position) = pending.iter().position(|b| *b == b'\n' || *b == b'\r') else {
+            if eof && !pending.is_empty() {
+                let line = pending.to_vec();
+                self.consumed = self.buffer.len();
                 return self.decode_line(line).map(Some);
             }
             return Ok(None);
         };
 
-        let is_cr = self.buffer[position] == b'\r';
-        if is_cr && position + 1 == self.buffer.len() && !eof {
+        let is_cr = pending[position] == b'\r';
+        if is_cr && position + 1 == pending.len() && !eof {
             return Ok(None);
         }
 
-        let width = if is_cr && self.buffer.get(position + 1) == Some(&b'\n') {
+        let width = if is_cr && pending.get(position + 1) == Some(&b'\n') {
             2
         } else {
             1
         };
-        let rest = self.buffer.split_off(position + width);
-        let mut line = std::mem::replace(&mut self.buffer, rest);
-        line.truncate(position);
+        let line = pending[..position].to_vec();
+        self.consumed += position + width;
         self.decode_line(line).map(Some)
     }
 

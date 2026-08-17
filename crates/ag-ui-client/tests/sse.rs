@@ -145,6 +145,90 @@ fn a_frame_that_never_ends_is_capped() {
 }
 
 #[test]
+fn the_cap_counts_the_frame_and_not_the_chunk() {
+    // A single read carrying many complete frames is ordinary — hyper hands
+    // over whatever arrived, and a fast agent fills a TCP window with dozens of
+    // tokens. Counting the whole read against a per-frame cap refused a server
+    // that had done nothing wrong.
+    let mut decoder = SseDecoder::new().with_max_frame_size(64);
+    let mut body = String::new();
+    for i in 0..20 {
+        body.push_str(&format!(
+            "data: {{\"type\":\"CUSTOM\",\"name\":\"n{i}\"}}\n\n"
+        ));
+    }
+    assert!(body.len() > 64 * 5, "the body must dwarf the cap");
+
+    decoder
+        .push(body.as_bytes())
+        .expect("a chunk of complete frames is not one oversized frame");
+
+    let mut frames = 0;
+    while decoder.next_frame().expect("decodes").is_some() {
+        frames += 1;
+    }
+    assert_eq!(frames, 20);
+}
+
+#[test]
+fn the_cap_still_stops_a_frame_built_from_many_small_data_lines() {
+    // Every line is terminated, so the unterminated-tail check never fires.
+    // The payload the lines accumulate into has to be capped as well, or a
+    // producer that never sends a blank line grows it without bound.
+    let mut decoder = SseDecoder::new().with_max_frame_size(256);
+    let body = "data: xxxxxxxx\n".repeat(200);
+
+    let error = decoder
+        .push(body.as_bytes())
+        .and_then(|()| decoder.next_frame())
+        .expect_err("the accumulated payload should hit the cap");
+    assert!(
+        error.to_string().contains("limit"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn many_frames_in_one_chunk_decode_in_linear_time() {
+    // Taking a line used to `split_off` the remainder of the buffer, copying
+    // everything still unread once per line. A 300 KB read of small frames —
+    // one slow second of a chatty agent — then cost tens of milliseconds of
+    // pure memcpy, and the cost grew with the square of the frame count.
+    fn decode(frames: usize) -> std::time::Duration {
+        let mut body = String::new();
+        for i in 0..frames {
+            body.push_str(&format!(
+                "data: {{\"type\":\"CUSTOM\",\"name\":\"n{i}\"}}\n\n"
+            ));
+        }
+        let start = std::time::Instant::now();
+        let mut decoder = SseDecoder::new();
+        decoder.push(body.as_bytes()).expect("pushes");
+        let mut decoded = 0;
+        while decoder.next_frame().expect("decodes").is_some() {
+            decoded += 1;
+        }
+        assert_eq!(decoded, frames);
+        start.elapsed()
+    }
+
+    // Warm up, so the first allocation does not land on the measurement.
+    decode(2_000);
+    let small = decode(2_000);
+    let large = decode(16_000);
+
+    // Eight times the frames, so linear is 8x and quadratic is 64x. The bound
+    // is loose enough to survive a loaded CI box and tight enough that the
+    // quadratic version — which measured over 100x here — cannot pass.
+    let ratio = large.as_secs_f64() / small.as_secs_f64().max(f64::EPSILON);
+    assert!(
+        ratio < 30.0,
+        "decoding 8x the frames took {ratio:.1}x the time ({small:?} -> {large:?}), \
+         which is not linear"
+    );
+}
+
+#[test]
 fn a_payload_with_embedded_newlines_and_blank_lines_round_trips() {
     // The encoder in ag-ui-core writes one `data:` line per line of payload.
     // This is the other half of that contract: what goes in comes out, byte for
