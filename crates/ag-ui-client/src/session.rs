@@ -174,13 +174,42 @@ pub struct Session<T, S = Value> {
 
 impl<T, S> Session<T, S> {
     /// A new conversation over `transport`.
-    pub fn new(transport: T, thread_id: impl Into<ThreadId>) -> Self {
+    ///
+    /// The `T: Transport` bound is checked *here*, at the construction site,
+    /// rather than on [`Session`] itself — so something that is not a transport
+    /// is an error on this line instead of on the first
+    /// [`send`](Session::send), which is usually in another file:
+    ///
+    /// ```compile_fail,E0277
+    /// use ag_ui_client::Session;
+    ///
+    /// // error[E0277]: the trait bound `str: Transport` is not satisfied,
+    /// // and the note lists the types that do implement it.
+    /// let session = Session::<_>::new("http://localhost:8080/agent", "thread-1");
+    /// ```
+    ///
+    /// (A URL is the mistake worth catching: it is what a transport is *made
+    /// from*, so it reads plausible.) The bound stays off the struct because a
+    /// bound there is viral — every application helper naming `Session<T, S>`
+    /// would have to repeat it, including ones that only read
+    /// [`messages`](Session::messages). `tests/bounds.rs` is what says so.
+    pub fn new(transport: T, thread_id: impl Into<ThreadId>) -> Self
+    where
+        T: Transport,
+    {
         Self::builder(transport, thread_id).build()
     }
 
     /// A builder, for seeding history, tools, context, or turning verification
     /// off.
-    pub fn builder(transport: T, thread_id: impl Into<ThreadId>) -> SessionBuilder<T, S> {
+    ///
+    /// Takes the same `T: Transport` bound as [`new`](Session::new), and for
+    /// the same reason. Everything after it — including
+    /// [`build`](SessionBuilder::build) — is unbounded.
+    pub fn builder(transport: T, thread_id: impl Into<ThreadId>) -> SessionBuilder<T, S>
+    where
+        T: Transport,
+    {
         SessionBuilder::new(transport, thread_id)
     }
 
@@ -369,7 +398,13 @@ pub struct SessionBuilder<T, S = Value> {
 
 impl<T, S> SessionBuilder<T, S> {
     /// A builder for a conversation over `transport`.
-    pub fn new(transport: T, thread_id: impl Into<ThreadId>) -> Self {
+    ///
+    /// The one bounded method here: see [`Session::new`] for why the check
+    /// belongs on the constructor and not on the type.
+    pub fn new(transport: T, thread_id: impl Into<ThreadId>) -> Self
+    where
+        T: Transport,
+    {
         Self {
             transport,
             thread_id: thread_id.into(),
