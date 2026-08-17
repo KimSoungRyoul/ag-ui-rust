@@ -552,8 +552,6 @@ impl<'a> Validator<'a> {
         data_model: Option<&Value>,
     ) -> ValidationReport {
         let mut report = ValidationReport::default();
-        // Lives for the whole run so scopes derived from it can borrow it.
-        let no_data = Value::Null;
 
         if nodes.is_empty() {
             report.errors.push(ValidationError::new(
@@ -596,16 +594,7 @@ impl<'a> Validator<'a> {
         }
 
         if self.options.check_bindings || self.options.check_binding_syntax {
-            let data = data_model.unwrap_or(&no_data);
-            self.check_bindings(
-                nodes,
-                typed,
-                &ids,
-                &adjacency,
-                data,
-                data_model.is_some(),
-                &mut report,
-            );
+            self.check_bindings(nodes, typed, &ids, &adjacency, data_model, &mut report);
         }
         report
     }
@@ -918,17 +907,20 @@ impl<'a> Validator<'a> {
 
     /// Data bindings: relative paths need a collection scope, and every path
     /// must resolve when a data model is available.
-    #[allow(clippy::too_many_arguments)]
     fn check_bindings(
         &self,
         nodes: &[Node<'_>],
         typed: &[Component],
         ids: &BTreeMap<&str, usize>,
         adjacency: &[Vec<Edge>],
-        data: &Value,
-        has_data: bool,
+        data_model: Option<&Value>,
         report: &mut ValidationReport,
     ) {
+        // The scopes borrow whichever document is in play, so it has to outlive
+        // the loop; `null` stands in when the caller supplied none.
+        let no_data = Value::Null;
+        let has_data = data_model.is_some();
+        let data = data_model.unwrap_or(&no_data);
         let scopes = collection_scopes(typed, ids, adjacency, self.catalog, data, has_data);
 
         for node in nodes {
