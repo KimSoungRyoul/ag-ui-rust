@@ -236,7 +236,11 @@ async fn reasoning_chunks_reassemble_separately_from_the_reply() {
 
     {
         let mut run = session.send("say two things");
-        while run.next().await.is_some() {}
+        while let Some(update) = run.next().await {
+            if let Update::Error(error) = update {
+                panic!("a chunked run should not produce an error: {error}");
+            }
+        }
     }
 
     let reasoning = session.reasoning();
@@ -256,10 +260,16 @@ async fn the_final_chunk_stream_is_closed_by_the_end_of_the_run() {
     {
         let mut run = session.send("say two things");
         while let Some(update) = run.next().await {
-            if let Update::Message(message) = update {
-                if matches!(message.change, ag_ui_client::MessageChangeKind::Ended) {
-                    ended_ids.push(message.id.to_string());
+            match update {
+                Update::Message(message) => {
+                    if matches!(message.change, ag_ui_client::MessageChangeKind::Ended) {
+                        ended_ids.push(message.id.to_string());
+                    }
                 }
+                // A stream the normalizer complained about would explain a
+                // missing terminator without the assertion below saying so.
+                Update::Error(error) => panic!("a chunked run should not error: {error}"),
+                _ => {}
             }
         }
     }

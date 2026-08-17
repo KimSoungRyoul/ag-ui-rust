@@ -5,16 +5,23 @@
 //! overlap is not left to luck: each run stops at a shared barrier that only
 //! releases once every run has reached it, so a server that answered one
 //! request at a time would deadlock here rather than pass slowly.
+//!
+//! The endpoint's own per-run state gets the same treatment. A
+//! [`StreamTransformer`] is a state machine and
+//! [`AgentEndpoint`](ag_ui_axum::AgentEndpoint) builds a fresh one per request
+//! for exactly that reason — so [`Numbering`] counts, and a shared instance
+//! would hand one run another run's numbers.
 
 mod common;
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use ag_ui_axum::AgentEndpoint;
 use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::{Message, RunOutcome, UserContent};
-use ag_ui_server::{Agent, Result, RunContext};
-use common::{serve, transport};
+use ag_ui_core::{Event, Message, RunOutcome, UserContent};
+use ag_ui_server::{Agent, Result, RunContext, StreamTransformer};
+use common::{serve, serve_endpoint, transport};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Barrier;
@@ -89,6 +96,28 @@ fn last_question(ctx: &RunContext<Tally>) -> String {
         .unwrap_or_default()
 }
 
+/// Stamps every text fragment with how many it has seen.
+///
+/// A count is the cheapest thing that makes sharing visible: one instance
+/// across the runs below would stamp numbers from every other run's stream into
+/// each reply, and no run would come out holding a clean sequence.
+struct Numbering {
+    seen: usize,
+}
+
+impl StreamTransformer for Numbering {
+    fn transform(&mut self, event: Event) -> Vec<Event> {
+        match event {
+            Event::TextMessageContent(mut content) => {
+                self.seen += 1;
+                content.delta = format!("[{}]{}", self.seen, content.delta);
+                vec![Event::TextMessageContent(content)]
+            }
+            other => vec![other],
+        }
+    }
+}
+
 /// What one client got back.
 struct Transcript {
     thread: String,
@@ -100,11 +129,18 @@ struct Transcript {
 /// Runs every client at once against one served agent.
 async fn run_all() -> Vec<Transcript> {
     let barrier = Arc::new(Barrier::new(CLIENTS));
-    let url = serve(Echo {
-        barrier: Arc::clone(&barrier),
-    })
-    .await;
+    drive_all(serve(Echo { barrier }).await).await
+}
 
+/// The same, with a stateful transformer between the agent and the wire.
+async fn run_all_numbered() -> Vec<Transcript> {
+    let barrier = Arc::new(Barrier::new(CLIENTS));
+    let endpoint = AgentEndpoint::new(Echo { barrier }).transformer(|| Numbering { seen: 0 });
+    drive_all(serve_endpoint(endpoint).await).await
+}
+
+/// Opens every client at once against `url` and collects what each got back.
+async fn drive_all(url: String) -> Vec<Transcript> {
     let clients: Vec<_> = (0..CLIENTS)
         .map(|index| {
             let url = url.clone();
@@ -190,6 +226,34 @@ async fn concurrent_clients_each_get_only_their_own_events() {
                     other.thread
                 );
             }
+        }
+    }
+}
+
+/// Every run gets its own transformer chain, and the count proves it: a run
+/// that shared one with the seven others running alongside it would see numbers
+/// climb past its own fragment count and skip most of them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateful_transformer_starts_over_for_each_concurrent_run() {
+    let transcripts = run_all_numbered().await;
+    assert_eq!(transcripts.len(), CLIENTS);
+
+    for transcript in &transcripts {
+        let thread = &transcript.thread;
+        assert_eq!(transcript.ended, RunEnd::Success { result: None });
+
+        for (index, reply) in transcript.replies.iter().enumerate() {
+            // Two fragments per reply — the stamped prefix and the stamped
+            // question — so this run's numbering runs 1, 2, 3, … across them.
+            assert_eq!(
+                reply,
+                &format!(
+                    "[{}]{thread}/{thread}-run-1#{index}: [{}]question from {thread}",
+                    2 * index + 1,
+                    2 * index + 2
+                ),
+                "{thread} was numbered by a transformer another run had used"
+            );
         }
     }
 }

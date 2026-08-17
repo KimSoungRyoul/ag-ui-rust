@@ -52,6 +52,19 @@ impl Agent for Abrupt {
     }
 }
 
+/// Does not fail — panics. The one way out of an agent that the run driver
+/// deliberately does not catch.
+struct Exploder;
+
+impl Agent for Exploder {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        ctx.say("Looking that up")?;
+        panic!("the tool returned something impossible");
+    }
+}
+
 /// Never gets to run: the state it is typed against will not decode.
 struct Picky;
 
@@ -201,6 +214,46 @@ async fn a_failure_with_a_message_still_open_is_still_a_clean_stream() {
     assert_eq!(
         session.messages().last(),
         Some(&Message::assistant("half", "I was saying"))
+    );
+}
+
+/// A panic is not an `Err`, and the run driver deliberately does not catch it:
+/// it unwinds through whoever polls the stream, which here is the connection
+/// task. So there is no `RUN_ERROR` to be had — the response body simply stops
+/// mid-message, and this file's other guarantees do not apply.
+///
+/// What still has to hold is the one a UI is built on: the run *ends*, and it
+/// ends saying it failed. A frontend that re-enables its input on
+/// [`Update::Done`] would otherwise be left with a spinner and no way out, and
+/// nothing between here and the agent would ever say why.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panicking_agent_ends_the_clients_run_rather_than_hanging_it() {
+    let url = serve(Exploder).await;
+    let mut session = Session::<_>::new(transport(&url), "boom");
+
+    let updates = timeout(DEADLINE, async {
+        let mut updates = Vec::new();
+        let mut run = session.send("what is the weather?");
+        while let Some(update) = run.next().await {
+            updates.push(update);
+        }
+        updates
+    })
+    .await
+    .expect("a panicking agent must not hang the client");
+
+    match updates.last() {
+        Some(Update::Done(RunEnd::Failed { .. })) => {}
+        other => panic!("a run whose agent panicked must not end as {other:?}"),
+    }
+    // The failure is described before it is declared, however the connection
+    // died — a truncated body and a broken transport are both reported, and
+    // neither is allowed to arrive as a bare `Done`.
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, Update::Error(_))),
+        "the run failed without saying anything about it: {updates:?}"
     );
 }
 

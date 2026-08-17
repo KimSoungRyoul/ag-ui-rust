@@ -80,6 +80,12 @@ async fn run_once() -> (Session<HttpTransport, Weather>, Vec<Update<Weather>>) {
     {
         let mut run = session.send("what is the weather in Seoul?");
         while let Some(update) = run.next().await {
+            // Asserted here rather than per test: an error anywhere in this
+            // stream invalidates every claim made about it below, and a test
+            // that only reads the updates it cares about would not see it.
+            if let Update::Error(error) = &update {
+                panic!("a well-formed run produced {error}");
+            }
             updates.push(update);
         }
     }

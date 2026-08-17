@@ -3,15 +3,17 @@
 //! A run that fails is a `200` with `RUN_ERROR` in it. A request the endpoint
 //! will not answer at all is something else entirely, and a client has to be
 //! able to tell the two apart — "the agent errored", "you asked for a body I
-//! cannot send", "nothing is listening" are three different bugs. This checks
-//! that the refusals arrive as distinguishable errors and that a refused
-//! request never reaches the agent.
+//! cannot send", "nothing is listening", "something answered but it was not an
+//! agent" are four different bugs. This checks that the refusals arrive as
+//! distinguishable errors and that a refused request never reaches the agent.
 
 mod common;
 
-use ag_ui_client::{Error as ClientError, HttpAgent, RunParams};
+use ag_ui_client::{Error as ClientError, HttpAgent, RunEnd, RunParams, Session, Update};
 use ag_ui_core::RunOutcome;
 use ag_ui_server::{Agent, Result, RunContext};
+use axum::Router;
+use axum::routing::post;
 use common::{serve, transport};
 use futures_util::StreamExt as _;
 use tokio::net::TcpListener;
@@ -107,6 +109,49 @@ async fn a_wrong_path_is_an_http_error_rather_than_an_empty_stream() {
         "{error:?}"
     );
     assert!(ran_rx.try_recv().is_err(), "the agent should not have run");
+}
+
+/// The refusal that does not look like one. A gateway that wants a login, a
+/// health check answering on the wrong path, a proxy reporting its own trouble
+/// as JSON: all of them are `200`, and none of them is an event stream. The
+/// status says nothing, so the client only finds out by running out of body —
+/// and it has to say so, because "the agent produced nothing and succeeded" is
+/// exactly what this must not be mistaken for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_two_hundred_that_is_not_an_event_stream_is_reported_as_a_failed_run() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port on loopback");
+    let addr = listener.local_addr().expect("the bound address");
+    let app = Router::new().route("/agent", post(|| async { "<html>please log in</html>" }));
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("the server to run");
+    });
+
+    let mut session = Session::<_>::new(transport(&format!("http://{addr}/agent")), "gateway");
+    let mut updates = Vec::new();
+    {
+        let mut run = session.send("hello?");
+        while let Some(update) = run.next().await {
+            updates.push(update);
+        }
+    }
+
+    match updates.last() {
+        Some(Update::Done(RunEnd::Failed { message, .. })) => {
+            assert!(
+                message.contains("RUN_STARTED"),
+                "the report should name what was missing: {message}"
+            );
+        }
+        other => panic!("a body with no run in it must not end as {other:?}"),
+    }
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, Update::Error(ClientError::Protocol(_)))),
+        "{updates:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

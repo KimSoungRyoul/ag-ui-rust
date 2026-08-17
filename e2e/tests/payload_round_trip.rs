@@ -4,7 +4,9 @@
 //! themselves, in both directions. The request the client built has to arrive
 //! field for field, a `MESSAGES_SNAPSHOT` has to carry every message variant the
 //! protocol has without losing a field on the way, and state published in one
-//! run has to be the state the next run starts from.
+//! run has to be the state the next run starts from — as does the conversation,
+//! including the turns the client did not receive whole but assembled out of
+//! deltas.
 
 mod common;
 
@@ -15,7 +17,7 @@ use ag_ui_core::{
     MediaInputContent, Message, PatchOperation, RunAgentInput, RunOutcome, TextInputContent, Tool,
     ToolCall, ToolMessage, UserContent, UserMessage,
 };
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui_server::{Agent, Error, Result, RunContext};
 use common::{serve, serve_endpoint, transport};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -218,6 +220,98 @@ async fn an_activity_is_published_and_then_patched_in_place() {
                 .clone(),
         }))
     );
+}
+
+// ----------------------------------------------------------- conversation ----
+
+/// Streams a turn on the first run and hands back whatever conversation it was
+/// given on the second.
+struct Recaller;
+
+impl Agent for Recaller {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        if ctx.messages().len() > 1 {
+            // The second turn. Nothing about the messages is asserted here —
+            // the point is to get them back out to a test that knows what the
+            // client thinks it sent.
+            let received = serde_json::to_string(ctx.messages()).map_err(Error::agent)?;
+            let mut call = ctx.tool_call("echo_conversation")?;
+            call.args("{}")?;
+            call.result(received)?;
+            return Ok(RunOutcome::Success);
+        }
+
+        // The first turn, streamed in the pieces a provider sends: neither the
+        // tool call's arguments nor the reply exists as a whole message
+        // anywhere on the wire, so what the next request carries can only be
+        // something the client assembled.
+        let mut call = ctx.tool_call("get_weather")?;
+        call.args(r#"{"city":"#)?;
+        call.args(r#""Seoul"}"#)?;
+        call.result(r#"{"tempC":21}"#)?;
+
+        let mut message = ctx.assistant_message()?;
+        message.delta("It is 21\u{b0}C ")?;
+        message.delta("in Seoul.")?;
+        message.end()?;
+
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// The client sends its whole conversation on every run, so an agent that keeps
+/// no storage of its own still gets its own last turn back — reassembled from
+/// the deltas it streamed, with the ids it minted for them.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_conversation_the_client_assembled_is_the_one_the_next_run_receives() {
+    let url = serve(Recaller).await;
+    let mut session = Session::<_>::new(transport(&url), "recall");
+
+    {
+        let mut run = session.send("what is the weather in Seoul?");
+        while let Some(update) = run.next().await {
+            if let Update::Error(error) = update {
+                panic!("the first turn should be clean: {error}");
+            }
+        }
+    }
+    let assembled = session.messages().to_vec();
+    assert_eq!(assembled.len(), 4, "{assembled:?}");
+
+    {
+        let mut run = session.send("and tomorrow?");
+        while let Some(update) = run.next().await {
+            if let Update::Error(error) = update {
+                panic!("the second turn should be clean: {error}");
+            }
+        }
+    }
+
+    let echoed = session
+        .messages()
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            Message::Tool(tool) if tool.tool_call_id.as_str().ends_with("-call-1") => {
+                Some(tool.content.clone())
+            }
+            _ => None,
+        })
+        .expect("the second run should have echoed what it received");
+    let received: Vec<Message> =
+        serde_json::from_str(&echoed).expect("the echo should be a message list");
+
+    // Everything the client had, in order, plus the turn it opened the second
+    // run with. A message the client dropped, renamed or merged shows up here.
+    assert_eq!(&received[..assembled.len()], assembled.as_slice());
+    assert_eq!(
+        received.get(assembled.len()),
+        Some(&Message::user("recall-msg-2", "and tomorrow?")),
+        "{received:?}"
+    );
+    assert_eq!(received.len(), assembled.len() + 1);
 }
 
 // ------------------------------------------------------------------ state ----
