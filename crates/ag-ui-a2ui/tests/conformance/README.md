@@ -13,11 +13,11 @@ upstream and are driven by `crates/ag-ui-a2ui/tests/conformance.rs`.
 Do not hand-edit these files. To update, re-copy from upstream at a newer commit
 and change the SHA here and in `UPSTREAM_COMMIT` in the harness.
 
-## Current standing: 114 passed, 79 skipped, 0 failed
+## Current standing: 118 passed, 75 skipped, 0 failed
 
 | File | Cases | Checks executed here |
 |---|---:|---|
-| `core/validator.yaml` | 45 | 17 of 51 — every v0.9 structural case |
+| `core/validator.yaml` | 45 | 21 of 51 — every v0.9 structural case, plus the depth limits |
 | `core/catalog.yaml` | 24 | 23 of 24 — prune, render, load, modifiers |
 | `core/accessibility.yaml` | 4 | none |
 | `agent/parser.yaml` | 19 | 19 — all of them |
@@ -41,16 +41,18 @@ cargo test -p ag-ui-a2ui --all-features -- --nocapture
 to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list every check by
 name.
 
-The 79 skips break down as:
+The 75 skips break down as:
 
 | Count | Reason |
 |---:|---|
 | 63 | **v0.8 wire format.** v0.8 nests component properties under the type name (`component: {Text: {...}}`) and uses different message names. This crate implements v0.9, where components are flat. |
 | 6 | **JSON Schema validation.** Upstream validates envelopes, component properties and example files with a JSON Schema engine, and these cases assert its error codes (`missing_field`, `type_mismatch`) or its messages (`123 is not of type 'string'`). This crate has no JSON Schema engine and adding one for six cases is not worth the dependency. |
 | 4 | **Renderer accessibility.** Accessibility trees and axe-core rules belong to a renderer; this crate does not render. |
-| 3 | **Depth limits.** Upstream caps logical nesting at 50 and function-call nesting at 5. This crate's validator is iterative and handles arbitrarily deep trees without a limit, so a depth cap would be policy rather than safety — and it has no code in the closed [`ErrorCode`] set. |
 | 2 | **v0.8 schema bundle in a prompt.** Two `generate_prompt` cases ask for the v0.8 schema documents to be embedded in the prompt; this crate ships v0.9. The other six prompt cases run. |
-| 1 | **Envelope-only payload.** One validator step carries no components, so there is nothing for a component validator to check. |
+
+The depth-limit cases now pass: `ValidateOptions::max_depth` defaults to 50 and
+`max_function_call_depth` to 5, matching every other toolkit, and a payload past
+either reports `max_depth_exceeded`.
 
 Version gating is applied only where the version actually matters. `validate`
 and `process_chunk` are wire-format operations and are gated; schema surgery

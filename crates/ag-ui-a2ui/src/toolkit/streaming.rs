@@ -87,6 +87,12 @@ const CHILD_FIELDS: [&str; 6] = [
     "componentId",
 ];
 
+/// How far the metadata sniffer rewinds between passes.
+///
+/// Comfortably longer than the keys it looks for (`"surfaceId"`, `"root"`), so a
+/// key split across two passes is still matched whole.
+const SNIFF_OVERLAP: usize = 16;
+
 /// Keys whose string values may be closed early when a chunk cuts them.
 ///
 /// Everything absent from this list is structural or atomic: healing `"id"` or
@@ -119,6 +125,8 @@ pub struct StreamParser {
     in_string: bool,
     string_escaped: bool,
     found_valid_json_in_block: bool,
+    /// How much of `json_buffer` the metadata sniffer has already read.
+    sniff_cursor: usize,
 
     // --- protocol state ---
     seen_components: BTreeMap<String, Value>,
@@ -158,6 +166,7 @@ impl StreamParser {
             in_string: false,
             string_escaped: false,
             found_valid_json_in_block: false,
+            sniff_cursor: 0,
             seen_components: BTreeMap::new(),
             yielded_data_model: Map::new(),
             deleted_surfaces: BTreeSet::new(),
@@ -306,6 +315,7 @@ impl StreamParser {
         self.in_string = false;
         self.string_escaped = false;
         self.found_valid_json_in_block = false;
+        self.sniff_cursor = 0;
         // `active_msg_type` and the yielded-content map deliberately survive, so
         // a second block can keep updating the surface built by the first.
     }
@@ -576,6 +586,10 @@ impl StreamParser {
         let root_id = self.root_id().to_string();
         let reachable = self.analyze_topology(&root_id)?;
 
+        // Hoisted out of the loop: both were being rebuilt per component, and
+        // cloning the raw buffer once per component turns a large message into
+        // quadratic copying.
+        let seen: BTreeSet<&str> = self.seen_components.keys().map(String::as_str).collect();
         let mut processed: Vec<Value> = Vec::new();
         let mut extras: Vec<Value> = Vec::new();
         for id in &reachable {
@@ -583,7 +597,18 @@ impl StreamParser {
                 continue;
             };
             let mut component = component.clone();
-            self.resolve_child_references(&mut component, &mut extras);
+            let comp_id = component
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            rewrite_children(
+                &mut component,
+                &comp_id,
+                &seen,
+                &mut extras,
+                &self.json_buffer,
+            );
             processed.push(component);
         }
         processed.extend(extras);
@@ -692,18 +717,6 @@ impl StreamParser {
         refs
     }
 
-    /// Rewrites references to components that have not arrived yet.
-    fn resolve_child_references(&self, component: &mut Value, extras: &mut Vec<Value>) {
-        let comp_id = component
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        let seen: BTreeSet<&str> = self.seen_components.keys().map(String::as_str).collect();
-        let buffer = self.json_buffer.clone();
-        rewrite_children(component, &comp_id, &seen, extras, &buffer);
-    }
-
     /// Emits a message, returning whether it survived validation.
     ///
     /// `partial` selects the filter behaviour: a partial fragment that fails
@@ -794,15 +807,47 @@ impl StreamParser {
 
     /// Reads identifiers out of the raw buffer before their message closes.
     fn sniff_metadata(&mut self) {
-        if let Some(sid) = latest_string_value(&self.json_buffer, "surfaceId") {
-            self.set_surface_id(Some(sid));
+        // Called on every delimiter character, so it reads only what has
+        // arrived since last time. Re-scanning the whole buffer each time turns
+        // a long message into quadratic work, which is a denial of service on
+        // input a model controls.
+        if self.json_buffer.len() < self.sniff_cursor {
+            // The buffer was compacted; positions no longer mean anything.
+            self.sniff_cursor = 0;
         }
-        if let Some(root) = latest_string_value(&self.json_buffer, "root") {
-            self.set_root_id(root);
+        let start = floor_char_boundary(&self.json_buffer, self.sniff_cursor);
+        let region = &self.json_buffer[start..];
+        // Rewind far enough that a key straddling the boundary is seen whole on
+        // the next pass. Once a key *is* seen, an unfinished value pins the
+        // cursor to it, so this only has to cover the key itself.
+        let mut next_cursor = self.json_buffer.len().saturating_sub(SNIFF_OVERLAP);
+
+        let mut found: Vec<(&str, String)> = Vec::new();
+        for key in ["surfaceId", "root"] {
+            let (value, incomplete) = scan_string_values(region, key);
+            if let Some(value) = value {
+                found.push((key, value));
+            }
+            if let Some(offset) = incomplete {
+                // A key whose value has not finished arriving: leave the cursor
+                // before it so the next pass sees the whole pair.
+                next_cursor = next_cursor.min(start + offset);
+            }
         }
-        for key in [MSG_CREATE_SURFACE, MSG_UPDATE_COMPONENTS] {
-            if self.json_buffer.contains(&format!("\"{key}\":")) && self.active_msg_type.is_none() {
-                self.active_msg_type = Some(key.to_string());
+        for (key, value) in found {
+            match key {
+                "surfaceId" => self.set_surface_id(Some(value)),
+                _ => self.set_root_id(value),
+            }
+        }
+        self.sniff_cursor = next_cursor;
+
+        if self.active_msg_type.is_none() {
+            for key in [MSG_CREATE_SURFACE, MSG_UPDATE_COMPONENTS] {
+                if self.json_buffer.contains(&format!("\"{key}\":")) {
+                    self.active_msg_type = Some(key.to_string());
+                    break;
+                }
             }
         }
     }
@@ -992,25 +1037,46 @@ impl StreamParser {
 }
 
 /// Depth-first walk collecting reachable ids and rejecting loops.
-fn walk(
-    node: &str,
-    adjacency: &BTreeMap<&str, Vec<(&str, String)>>,
+fn walk<'a>(
+    root: &'a str,
+    adjacency: &BTreeMap<&'a str, Vec<(&'a str, String)>>,
     visited: &mut BTreeSet<String>,
     on_path: &mut BTreeSet<String>,
 ) -> Result<()> {
-    visited.insert(node.to_string());
-    on_path.insert(node.to_string());
-    for (_, target) in adjacency.get(node).into_iter().flatten() {
+    // Iterative rather than recursive: this runs on every chunk of a model's
+    // output, over a component graph whose depth the model chooses. A recursive
+    // walk would take the process down on a deep enough tree, and unlike a
+    // validation failure there is nothing to report afterwards.
+    let mut stack: Vec<(&str, usize)> = vec![(root, 0)];
+    visited.insert(root.to_string());
+    on_path.insert(root.to_string());
+
+    while let Some(&(node, edge_index)) = stack.last() {
+        let edges = adjacency.get(node).map(Vec::as_slice).unwrap_or_default();
+        let Some((_, target)) = edges.get(edge_index) else {
+            on_path.remove(node);
+            stack.pop();
+            continue;
+        };
+        if let Some(top) = stack.last_mut() {
+            top.1 += 1;
+        }
         if on_path.contains(target.as_str()) {
             return Err(Error::Parse(format!(
                 "Circular reference detected involving component '{target}'"
             )));
         }
-        if !visited.contains(target.as_str()) {
-            walk(target, adjacency, visited, on_path)?;
+        if visited.insert(target.to_string()) {
+            on_path.insert(target.to_string());
+            // Borrow the key out of the map so the stack holds `&'a str`
+            // rather than a reference into `adjacency`'s values.
+            let next = adjacency
+                .get_key_value(target.as_str())
+                .map(|(key, _)| *key)
+                .unwrap_or(target.as_str());
+            stack.push((next, 0));
         }
     }
-    on_path.remove(node);
     Ok(())
 }
 
@@ -1115,27 +1181,53 @@ fn key_before_colon(prefix: &str) -> Option<String> {
     Some(inner[start + 1..].to_string())
 }
 
-/// Finds the last `"key": "value"` pair in a raw buffer.
-fn latest_string_value(buffer: &str, key: &str) -> Option<String> {
+/// Reads `"key": "value"` pairs out of a buffer region, front to back.
+///
+/// Returns the last complete value found, and the offset of the first key whose
+/// value has not finished arriving. A caller scanning incrementally must rewind
+/// to that offset, or it would never see the finished pair.
+fn scan_string_values(region: &str, key: &str) -> (Option<String>, Option<usize>) {
     let needle = format!("\"{key}\"");
-    let mut search_end = buffer.len();
-    while let Some(index) = buffer[..search_end].rfind(&needle) {
-        let rest = &buffer[index + needle.len()..];
-        let rest = rest.trim_start();
-        if let Some(rest) = rest.strip_prefix(':') {
-            let rest = rest.trim_start();
-            if let Some(rest) = rest.strip_prefix('"') {
-                if let Some(end) = rest.find('"') {
-                    return Some(rest[..end].to_string());
+    let mut latest = None;
+    let mut incomplete = None;
+    let mut cursor = 0;
+
+    while let Some(offset) = region[cursor..].find(&needle) {
+        let at = cursor + offset;
+        let rest = region[at + needle.len()..].trim_start();
+        match rest
+            .strip_prefix(':')
+            .map(str::trim_start)
+            .and_then(|rest| rest.strip_prefix('"'))
+        {
+            Some(value) => match value.find('"') {
+                Some(end) => latest = Some(value[..end].to_string()),
+                None => {
+                    incomplete = Some(at);
+                    break;
+                }
+            },
+            // Not a string value: `"root": 3` is not an identifier, and a key
+            // whose colon has not arrived yet must be looked at again.
+            None => {
+                if rest.is_empty() || rest == ":" {
+                    incomplete = Some(at);
+                    break;
                 }
             }
         }
-        search_end = index;
-        if search_end == 0 {
-            break;
-        }
+        cursor = at + needle.len();
     }
-    None
+    (latest, incomplete)
+}
+
+/// The largest char boundary at or below `index`.
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 /// Whether any object nested inside the value is empty.
@@ -1735,14 +1827,123 @@ mod tests {
     }
 
     #[test]
-    fn latest_string_value_reads_the_last_occurrence() {
-        let buffer = r#"{"surfaceId": "first"} {"surfaceId" : "second""#;
-        assert_eq!(
-            latest_string_value(buffer, "surfaceId"),
-            Some("second".to_string())
+    fn a_very_deep_component_chain_does_not_blow_the_stack() {
+        // The topology walk runs on every chunk, over a graph whose depth the
+        // model chooses. If it recursed, this would abort the process rather
+        // than fail a test.
+        let mut parser = StreamParser::new(catalog()).without_validation();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+
+        let depth = 20_000;
+        let mut components = String::from(r#"[{"id":"root","component":"Card","child":"n0"}"#);
+        for i in 0..depth {
+            let child = if i + 1 == depth {
+                "leaf".to_string()
+            } else {
+                format!("n{}", i + 1)
+            };
+            components.push_str(&format!(
+                r#",{{"id":"n{i}","component":"Card","child":"{child}"}}"#
+            ));
+        }
+        components.push_str(r#",{"id":"leaf","component":"Text","text":"end"}]"#);
+
+        let chunk = format!(r#"{UPDATE_OPEN}{components}}}}}"#);
+        let messages = feed(&mut parser, &[&chunk]);
+        let emitted = messages[0]["updateComponents"]["components"]
+            .as_array()
+            .expect("components");
+        assert_eq!(emitted.len(), depth + 2);
+    }
+
+    #[test]
+    fn a_deep_chain_with_a_loop_at_the_bottom_is_still_caught() {
+        // Depth must not let a cycle slip past: the walk has to reach the end.
+        let mut parser = StreamParser::new(catalog()).without_validation();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+
+        let depth = 5_000;
+        let mut components = String::from(r#"[{"id":"root","component":"Card","child":"n0"}"#);
+        for i in 0..depth {
+            let child = if i + 1 == depth {
+                "root".to_string() // closes the loop
+            } else {
+                format!("n{}", i + 1)
+            };
+            components.push_str(&format!(
+                r#",{{"id":"n{i}","component":"Card","child":"{child}"}}"#
+            ));
+        }
+        components.push(']');
+
+        let chunk = format!(r#"{UPDATE_OPEN}{components}}}}}"#);
+        let error = parser.process_chunk(&chunk).unwrap_err();
+        assert!(
+            error.to_string().contains("Circular reference detected"),
+            "{error}"
         );
-        assert_eq!(latest_string_value(buffer, "missing"), None);
+    }
+
+    #[test]
+    fn a_surface_id_split_across_chunks_is_still_picked_up() {
+        // The metadata sniffer reads only what is new since the last pass, so a
+        // key landing on a chunk boundary is the case that breaks it.
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+
+        // `"surfaceId"` is split down the middle, and its value again after.
+        let messages = feed(
+            &mut parser,
+            &[
+                r#"{"version":"v0.9","updateComponents":{"surf"#,
+                r#"aceId":"s1","components":[{"id":"root","component":"Text","text":"hi"}"#,
+            ],
+        );
+        assert_eq!(
+            messages[0]["updateComponents"]["surfaceId"], "s1",
+            "the split key must still be found"
+        );
+    }
+
+    #[test]
+    fn a_later_surface_does_not_leak_into_an_earlier_one() {
+        let mut parser = parser();
+        feed(
+            &mut parser,
+            &[
+                "<a2ui-json>[",
+                r#"{"version":"v0.9","createSurface":{"surfaceId":"one","catalogId":"test"}},"#,
+                r#"{"version":"v0.9","createSurface":{"surfaceId":"two","catalogId":"test"}},"#,
+            ],
+        );
+        // Back to the first surface: the sniffer has to notice the switch.
+        let messages = feed(
+            &mut parser,
+            &[concat!(
+                r#"{"version":"v0.9","updateComponents":{"surfaceId":"one","components":"#,
+                r#"[{"id":"root","component":"Text","text":"hi"}"#
+            )],
+        );
+        assert_eq!(messages[0]["updateComponents"]["surfaceId"], "one");
+    }
+
+    #[test]
+    fn scanning_reads_the_last_pair_and_flags_an_unfinished_one() {
+        let buffer = r#"{"surfaceId": "first"} {"surfaceId" : "second"}"#;
+        let (value, incomplete) = scan_string_values(buffer, "surfaceId");
+        assert_eq!(value, Some("second".to_string()));
+        assert_eq!(incomplete, None);
+
+        assert_eq!(scan_string_values(buffer, "missing"), (None, None));
+
         // A key with a non-string value is skipped rather than mis-read.
-        assert_eq!(latest_string_value(r#"{"root": 3}"#, "root"), None);
+        assert_eq!(scan_string_values(r#"{"root": 3}"#, "root"), (None, None));
+
+        // A value still arriving must be looked at again next time, and the
+        // earlier complete value is still reported.
+        let cut = r#"{"surfaceId": "done"}, {"surfaceId": "partia"#;
+        let (value, incomplete) = scan_string_values(cut, "surfaceId");
+        assert_eq!(value, Some("done".to_string()));
+        assert_eq!(incomplete, Some(cut.rfind("\"surfaceId\"").unwrap()));
     }
 }

@@ -11,6 +11,15 @@
 //! *all* errors rather than stopping at the first, so one retry can fix
 //! everything at once.
 //!
+//! # Depth
+//!
+//! The component graph is walked iteratively, with an explicit worklist, in
+//! every case — cycle detection, reachability, and scope assignment. That is not
+//! a style preference: the graph is model-generated and its depth is bounded by
+//! nothing, so a recursive walk would abort the process rather than fail a
+//! request. [`MAX_DEPTH`] is therefore a *policy* about what a renderer will
+//! draw, not what keeps this crate standing, and it can be raised safely.
+//!
 //! # Full surfaces and incremental updates
 //!
 //! A payload that creates a surface is held to the full contract: a `root` must
@@ -42,7 +51,19 @@ use crate::binding::{Scope, collect_bindings};
 use crate::catalog::Catalog;
 use crate::constants::ROOT_ID;
 use crate::error::{Error, Result, ValidationErrors};
-use crate::message::{AgentMessage, AgentPayload, Component};
+use crate::message::{AgentMessage, Component};
+
+/// Deepest nesting accepted by default, for both the component graph and the
+/// raw JSON of a message.
+///
+/// Matches the limit every other A2UI toolkit enforces, so a payload one of them
+/// accepts is accepted here and vice versa. Nothing in this crate needs the cap
+/// to stay safe — every walk is iterative — but a renderer that recurses does,
+/// and the input is model-generated.
+pub const MAX_DEPTH: usize = 50;
+
+/// Deepest chain of nested function calls accepted by default.
+pub const MAX_FUNCTION_CALL_DEPTH: usize = 5;
 
 /// The complete set of semantic failures this validator reports.
 ///
@@ -74,6 +95,14 @@ pub enum ErrorCode {
     ChildCycle,
     /// A data binding cannot resolve against the surface's data model.
     UnresolvedBinding,
+    /// Nesting runs deeper than the configured maximum.
+    ///
+    /// Distinct from [`ErrorCode::ChildCycle`]: a deep tree is finite and
+    /// acyclic, it is just deeper than anything a renderer will draw, and deep
+    /// enough to threaten a recursive consumer. Covers three kinds of nesting —
+    /// the component graph, the raw JSON, and chained function calls — because
+    /// all three are model-generated and all three are unbounded without a cap.
+    MaxDepthExceeded,
 }
 
 impl ErrorCode {
@@ -90,6 +119,7 @@ impl ErrorCode {
             ErrorCode::UnresolvedChild => "unresolved_child",
             ErrorCode::ChildCycle => "child_cycle",
             ErrorCode::UnresolvedBinding => "unresolved_binding",
+            ErrorCode::MaxDepthExceeded => "max_depth_exceeded",
         }
     }
 }
@@ -153,6 +183,16 @@ pub struct ValidateOptions {
     /// data model and cannot produce a false positive: a malformed escape can
     /// never resolve, whatever the data turns out to be.
     pub check_binding_syntax: bool,
+    /// Deepest nesting accepted, for both the component graph and the raw JSON.
+    ///
+    /// Defaults to [`MAX_DEPTH`]. Raising it is safe here — every walk in this
+    /// crate is iterative — but a renderer on the other end may not be, and a
+    /// tree this deep is a generation failure rather than a design.
+    pub max_depth: usize,
+    /// Deepest chain of function calls accepted, counting nesting through `args`.
+    ///
+    /// Defaults to [`MAX_FUNCTION_CALL_DEPTH`].
+    pub max_function_call_depth: usize,
 }
 
 impl Default for ValidateOptions {
@@ -172,6 +212,8 @@ impl ValidateOptions {
             check_required_props: true,
             check_bindings: true,
             check_binding_syntax: true,
+            max_depth: MAX_DEPTH,
+            max_function_call_depth: MAX_FUNCTION_CALL_DEPTH,
         }
     }
 
@@ -191,6 +233,13 @@ impl ValidateOptions {
     #[must_use]
     pub fn with_root_id(mut self, root_id: impl Into<String>) -> Self {
         self.root_id = root_id.into();
+        self
+    }
+
+    /// Overrides the maximum nesting depth.
+    #[must_use]
+    pub fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
         self
     }
 }
@@ -384,22 +433,57 @@ impl<'a> Validator<'a> {
     /// data model, and the contract is chosen automatically: a stream with no
     /// `createSurface` is treated as an incremental update.
     pub fn validate_messages(&self, messages: &[AgentMessage]) -> ValidationReport {
-        let mut components: Vec<Component> = Vec::new();
+        let raw: Vec<Value> = messages
+            .iter()
+            .filter_map(|message| serde_json::to_value(message).ok())
+            .collect();
+        self.validate_json_messages(&raw)
+    }
+
+    /// Validates raw protocol messages, as they arrive on the wire.
+    ///
+    /// The same folding as [`Validator::validate_messages`], plus the checks
+    /// that only make sense on the raw JSON: how deeply the message nests, and
+    /// how long a chain of function calls it carries. Neither survives
+    /// deserialization into typed messages, because both are properties of the
+    /// document rather than of any one component.
+    pub fn validate_json_messages(&self, messages: &[Value]) -> ValidationReport {
+        let mut depth_report = ValidationReport::default();
+        for (index, message) in messages.iter().enumerate() {
+            check_value_depth(
+                message,
+                &format!("messages[{index}]"),
+                // The enclosing array is depth 0, so a message sits at 1.
+                1,
+                self.options.max_depth,
+                self.options.max_function_call_depth,
+                &mut depth_report,
+            );
+        }
+
+        let mut components: Vec<Value> = Vec::new();
         let mut data_model = Value::Null;
         let mut has_create = false;
 
         for message in messages {
-            match &message.payload {
-                AgentPayload::CreateSurface(_) => has_create = true,
-                AgentPayload::UpdateComponents(update) => {
-                    components.extend(update.components.iter().cloned());
+            if message.get("createSurface").is_some() {
+                has_create = true;
+            }
+            for key in ["createSurface", "updateComponents"] {
+                if let Some(Value::Array(list)) = message.pointer(&format!("/{key}/components")) {
+                    components.extend(list.iter().cloned());
                 }
-                AgentPayload::UpdateDataModel(update) => {
-                    // A malformed pointer is reported by the data-model layer,
-                    // not here; skip it and validate what we can.
-                    let _ = update.apply(&mut data_model);
-                }
-                _ => {}
+            }
+            if let Some(update) = message.get("updateDataModel") {
+                let path = update
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("/")
+                    .to_string();
+                let value = update.get("value").cloned().unwrap_or(Value::Null);
+                // A malformed pointer is reported by the data-model layer, not
+                // here; skip it and validate what we can.
+                let _ = crate::message::apply_data_model_update(&mut data_model, &path, &value);
             }
         }
 
@@ -408,8 +492,17 @@ impl<'a> Validator<'a> {
             options.require_root = false;
             options.allow_dangling_children = true;
         }
+        // A payload that is nothing but data still gets its depth checked.
+        if components.is_empty() {
+            return depth_report;
+        }
+
         let data = (!data_model.is_null()).then_some(&data_model);
-        Validator::with_options(self.catalog, options).validate_surface(&components, data)
+        let mut report =
+            Validator::with_options(self.catalog, options).validate_json(&components, data);
+        report.errors.splice(0..0, depth_report.errors);
+        report.unreachable.extend(depth_report.unreachable);
+        report
     }
 
     fn run(
@@ -434,6 +527,7 @@ impl<'a> Validator<'a> {
 
         let ids = self.check_identity(nodes, &mut report);
         self.check_types_and_props(nodes, &mut report);
+        self.check_component_depth(nodes, &mut report);
 
         if self.options.require_root && !ids.contains_key(self.options.root_id.as_str()) {
             report.errors.push(ValidationError::new(
@@ -558,6 +652,28 @@ impl<'a> Validator<'a> {
         }
     }
 
+    /// How deeply each component nests inside itself, and how long a chain of
+    /// function calls it carries.
+    ///
+    /// Separate from the component *graph* depth checked in
+    /// [`Validator::check_cycles`]: a component can be shallow in the tree and
+    /// still carry a pathologically nested `action` or data binding.
+    fn check_component_depth(&self, nodes: &[Node<'_>], report: &mut ValidationReport) {
+        for node in nodes {
+            let Some(props) = node.props else { continue };
+            for (key, value) in props {
+                check_value_depth(
+                    value,
+                    &node.locator(key),
+                    1,
+                    self.options.max_depth,
+                    self.options.max_function_call_depth,
+                    report,
+                );
+            }
+        }
+    }
+
     /// Child edges, reporting references that do not resolve.
     fn build_adjacency(
         &self,
@@ -592,11 +708,18 @@ impl<'a> Validator<'a> {
         adjacency
     }
 
-    /// Iterative depth-first search reporting each distinct cycle once.
+    /// Iterative depth-first search reporting each distinct cycle once, and
+    /// flagging a component graph nested past [`ValidateOptions::max_depth`].
     ///
     /// Iterative rather than recursive because the input is model-generated and
-    /// may be arbitrarily deep. A back edge to a node still on the current path
-    /// closes a cycle; a self-reference is the one-node case of the same thing.
+    /// may be arbitrarily deep — the very thing the depth limit reports on. A
+    /// back edge to a node still on the current path closes a cycle; a
+    /// self-reference is the one-node case of the same thing.
+    ///
+    /// Depth is measured along the search path, so it is the depth of the first
+    /// route the search finds to a node rather than the longest possible one.
+    /// That matches every other toolkit, and finding true longest paths in a
+    /// general graph is not something a validator should be doing.
     fn check_cycles(
         &self,
         nodes: &[Node<'_>],
@@ -609,6 +732,7 @@ impl<'a> Validator<'a> {
 
         let mut color = vec![WHITE; nodes.len()];
         let mut reported: BTreeSet<Vec<usize>> = BTreeSet::new();
+        let mut reported_depth = false;
 
         for start in 0..nodes.len() {
             if color[start] != WHITE {
@@ -628,6 +752,26 @@ impl<'a> Validator<'a> {
                 }
                 let edge = &adjacency[node][edge_index];
                 match color[edge.target] {
+                    // `stack.len() - 1` is the depth of `node`, so the target
+                    // sits one deeper.
+                    WHITE if stack.len() > self.options.max_depth => {
+                        if !reported_depth {
+                            reported_depth = true;
+                            report.errors.push(ValidationError::new(
+                                ErrorCode::MaxDepthExceeded,
+                                nodes[node].locator(&edge.location),
+                                format!(
+                                    "Global recursion limit exceeded: logical depth > {}. The \
+                                     component tree nests deeper than a renderer will draw; \
+                                     flatten it.",
+                                    self.options.max_depth
+                                ),
+                            ));
+                        }
+                        // Leave the subtree unexplored: it is condemned, and a
+                        // pathological payload should not cost more work.
+                        color[edge.target] = BLACK;
+                    }
                     WHITE => {
                         color[edge.target] = GRAY;
                         stack.push((edge.target, 0));
@@ -896,6 +1040,102 @@ fn template_path(component: &Component, location: &str) -> Option<String> {
         .get("path")?
         .as_str()
         .map(str::to_string)
+}
+
+/// Reports JSON nesting and function-call chains that run past their limits.
+///
+/// Iterative with an explicit stack: the input is model-generated, and a
+/// recursive walk over it is exactly the stack overflow this check exists to
+/// prevent. `base_depth` is the depth `value` already sits at within its
+/// enclosing document.
+///
+/// A `components` array is skipped, because components are checked one at a
+/// time with locators that name the offending one; walking them here as well
+/// would report the same nesting twice under a vaguer path.
+///
+/// At most one error of each kind is reported — a payload that is too deep is
+/// too deep once, and listing every node past the limit would bury the point.
+fn check_value_depth(
+    value: &Value,
+    path: &str,
+    base_depth: usize,
+    max_depth: usize,
+    max_function_call_depth: usize,
+    report: &mut ValidationReport,
+) {
+    let mut reported_depth = false;
+    let mut reported_calls = false;
+    let mut stack: Vec<(&Value, usize, usize)> = vec![(value, base_depth, 0)];
+
+    while let Some((current, depth, call_depth)) = stack.pop() {
+        if depth > max_depth {
+            if !reported_depth {
+                reported_depth = true;
+                report.errors.push(ValidationError::new(
+                    ErrorCode::MaxDepthExceeded,
+                    path,
+                    format!(
+                        "Global recursion limit exceeded: depth > {max_depth}. Flatten the \
+                         structure; a renderer will not draw nesting this deep."
+                    ),
+                ));
+            }
+            // Stop descending: the message is already condemned, and walking
+            // the rest costs time on input that is probably adversarial.
+            continue;
+        }
+
+        match current {
+            Value::Array(items) => {
+                for item in items {
+                    stack.push((item, depth + 1, call_depth));
+                }
+            }
+            Value::Object(map) => {
+                // Two spellings of a function call, and both nest: a
+                // `{"functionCall": ...}` wrapper, and the `{call, args}` object
+                // it wraps. Each costs one level, so a chain written with both
+                // spends the budget twice as fast as the number suggests. That
+                // is what every other toolkit counts, and a payload one of them
+                // rejects must be rejected here too.
+                let wrapper = map.get("functionCall").filter(|value| value.is_object());
+                let is_call = map.contains_key("call") && map.contains_key("args");
+
+                if (wrapper.is_some() || is_call) && call_depth >= max_function_call_depth {
+                    if !reported_calls {
+                        reported_calls = true;
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::MaxDepthExceeded,
+                            path,
+                            format!(
+                                "Recursion limit exceeded: functionCall depth > \
+                                 {max_function_call_depth}. Compute the value before sending it \
+                                 rather than chaining more calls."
+                            ),
+                        ));
+                    }
+                    continue;
+                }
+
+                if let Some(wrapper) = wrapper {
+                    stack.push((wrapper, depth + 1, call_depth + 1));
+                    continue;
+                }
+                for (key, child) in map {
+                    if key == "components" {
+                        continue;
+                    }
+                    let next_call_depth = if is_call && key == "args" {
+                        call_depth + 1
+                    } else {
+                        call_depth
+                    };
+                    stack.push((child, depth + 1, next_call_depth));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Node indices reachable from the root, or `None` when there is no root.
@@ -1168,11 +1408,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_deep_chain_does_not_blow_the_stack() {
-        let catalog = basic();
-        let depth = 20_000;
-        let mut components = Vec::with_capacity(depth + 1);
+    /// A chain of `Card`s `depth` links long, rooted at `root`.
+    fn deep_chain(depth: usize) -> Vec<Component> {
+        let mut components = Vec::with_capacity(depth + 2);
         components.push(Component::new("root", "Card").with("child", json!("n0")));
         for i in 0..depth {
             let next = if i + 1 == depth {
@@ -1183,12 +1421,155 @@ mod tests {
             components.push(Component::new(format!("n{i}"), "Card").with("child", next));
         }
         components.push(Component::new("leaf", "Text").with("text", json!("end")));
-        let report = Validator::new(&catalog).validate(&components);
+        components
+    }
+
+    /// A value nested `depth` objects deep.
+    fn deep_value(depth: usize) -> Value {
+        let mut value = json!({"level": depth});
+        for level in (0..depth).rev() {
+            value = json!({"level": level, "next": value});
+        }
+        value
+    }
+
+    #[test]
+    fn a_tree_deeper_than_the_limit_is_reported_not_crashed() {
+        let catalog = basic();
+        // Far past the limit, and far past what any stack would survive if the
+        // walk recursed.
+        let report = Validator::new(&catalog).validate(&deep_chain(50_000));
+        let depth_errors: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|e| e.code == ErrorCode::MaxDepthExceeded)
+            .collect();
+        assert_eq!(depth_errors.len(), 1, "reported once, not once per node");
+        assert!(depth_errors[0].message.contains("logical depth > 50"));
+        assert_eq!(depth_errors[0].path, "components[50].child");
+    }
+
+    #[test]
+    fn the_depth_limit_is_policy_not_what_keeps_the_walk_safe() {
+        // With the limit lifted, the same 50k-deep tree still validates: every
+        // walk is iterative, so nothing here depends on the cap to survive.
+        // This is the test that would blow the stack if a walk recursed.
+        let catalog = basic();
+        let options = ValidateOptions::full_surface().with_max_depth(usize::MAX);
+        let report = Validator::with_options(&catalog, options).validate(&deep_chain(50_000));
         assert!(
             report.is_valid(),
             "{:?}",
             &report.errors[..report.errors.len().min(3)]
         );
+    }
+
+    #[test]
+    fn json_from_the_wire_is_depth_bounded_before_this_crate_sees_it() {
+        // The value walks in this crate recurse, and this is why that is safe:
+        // anything arriving as text has already been through serde_json, which
+        // refuses to build a `Value` nested deeper than 128. If that ever
+        // changes, those walks need the same treatment as the graph walks.
+        let ok = format!("{}{}", "[".repeat(127), "]".repeat(127));
+        assert!(serde_json::from_str::<Value>(&ok).is_ok());
+
+        let too_deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        let error = serde_json::from_str::<Value>(&too_deep).unwrap_err();
+        assert!(
+            error.to_string().contains("recursion limit exceeded"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_chain_within_the_limit_is_accepted() {
+        let catalog = basic();
+        // root -> n0..n47 -> leaf is 49 links, one inside the limit.
+        let report = Validator::new(&catalog).validate(&deep_chain(48));
+        assert!(report.is_valid(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn deeply_nested_json_inside_a_component_is_reported() {
+        let catalog = basic();
+        let component = Component::new("root", "Text")
+            .with("text", json!("hi"))
+            .with("accessibility", deep_value(400));
+        let report = Validator::new(&catalog).validate(&[component]);
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::MaxDepthExceeded)
+            .expect("a depth error");
+        assert!(error.message.contains("depth > 50"));
+        assert_eq!(error.path, "components[0].accessibility");
+    }
+
+    #[test]
+    fn a_deeply_nested_data_model_is_reported_on_the_message() {
+        let catalog = basic();
+        let messages = vec![json!({
+            "version": "v0.9",
+            "updateDataModel": {"surfaceId": "s", "value": deep_value(400)}
+        })];
+        let report = Validator::new(&catalog).validate_json_messages(&messages);
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::MaxDepthExceeded)
+            .expect("a depth error");
+        assert!(error.message.contains("Global recursion limit exceeded"));
+        assert_eq!(error.path, "messages[0]");
+    }
+
+    #[test]
+    fn a_chain_of_function_calls_past_the_limit_is_reported() {
+        let catalog = basic();
+        // Six nested calls, one past the budget of five.
+        let mut call = json!({"call": "f5", "args": {}});
+        for level in (0..5).rev() {
+            call = json!({"call": format!("f{level}"), "args": {"functionCall": call}});
+        }
+        let component = Component::new("root", "Button")
+            .with("child", json!("root"))
+            .with("action", json!({"functionCall": call}));
+
+        let report = Validator::with_options(
+            &catalog,
+            ValidateOptions {
+                // Isolate the call-depth check from the cycle this component
+                // has for brevity.
+                ..ValidateOptions::incremental_update()
+            },
+        )
+        .validate(&[component]);
+        let error = report
+            .errors
+            .iter()
+            .find(|e| e.code == ErrorCode::MaxDepthExceeded)
+            .expect("a depth error");
+        assert!(error.message.contains("functionCall depth > 5"), "{error}");
+        assert_eq!(error.path, "components[0].action");
+    }
+
+    #[test]
+    fn a_short_chain_of_function_calls_is_accepted() {
+        let catalog = basic();
+        // Two calls. The budget of five is spent two levels per call, because
+        // the wrapper and the call object each count, so this is close to the
+        // practical ceiling.
+        let mut call = json!({"call": "f1", "args": {}});
+        for level in (0..1).rev() {
+            call = json!({"call": format!("f{level}"), "args": {"functionCall": call}});
+        }
+        let components = vec![
+            Component::new("root", "Button")
+                .with("child", json!("label"))
+                .with("action", json!({"functionCall": call})),
+            Component::new("label", "Text").with("text", json!("go")),
+        ];
+        let report = Validator::new(&catalog).validate(&components);
+        assert!(report.is_valid(), "{:?}", report.errors);
     }
 
     #[test]

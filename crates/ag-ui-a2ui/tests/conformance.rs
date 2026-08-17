@@ -678,29 +678,13 @@ fn run_validate_step(
         other => vec![other.clone()],
     };
 
-    let has_create = messages.iter().any(|m| m.get("createSurface").is_some());
-    let components: Vec<Value> = messages
-        .iter()
-        .filter_map(|m| m.get("updateComponents"))
-        .filter_map(|u| u.get("components"))
-        .filter_map(Value::as_array)
-        .flatten()
-        .cloned()
-        .collect();
-
-    if components.is_empty() {
-        return Outcome::Skipped(
-            "payload carries no components (envelope-only JSON Schema case)".to_string(),
-        );
-    }
-
-    // Upstream's structural validator checks references, roots and cycles; type
-    // and required-property checking is JSON Schema's job there, and data
-    // bindings are not checked at all. Matching that scope keeps the comparison
-    // honest rather than failing cases on checks upstream never ran.
+    // Upstream's structural validator checks references, roots, cycles and
+    // nesting depth; type and required-property checking is JSON Schema's job
+    // there, and data bindings are not checked at all. Matching that scope keeps
+    // the comparison honest rather than failing cases on checks upstream never
+    // ran. The root and dangling-reference contract is chosen from the payload
+    // by `validate_json_messages`, exactly as upstream chooses it.
     let options = ValidateOptions {
-        require_root: has_create,
-        allow_dangling_children: !has_create,
         check_component_types: false,
         check_required_props: false,
         check_bindings: false,
@@ -709,7 +693,7 @@ fn run_validate_step(
         check_binding_syntax: true,
         ..ValidateOptions::full_surface()
     };
-    let report = Validator::with_options(catalog, options).validate_json(&components, None);
+    let report = Validator::with_options(catalog, options).validate_json_messages(&messages);
 
     match expectation {
         Expectation::Unsupported(reason) => Outcome::Skipped(reason),
@@ -808,9 +792,7 @@ fn classify_expectation(expect_error: Option<&Value>) -> Expectation {
     } else if message.contains("is not reachable from") {
         Expectation::Unreachable
     } else if message.contains("ecursion limit") {
-        Expectation::Unsupported(
-            "expects a recursion/nesting depth limit (not implemented)".to_string(),
-        )
+        Expectation::Code(ErrorCode::MaxDepthExceeded)
     } else if message.contains("Invalid path syntax") {
         Expectation::Code(ErrorCode::UnresolvedBinding)
     } else if message.is_empty() {

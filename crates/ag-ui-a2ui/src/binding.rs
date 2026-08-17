@@ -39,6 +39,18 @@
 //!            "Bob @ Acme (#2)");
 //! ```
 //!
+//! # Depth
+//!
+//! Resolution walks a `serde_json::Value`, and a walk over a tree is a stack
+//! frame per level unless something stops it. Two things do. Anything arriving
+//! over the wire has already passed through `serde_json`, which refuses to
+//! parse deeper than 127 levels, so a `Value` from a model or a transport is
+//! bounded before this module sees it. On top of that,
+//! [`Scope::resolve_dynamic`] and [`collect_bindings`] carry their own cap
+//! ([`MAX_VALUE_DEPTH`]) for values built in memory, which `serde_json` does not
+//! check. The component *graph* — where depth is genuinely unbounded — is walked
+//! iteratively in [`crate::validate`] instead.
+//!
 //! [rfc6901]: https://datatracker.ietf.org/doc/html/rfc6901
 
 use std::collections::BTreeMap;
@@ -47,6 +59,13 @@ use jsonptr::Pointer;
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
+
+/// Deepest nesting these walks will descend into a value.
+///
+/// Well past `serde_json`'s own parse limit of 127, so it never fires on
+/// anything that arrived as text; it exists for values assembled in memory,
+/// which nothing else bounds.
+pub const MAX_VALUE_DEPTH: usize = 256;
 
 /// Splits a JSON Pointer into its decoded tokens.
 ///
@@ -234,6 +253,21 @@ impl<'a> Scope<'a> {
         value: &Value,
         functions: &dyn FunctionResolver,
     ) -> Result<Value> {
+        self.resolve_dynamic_at(value, functions, 0)
+    }
+
+    fn resolve_dynamic_at(
+        &self,
+        value: &Value,
+        functions: &dyn FunctionResolver,
+        depth: usize,
+    ) -> Result<Value> {
+        if depth > MAX_VALUE_DEPTH {
+            return Err(Error::binding(
+                "<value>",
+                format!("value nests deeper than {MAX_VALUE_DEPTH} levels"),
+            ));
+        }
         match value {
             Value::Object(map) => {
                 if let Some(Value::String(path)) = map.get("path") {
@@ -248,7 +282,7 @@ impl<'a> Scope<'a> {
                         for (key, raw_value) in raw {
                             args.insert(
                                 key.clone(),
-                                self.resolve_dynamic_with(raw_value, functions)?,
+                                self.resolve_dynamic_at(raw_value, functions, depth + 1)?,
                             );
                         }
                     }
@@ -258,14 +292,14 @@ impl<'a> Scope<'a> {
                 for (key, raw_value) in map {
                     out.insert(
                         key.clone(),
-                        self.resolve_dynamic_with(raw_value, functions)?,
+                        self.resolve_dynamic_at(raw_value, functions, depth + 1)?,
                     );
                 }
                 Ok(Value::Object(out))
             }
             Value::Array(items) => items
                 .iter()
-                .map(|item| self.resolve_dynamic_with(item, functions))
+                .map(|item| self.resolve_dynamic_at(item, functions, depth + 1))
                 .collect::<Result<Vec<_>>>()
                 .map(Value::Array),
             other => Ok(other.clone()),
@@ -569,7 +603,7 @@ fn split_top_level_colon(piece: &str) -> Option<usize> {
 pub fn collect_bindings(value: &Value) -> Vec<Binding> {
     let mut out = Vec::new();
     let mut seen = BTreeMap::new();
-    walk_bindings(value, String::new(), &mut out, &mut seen);
+    walk_bindings(value, String::new(), 0, &mut out, &mut seen);
     out
 }
 
@@ -588,9 +622,15 @@ pub struct Binding {
 fn walk_bindings(
     value: &Value,
     location: String,
+    depth: usize,
     out: &mut Vec<Binding>,
     seen: &mut BTreeMap<(String, String), ()>,
 ) {
+    // Stop rather than fail: a binding buried past this depth is unreachable in
+    // practice, and the validator reports the nesting itself.
+    if depth > MAX_VALUE_DEPTH {
+        return;
+    }
     match value {
         Value::Object(map) => {
             if let Some(Value::String(path)) = map.get("path") {
@@ -616,12 +656,12 @@ fn walk_bindings(
                 } else {
                     format!("{location}.{key}")
                 };
-                walk_bindings(child, next, out, seen);
+                walk_bindings(child, next, depth + 1, out, seen);
             }
         }
         Value::Array(items) => {
             for (index, item) in items.iter().enumerate() {
-                walk_bindings(item, format!("{location}[{index}]"), out, seen);
+                walk_bindings(item, format!("{location}[{index}]"), depth + 1, out, seen);
             }
         }
         _ => {}
@@ -786,6 +826,40 @@ mod tests {
         assert!(found.contains(&("text", "/user/name", false)));
         assert!(found.contains(&("children", "/items", true)));
         assert!(found.contains(&("action.event.context.email", "/form/email", false)));
+    }
+
+    #[test]
+    fn a_value_nested_past_the_cap_errors_instead_of_recursing_away() {
+        let data = json!({"name": "Ada"});
+        let scope = Scope::root(&data);
+
+        // Deeper than MAX_VALUE_DEPTH, but shallow enough that `Value`'s own
+        // recursive Clone and Drop still cope — past that point the type itself
+        // is the limit, not this crate.
+        let mut value = json!({"path": "/name"});
+        for _ in 0..(MAX_VALUE_DEPTH + 50) {
+            value = json!({"nested": value});
+        }
+        let error = scope.resolve_dynamic(&value).unwrap_err();
+        assert!(matches!(error, Error::Binding { .. }), "{error}");
+
+        // Just inside the cap still resolves.
+        let mut value = json!({"path": "/name"});
+        for _ in 0..10 {
+            value = json!({"nested": value});
+        }
+        assert!(scope.resolve_dynamic(&value).is_ok());
+    }
+
+    #[test]
+    fn collecting_bindings_stops_at_the_cap_rather_than_recursing_away() {
+        let mut value = json!({"path": "/deep"});
+        for _ in 0..(MAX_VALUE_DEPTH + 50) {
+            value = json!({"nested": value});
+        }
+        // No panic, no overflow; the buried binding is simply not reported, and
+        // the validator flags the nesting itself.
+        assert!(collect_bindings(&value).is_empty());
     }
 
     #[test]
