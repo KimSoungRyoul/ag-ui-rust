@@ -335,6 +335,71 @@ async fn the_event_stream_is_ordered_as_the_protocol_requires() {
     assert_eq!(finished.run_id.as_str(), "r1");
 }
 
+/// The encoding of a state publish is a size decision, and both outcomes reach
+/// the same client state. Which one goes out is not the agent's choice, so this
+/// pins it at the size where it flips rather than asserting a fixed answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn state_publishes_pick_the_smaller_of_a_snapshot_and_a_patch() {
+    let url = serve().await;
+    let agent = HttpAgent::http(&url).expect("a valid endpoint URL");
+
+    // Two publishes on a board small enough that resending it beats patching
+    // it, and two on a board where it does not.
+    let tiny = state_events(&agent, "add a, b").await;
+    assert_eq!(
+        tiny,
+        [EventType::StateSnapshot, EventType::StateSnapshot],
+        "a two-word board is cheaper to resend than to patch"
+    );
+
+    let roomy = state_events(
+        &agent,
+        "add write the workshop agenda and circulate it, \
+         book the large meeting room for thursday",
+    )
+    .await;
+    assert_eq!(
+        roomy,
+        [EventType::StateSnapshot, EventType::StateDelta],
+        "the first publish of a run is always a snapshot; the second is a patch \
+         once the patch is the smaller of the two"
+    );
+
+    // Whichever went out, the client lands in the same place.
+    let mut session = session(&url, "encodings");
+    transcript(
+        &mut session,
+        "add write the workshop agenda and circulate it, book the large meeting room for thursday\n",
+    )
+    .await;
+    let board = session.state().expect("a board");
+    assert_eq!(board.tasks.len(), 2);
+    assert_eq!(
+        board.tasks[1].label(),
+        "#2 book the large meeting room for thursday"
+    );
+}
+
+/// The `STATE_*` events one run puts on the wire, in order.
+async fn state_events(agent: &HttpAgent, said: &str) -> Vec<EventType> {
+    let params = RunParams::new("encodings", "r1")
+        .user("m1", said)
+        .tools(board::tools());
+
+    agent
+        .run(params)
+        .map(|event| event.expect("the stream should not break"))
+        .map(|event| event.event_type())
+        .filter(|kind| {
+            std::future::ready(matches!(
+                kind,
+                EventType::StateSnapshot | EventType::StateDelta
+            ))
+        })
+        .collect()
+        .await
+}
+
 /// Drains one run and returns everything it reported.
 async fn drain(session: &mut Session<HttpTransport, Board>, said: &str) -> Vec<Update<Board>> {
     let mut run = session.send(said);

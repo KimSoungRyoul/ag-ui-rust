@@ -87,9 +87,21 @@ after a state event, and the box is the A2UI surface — drawn by walking the
 component tree and resolving each binding through `ag_ui_a2ui::binding::Scope`,
 which is as far as a terminal can honestly go towards rendering.
 
-Two adds means two publishes: the first is a `STATE_SNAPSHOT` and the second a
-`STATE_DELTA`, and nothing above can tell which, because the client applied both
-into the same `Board`.
+Two adds means two publishes, and nothing above can tell what either was on the
+wire, because the client applied both into the same `Board`. The server decides
+per publish: the first is always a `STATE_SNAPSHOT`, and later ones are a
+`STATE_DELTA` *unless the patch would be no smaller than the state it
+describes*. On a board this small it would be — resending two short tasks costs
+less than the RFC 6902 patch adding one — so both of those go out as snapshots.
+Give the tasks realistic titles and the second becomes a delta:
+
+```text
+STATE_SNAPSHOT {"tasks":[{"id":1,"title":"write the workshop agenda and circulate it",…}],"nextId":1}
+STATE_DELTA    [{"op":"add","path":"/tasks/1","value":{"id":2,…}},{"op":"replace","path":"/nextId",…}]
+```
+
+Both encodings are pinned by a test, because "it works" here means the client
+lands in the same place either way.
 
 ## The human in the loop
 

@@ -153,9 +153,11 @@ fn apply(
                 call.args_json(&json!({"title": title}))?;
                 call.result_json(&json!({"id": task.id, "title": task.title}))?;
 
-                // One publish per task: the first is a STATE_SNAPSHOT and the
-                // rest are STATE_DELTAs, which is exactly what a client
-                // mirroring the board has to survive.
+                // One publish per task, so a two-task message makes the server
+                // choose an encoding twice: the first publish is a snapshot,
+                // and the second is a STATE_DELTA only if the patch comes out
+                // smaller than the board. A client mirroring this has to
+                // survive both, and `tests/flows.rs` pins both.
                 ctx.publish_state()?;
                 added.push(format!("#{} {}", task.id, task.title));
             }
