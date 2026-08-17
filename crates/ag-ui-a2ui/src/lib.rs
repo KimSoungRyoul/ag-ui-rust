@@ -100,7 +100,10 @@ pub mod agui;
 // Everything else stays behind its module, because the modules are the map.
 pub use catalog::Catalog;
 pub use error::{Error, Result, ValidationErrors};
-pub use message::{AgentMessage, AgentPayload, Component, RendererMessage, RendererPayload};
+pub use message::{
+    AgentMessage, AgentPayload, ChildList, ChildTemplate, Component, RendererMessage,
+    RendererPayload,
+};
 pub use validate::{ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator};
 
 #[cfg(feature = "toolkit")]
