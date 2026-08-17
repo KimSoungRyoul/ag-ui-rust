@@ -49,6 +49,7 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
 
 // The README is the crate's front page on crates.io, so its examples are
 // doctested: a stale one is a red build rather than a bad first impression.

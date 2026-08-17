@@ -81,6 +81,19 @@ pub struct Runner<A> {
     echo_input: bool,
 }
 
+// Hand-written so that `Runner` is printable whatever the agent is: requiring
+// `A: Debug` would make the bound viral through every wrapper that holds one.
+impl<A> std::fmt::Debug for Runner<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Runner")
+            .field("agent", &std::any::type_name::<A>())
+            .field("chain", &self.chain)
+            .field("cancel", &self.cancel)
+            .field("echo_input", &self.echo_input)
+            .finish()
+    }
+}
+
 impl<A> Runner<A> {
     /// Wraps an agent.
     pub fn new(agent: A) -> Self {
