@@ -1,0 +1,63 @@
+[
+  {
+    "name": "add_task",
+    "description": "Add one task to the board.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "What has to be done."
+        }
+      },
+      "required": [
+        "title"
+      ]
+    }
+  },
+  {
+    "name": "complete_task",
+    "description": "Mark a task done, by id or by a piece of its title.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Task id, or part of the title."
+        }
+      },
+      "required": [
+        "task"
+      ]
+    }
+  },
+  {
+    "name": "estimate",
+    "description": "Put a minute estimate on a task.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Task id, or part of the title."
+        },
+        "minutes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "task",
+        "minutes"
+      ]
+    }
+  },
+  {
+    "name": "clear_board",
+    "description": "Remove every task. Destructive: ask the human first.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  }
+]

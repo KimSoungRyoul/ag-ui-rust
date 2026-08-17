@@ -1,0 +1,29 @@
+[package]
+name = "board-watch"
+description = "A terminal client for any AG-UI agent, and the awkward agent it is tested against. Not published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ag-ui-core.workspace = true
+ag-ui-client = { workspace = true, features = ["http"] }
+ag-ui-a2ui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync"] }
+# The backend half — only `serve-fake` and the tests reach for these. The client
+# itself needs none of them, which is the point: `watch` talks to whatever is on
+# the far end of a URL.
+ag-ui-server.workspace = true
+ag-ui-axum.workspace = true
+axum.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+# A second, independent backend to point the client at: the round-one example's
+# agent, unmodified. A client that only ever talks to its own fake server has
+# not been tested against anything.
+task-board = { path = "../task-board" }

@@ -1,0 +1,81 @@
+[
+  [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "replay",
+      "runId": "replay-run-1"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "toolCallId": "replay-run-1-call-1",
+      "toolCallName": "add_task",
+      "delta": "{\"no"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "delta": "te\":\"line\\"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "delta": "nbreak\",\"ti"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "delta": "tle\":\"ship "
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "delta": "the SDK\",\"depth\":3}"
+    },
+    {
+      "type": "TOOL_CALL_RESULT",
+      "messageId": "replay-run-1-msg-1",
+      "toolCallId": "replay-run-1-call-1",
+      "content": "{\"id\":1,\"title\":\"ship the SDK\"}"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "replay",
+      "runId": "replay-run-1",
+      "outcome": {
+        "type": "success"
+      }
+    }
+  ],
+  [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "replay",
+      "runId": "replay-run-2"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "replay-run-2-msg-1",
+      "delta": "Chunked text arrives in frag"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "ments, and the client rejoins "
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "them \u2014 emoji included: \ud83d\udc69"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "\u200d"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "\ud83d\udcbb."
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "replay",
+      "runId": "replay-run-2",
+      "outcome": {
+        "type": "success"
+      }
+    }
+  ]
+]
