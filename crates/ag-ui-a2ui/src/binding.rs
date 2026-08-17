@@ -880,6 +880,33 @@ mod tests {
         assert!(scope.resolve_dynamic(&value).is_ok());
     }
 
+    /// Nests a binding `wrappers` objects deep. The outermost object sits at
+    /// depth 0, so `wrappers` is the depth the innermost one is reached at.
+    fn nested(wrappers: usize) -> Value {
+        let mut value = json!({"path": "/name"});
+        for _ in 0..wrappers {
+            value = json!({"nested": value});
+        }
+        value
+    }
+
+    #[test]
+    fn the_value_depth_cap_fires_one_level_past_it_and_not_before() {
+        let data = json!({"name": "Ada"});
+        let scope = Scope::root(&data);
+
+        // Off-by-one here is the difference between rejecting input the spec
+        // allows and letting a deeper one through, so the boundary is pinned
+        // rather than probed from far away.
+        assert!(scope.resolve_dynamic(&nested(MAX_VALUE_DEPTH)).is_ok());
+        assert!(scope.resolve_dynamic(&nested(MAX_VALUE_DEPTH + 1)).is_err());
+
+        // `collect_bindings` shares the cap but stops rather than failing, so
+        // the binding at the bottom is simply not reported.
+        assert_eq!(collect_bindings(&nested(MAX_VALUE_DEPTH)).len(), 1);
+        assert!(collect_bindings(&nested(MAX_VALUE_DEPTH + 1)).is_empty());
+    }
+
     #[test]
     fn collecting_bindings_stops_at_the_cap_rather_than_recursing_away() {
         let mut value = json!({"path": "/deep"});
