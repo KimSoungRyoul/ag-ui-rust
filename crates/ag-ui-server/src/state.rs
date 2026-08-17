@@ -6,7 +6,7 @@
 //! [`StateManager`] keeps the last published snapshot and picks per publish:
 //!
 //! 1. the first publish is always a `STATE_SNAPSHOT` — the client's copy may
-//!    have drifted, and a patch against an unknown base is unapplicable;
+//!    have drifted, and a patch against an unknown base is inapplicable;
 //! 2. afterwards it diffs against the last snapshot with [RFC 6902] and emits
 //!    `STATE_DELTA`;
 //! 3. unless the serialized patch is no smaller than the serialized snapshot,
