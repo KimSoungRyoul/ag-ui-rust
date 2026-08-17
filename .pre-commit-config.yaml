@@ -14,18 +14,22 @@
 default_install_hook_types: [pre-commit, pre-push]
 
 # Files this repo has promised not to touch. Every one of them is either copied
-# from another project or written by a tool, and a fixer "improving" one is a
-# defect: the vendored conformance suite is compared against upstream by hand on
-# every re-copy, the insta snapshots are compared byte for byte by the tests
-# themselves, and the drift baseline is the protocol's own record. Found the
-# hard way — the first run of this config quietly added a trailing newline to
-# seventeen vendored fixtures.
+# from another project or written by a tool, and their worth depends on staying
+# byte-identical to that source: the A2UI conformance suite and spec fixtures
+# are diffed against upstream by hand on every re-copy, so each mechanical
+# "improvement" here is noise in that diff forever; the insta snapshots are
+# compared byte for byte by the tests themselves; the drift baseline is the
+# protocol's own record. Found the hard way — the first run of this config
+# quietly added a trailing newline to seventeen vendored fixtures.
 #
-# It also spares `check-json` the conformance suite's `bad_json/bad.json`, which
-# is invalid on purpose because a parse-error case is pointed at it.
+# Whole directories rather than the vendored subtrees within them, so that a
+# later re-copy that brings a new file is covered without anyone remembering to
+# widen this. It also spares `check-json` the conformance suite's
+# `bad_json/bad.json`, which is malformed on purpose because that is exactly
+# what the parse-error case needs to be pointed at.
 exclude: |
   (?x)^(
-      crates/ag-ui-a2ui/tests/conformance/(agent|core|test_data)/
+      crates/ag-ui-a2ui/tests/(conformance|spec_v0_9)/
     | crates/ag-ui-core/tests/snapshots/
     | xtask/baseline/events\.json$
   )
@@ -44,6 +48,9 @@ repos:
         args: [--fix=lf]
       - id: check-yaml
       - id: check-toml
+      # Checks nothing today: every tracked .json belongs to one of the vendored
+      # trees excluded above. Kept as the guard for the first JSON file this
+      # repo actually owns, which would otherwise arrive unchecked.
       - id: check-json
       - id: check-merge-conflict
       - id: check-added-large-files
