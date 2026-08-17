@@ -73,6 +73,12 @@ The same reasoning inverts for errors, which is why they carry the attribute. No
 an exhaustive match over failure modes, callers route on a handful of variants and fall
 through on the rest, and a new failure mode is not a protocol change.
 
+`ag_ui_client::RunEnd` sits with `Event` rather than with the errors, for the same reason
+scaled down: a run ends in exactly the three ways the protocol defines, that match is the one
+a front-end most wants checked — it decides whether the input goes live again — and a fourth
+way to end a run *would* be a wire-contract change. `Update` keeps the attribute: it is a view
+model rather than a wire type, and a new kind of thing worth redrawing is not a protocol change.
+
 The runtime side agrees with the type side. An event type this build does not know fails to
 deserialize, `Session` reports it and ends the run as `RunEnd::Failed`. A frontend talking
 to a newer agent stops with an error naming the unknown type rather than quietly rendering

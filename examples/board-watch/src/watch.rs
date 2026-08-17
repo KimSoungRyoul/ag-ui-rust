@@ -225,10 +225,11 @@ async fn drive<T: Transport>(
 
 /// How a run ended, in one phrase.
 ///
-/// The `_` arm is not a courtesy: [`RunEnd`] is `#[non_exhaustive]`, so a
-/// client cannot ask the compiler to tell it about a new way for a run to end.
-/// See the report — this is the one match in a front-end that most wants to be
-/// exhaustive.
+/// Three arms and no `_`: [`RunEnd`] is exhaustive, so a fourth way for a run
+/// to end would stop this build rather than reach a user as a shrug. That is
+/// the match a client most wants the compiler's help with — the arms decide
+/// whether the prompt comes back, whether an answer is owed, and whether
+/// anything failed.
 fn ended(end: &RunEnd) -> String {
     match end {
         RunEnd::Success { .. } => "success".to_owned(),
@@ -237,7 +238,6 @@ fn ended(end: &RunEnd) -> String {
             Some(code) => format!("failed [{code}] {message}"),
             None => format!("failed {message}"),
         },
-        other => format!("ended in a way this build does not know: {other:?}"),
     }
 }
 

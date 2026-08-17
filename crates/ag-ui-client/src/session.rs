@@ -116,8 +116,16 @@ pub struct ReasoningUpdate {
 }
 
 /// How a run ended.
+///
+/// Exhaustive, unlike [`Update`] and unlike every error in this workspace: a
+/// run ends in one of three ways because the protocol says so — `RUN_FINISHED`
+/// with a success outcome, `RUN_FINISHED` with an interrupt outcome, or
+/// `RUN_ERROR` (which the truncated-stream case is reported as). A fourth would
+/// be a wire-contract change, and `docs/DESIGN.md` explains why those are meant
+/// to be compile errors for consumers rather than something a `_` arm swallows.
+/// This is the match a front-end most wants the compiler's help with — it
+/// decides whether the input goes live again.
 #[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
 pub enum RunEnd {
     /// The agent finished.
     Success {
