@@ -89,7 +89,11 @@ asserting tokio is absent from their dependency graphs.
 enforced by typestate handles that borrow the run context, so interleaving two messages is a
 borrow-check error. Handles emit their terminating event on `Drop`, so it cannot be forgotten.
 Because Rust has no async `Drop`, the emit path is synchronous by design. What the borrow
-checker cannot catch, a runtime ordering verifier catches in debug builds.
+checker cannot catch, a runtime ordering verifier catches — on the server and on the client,
+on by default in release builds too, and compiled out via the `verify` feature if you want
+the last handful of `HashSet` lookups back. Neither the TypeScript SDK (which verifies only
+on the client) nor the .NET one (which does not verify) checks ordering server-side, which is
+where the bug is actually caused.
 
 **IDs are strings.** `ThreadId`, `RunId`, and friends are newtypes over `String`, not `Uuid`.
 The spec says string; real backends such as LangGraph send arbitrary strings.
@@ -101,6 +105,30 @@ compiler links the two. `cargo run -p xtask -- drift-check` is that link: it com
 vendored snapshot of the upstream event surface against the Rust types and fails the build
 when they diverge. It is offline and deterministic, so it runs on every pull request; a
 scheduled job additionally asks GitHub whether the snapshot itself has gone stale.
+
+## Running the tests
+
+Two commands, and the second one is not optional:
+
+```sh
+cargo nextest run --workspace --all-features
+cargo test --doc --workspace --all-features
+```
+
+**`cargo nextest` does not run doctests.** It says nothing about them — it does not skip
+them loudly, it never sees them — so a green nextest run is a partial result. A lot of what
+this workspace proves lives in doctests: every crate README, the quickstart above, and the
+`compile_fail` example in `crates/ag-ui-server/src/emit/mod.rs` that is the only executable
+proof that two overlapping message handles fail to compile. Weaken the emitter API and
+nextest stays green.
+
+`cargo test --workspace --all-features` does run both, if you would rather have one command
+and can live without nextest's output. CI runs both forms.
+
+One caveat on `compile_fail` doctests that name the error they expect, as the emitter one
+names `E0499`: **stable rustdoc ignores that error code**. The example need only fail to
+compile, for any reason at all — including a typo that has nothing to do with the guarantee.
+CI therefore runs the doctests on nightly as well, which does enforce it.
 
 ## Status
 
