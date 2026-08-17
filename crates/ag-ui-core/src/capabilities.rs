@@ -226,7 +226,17 @@ pub struct MultimodalCapabilities {
 }
 
 /// Execution controls and limits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+///
+/// The two caps are integers, not floats. The upstream Zod schema types them as
+/// a bare `z.number()`, which is a JavaScript double — but the Python SDK
+/// declares them `Optional[int]`, and both an iteration count and a millisecond
+/// budget are whole numbers everywhere they are produced. Modelling them as
+/// `f64` would re-emit a received `"maxIterations": 10` as `10.0`, so a Rust
+/// proxy between two upstream implementations would silently rewrite the
+/// payload. They are signed because Python's `int` is: some frameworks spell
+/// "no limit" as `-1`, and rejecting that at parse time would fail the whole
+/// capabilities document over a value the reference implementations accept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -239,10 +249,10 @@ pub struct ExecutionCapabilities {
     pub sandboxed: Option<bool>,
     /// Cap on tool-call / reasoning iterations per run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_iterations: Option<f64>,
+    pub max_iterations: Option<i64>,
     /// Wall-clock cap per run, in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_execution_time: Option<f64>,
+    pub max_execution_time: Option<i64>,
 }
 
 /// Human-in-the-loop support.
