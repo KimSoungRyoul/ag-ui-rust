@@ -130,7 +130,10 @@ pub struct StreamParser {
 
     // --- protocol state ---
     seen_components: BTreeMap<String, Value>,
-    yielded_data_model: Map<String, Value>,
+    /// Data-model entries already emitted, per surface. Keyed by surface
+    /// because two surfaces may legitimately hold the same value at the same
+    /// path, and the second one still has to be sent.
+    yielded_data_model: BTreeMap<String, Map<String, Value>>,
     deleted_surfaces: BTreeSet<String>,
     /// Component ids already emitted, per surface.
     yielded_ids: BTreeMap<String, BTreeSet<String>>,
@@ -168,7 +171,7 @@ impl StreamParser {
             found_valid_json_in_block: false,
             sniff_cursor: 0,
             seen_components: BTreeMap::new(),
-            yielded_data_model: Map::new(),
+            yielded_data_model: BTreeMap::new(),
             deleted_surfaces: BTreeSet::new(),
             yielded_ids: BTreeMap::new(),
             yielded_contents: BTreeMap::new(),
@@ -760,23 +763,36 @@ impl StreamParser {
         Ok(true)
     }
 
-    /// Suppresses a data-model update that repeats what was already sent.
+    /// Suppresses a data-model update that repeats what that surface was
+    /// already sent.
     fn deduplicate_data_model(&mut self, message: &Value) -> bool {
         let Some(Value::Object(update)) = message.get(MSG_UPDATE_DATA_MODEL) else {
             return true;
         };
-        let is_new = update.iter().any(|(k, v)| {
-            k != "surfaceId" && k != "root" && self.yielded_data_model.get(k) != Some(v)
-        });
+        let sid = self.data_model_surface(update.get("surfaceId"));
+        let yielded = self.yielded_data_model.entry(sid).or_default();
+        let is_new = update
+            .iter()
+            .any(|(k, v)| k != "surfaceId" && k != "root" && yielded.get(k) != Some(v));
         if !is_new {
             return false;
         }
         for (k, v) in update {
             if k != "surfaceId" && k != "root" {
-                self.yielded_data_model.insert(k.clone(), v.clone());
+                yielded.insert(k.clone(), v.clone());
             }
         }
         true
+    }
+
+    /// The surface a data-model update belongs to: the one it names, or the one
+    /// the stream is currently describing.
+    fn data_model_surface(&self, named: Option<&Value>) -> String {
+        named
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| self.surface_id.clone())
+            .unwrap_or_else(|| "default".to_string())
     }
 
     /// Validates one complete message: envelope shape, then components.
@@ -918,24 +934,20 @@ impl StreamParser {
                 continue;
             };
 
+            let sid = self.data_model_surface(update.get("surfaceId"));
+            let known = self.yielded_data_model.get(&sid);
             let mut delta = Map::new();
             for (key, item) in value {
-                if self.yielded_data_model.get(key) != Some(item) {
+                if known.and_then(|entries| entries.get(key)) != Some(item) {
                     delta.insert(key.clone(), item.clone());
                 }
             }
             if delta.is_empty() {
                 continue;
             }
-            let sid = update
-                .get("surfaceId")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| self.surface_id.clone())
-                .unwrap_or_else(|| "default".to_string());
 
             let mut payload = Map::new();
-            payload.insert("surfaceId".to_string(), Value::String(sid));
+            payload.insert("surfaceId".to_string(), Value::String(sid.clone()));
             payload.insert("value".to_string(), Value::Object(delta.clone()));
             let mut message = Map::new();
             message.insert(
@@ -950,8 +962,9 @@ impl StreamParser {
                 .yield_message(Value::Object(message), parts, true)
                 .unwrap_or(false);
             let _ = emitted;
+            let yielded = self.yielded_data_model.entry(sid).or_default();
             for (key, item) in delta {
-                self.yielded_data_model.insert(key, item);
+                yielded.insert(key, item);
             }
         }
     }
@@ -1782,6 +1795,30 @@ mod tests {
         );
         let messages = feed(&mut parser, &[", "]);
         assert!(messages.is_empty(), "nothing changed, so nothing to send");
+    }
+
+    #[test]
+    fn two_surfaces_may_carry_the_same_data_model() {
+        let mut parser = parser();
+        let messages = feed(
+            &mut parser,
+            &[
+                "<a2ui-json>[",
+                CREATE,
+                r#"{"version":"v0.9","updateDataModel":{"surfaceId":"s1","path":"/","value":{"a":1}}}, "#,
+                r#"{"version":"v0.9","createSurface":{"surfaceId":"s2","catalogId":"test"}}, "#,
+                r#"{"version":"v0.9","updateDataModel":{"surfaceId":"s2","path":"/","value":{"a":1}}}"#,
+            ],
+        );
+        // Deduplication is per surface: the second surface's model is not a
+        // repeat of anything it has been sent, however the first surface's
+        // happens to be spelled.
+        let updated: Vec<&Value> = messages
+            .iter()
+            .filter(|m| m.get(MSG_UPDATE_DATA_MODEL).is_some())
+            .collect();
+        assert_eq!(updated.len(), 1, "{messages:?}");
+        assert_eq!(updated[0][MSG_UPDATE_DATA_MODEL]["surfaceId"], "s2");
     }
 
     #[test]
