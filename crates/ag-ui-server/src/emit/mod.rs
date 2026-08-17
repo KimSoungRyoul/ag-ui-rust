@@ -66,6 +66,27 @@
 //!     call.args("{}").unwrap();
 //! }
 //! ```
+//!
+//! # What has no handle, and why that is the answer
+//!
+//! Two things an agent may legitimately put on the wire are
+//! [`RunContext::emit`](crate::RunContext::emit) territory, and the escape
+//! hatch is the supported path for both rather than a gap waiting for an API.
+//!
+//! The `*_CHUNK` family is unbracketed by definition: a chunk carries its own
+//! id and needs no start and no end, which is the point — it exists for
+//! provider adapters that cannot know a message ended until the next one
+//! begins. There is nothing for an RAII handle to close, and wrapping one
+//! around a self-contained event would only add a way to get it wrong.
+//!
+//! Interleaved parallel tool calls are the other. Two open [`ToolCallHandle`]s
+//! at once is a borrow-check error *by design*, so a provider streaming
+//! `args(a) args(b) args(a) end(a) end(b)` cannot be mirrored handle-for-call.
+//! Either accumulate each call and emit it whole once its arguments are
+//! complete — what `e2e/src/llm.rs` does, and the only mapping that cannot
+//! splice two calls' arguments into each other — or emit the interleaving
+//! yourself. The verifier keys everything by id, so it accepts the interleaved
+//! stream; what it will not let you do is close a call you never opened.
 
 mod message;
 mod reasoning;
