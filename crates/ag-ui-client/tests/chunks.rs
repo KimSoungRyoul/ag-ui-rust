@@ -363,3 +363,89 @@ fn the_applier_also_assembles_raw_chunks_on_its_own() {
         "{}"
     );
 }
+
+#[test]
+fn a_tool_result_closes_the_chunk_streamed_call_it_answers() {
+    // A chunk-streamed call has no `TOOL_CALL_END` of its own, so the result
+    // is the first event that says the call is over. Until this was handled the
+    // synthesized end came out *after* the result — a stream both verifiers
+    // reject, and whose `TOOL_CALL_RESULT` a `Session` then discards.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        tool_chunk(Some("call-1"), Some("search"), Some("{}")),
+        Event::tool_call_result("msg-1", "call-1", "sunny"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalizes");
+
+    assert_eq!(
+        types(&events),
+        [
+            EventType::RunStarted,
+            EventType::ToolCallStart,
+            EventType::ToolCallArgs,
+            EventType::ToolCallEnd,
+            EventType::ToolCallResult,
+            EventType::RunFinished,
+        ]
+    );
+    verify_all(&events).expect("the normalized stream should verify");
+}
+
+#[test]
+fn a_tool_result_closes_a_chunk_streamed_message_too() {
+    // The other stream a result can arrive underneath: it may not interleave
+    // with an open message either.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        Event::tool_call_start("call-1", "search"),
+        Event::tool_call_end("call-1"),
+        text_chunk(Some("msg-1"), Some("looking")),
+        Event::tool_call_result("msg-2", "call-1", "sunny"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalizes");
+
+    assert_eq!(
+        types(&events),
+        [
+            EventType::RunStarted,
+            EventType::ToolCallStart,
+            EventType::ToolCallEnd,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::ToolCallResult,
+            EventType::RunFinished,
+        ]
+    );
+    verify_all(&events).expect("the normalized stream should verify");
+}
+
+#[test]
+fn a_tool_result_for_an_explicitly_ended_call_adds_no_terminator() {
+    // Nothing is owed when the producer closed the call itself, so the result
+    // must not grow a second `TOOL_CALL_END`.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        Event::tool_call_start("call-1", "search"),
+        Event::tool_call_args("call-1", "{}"),
+        Event::tool_call_end("call-1"),
+        Event::tool_call_result("msg-1", "call-1", "sunny"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalizes");
+
+    assert_eq!(
+        types(&events),
+        [
+            EventType::RunStarted,
+            EventType::ToolCallStart,
+            EventType::ToolCallArgs,
+            EventType::ToolCallEnd,
+            EventType::ToolCallResult,
+            EventType::RunFinished,
+        ]
+    );
+    verify_all(&events).expect("the normalized stream should verify");
+}

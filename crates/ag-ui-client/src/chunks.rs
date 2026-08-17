@@ -220,9 +220,9 @@ impl ChunkNormalizer {
 
     /// Tracks what an explicit (non-chunk) event does to the open stream.
     ///
-    /// Only events that belong to a stream, and the two that end a run, touch
-    /// it: a `STATE_DELTA` between two chunks of one message must not split
-    /// that message in half.
+    /// Only events that belong to a stream, the one that answers a tool call,
+    /// and the two that end a run touch it: a `STATE_DELTA` between two chunks
+    /// of one message must not split that message in half.
     fn observe(&mut self, event: &Event, out: &mut Vec<Event>) {
         match event {
             Event::TextMessageStart(e) => {
@@ -238,6 +238,11 @@ impl ChunkNormalizer {
             }
             Event::ToolCallArgs(e) => self.open_explicit(Kind::Tool, e.tool_call_id.as_str(), out),
             Event::ToolCallEnd(e) => self.close_explicit(Kind::Tool, e.tool_call_id.as_str(), out),
+            // A result answers a call, so the call is over — and the protocol
+            // puts `TOOL_CALL_END` before it. A chunk-streamed call has no end
+            // of its own, so without this the result overtakes the terminator
+            // this normalizer still owes.
+            Event::ToolCallResult(_) => self.close(out),
 
             Event::ReasoningMessageStart(e) => {
                 self.open_explicit(Kind::Reasoning, e.message_id.as_str(), out);
