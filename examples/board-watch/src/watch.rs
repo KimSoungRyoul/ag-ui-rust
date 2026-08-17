@@ -44,6 +44,17 @@ pub struct Watch {
     /// Print each delta in brackets instead of joining them, so chunk
     /// normalization is visible in the transcript.
     pub fragments: bool,
+    /// Draw one line per update, in arrival order, instead of grouping a tool
+    /// call onto one line when it closes.
+    ///
+    /// The trade `ag-ui-client`'s [session docs] describe, made visible: the
+    /// grouped view reads better and reorders anything that happened inside a
+    /// call; this one is faithful and noisier. Neither is more correct — the
+    /// arrival order is the only nesting there is, so a view that keeps it is
+    /// the one that can show it.
+    ///
+    /// [session docs]: https://docs.rs/ag-ui-client/latest/ag_ui_client/session/index.html
+    pub in_order: bool,
     /// Stop reading after this many updates and drop the stream — what a user
     /// hitting Ctrl-C does, and the only cancellation a client actually has.
     pub stop_after: Option<usize>,
@@ -254,17 +265,21 @@ fn ended(end: &RunEnd) -> String {
 /// watching a reply type out is the point; a second text id simply closes the
 /// first line and opens another.
 ///
-/// # What buffering costs
+/// # What buffering costs, and what it does not
 ///
 /// A call is printed when it *closes*, so anything the agent emitted while it
 /// was open — a `STATE_DELTA` published from inside the call, which
-/// `ag-ui-server`'s handles now allow — prints **before** the call line rather
-/// than inside it. That is not recoverable here: an [`Update::State`] carries
-/// no association with the call it arrived during, so the nesting the wire had
-/// is not in the update stream. Printing the header at `Started` instead would
-/// keep the order and lose the parallel case, and the parallel case is the one
-/// that corrupts data rather than merely misleading. `board-watch trace` shows
-/// the true order when it matters.
+/// `ag-ui-server`'s handles allow — prints **before** the call line rather than
+/// inside it.
+///
+/// That is a property of *this* rendering, not a limit of the client. Arrival
+/// order carries the nesting; what cannot be had is a call drawn as one line
+/// *and* kept in order, because the line cannot be written until the call
+/// closes. [`Watch::in_order`] takes the other side of that trade and shows the
+/// state between the call's arguments and its end, which is where the wire put
+/// it. Legibility under parallel calls comes from tagging each line with the
+/// call id — not from buffering, which was the wrong conclusion the first time
+/// this was written down.
 #[derive(Debug, Default)]
 struct Open {
     /// The text message whose line is currently unterminated.
@@ -301,12 +316,27 @@ impl Open {
             MessageChangeKind::ToolCallStarted { tool_call_id, name } => {
                 self.calls
                     .push((tool_call_id.clone(), name.clone(), Vec::new()));
+                if settings.in_order {
+                    self.close_text(out)?;
+                    return writeln!(out, "  call   {name} ({})", short(tool_call_id));
+                }
                 Ok(())
             }
             MessageChangeKind::ToolCallArgs {
                 tool_call_id,
                 delta,
             } => {
+                if settings.in_order {
+                    self.close_text(out)?;
+                    // Named, because in arrival order two calls' fragments are
+                    // adjacent and the id is the only thing separating them.
+                    return writeln!(
+                        out,
+                        "  args   ({}) {}",
+                        short(tool_call_id),
+                        mark(delta, settings)
+                    );
+                }
                 if let Some(call) = self.call_mut(tool_call_id) {
                     call.2.push(delta.clone());
                 }
@@ -320,6 +350,10 @@ impl Open {
                 };
                 let (_, name, fragments) = self.calls.remove(index);
                 self.close_text(out)?;
+
+                if settings.in_order {
+                    return writeln!(out, "  end    {name} ({})", short(tool_call_id));
+                }
 
                 let args: String = fragments
                     .iter()
@@ -353,6 +387,18 @@ impl Open {
             writeln!(out)?;
         }
         Ok(())
+    }
+}
+
+/// The tail of a call id, enough to tell two apart in one run.
+///
+/// Ids are the producer's, and this one only has to disambiguate within a
+/// transcript, so the last segment is plenty and the whole thing is noise.
+fn short(id: &ToolCallId) -> &str {
+    let id = id.as_str();
+    match id.rfind('-') {
+        Some(index) => &id[index + 1..],
+        None => id,
     }
 }
 

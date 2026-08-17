@@ -14,6 +14,7 @@ use std::time::Duration;
 use ag_ui_client::transport::HttpTransport;
 use ag_ui_client::{HttpAgent, Session};
 use ag_ui_core::{Message, Tool};
+use board_watch::view::message_count;
 use board_watch::watch::{Console, Policy, Watch};
 use board_watch::{Board, fake, load_tools, replay_fixture, trace, watch};
 use serde_json::Value;
@@ -494,6 +495,134 @@ async fn an_event_published_inside_a_call_loses_its_nesting() {
     );
 }
 
+/// Drawing in arrival order shows the nesting that grouping hides.
+///
+/// Round two reported that a call published-into cannot be drawn with its state
+/// inside it. That was too strong, and this is the correction: the nesting *is*
+/// recoverable, because arrival order carries it — what is not recoverable is
+/// drawing a call as one line *and* keeping the order, since the line cannot be
+/// written until the call closes. Tagging each line with the call id is what
+/// makes the faithful rendering legible under parallel calls, and without the
+/// tag it is not.
+#[tokio::test(flavor = "multi_thread")]
+async fn arrival_order_rendering_shows_the_nesting_that_grouping_hides() {
+    let url = serve_task_board().await;
+    let tools = task_board::board::tools();
+
+    let mut grouped = configured(&url, "grouped", tools.clone(), true);
+    let grouped = transcript(&mut grouped, Watch::default(), "add draft the agenda\n").await;
+
+    let mut ordered = configured(&url, "ordered", tools, true);
+    let ordered = transcript(
+        &mut ordered,
+        Watch {
+            in_order: true,
+            ..Watch::default()
+        },
+        "add draft the agenda\n",
+    )
+    .await;
+
+    let at = |text: &str, needle: &str| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("{needle}:\n{text}"))
+    };
+
+    // Grouped: the call is one line, written when it closes, so the state that
+    // was published during it is already on screen.
+    assert!(
+        at(&grouped, "  state  ") < at(&grouped, "  call   add_task"),
+        "{grouped}"
+    );
+
+    // In arrival order: the state lands between the call's arguments and its
+    // end, which is where the wire put it.
+    assert!(
+        at(&ordered, "  args   ") < at(&ordered, "  state  "),
+        "{ordered}"
+    );
+    assert!(
+        at(&ordered, "  state  ") < at(&ordered, "  end    add_task"),
+        "{ordered}"
+    );
+
+    // Both agree about the board itself; only the drawing differs.
+    assert!(grouped.contains("[ ] #1 draft the agenda"), "{grouped}");
+    assert!(ordered.contains("[ ] #1 draft the agenda"), "{ordered}");
+}
+
+/// Two calls in flight stay legible in arrival order, because each line names
+/// its call.
+#[tokio::test(flavor = "multi_thread")]
+async fn arrival_order_keeps_parallel_calls_apart_by_naming_them() {
+    let url = serve_fake().await;
+    let mut session = session(&format!("{url}{}", fake::ROUTE), "ordered-parallel");
+
+    let printed = transcript(
+        &mut session,
+        Watch {
+            in_order: true,
+            ..Watch::default()
+        },
+        "parallel\n",
+    )
+    .await;
+
+    // Both calls open before either closes — the interleaving, on screen.
+    let lines: Vec<&str> = printed.lines().map(str::trim_end).collect();
+    let calls: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.trim_start().starts_with("call   add_task"))
+        .collect();
+    assert_eq!(calls.len(), 2, "{printed}");
+    assert_ne!(calls[0], calls[1], "the id is what separates them");
+
+    // And every argument fragment says which call it belongs to.
+    let args: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.trim_start().starts_with("args   "))
+        .collect();
+    assert_eq!(args.len(), 4, "{printed}");
+    assert!(args.iter().all(|line| line.contains('(')), "{printed}");
+}
+
+/// A run can do work and *then* pause, and resuming carries what the first half
+/// produced.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_that_has_already_done_work_can_still_pause() {
+    let url = serve_fake().await;
+    let mut session = session(&format!("{url}{}", fake::ROUTE), "busy");
+
+    let printed = transcript(
+        &mut session,
+        Watch {
+            policy: Policy::Approve,
+            ..Watch::default()
+        },
+        "busy\n",
+    )
+    .await;
+    assert!(!printed.contains("  error"), "{printed}");
+
+    // Two calls and a state publish before the pause, one more after it.
+    assert!(printed.contains("  done   interrupted on 1"), "{printed}");
+    assert_eq!(tool_calls(&session).len(), 3, "{printed}");
+    assert_eq!(
+        session.state().expect("a board").tasks.len(),
+        3,
+        "the resumed run built on the first half's state:\n{printed}"
+    );
+    // The first half's tool messages are still in the conversation.
+    assert!(
+        session.messages().iter().any(|message| matches!(
+            message,
+            Message::Tool(tool) if tool.content.contains("write it down")
+        )),
+        "{:?}",
+        session.messages()
+    );
+}
+
 /// The tools a client does not send are tools the agent does not have.
 ///
 /// There is no discovery in AG-UI: an agent cannot ask for a tool, so a generic
@@ -510,6 +639,47 @@ async fn an_agent_that_needs_a_tool_says_so_when_the_client_offers_none() {
         "{printed}"
     );
     assert!(printed.contains("  done   failed"), "{printed}");
+}
+
+/// A client that wants to be sent A2UI surfaces offers the toolkit's own tool
+/// definition, converted rather than retyped.
+///
+/// Round one found `ToolDefinition::to_value` emitting `input_schema` —
+/// Anthropic's key — where `ag_ui_core::Tool` wants `parameters`, so the
+/// obvious `from_value(def.to_value())` produced a tool with an empty schema.
+/// The conversion is now a `From` impl and the old name says whose shape it is.
+/// This is the regression guard for both halves.
+#[test]
+fn a_toolkit_tool_definition_can_be_offered_on_a_run() {
+    use ag_ui_a2ui::catalog::Catalog;
+    use ag_ui_a2ui::toolkit::tools::render_a2ui_tool;
+
+    let definition = render_a2ui_tool(Some(&Catalog::basic()));
+    let anthropic = definition.to_anthropic_value();
+    assert!(anthropic["input_schema"].is_object(), "{anthropic}");
+    assert!(
+        anthropic.get("parameters").is_none(),
+        "the Anthropic shape is the one that says so in its name: {anthropic}"
+    );
+
+    // The AG-UI shape, which is what a run carries.
+    let tool = Tool::from(definition.clone());
+    assert_eq!(tool.name, ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME);
+    assert_eq!(tool.parameters, definition.parameters);
+    assert!(
+        tool.parameters["properties"].is_object(),
+        "the schema survives the conversion: {}",
+        tool.parameters
+    );
+
+    // And it is offerable: a session takes it like any other tool.
+    let session: Session<HttpTransport, Board> = Session::builder(
+        HttpTransport::new("http://127.0.0.1:1/agent").expect("a valid endpoint URL"),
+        "surfaces",
+    )
+    .tools(vec![tool])
+    .build();
+    assert_eq!(message_count(&session), 0);
 }
 
 /// The tool list shipped for pointing this client at `task-board` is the one

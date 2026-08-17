@@ -106,6 +106,7 @@ impl Agent for Awkward {
             "call" => chunked_call(ctx),
             "parallel" => parallel_calls(ctx),
             "mixed" => mixed_stream(ctx),
+            "busy" => return busy(ctx),
             "approve" => return Ok(approvals(ctx)),
             "slow" => return slow(ctx).await,
             "fail" => Err(Error::agent("the model refused, and said so at length")),
@@ -238,6 +239,50 @@ fn mixed_stream(ctx: &mut RunContext<Board>) -> Result<()> {
         Some("add_task".to_owned()),
         Some(r#"{"title":"unbracketed"}"#.to_owned()),
     ))
+}
+
+/// Does work *and then* pauses, in one run.
+///
+/// The interaction the separate scenarios miss: two calls in flight, state
+/// published, and only then a decision the agent needs a human for. What it
+/// exercises on the client side is that a run which already grew the
+/// conversation can still pause — and that resuming carries the tool messages
+/// the first half produced, rather than starting from the user's turn.
+fn busy(ctx: &mut RunContext<Board>) -> Result<RunOutcome> {
+    if ctx.resume_for(BUDGET).is_none() {
+        parallel_calls(ctx)?;
+        ctx.say("Two added. The third needs sign-off.")?;
+        return Ok(RunOutcome::interrupt(vec![Interrupt {
+            id: BUDGET.to_owned(),
+            reason: "tool_approval".to_owned(),
+            message: Some("Add the third task too?".to_owned()),
+            ..Default::default()
+        }]));
+    }
+
+    let approved = ctx
+        .resume_for(BUDGET)
+        .is_some_and(|entry| entry.status == ResumeStatus::Resolved);
+    if approved {
+        let id = ctx.new_tool_call_id();
+        let result = ctx.new_message_id();
+        ctx.emit(Event::tool_call_start(id.clone(), "add_task"))?;
+        ctx.emit(Event::tool_call_args(
+            id.clone(),
+            r#"{"title":"sign it off"}"#,
+        ))?;
+        ctx.emit(Event::tool_call_end(id.clone()))?;
+        ctx.emit(Event::tool_call_result(
+            result,
+            id,
+            r#"{"id":3,"title":"sign it off"}"#,
+        ))?;
+        ctx.update_state(|board| board.tasks.push(task(3, "sign it off")))?;
+        ctx.say("Three on the board.")?;
+    } else {
+        ctx.say("Left it at two.")?;
+    }
+    Ok(RunOutcome::Success)
 }
 
 /// Pauses on two decisions at once.

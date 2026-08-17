@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! board-watch watch      [--url URL] [--thread ID] [--approve|--decline]
-//!                        [--fragments] [--no-verify] [--stop-after N]
+//!                        [--fragments] [--in-order] [--no-verify] [--stop-after N]
 //! board-watch trace      [--url URL] [--thread ID] [--tools FILE] [--approve] SAID
 //! board-watch replay     FIXTURE [--fragments]
 //! board-watch serve-fake [--port 8090]
@@ -69,6 +69,7 @@ async fn run_watch(mut args: impl Iterator<Item = String>) -> ExitCode {
             "--approve" => settings.policy = Policy::Approve,
             "--decline" => settings.policy = Policy::Decline,
             "--fragments" => settings.fragments = true,
+            "--in-order" => settings.in_order = true,
             "--no-verify" => verify = false,
             "--tools" => match args.next() {
                 Some(value) => tools_path = Some(value),
@@ -174,6 +175,7 @@ async fn run_replay(args: impl Iterator<Item = String>) -> ExitCode {
     for arg in args {
         match arg.as_str() {
             "--fragments" => settings.fragments = true,
+            "--in-order" => settings.in_order = true,
             other => path = Some(other.to_owned()),
         }
     }
@@ -232,6 +234,7 @@ async fn run_serve(mut args: impl Iterator<Item = String>) -> ExitCode {
     println!("  parallel two calls in flight, events interleaved");
     println!("  mixed    reasoning, text and a call, none of them bracketed");
     println!("  approve  pauses on two decisions at once");
+    println!("  busy     does work, then pauses — both halves in one run");
     println!("  slow     never finishes — for --stop-after");
     println!("  fail     ends as RUN_ERROR");
     println!();
@@ -295,7 +298,7 @@ fn usage(out: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         out,
-        "                         [--tools FILE] [--stop-after N]"
+        "                         [--tools FILE] [--in-order] [--stop-after N]"
     )?;
     writeln!(
         out,

@@ -31,11 +31,12 @@ cargo run -p board-watch -- watch --url http://127.0.0.1:8090/agent --fragments
 ```
 
 Scenarios are chosen by the first word you type, so a transcript names what it
-exercised: `chunks`, `call`, `parallel`, `mixed`, `approve`, `slow`, `fail`, and
-anything else for a well-behaved turn.
+exercised: `chunks`, `call`, `parallel`, `mixed`, `approve`, `busy`, `slow`,
+`fail`, and anything else for a well-behaved turn.
 
-`--fragments` is the flag worth knowing: it brackets every delta as it arrives,
-so what the client had to reassemble is visible in the output.
+`--fragments` brackets every delta as it arrives, so what the client had to
+reassemble is visible in the output. `--in-order` draws one line per update
+instead of grouping a tool call onto one line — see below.
 
 ## Chunked streams
 
@@ -82,10 +83,9 @@ garbled line; this one buffers by call id:
   state  2 open · 0 done
 ```
 
-That buffering has a price, and it is worth knowing before you copy the
-renderer. A call is printed when it *closes*, so anything the agent emitted
-while the call was open prints **before** it. `task-board` publishes state from
-inside its call, so `watch` shows:
+That buffering has a price. A call is printed when it *closes*, so anything the
+agent emitted while the call was open prints **before** it. `task-board`
+publishes state from inside its call, so the grouped view shows:
 
 ```text
   state  1 open · 0 done
@@ -93,19 +93,41 @@ inside its call, so `watch` shows:
   result {"id":1,"title":"draft the agenda"}
 ```
 
-…while the wire actually carried:
+`--in-order` takes the other side of the trade — one line per update, in
+arrival order, each tool line tagged with its call:
 
 ```text
-  TOOL_CALL_START            {"toolCallName":"add_task","toolCallId":"wire-run-1-call-1"}
-  TOOL_CALL_ARGS             {"delta":"{\"title\":\"one thing\"}","toolCallId":"wire-run-1-call-1"}
-  STATE_SNAPSHOT             {"snapshot":{"tasks":[{"id":1,...}],"nextId":1}}
-  TOOL_CALL_END              {"toolCallId":"wire-run-1-call-1"}
-  TOOL_CALL_RESULT           {"messageId":"wire-run-1-msg-2",...}
+  call   add_task (1)
+  args   (1) {"title":"draft the agenda"}
+  state  1 open · 0 done
+  end    add_task (1)
+  result {"id":1,"title":"draft the agenda"}
 ```
 
-An `Update::State` carries no association with the call it arrived during, so
-the nesting the wire had is not recoverable from the update stream. Use `trace`
-when the order is what you are debugging.
+That is where the wire put it. Arrival order *is* the nesting — `Update::State`
+carries no association with the call it arrived during, and
+[`ag-ui-client`'s session docs](https://docs.rs/ag-ui-client) explain why one
+would be invented rather than reported: under parallel calls two calls are open
+and the wire does not attribute the state either.
+
+So what cannot be had is a call drawn as one line **and** kept in order, because
+the line cannot be written until the call closes. Legibility under parallel
+calls comes from the id tag, not from buffering:
+
+```text
+$ board-watch watch --url http://127.0.0.1:8090/agent --in-order
+> parallel
+  call   add_task (1)
+  call   add_task (2)
+  args   (1) {"title":
+  args   (2) {"title":
+  args   (1) "write it down"}
+  args   (2) "read it back"}
+  end    add_task (1)
+  end    add_task (2)
+```
+
+Pick the grouped view to read a conversation and `--in-order` to debug one.
 
 ## Pausing
 
@@ -127,6 +149,28 @@ sees what the resuming request carries.
 ```
 
 `--approve` and `--decline` answer everything unattended, for scripts.
+
+A run can also do work *and then* pause. `busy` adds two tasks, publishes state
+and only then asks — and resuming carries what the first half produced rather
+than starting over:
+
+```text
+> busy
+  call   add_task {"title":"write it down"}
+  call   add_task {"title":"read it back"}
+  result {"id":1,"title":"write it down"}
+  result {"id":2,"title":"read it back"}
+  state  2 open · 0 done
+  text   Two added. The third needs sign-off.
+  pause  approve-budget · Add the third task too?
+  done   interrupted on 1
+  answer approve-budget · approved
+  call   add_task {"title":"sign it off"}
+  result {"id":3,"title":"sign it off"}
+  state  3 open · 0 done
+  text   Three on the board.
+  done   success
+```
 
 ## Stopping
 
@@ -306,7 +350,7 @@ cannot fake.
 
 | File | What is in it |
 | --- | --- |
-| `src/watch.rs` | The driver and the renderer, generic over input and output |
+| `src/watch.rs` | The driver and both renderers, generic over input and output |
 | `src/view.rs` | The panel, the A2UI walk, and helpers that name a `Session` without bounding its transport |
 | `src/board.rs` | The client's own view model of the agent's state |
 | `src/trace.rs` | The unassembled view, and resume without a session |
