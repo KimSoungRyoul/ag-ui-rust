@@ -411,7 +411,7 @@ impl Applier {
                 Ok(Changed::State)
             }
             Event::MessagesSnapshot(e) => {
-                self.replace_messages(e.messages.clone());
+                self.merge_snapshot(e.messages.clone());
                 Ok(Changed::MessagesReplaced)
             }
 
@@ -530,6 +530,64 @@ impl Applier {
         {
             self.open_text = None;
         }
+    }
+
+    /// Folds a `MESSAGES_SNAPSHOT` into the conversation.
+    ///
+    /// A snapshot is an *edit*, not a replacement — upstream
+    /// (`client/src/apply/default.ts`, `case EventType.MESSAGES_SNAPSHOT`)
+    /// rebuilds the list by filtering the local one and appending whatever the
+    /// snapshot adds. Three consequences, all of them load-bearing:
+    ///
+    /// - the order the client already had wins for every id the snapshot also
+    ///   carries, so a backend that reorders its own history does not reshuffle
+    ///   the transcript under the user;
+    /// - messages the snapshot leaves out are dropped — that is how a
+    ///   summarizing backend deletes turns;
+    /// - except `activity`, which survives a snapshot that carries none.
+    ///   Activity never travels back to the backend, so one that does not track
+    ///   it *cannot* list it, and dropping the local copies would clear a pane
+    ///   of the UI on every snapshot. A snapshot that does carry activity is
+    ///   declaring the whole set, so an activity missing from it has been
+    ///   deleted; without that half, a client-side activity would be
+    ///   undeletable.
+    ///
+    /// Upstream's rule has a fourth clause, for `reasoning`. It needs no
+    /// equivalent here: reasoning lives in [`Applier::reasoning`], not in
+    /// [`Applier::messages`], so a snapshot of the conversation cannot drop it.
+    fn merge_snapshot(&mut self, snapshot: Vec<Message>) {
+        let snapshot_owns_activity = snapshot.iter().any(|m| matches!(m, Message::Activity(_)));
+
+        // `Option` slots so a message can be moved out when it is placed, and
+        // whatever is left over is exactly what the snapshot added.
+        let mut incoming: Vec<Option<Message>> = snapshot.into_iter().map(Some).collect();
+        let mut position: HashMap<MessageId, usize> = HashMap::with_capacity(incoming.len());
+        for (index, message) in incoming.iter().enumerate() {
+            let id = message.as_ref().expect("every slot starts full").id();
+            position.insert(id.clone(), index);
+        }
+
+        let previous = std::mem::take(&mut self.messages);
+        let mut merged = Vec::with_capacity(previous.len().max(incoming.len()));
+        for message in previous {
+            let keep_local = !snapshot_owns_activity && matches!(message, Message::Activity(_));
+            if let Some(index) = position.get(message.id()).copied() {
+                if keep_local {
+                    // Claim the slot so the snapshot's copy is not appended on
+                    // top of the local one further down.
+                    incoming[index] = None;
+                } else if let Some(replacement) = incoming[index].take() {
+                    merged.push(replacement);
+                    continue;
+                }
+            }
+            if keep_local {
+                merged.push(message);
+            }
+        }
+        merged.extend(incoming.into_iter().flatten());
+
+        self.replace_messages(merged);
     }
 
     fn message_change(&self, id: &MessageId, kind: MessageChangeKind) -> Changed {

@@ -4,7 +4,8 @@ use ag_ui_client::apply::{Applier, Changed, MessageChangeKind};
 use ag_ui_client::transport::ReplayTransport;
 use ag_ui_client::{RunEnd, Session, Update, verify_all};
 use ag_ui_core::{
-    Event, Message, PatchOperation, ReasoningEncryptedValueSubtype, TextMessageRole, ToolCallId,
+    ActivityMessage, Event, JsonObject, Message, PatchOperation, ReasoningEncryptedValueSubtype,
+    TextMessageRole, ToolCallId,
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -176,7 +177,7 @@ fn applying_reports_exactly_what_changed() {
 }
 
 #[test]
-fn a_messages_snapshot_replaces_the_whole_conversation() {
+fn a_messages_snapshot_drops_the_turns_it_leaves_out() {
     let mut applier = Applier::new();
     for event in scripted_run() {
         applier.apply(&event).expect("applies");
@@ -197,6 +198,90 @@ fn a_messages_snapshot_replaces_the_whole_conversation() {
     );
     // The messages the snapshot dropped are gone from the index too.
     assert!(applier.message(&"msg-1".into()).is_none());
+}
+
+#[test]
+fn a_messages_snapshot_keeps_activity_the_backend_does_not_track() {
+    // Upstream `client/src/apply/default.ts`, MESSAGES_SNAPSHOT: activity
+    // messages never travel back to the backend — `prepareRunAgentInput` strips
+    // them from `RunAgentInput` — so a backend that does not track them cannot
+    // put them in the snapshot, and dropping the local copies would delete a
+    // pane of the UI on every summarization.
+    let mut applier = Applier::new();
+    applier.push_message(Message::Activity(ActivityMessage {
+        id: "act-1".into(),
+        activity_type: "web_search".into(),
+        content: json!({ "query": "weather" })
+            .as_object()
+            .expect("an object")
+            .clone(),
+    }));
+    applier.push_message(Message::assistant("msg-1", "Checking."));
+
+    applier
+        .apply(&Event::messages_snapshot(vec![Message::assistant(
+            "msg-1", "Checked.",
+        )]))
+        .expect("applies");
+
+    let ids: Vec<&str> = applier.messages().iter().map(|m| m.id().as_str()).collect();
+    assert_eq!(
+        ids,
+        ["act-1", "msg-1"],
+        "a snapshot carrying no activity leaves the local activity alone"
+    );
+    assert_eq!(applier.text_of("msg-1"), Some("Checked."));
+}
+
+#[test]
+fn a_messages_snapshot_that_carries_activity_owns_the_activity_set() {
+    // The other half of the same upstream rule: once a snapshot carries any
+    // activity, the backend is declaring the complete activity set, so one it
+    // leaves out has been deleted. Without this the local copy is undeletable.
+    let mut applier = Applier::new();
+    for id in ["act-1", "act-2"] {
+        applier.push_message(Message::Activity(ActivityMessage {
+            id: id.into(),
+            activity_type: "web_search".into(),
+            content: JsonObject::new(),
+        }));
+    }
+
+    applier
+        .apply(&Event::messages_snapshot(vec![Message::Activity(
+            ActivityMessage {
+                id: "act-2".into(),
+                activity_type: "web_search".into(),
+                content: JsonObject::new(),
+            },
+        )]))
+        .expect("applies");
+
+    let ids: Vec<&str> = applier.messages().iter().map(|m| m.id().as_str()).collect();
+    assert_eq!(ids, ["act-2"]);
+}
+
+#[test]
+fn a_messages_snapshot_keeps_the_order_the_client_already_had() {
+    // Upstream rebuilds the list by filtering the *local* one and appending
+    // whatever the snapshot adds, so a backend that reorders its own history
+    // does not reshuffle the transcript under the user.
+    let mut applier = Applier::new();
+    applier.push_message(Message::assistant("msg-1", "first"));
+    applier.push_message(Message::assistant("msg-2", "second"));
+
+    applier
+        .apply(&Event::messages_snapshot(vec![
+            Message::assistant("msg-2", "second"),
+            Message::assistant("msg-1", "first"),
+            Message::assistant("msg-3", "third"),
+        ]))
+        .expect("applies");
+
+    let ids: Vec<&str> = applier.messages().iter().map(|m| m.id().as_str()).collect();
+    assert_eq!(ids, ["msg-1", "msg-2", "msg-3"]);
+    // And the index still points at the right rows after the rebuild.
+    assert_eq!(applier.text_of("msg-3"), Some("third"));
 }
 
 #[test]
