@@ -42,7 +42,7 @@
 // this module has to name them. Downstream users still get the warnings.
 #![allow(deprecated)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ag_ui_core::{
     ActivityDeltaEvent, ActivityMessage, ActivitySnapshotEvent, AssistantMessage, DeveloperMessage,
@@ -167,6 +167,13 @@ pub struct ReasoningChange {
 }
 
 /// What happened to a reasoning message.
+///
+/// [`Started`](Self::Started) and [`Ended`](Self::Ended) arrive **once per id**.
+/// The protocol brackets a thought twice — `REASONING_START` opens the block and
+/// `REASONING_MESSAGE_START` the message inside it, both under the same id, and
+/// the two terminators close it the same way — but that is protocol framing, not
+/// two things happening. A consumer that prints a finished thought prints it
+/// once.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ReasoningChangeKind {
@@ -177,7 +184,7 @@ pub enum ReasoningChangeKind {
         /// The text this event appended.
         delta: String,
     },
-    /// The reasoning message was closed.
+    /// The reasoning message was closed; no more content will arrive for it.
     Ended,
     /// A provider's opaque reasoning blob was attached.
     EncryptedValue,
@@ -196,7 +203,13 @@ pub struct Applier {
     state: Value,
     reasoning: Vec<ReasoningMessage>,
     reasoning_by_id: HashMap<MessageId, usize>,
-    open_reasoning: Option<MessageId>,
+    /// Reasoning ids started and not yet ended. What makes a thought report one
+    /// [`ReasoningChangeKind::Started`] and one [`ReasoningChangeKind::Ended`]
+    /// however many events the protocol brackets it with.
+    open_reasoning: HashSet<MessageId>,
+    /// The reasoning message the events that carry no id belong to — the
+    /// `THINKING_*` family and a `REASONING_MESSAGE_CHUNK` after the first.
+    current_reasoning: Option<MessageId>,
     /// `THINKING_*` carries no message id, so ids are minted for it.
     thinking_counter: u64,
     thread_id: Option<ThreadId>,
@@ -224,7 +237,8 @@ impl Applier {
             state: Value::Object(JsonObject::new()),
             reasoning: Vec::new(),
             reasoning_by_id: HashMap::new(),
-            open_reasoning: None,
+            open_reasoning: HashSet::new(),
+            current_reasoning: None,
             thinking_counter: 0,
             thread_id: None,
             run_id: None,
@@ -421,18 +435,15 @@ impl Applier {
                 Ok(self.reasoning_start(id))
             }
             Event::ThinkingTextMessageStart(_) => {
-                let id = self.open_thinking();
-                Ok(Changed::Reasoning(ReasoningChange {
-                    id,
-                    kind: ReasoningChangeKind::Started,
-                }))
+                let id = self.thinking_id();
+                Ok(self.reasoning_start(id))
             }
             Event::ThinkingTextMessageContent(e) => {
-                let id = self.open_thinking();
+                let id = self.thinking_id();
                 Ok(self.reasoning_content(&id, &e.delta))
             }
             Event::ThinkingTextMessageEnd(_) | Event::ThinkingEnd(_) => {
-                Ok(match self.open_reasoning.clone() {
+                Ok(match self.current_reasoning.clone() {
                     Some(id) => self.reasoning_end(&id),
                     None => Changed::Nothing,
                 })
@@ -843,8 +854,13 @@ impl Applier {
 
     // ---- reasoning ------------------------------------------------------
 
+    /// Opens a reasoning message, or reports nothing when it is already open.
+    ///
+    /// `REASONING_START` and `REASONING_MESSAGE_START` both land here under the
+    /// same id — the block and the message inside it — and so does the
+    /// `THINKING_*` pair. Only the first of them starts anything.
     fn reasoning_start(&mut self, id: MessageId) -> Changed {
-        self.open_reasoning = Some(id.clone());
+        self.current_reasoning = Some(id.clone());
         if !self.reasoning_by_id.contains_key(&id) {
             self.reasoning_by_id
                 .insert(id.clone(), self.reasoning.len());
@@ -852,6 +868,9 @@ impl Applier {
                 id: id.clone(),
                 ..Default::default()
             });
+        }
+        if !self.open_reasoning.insert(id.clone()) {
+            return Changed::Nothing;
         }
         Changed::Reasoning(ReasoningChange {
             id,
@@ -863,21 +882,22 @@ impl Applier {
     ///
     /// Those events carry no `messageId` at all, so the applier has to invent
     /// one — and it has to be the same one for the whole block, which is what
-    /// [`Applier::open_thinking`] is for.
+    /// [`Applier::thinking_id`] is for.
     fn mint_thinking_id(&mut self) -> MessageId {
         self.thinking_counter += 1;
         MessageId::new(format!("thinking-{}", self.thinking_counter))
     }
 
-    /// The reasoning message a `THINKING_*` event belongs to, opening one if
-    /// the producer sent content before its `THINKING_START`.
-    fn open_thinking(&mut self) -> MessageId {
-        if let Some(id) = self.open_reasoning.clone() {
-            return id;
+    /// The id a `THINKING_*` event belongs to, minting one when the producer
+    /// sent content before its `THINKING_START`.
+    ///
+    /// Only resolves the id; opening it is the caller's, so that the caller can
+    /// report whether the open was the one that started the thought.
+    fn thinking_id(&mut self) -> MessageId {
+        match self.current_reasoning.clone() {
+            Some(id) => id,
+            None => self.mint_thinking_id(),
         }
-        let id = self.mint_thinking_id();
-        self.reasoning_start(id.clone());
-        id
     }
 
     fn reasoning_content(&mut self, id: &MessageId, delta: &str) -> Changed {
@@ -905,27 +925,36 @@ impl Applier {
         let Some(id) = event
             .message_id
             .clone()
-            .or_else(|| self.open_reasoning.clone())
+            .or_else(|| self.current_reasoning.clone())
         else {
             return Err(Error::protocol(
                 "REASONING_MESSAGE_CHUNK carries no messageId and no reasoning message is open",
             ));
         };
-        if self.open_reasoning.as_ref() != Some(&id) {
-            self.reasoning_start(id.clone());
-        }
+        let started = if self.current_reasoning.as_ref() == Some(&id) {
+            Changed::Nothing
+        } else {
+            self.reasoning_start(id.clone())
+        };
         Ok(match &event.delta {
             Some(delta) => self.reasoning_content(&id, delta),
-            None => Changed::Reasoning(ReasoningChange {
-                id,
-                kind: ReasoningChangeKind::Started,
-            }),
+            // A chunk with no delta only opens, so it reports whatever the open
+            // did — nothing at all when the message was already open.
+            None => started,
         })
     }
 
+    /// Closes a reasoning message, or reports nothing when it is already closed.
+    ///
+    /// The mirror of [`Applier::reasoning_start`]: `REASONING_MESSAGE_END` and
+    /// `REASONING_END` are two events closing one thought, and a consumer that
+    /// prints a finished thought has to see it finish once.
     fn reasoning_end(&mut self, id: &MessageId) -> Changed {
-        if self.open_reasoning.as_ref() == Some(id) {
-            self.open_reasoning = None;
+        if self.current_reasoning.as_ref() == Some(id) {
+            self.current_reasoning = None;
+        }
+        if !self.open_reasoning.remove(id) {
+            return Changed::Nothing;
         }
         Changed::Reasoning(ReasoningChange {
             id: id.clone(),

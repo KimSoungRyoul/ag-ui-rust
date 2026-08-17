@@ -140,7 +140,6 @@ async fn drive<T: Transport>(
     output: &mut impl Write,
 ) -> io::Result<Option<Interrupt>> {
     let mut pending = None;
-    let mut printed = None;
     // The reply and a tool call's arguments print without a newline, so an
     // update that owns a whole line has to wait for the open one to close
     // rather than splice itself into it. The board does exactly that now: a
@@ -155,18 +154,10 @@ async fn drive<T: Transport>(
 
             // Only the finished thought is printed: a reasoning block is
             // commentary, and streaming it interleaved with the reply is noise
-            // in a terminal.
-            //
-            // The `printed` guard is a workaround, not taste. `ctx.think()`
-            // emits REASONING_MESSAGE_END *and* REASONING_END, and the client
-            // maps both to `ReasoningChangeKind::Ended` under the same id — so
-            // the obvious spelling of this arm prints every thought twice.
-            Update::Reasoning(reasoning)
-                if reasoning.change == ReasoningChangeKind::Ended
-                    && printed.as_ref() != Some(&reasoning.id) =>
-            {
+            // in a terminal. One `Ended` per thought, whatever the agent
+            // bracketed it with, so this is the whole arm.
+            Update::Reasoning(reasoning) if reasoning.change == ReasoningChangeKind::Ended => {
                 writeln!(output, "  ~ {}", reasoning.text)?;
-                printed = Some(reasoning.id);
             }
 
             // The typed state, already patched: `Board` came off the wire as a

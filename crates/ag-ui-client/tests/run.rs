@@ -1,6 +1,8 @@
 //! A whole run, applied: start, text deltas, a tool call, state, finish.
 
-use ag_ui_client::apply::{Applier, Changed, MessageChangeKind};
+use ag_ui_client::apply::{
+    Applier, Changed, MessageChangeKind, ReasoningChange, ReasoningChangeKind,
+};
 use ag_ui_client::transport::ReplayTransport;
 use ag_ui_client::{RunEnd, Session, Update, verify_all};
 use ag_ui_core::{
@@ -369,6 +371,93 @@ fn an_encrypted_reasoning_blob_attaches_to_its_entity() {
     assert_eq!(call.encrypted_value.as_deref(), Some("call-blob"));
 }
 
+/// One reasoning change, short enough to compare a whole run against.
+fn thought(id: &str, kind: ReasoningChangeKind) -> Changed {
+    Changed::Reasoning(ReasoningChange {
+        id: id.into(),
+        kind,
+    })
+}
+
+/// `ctx.think()` on the server emits `REASONING_MESSAGE_END` *and*
+/// `REASONING_END`, and opens with the matching pair — four events bracketing
+/// one thought. The applier reports the lifecycle rather than the framing, so a
+/// consumer that draws a finished thought draws it once.
+#[test]
+fn a_thought_starts_and_ends_once_however_it_is_bracketed() {
+    let mut applier = Applier::new();
+    let changes: Vec<Changed> = [
+        Event::reasoning_start("reason-1"),
+        Event::reasoning_message_start("reason-1"),
+        Event::reasoning_message_content("reason-1", "hmm"),
+        Event::reasoning_message_end("reason-1"),
+        Event::reasoning_end("reason-1"),
+    ]
+    .iter()
+    .map(|event| applier.apply(event).expect("applies"))
+    .collect();
+
+    assert_eq!(
+        changes,
+        [
+            thought("reason-1", ReasoningChangeKind::Started),
+            Changed::Nothing,
+            thought(
+                "reason-1",
+                ReasoningChangeKind::Content {
+                    delta: "hmm".to_owned()
+                }
+            ),
+            thought("reason-1", ReasoningChangeKind::Ended),
+            Changed::Nothing,
+        ]
+    );
+    assert_eq!(applier.reasoning_text(&"reason-1".into()), Some("hmm"));
+}
+
+/// The other half of that: collapsing the duplicate must not collapse two
+/// *different* thoughts. A block holding two messages ends three things — each
+/// message, then the block — and every one of them is somebody's redraw.
+#[test]
+fn every_reasoning_message_in_a_block_ends_on_its_own() {
+    let mut applier = Applier::new();
+    let changes: Vec<Changed> = [
+        Event::reasoning_start("block-1"),
+        Event::reasoning_message_start("msg-1"),
+        Event::reasoning_message_content("msg-1", "first"),
+        Event::reasoning_message_end("msg-1"),
+        Event::reasoning_message_start("msg-2"),
+        Event::reasoning_message_content("msg-2", "second"),
+        Event::reasoning_message_end("msg-2"),
+        Event::reasoning_end("block-1"),
+    ]
+    .iter()
+    .map(|event| applier.apply(event).expect("applies"))
+    .collect();
+
+    let endings: Vec<&Changed> = changes
+        .iter()
+        .filter(|changed| {
+            matches!(
+                changed,
+                Changed::Reasoning(ReasoningChange {
+                    kind: ReasoningChangeKind::Ended,
+                    ..
+                })
+            )
+        })
+        .collect();
+    assert_eq!(
+        endings,
+        [
+            &thought("msg-1", ReasoningChangeKind::Ended),
+            &thought("msg-2", ReasoningChangeKind::Ended),
+            &thought("block-1", ReasoningChangeKind::Ended),
+        ]
+    );
+    assert_eq!(applier.reasoning_text(&"msg-2".into()), Some("second"));
+}
+
 #[test]
 fn an_activity_snapshot_becomes_a_message_and_a_delta_patches_it() {
     let mut applier = Applier::new();
@@ -406,6 +495,44 @@ struct Weather {
     city: String,
     #[serde(default)]
     temperature: Option<i64>,
+}
+
+/// What a consumer of [`Session`] actually sees for one thought: opened once,
+/// two deltas, closed once. The scripted run brackets it with all four
+/// `REASONING_*` events, as `ctx.think()` does.
+#[tokio::test]
+async fn a_session_reports_one_ending_per_thought() {
+    let transport = ReplayTransport::new(scripted_run());
+    let mut session = Session::<_, Weather>::new(transport, "thread-1");
+
+    let mut reasoning = Vec::new();
+    let mut run = session.send("what is the weather in Seoul?");
+    while let Some(update) = run.next().await {
+        if let Update::Reasoning(update) = update {
+            reasoning.push((update.id.as_str().to_owned(), update.change));
+        }
+    }
+    drop(run);
+
+    assert_eq!(
+        reasoning,
+        [
+            ("reason-1".to_owned(), ReasoningChangeKind::Started),
+            (
+                "reason-1".to_owned(),
+                ReasoningChangeKind::Content {
+                    delta: "The user wants the weather. ".to_owned()
+                }
+            ),
+            (
+                "reason-1".to_owned(),
+                ReasoningChangeKind::Content {
+                    delta: "I should call the tool.".to_owned()
+                }
+            ),
+            ("reason-1".to_owned(), ReasoningChangeKind::Ended),
+        ]
+    );
 }
 
 #[tokio::test]
