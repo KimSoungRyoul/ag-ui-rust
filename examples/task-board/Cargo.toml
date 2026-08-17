@@ -1,0 +1,25 @@
+[package]
+name = "task-board"
+description = "A workshop task board over AG-UI: the agent, the terminal client, and the wire between them. Not published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ag-ui-core.workspace = true
+ag-ui-server.workspace = true
+ag-ui-client = { workspace = true, features = ["http"] }
+ag-ui-a2ui.workspace = true
+ag-ui-axum.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+# `--llm` talks to an OpenAI-compatible endpoint over plain HTTP, the same way
+# `e2e/src/llm.rs` does. No LLM crate here either: that is the point.
+reqwest = { workspace = true, features = ["stream"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }

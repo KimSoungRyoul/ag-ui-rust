@@ -17,6 +17,11 @@ spec. This project fills the gap, with the server story as the priority.
 | `ag-ui-client` | Consume a remote agent: transport, event application, materialised messages and state. |
 | `ag-ui-a2ui` | [A2UI](https://a2ui.org) protocol types, semantic validator, and agent-side authoring toolkit. |
 
+A worked example of all of it together — streamed text, tool calls, shared
+state, an A2UI surface and a human-in-the-loop pause, with an agent and a
+terminal client that talk to each other over a real port — is
+[`examples/task-board`](examples/task-board).
+
 ## Quickstart
 
 Serving an agent. Implement `Agent`, mount it, and the endpoint speaks AG-UI:
