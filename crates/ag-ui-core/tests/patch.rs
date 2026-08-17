@@ -119,6 +119,44 @@ fn a_patch_document_round_trips_inside_an_activity_delta() {
 #[test]
 fn an_unknown_operation_is_rejected() {
     assert!(serde_json::from_str::<PatchOperation>(r#"{"op":"increment","path":"/a"}"#).is_err());
-    // `add` without a value is not a valid operation either.
-    assert!(serde_json::from_str::<PatchOperation>(r#"{"op":"add","path":"/a"}"#).is_err());
+}
+
+#[test]
+fn an_omitted_value_reads_as_null_rather_than_failing_the_event() {
+    // `JSON.stringify({op: "add", path: "/x", value: undefined})` drops the key,
+    // so this is what a JavaScript producer emits whenever the new state holds
+    // `undefined` there. Upstream types the patch as `z.array(z.any())` and
+    // accepts it; rejecting it here would take down the whole STATE_DELTA event,
+    // and with it the run.
+    for (wire, expected) in [
+        (
+            r#"{"op":"add","path":"/x"}"#,
+            PatchOperation::add("/x", serde_json::Value::Null),
+        ),
+        (
+            r#"{"op":"replace","path":"/x"}"#,
+            PatchOperation::replace("/x", serde_json::Value::Null),
+        ),
+        (
+            r#"{"op":"test","path":"/x"}"#,
+            PatchOperation::test("/x", serde_json::Value::Null),
+        ),
+    ] {
+        let parsed: PatchOperation = serde_json::from_str(wire).expect(wire);
+        assert_eq!(parsed, expected);
+        // Re-serialization makes the null explicit; the applier then sees the
+        // same value a JavaScript patch library would have written.
+        assert_eq!(parsed.value(), Some(&serde_json::Value::Null));
+    }
+
+    // And a whole event survives it.
+    let event: Event = serde_json::from_str(
+        r#"{"type":"STATE_DELTA","delta":[{"op":"add","path":"/draft"},{"op":"remove","path":"/old"}]}"#,
+    )
+    .expect("a STATE_DELTA carrying a valueless add must parse");
+    let Event::StateDelta(payload) = event else {
+        panic!("wrong variant");
+    };
+    assert_eq!(payload.delta.len(), 2);
+    assert_eq!(payload.delta[0].value(), Some(&serde_json::Value::Null));
 }

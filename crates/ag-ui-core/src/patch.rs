@@ -17,6 +17,23 @@ pub type JsonPatch = Vec<PatchOperation>;
 /// `op` discriminator, a `path` JSON Pointer, and — depending on the operation
 /// — a `value` or a `from` pointer.
 ///
+/// # Why `value` has a default
+///
+/// Upstream types both patch fields as `z.array(z.any())` / `List[Any]` and
+/// validates nothing, so a producer that drops `value` still parses there. The
+/// case is not hypothetical: `JSON.stringify({op: "add", path: "/x", value:
+/// undefined})` yields `{"op":"add","path":"/x"}`, which is what a JavaScript
+/// producer emits whenever the new state holds `undefined` at that key. Making
+/// `value` required would turn that into a deserialization failure for the whole
+/// `STATE_DELTA` event — and in an SSE stream a failed event is usually a failed
+/// run. An omitted `value` therefore reads as JSON `null`, which is how the
+/// JavaScript patch libraries apply it, and re-serializes explicitly as `null`.
+///
+/// Everything else about the operation stays strictly typed: an unrecognized
+/// `op` is still rejected, because the six RFC operations are the whole
+/// vocabulary and a seventh is a producer bug worth surfacing rather than
+/// carrying silently to an applier that cannot execute it.
+///
 /// ```
 /// # use ag_ui_core::PatchOperation;
 /// let op = PatchOperation::Replace {
@@ -40,7 +57,9 @@ pub enum PatchOperation {
     Add {
         /// JSON Pointer to the location to add.
         path: String,
-        /// The value to insert. `null` is a legitimate value, not an omission.
+        /// The value to insert. An omitted `value` reads as `null`; see the
+        /// type-level docs.
+        #[serde(default)]
         value: Value,
     },
 
@@ -54,7 +73,8 @@ pub enum PatchOperation {
     Replace {
         /// JSON Pointer to the location to overwrite.
         path: String,
-        /// The replacement value.
+        /// The replacement value. An omitted `value` reads as `null`.
+        #[serde(default)]
         value: Value,
     },
 
@@ -79,7 +99,9 @@ pub enum PatchOperation {
     Test {
         /// JSON Pointer to the location to test.
         path: String,
-        /// The value the location is expected to hold.
+        /// The value the location is expected to hold. An omitted `value` reads
+        /// as `null`.
+        #[serde(default)]
         value: Value,
     },
 }
