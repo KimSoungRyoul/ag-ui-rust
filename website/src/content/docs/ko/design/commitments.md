@@ -56,7 +56,7 @@ export도 없습니다.
 객체 key를 parse해서, Rust 쪽과 어긋나면 build를 실패시킵니다. 완전한 code 생성은
 Zod-to-Rust compiler를 만들어 유지한다는 뜻입니다. 아직 그럴 값어치는 없습니다.
 
-[event 레퍼런스](/ag-ui-rust/ko/reference/events/)가 binary transport가 싣는
+[event reference](/ag-ui-rust/ko/reference/events/)가 binary transport가 싣는
 18개와 싣지 못하는 15개를 짚어 줍니다.
 
 ## `Event`는 일부러 exhaustive하고, error는 아닙니다
@@ -102,7 +102,7 @@ frontend가 가장 검사받고 싶어 하는 match도 그것입니다. 입력�
 use ag_ui_client::RunEnd;
 
 fn on_end(end: &RunEnd) -> String {
-    // `_` 갈래가 없습니다. run이 끝나는 네 번째 방식이 생기면 이 코드는
+    // `_` 갈래가 없습니다. run이 끝나는 네 번째 방식이 생기면 이 code는
     // compile되지 않습니다. 그것이 요점입니다. protocol이 바뀌었고, 이 함수는
     // 결정을 내려야 합니다.
     match end {

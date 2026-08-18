@@ -79,7 +79,7 @@ async fn main() {
 }
 ```
 
-다섯 event 중 둘은 agent 코드에 없습니다. `run()`이 driver이기 때문입니다. agent를 호출하기
+다섯 event 중 둘은 agent code에 없습니다. `run()`이 driver이기 때문입니다. agent를 호출하기
 전에 `RUN_STARTED`를 emit합니다. agent가 반환되면 `RUN_FINISHED` / `RUN_ERROR` 중 정확히
 하나를 emit합니다. 본문이 아무 일도 하지 않았을 때도, `?`로 `Err`가 빠져나갔을 때도
 마찬가지입니다.
@@ -279,7 +279,7 @@ async fn main() {
 }
 ```
 
-step은 선택입니다. 프로토콜은 step을 요구하지 않습니다. message 하나만 emit하는 agent는 step이
+step은 선택입니다. protocol은 step을 요구하지 않습니다. message 하나만 emit하는 agent는 step이
 없는 편이 더 분명합니다.
 
 ## run이 끝나는 방식
@@ -292,7 +292,7 @@ step은 선택입니다. 프로토콜은 step을 요구하지 않습니다. mess
 - `Ok(RunOutcome::Interrupt { .. })` — run이 멈춘 채 사람을 기다립니다. 이것도
   `RUN_FINISHED`입니다. 대기 중인 interrupt를 싣고 나갑니다.
   [human in the loop](/ag-ui-rust/ko/server/interrupts/)를 보십시오.
-- `Err(_)` — run이 실패했습니다. driver는 오류 문구와 코드를 담아 `RUN_ERROR`를 emit합니다. agent
+- `Err(_)` — run이 실패했습니다. driver는 오류 문구와 code를 담아 `RUN_ERROR`를 emit합니다. agent
   오류는 panic도 아니고 잘린 stream도 아닙니다.
   [error와 cancellation](/ag-ui-rust/ko/server/errors/)를 보십시오.
 

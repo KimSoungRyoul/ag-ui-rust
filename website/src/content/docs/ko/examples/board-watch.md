@@ -13,7 +13,7 @@ server는 살아남을 가치가 있는 stream을 그 client에게 던져 주려
 병렬 call, 여러 결정에서 한꺼번에 멈춰 서기, 영영 끝나지 않는 run, 그리고 protocol이
 금지하는 stream입니다.
 
-[GitHub에서 소스 읽기](https://github.com/KimSoungRyoul/ag-ui-rust/tree/main/examples/board-watch).
+[GitHub에서 source 읽기](https://github.com/KimSoungRyoul/ag-ui-rust/tree/main/examples/board-watch).
 
 | 명령 | 무엇인가 |
 | --- | --- |
@@ -257,7 +257,7 @@ run이 여전히 `success`로 끝난다는 점도 보세요. `Update::Error`가 
 
 ## 진짜 agent를 상대로
 
-1라운드의 `task-board`를 손대지 않은 채로 8080 port에:
+앞에서 본 `task-board`를 손대지 않은 채로 8080 port에:
 
 ```sh
 cargo run -p task-board -- serve
@@ -354,7 +354,7 @@ cargo test -p board-watch --test live -- --ignored --nocapture
 그렇게 얻는 것은 fixture가 흉내 낼 수 없는 chunk 처리의 한 부분입니다. 이 crate가
 생각하는 방식이 아니라 실제 provider가 자기 박자대로 쪼갠 delta입니다.
 
-## 코드
+## code
 
 | 파일 | 무엇이 들어 있는가 |
 | --- | --- |

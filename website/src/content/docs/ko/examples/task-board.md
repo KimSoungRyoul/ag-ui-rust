@@ -3,13 +3,13 @@ title: task-board (agent)
 description: 끝까지 만들어 본 agent 예제를 읽어 나갑니다. streaming text, tool call, shared state, A2UI surface, 그리고 사람을 기다리는 정지.
 ---
 
-`task-board`는 AG-UI로 말하는 워크숍 작업 board입니다. 직접 띄우는 agent와 그것과
+`task-board`는 AG-UI로 말하는 workshop 작업 board입니다. 직접 띄우는 agent와 그것과
 대화하는 terminal이 crate 하나에 들어 있습니다. 이 SDK의 첫 외부 소비자가 되려고
 존재합니다. `ag-ui-server`, `ag-ui-client`, `ag-ui-axum`, `ag-ui-a2ui`, `ag-ui-core`를
 남들과 똑같이 씁니다. 공개 항목만 쓰고, 안으로 손을 뻗지 않습니다. 주요 subsystem이
 하나도 빠짐없이 정확히 한 번씩 나옵니다.
 
-[GitHub에서 소스 읽기](https://github.com/KimSoungRyoul/ag-ui-rust/tree/main/examples/task-board).
+[GitHub에서 source 읽기](https://github.com/KimSoungRyoul/ag-ui-rust/tree/main/examples/task-board).
 
 | subsystem | 어디에 나오는가 |
 | --- | --- |
@@ -187,7 +187,7 @@ you> clear
 
 첫 run은 interrupt outcome과 함께 `RUN_FINISHED`로 끝납니다. client가 답을 모아
 `resume`에 실어 되돌립니다. agent가 `ctx.resume_for(…)`로 읽고 이어 갑니다. 거절한
-경로도 같은 코드에 `ResumeStatus::Cancelled`로 닿고, tool call을 하나도 하지 않습니다.
+경로도 같은 code에 `ResumeStatus::Cancelled`로 닿고, tool call을 하나도 하지 않습니다.
 test가 단언하는 것이 그것입니다. `tests/flows.rs`의
 `a_paused_run_ends_as_interrupted_and_resumes_as_its_own_run`입니다.
 
@@ -216,7 +216,7 @@ export AG_UI_LLM_API_KEY=…        # or GEMINI_API_KEY
 cargo run -p task-board -- serve --llm
 ```
 
-또는 키 없이, 각자의 컴퓨터에 있는 model을 상대로:
+또는 키 없이, 각자의 machine에서 도는 model을 상대로:
 
 ```sh
 export AG_UI_LLM_BASE_URL=http://localhost:11434/v1
@@ -232,7 +232,7 @@ dependency tree에 LLM crate는 없습니다. `src/llm.rs`는 `reqwest`와 `serd
 둘입니다. 지름길이 아니라 설계 결정의 증명입니다. 이 SDK는 어떤 model client에도
 의존하지 않습니다. model client가 필요한 예제라면 그 설계를 스스로 반박하는 셈입니다.
 
-## 코드
+## code
 
 | 파일 | 무엇이 들어 있는가 |
 | --- | --- |

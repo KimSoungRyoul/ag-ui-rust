@@ -8,10 +8,10 @@ hero:
     file: ../../../assets/logo.svg
     alt: ''
   actions:
-    # 이 page의 링크는 모두 site의 base를 손으로 적습니다. frontmatter는
+    # 이 page의 link는 모두 site의 base를 손으로 적습니다. frontmatter는
     # YAML이라 `import.meta.env.BASE_URL`을 끼워 넣을 자리가 없습니다.
     # Starlight도 hero action을 그냥 `<a href>`로 내보냅니다. base를 풀어 쓴
-    # 쪽이 오히려 안전합니다. starlight-links-validator가 이 링크를 읽고,
+    # 쪽이 오히려 안전합니다. starlight-links-validator가 이 link를 읽고,
     # 해석되지 않으면 build를 실패시킵니다. `base`가 바뀌면 배포 후 404가
     # 아니라 여기서 빨간 build로 드러납니다. 다만 문자열 literal에만 그렇게
     # 할 수 있습니다. 보간된 href는 조용히 건너뜁니다. 아래 card도 풀어 쓴

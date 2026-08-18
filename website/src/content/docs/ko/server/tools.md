@@ -84,7 +84,7 @@ fn main() -> ag_ui_server::Result<()> {
 ## 인자는 텍스트로 streaming됩니다
 
 `args`는 값이 아니라 조각을 받습니다. provider가 인자를 그렇게 내보내기 때문입니다. 부분
-delta는 대개 올바른 JSON이 아닙니다. 프로토콜이 `TOOL_CALL_ARGS`를 파싱하지 않은 채 두는
+delta는 대개 올바른 JSON이 아닙니다. protocol이 `TOOL_CALL_ARGS`를 파싱하지 않은 채 두는
 이유도 그것입니다.
 
 handle은 자기가 emit한 것을 모두 간직합니다. 그래서 provider가 다 보내고 나면 `parse_args`가
@@ -133,7 +133,7 @@ stream이 끝난 다음에 한 번 부르십시오. `raw_args`는 같은 버퍼�
 call도 마찬가지입니다.
 
 알지 못하는 call을 받았을 때 무엇을 할지는 client가 정합니다. 무시하든, activity로 그리든,
-보고하든 말입니다. 프로토콜이 제약하는 것은 *ordering*입니다. 시작 없는 인자, 끝나기 전에 온
+보고하든 말입니다. protocol이 제약하는 것은 *ordering*입니다. 시작 없는 인자, 끝나기 전에 온
 결과 같은 것들입니다. 검사되는 것도 그것뿐입니다.
 
 더 엄격한 규칙을 원하는 agent는 그렇게 할 수 있습니다. `ctx.tool(name)`이 제공되지 않은 이름에
@@ -145,7 +145,7 @@ use ag_ui_server::{Agent, Error, Result, RunContext, ToolCallHandle};
 use serde_json::json;
 
 /// client가 제공한 tool일 때만 call을 엽니다. client가 실행해 주기를 기대하는
-/// tool에 대해 이 agent가 스스로 채택한 규칙입니다. 프로토콜이 강제하는
+/// tool에 대해 이 agent가 스스로 채택한 규칙입니다. protocol이 강제하는
 /// 규칙이 아닙니다.
 fn offered<'a>(ctx: &'a mut RunContext<()>, name: &str) -> Result<ToolCallHandle<'a, ()>> {
     if ctx.tool(name).is_none() {
@@ -217,7 +217,7 @@ fn main() -> ag_ui_server::Result<()> {
 ```
 
 call이 진행 중이고, 상태가 바뀌고, 결과가 그것을 닫습니다. 이 순서야말로 call을 streaming하는
-이유입니다. 이미 끝난 call을 한 번에 알리는 대신 말입니다. 프로토콜이 왜 이를 허용하는지,
+이유입니다. 이미 끝난 call을 한 번에 알리는 대신 말입니다. protocol이 왜 이를 허용하는지,
 그리고 순서를 왜 신경 쓸 만한지는 [shared state](/ag-ui-rust/ko/server/state/)에서 다룹니다.
 
 ## 병렬 call

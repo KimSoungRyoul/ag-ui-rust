@@ -12,7 +12,7 @@ program이 그 agent와 대화하고 있습니다.
 
 :::note
 이 site의 Rust block은 전부 workspace의 test suite가 compile합니다. `README`의
-quickstart와 같습니다. 낡은 코드는 붙여넣어 봐야 아는 것이 아니라 빨간 build로
+quickstart와 같습니다. 낡은 code는 붙여넣어 봐야 아는 것이 아니라 빨간 build로
 드러납니다.
 :::
 
@@ -21,7 +21,7 @@ quickstart와 같습니다. 낡은 코드는 붙여넣어 봐야 아는 것이 �
 Rust **1.85 이상**. workspace가 `rust-version = "1.85"`와 `edition = "2024"`를
 설정합니다. 그 edition을 아는 첫 compiler가 1.85입니다.
 
-목록은 이것이 전부입니다. protobuf compiler도 코드 생성 단계도 없습니다.
+목록은 이것이 전부입니다. protobuf compiler도 code 생성 단계도 없습니다.
 `ag-ui-core`는 `serde`와 `serde_json`에만 의존합니다. 그 위에 쌓이는 crate는
 runtime이 아니라 `futures` primitive를 더합니다. tokio는 `ag-ui-axum`을 쓸 때만
 들어옵니다.

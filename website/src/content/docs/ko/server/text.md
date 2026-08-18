@@ -38,7 +38,7 @@ fn main() -> ag_ui_server::Result<()> {
 ```
 
 message id는 UUID가 아닙니다. run id와 카운터에서 만들어집니다. 위의 `r-msg-1`이 그렇습니다.
-프로토콜은 불투명한 문자열만 요구합니다. 이 crate는 `uuid` 의존성을 두지 않습니다. 그리고
+protocol은 불투명한 문자열만 요구합니다. 이 crate는 `uuid` 의존성을 두지 않습니다. 그리고
 결정적인 id라야 기록한 stream을 diff할 수 있습니다. 직접 정한 id가 필요하면
 `message_with_id`가 받습니다.
 
@@ -131,14 +131,14 @@ fn main() -> ag_ui_server::Result<()> {
 emitter는 unbounded channel에 밀어 넣고 transport가 그것을 비웁니다. 막히는 곳도 없고, 읽는
 쪽을 기다리며 쌓이는 것도 없습니다.
 
-여기서 나오는 실질적 결과는 반갑습니다. agent 코드를 호출하고 나면 그것이 emit한 것은 이미
+여기서 나오는 실질적 결과는 반갑습니다. agent code를 호출하고 나면 그것이 emit한 것은 이미
 전부 큐에 들어가 있습니다. 위의 단언들이 런타임 하나 없이 그냥 `drain()` 호출로 끝나는 이유가
 이것입니다.
 
 ## message 두 개를 동시에 열면 컴파일되지 않습니다
 
 handle은 살아 있는 동안 run context를 가변으로 빌립니다. 그래서 첫 message가 열려 있는 동안
-두 번째를 여는 것은 borrow check 오류입니다. frontend가 나중에 발견하는 프로토콜 위반이
+두 번째를 여는 것은 borrow check 오류입니다. frontend가 나중에 발견하는 protocol 위반이
 아닙니다.
 
 ```rust,compile_fail
@@ -159,9 +159,9 @@ fn interleave(ctx: &mut RunContext<()>) {
 빨개집니다.
 
 :::caution
-안정 버전 rustdoc은 `compile_fail` doctest의 오류 코드를 강제하지 않습니다. 어떤 이유로든 그
+안정 버전 rustdoc은 `compile_fail` doctest의 오류 code를 강제하지 않습니다. 어떤 이유로든 그
 블록이 컴파일에 실패하는지만 봅니다. 오타여도 통과합니다. 그래서 CI는 doctest를
-나이틀리에서도 돌립니다. 나이틀리는 오류 코드를 강제합니다.
+나이틀리에서도 돌립니다. 나이틀리는 오류 code를 강제합니다.
 :::
 
 ## 열려 있는 message가 그래도 할 수 있는 일
@@ -199,7 +199,7 @@ fn main() -> ag_ui_server::Result<()> {
 
 `message.emit(event)`는 그 일반형입니다. message 사이에 적법하게 끼어들 수 있는 순서 없는
 계열 — `STATE_*`, `ACTIVITY_*`, `CUSTOM`, `RAW` — 을 위한 것입니다. 이것으로 두 번째 message를
-여는 것은 프로토콜 위반입니다. [ordering verifier](/ag-ui-rust/ko/server/errors/)가 emit
+여는 것은 protocol 위반입니다. [ordering verifier](/ag-ui-rust/ko/server/errors/)가 emit
 시점에 거부합니다.
 
 handle이 할 수 없는 일은 또 다른 블록을 여는 것입니다. 블록을 열 run context를 쥐고 있지

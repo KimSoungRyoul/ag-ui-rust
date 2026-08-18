@@ -247,9 +247,9 @@ impl Agent for Planner {
 
 ## 타입 시스템이 잡아 주지 않는 규칙 하나
 
-`RunOutcome::Interrupt`는 빈 목록으로도 만들 수 있는데, 프로토콜은 그것을 금지합니다. driver가
+`RunOutcome::Interrupt`는 빈 목록으로도 만들 수 있는데, protocol은 그것을 금지합니다. driver가
 emit 전에 outcome을 검사합니다. 그래서 빈 interrupt 목록은 `RUN_FINISHED`가 아니라 `PROTOCOL`
-코드를 단 `RUN_ERROR`가 됩니다. client가 아무것도 할 수 없는 `RUN_FINISHED` 대신 말입니다.
+code를 단 `RUN_ERROR`가 됩니다. client가 아무것도 할 수 없는 `RUN_FINISHED` 대신 말입니다.
 
 ```rust
 use ag_ui_core::RunOutcome;
@@ -261,7 +261,7 @@ fn main() {
 ```
 
 역직렬화도 이를 강제하지 않습니다. 이것도 일부러 그렇습니다. 결함 있는 생산자가 보낸 엉뚱한 빈
-배열은 로그로 남길 수 있는 프로토콜 오류로 드러납니다. stream을 죽이는 파싱 불가 event가
+배열은 로그로 남길 수 있는 protocol 오류로 드러납니다. stream을 죽이는 파싱 불가 event가
 되지 않습니다.
 
 ## API

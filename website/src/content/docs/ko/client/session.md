@@ -104,7 +104,7 @@ method 하나입니다. [transport](/ag-ui-rust/ko/client/transports/)를
 
 당장의 이득은 실수가 저질러진 자리에서 잡힌다는 것입니다. URL은
 transport를 *만드는 재료*입니다. 그래서 transport 자리에 URL을 넘기는
-코드는 그럴듯해 보입니다.
+code는 그럴듯해 보입니다.
 
 ```rust,compile_fail,E0277
 use ag_ui_client::Session;
@@ -119,7 +119,7 @@ let session = Session::<_>::new("http://localhost:3000/agent", "thread-1");
 생성자에 bound가 없다면 이 error는 첫 `send`에서 납니다. 그 자리는
 보통 다른 파일입니다.
 
-두 번째 이득은 그 아래 모든 코드가 가져갑니다. struct 정의에 붙은
+두 번째 이득은 그 아래 모든 code가 가져갑니다. struct 정의에 붙은
 bound는 전염됩니다. `Session<T, S>`에 `T: Transport`를 붙여 보세요. 그
 type을 이름으로 쓰기만 하는 helper도 전부 같은 bound를 되풀이해야
 합니다. `messages()`만 읽는 helper도 예외가 아닙니다. view 계층은

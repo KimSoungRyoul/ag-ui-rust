@@ -357,7 +357,7 @@ tokio 자체는 wasm으로 컴파일되기 때문입니다. wasm build가 초록
 
 feature flag 각각의 비용은 [feature
 flag](/ag-ui-rust/ko/reference/features/) 문서에 있습니다. 무엇이 어디서
-빌드되는지는 [플랫폼과 MSRV](/ag-ui-rust/ko/reference/platforms/)에
+빌드되는지는 [platform과 MSRV](/ag-ui-rust/ko/reference/platforms/)에
 있습니다.
 
 ## 다음

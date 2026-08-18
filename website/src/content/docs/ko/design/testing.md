@@ -1,5 +1,5 @@
 ---
-title: 테스트
+title: testing
 description: 이 workspace를 test하는 두 개의 명령, 두 번째가 선택이 아닌 이유, 두 개의 QA tier, 그리고 CI job 전체 목록.
 ---
 
@@ -51,7 +51,7 @@ frontmatter와 산문과 `:::note` directive는 손대지 않은 채 통과합�
 
 emit 경로가 동기입니다. 그래서 agent는 runtime 없이, port 없이, client 없이
 test할 수 있습니다. `RunContext::new`는 context와 그 event stream의 받는 쪽 끝을
-함께 줍니다. agent 코드를 호출하고 나면 emit된 것이 이미 queue에 쌓여 있습니다.
+함께 줍니다. agent code를 호출하고 나면 emit된 것이 이미 queue에 쌓여 있습니다.
 `drain`이 그것을 가져옵니다.
 
 ```rust
@@ -140,7 +140,7 @@ cargo test -p ag-ui-e2e --test live_llm -- --ignored --test-threads=1 --nocaptur
 | `AG_UI_LLM_MODEL` | `gemini-2.5-flash-lite` | model id. 고정하며, `*-latest` 별칭은 쓰지 않습니다 |
 | `AG_UI_LLM_API_KEY` | `GEMINI_API_KEY`로 fallback | Bearer token |
 
-harness는 OpenAI 호환 `POST {base}/chat/completions` 모양으로 말합니다. 어느 벤더의
+harness는 OpenAI 호환 `POST {base}/chat/completions` 모양으로 말합니다. 어느 vendor의
 고유 방언도 쓰지 않습니다. 거의 모든 곳이 제공하는 모양이 그것 하나이기
 때문입니다. 같은 세 변수로 Ollama, LM Studio, llama.cpp, vLLM, Groq, Together,
 OpenRouter, OpenAI 자체를 가리킬 수 있습니다.

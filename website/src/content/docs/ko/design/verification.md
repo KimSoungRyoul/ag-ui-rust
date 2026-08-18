@@ -1,11 +1,11 @@
 ---
-title: 검증 체계
+title: verification
 description: event stream을 올바른 형태로 지키는 세 layer. typestate handle, 양쪽 끝의 runtime ordering verifier, 그리고 CI에서 도는 upstream drift check.
 ---
 
 "stream이 올바른 형태다"는 서로 다른 세 개의 주장입니다. 장치도 셋이 필요합니다.
 
-1. **코드가 겹치는 block 두 개를 열 수 없습니다.** type system의 보증이고,
+1. **code가 겹치는 block 두 개를 열 수 없습니다.** type system의 보증이고,
    `compile_fail` doctest가 증명합니다.
 2. **나가는 event는 ordering 규칙을 지킵니다.** runtime state machine입니다.
    server와 client 양쪽에 있고, release build에서도 기본으로 켜져 있습니다.

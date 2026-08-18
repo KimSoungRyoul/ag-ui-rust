@@ -46,16 +46,16 @@ async fn main() {
 ## 배리언트
 
 `ag_ui_server::Error`는 이 crate의 모든 메서드가 반환하는 타입입니다. `Result<T, E = Error>`
-별칭을 통해서 말입니다. 각 배리언트에는 `RUN_ERROR` event에 실리는 안정된 코드가 있습니다.
+별칭을 통해서 말입니다. 각 배리언트에는 `RUN_ERROR` event에 실리는 안정된 code가 있습니다.
 
-| 배리언트 | 코드 | 언제 나오는가 |
+| 배리언트 | code | 언제 나오는가 |
 | --- | --- | --- |
 | `Protocol` | `PROTOCOL` | core 타입이 값을 거부했을 때. 이를테면 interrupt가 없는 `interrupt` outcome |
 | `Json` | `SERIALIZATION` | 상태, tool 인자, tool 결과가 JSON으로 오가지 못할 때 |
 | `Verification` | `PROTOCOL_VIOLATION` | emit된 stream이 ordering 규칙을 어겼을 때 |
 | `Cancelled` | `CANCELLED` | run이 취소되었을 때. 대개 client가 연결을 끊었기 때문 |
 | `Disconnected` | `DISCONNECTED` | 소비자가 event stream을 드롭했을 때 |
-| `Agent` | `AGENT_ERROR` | 여러분의 코드가 실패했을 때. `Error::agent`로 만듭니다 |
+| `Agent` | `AGENT_ERROR` | 여러분의 code가 실패했을 때. `Error::agent`로 만듭니다 |
 
 분기할 일이 가장 많은 둘은 `is_cancelled()`와 `is_disconnected()`입니다. 둘 다 "무언가
 망가졌다"는 뜻이 아닙니다. "그만두라, 아무도 듣고 있지 않다"는 뜻입니다.
@@ -63,7 +63,7 @@ async fn main() {
 이 열거형은 `#[non_exhaustive]`입니다. 이 workspace의 모든 오류 타입이 그렇습니다. `Event`와
 `EventType`은 일부러 그렇게 하지 **않았습니다**. 그 비대칭이 핵심입니다.
 
-새 프로토콜 event는 소비자에게 컴파일 오류여야 *합니다*. `_` 갈래야말로 "새 event가
+새 protocol event는 소비자에게 컴파일 오류여야 *합니다*. `_` 갈래야말로 "새 event가
 도착했다"를 아무 진단도 없는 상태로 만들어 버리는 구문이기 때문입니다. 실패 양상은 반대입니다.
 전체를 빠짐없이 매치하고 싶은 사람은 없습니다. 호출자는 몇 안 되는 배리언트로만 분기하고
 나머지는 흘려보냅니다. 그리고 새로운 실패 양상은 wire 계약의 변경이 아닙니다. 이 논증은
@@ -77,7 +77,7 @@ stream을 polling하는 쪽으로 그대로 unwind됩니다. HTTP에서는 그�
 쓰십시오.
 :::
 
-## 프로토콜 verification
+## protocol verification
 
 borrow checker는 겹치는 message 두 개를 막아 줍니다. 그것이 볼 수 없는 것이 날것의
 `ctx.emit`입니다. 그래서 ordering 상태 기계가 나가는 event를 하나하나 지켜봅니다. 기본으로 켜져
