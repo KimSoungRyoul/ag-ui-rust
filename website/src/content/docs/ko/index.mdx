@@ -1,12 +1,51 @@
 ---
-# Stub, not a translation. Delete the `draft` line below along with the
-# rest of this file when the translation lands: while it is set, Starlight
-# drops this page from production builds and /ko/ serves the English
-# original instead, so a page translated but left marked `draft` would
-# never reach a reader. e2e/src/website.rs already includes this path, and
-# its module docs explain why the file is here before its translation is.
 title: ag-ui-rust
-draft: true
+description: AG-UI protocol을 위한 Rust SDK. agent backend와 agent client를 Rust로 만듭니다.
+template: splash
+hero:
+  tagline: AG-UI protocol을 위한 Rust SDK. agent backend와 agent client를 Rust로 만듭니다.
+  image:
+    file: ../../../assets/logo.svg
+    alt: ''
+  actions:
+    # 이 page의 링크는 모두 site의 base를 손으로 적습니다. frontmatter는
+    # YAML이라 `import.meta.env.BASE_URL`을 끼워 넣을 자리가 없습니다.
+    # Starlight도 hero action을 그냥 `<a href>`로 내보냅니다. base를 풀어 쓴
+    # 쪽이 오히려 안전합니다. starlight-links-validator가 이 링크를 읽고,
+    # 해석되지 않으면 build를 실패시킵니다. `base`가 바뀌면 배포 후 404가
+    # 아니라 여기서 빨간 build로 드러납니다. 다만 문자열 literal에만 그렇게
+    # 할 수 있습니다. 보간된 href는 조용히 건너뜁니다. 아래 card도 풀어 쓴
+    # 이유가 그것입니다.
+    - text: 시작하기
+      link: /ag-ui-rust/ko/start/
+      icon: right-arrow
+    - text: GitHub
+      link: https://github.com/KimSoungRyoul/ag-ui-rust
+      icon: external
+      variant: minimal
 ---
 
-Untranslated. English source: index.mdx
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+<CardGrid>
+	<LinkCard
+		title="Agent serving"
+		href="/ag-ui-rust/ko/server/agent/"
+		description="trait 하나를 구현하면 endpoint가 AG-UI를 말합니다. protocol을 잘못 쓰면 compile 오류입니다. event ordering은 run context를 borrow하는 typestate handle이 강제합니다."
+	/>
+	<LinkCard
+		title="Agent 소비하기"
+		href="/ag-ui-rust/ko/client/session/"
+		description="server와 client가 한 workspace에 있습니다. ag-ui-core, ag-ui-server, ag-ui-client, ag-ui-axum, ag-ui-a2ui입니다. run의 양쪽 끝을 같은 type으로 씁니다."
+	/>
+	<LinkCard
+		title="어디서든 돕니다"
+		href="/ag-ui-rust/ko/reference/platforms/"
+		description="web binding 아래로는 executor를 가리지 않습니다. core와 server와 client는 wasm32-unknown-unknown으로 build됩니다. CI가 이들의 dependency graph에 tokio가 없음을 확인합니다."
+	/>
+	<LinkCard
+		title="명세를 따라갑니다"
+		href="/ag-ui-rust/ko/design/commitments/"
+		description="drift check가 pull request마다 Rust type을 확인합니다. upstream TypeScript schema를 vendor해 둔 snapshot과 대조합니다."
+	/>
+</CardGrid>

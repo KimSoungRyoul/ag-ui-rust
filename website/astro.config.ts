@@ -133,46 +133,46 @@ export default defineConfig({
 							translations: { ko: 'AG-UI 동작 방식' },
 							link: '/start/protocol/',
 						},
-						{ label: 'The crates', translations: { ko: '크레이트 구성' }, link: '/start/crates/' },
+						{ label: 'The crates', translations: { ko: 'crate 구성' }, link: '/start/crates/' },
 					],
 				},
 				{
 					label: 'Serving an agent',
-					translations: { ko: '에이전트 서빙' },
+					translations: { ko: 'agent serving' },
 					items: [
-						{ label: 'The Agent trait', translations: { ko: 'Agent 트레이트' }, link: '/server/agent/' },
-						{ label: 'Streaming text', translations: { ko: '텍스트 스트리밍' }, link: '/server/text/' },
-						{ label: 'Tool calls', translations: { ko: '도구 호출' }, link: '/server/tools/' },
-						{ label: 'Shared state', translations: { ko: '공유 상태' }, link: '/server/state/' },
+						{ label: 'The Agent trait', translations: { ko: 'Agent trait' }, link: '/server/agent/' },
+						{ label: 'Streaming text', translations: { ko: 'text streaming' }, link: '/server/text/' },
+						{ label: 'Tool calls', translations: { ko: 'tool call' }, link: '/server/tools/' },
+						{ label: 'Shared state', translations: { ko: 'shared state' }, link: '/server/state/' },
 						{
 							label: 'Human in the loop',
-							translations: { ko: '사람 개입' },
+							translations: { ko: 'human in the loop' },
 							link: '/server/interrupts/',
 						},
 						{
 							label: 'Errors and cancellation',
-							translations: { ko: '오류와 취소' },
+							translations: { ko: 'error와 cancellation' },
 							link: '/server/errors/',
 						},
-						{ label: 'Serving over HTTP', translations: { ko: 'HTTP로 서빙' }, link: '/server/axum/' },
+						{ label: 'Serving over HTTP', translations: { ko: 'HTTP로 serving' }, link: '/server/axum/' },
 					],
 				},
 				{
 					label: 'Consuming an agent',
-					translations: { ko: '에이전트 소비' },
+					translations: { ko: 'agent 사용' },
 					items: [
-						{ label: 'Sessions', translations: { ko: '세션' }, link: '/client/session/' },
+						{ label: 'Sessions', translations: { ko: 'session' }, link: '/client/session/' },
 						{
 							label: 'The update stream',
-							translations: { ko: '업데이트 스트림' },
+							translations: { ko: 'update stream' },
 							link: '/client/updates/',
 						},
 						{
 							label: 'Rendering a run',
-							translations: { ko: '실행 렌더링' },
+							translations: { ko: 'run rendering' },
 							link: '/client/rendering/',
 						},
-						{ label: 'Transports', translations: { ko: '트랜스포트' }, link: '/client/transports/' },
+						{ label: 'Transports', translations: { ko: 'transport' }, link: '/client/transports/' },
 					],
 				},
 				{
@@ -180,8 +180,8 @@ export default defineConfig({
 					translations: { ko: 'A2UI' },
 					items: [
 						{ label: 'Overview', translations: { ko: '개요' }, link: '/a2ui/' },
-						{ label: 'Authoring surfaces', translations: { ko: '서피스 작성' }, link: '/a2ui/authoring/' },
-						{ label: 'Validation', translations: { ko: '검증' }, link: '/a2ui/validation/' },
+						{ label: 'Authoring surfaces', translations: { ko: 'surface 작성' }, link: '/a2ui/authoring/' },
+						{ label: 'Validation', translations: { ko: 'validation' }, link: '/a2ui/validation/' },
 					],
 				},
 				{
@@ -193,23 +193,23 @@ export default defineConfig({
 							translations: { ko: '설계 원칙' },
 							link: '/design/commitments/',
 						},
-						{ label: 'Verification', translations: { ko: '검증 체계' }, link: '/design/verification/' },
-						{ label: 'Testing', translations: { ko: '테스트' }, link: '/design/testing/' },
+						{ label: 'Verification', translations: { ko: 'verification' }, link: '/design/verification/' },
+						{ label: 'Testing', translations: { ko: 'testing' }, link: '/design/testing/' },
 					],
 				},
 				{
 					label: 'Reference',
-					translations: { ko: '레퍼런스' },
+					translations: { ko: 'reference' },
 					items: [
 						{
 							label: 'Event reference',
-							translations: { ko: '이벤트 레퍼런스' },
+							translations: { ko: 'event reference' },
 							link: '/reference/events/',
 						},
-						{ label: 'Feature flags', translations: { ko: '기능 플래그' }, link: '/reference/features/' },
+						{ label: 'Feature flags', translations: { ko: 'feature flag' }, link: '/reference/features/' },
 						{
 							label: 'Platforms and MSRV',
-							translations: { ko: '플랫폼과 MSRV' },
+							translations: { ko: 'platform과 MSRV' },
 							link: '/reference/platforms/',
 						},
 						{
@@ -235,12 +235,12 @@ export default defineConfig({
 					items: [
 						{
 							label: 'task-board (agent)',
-							translations: { ko: 'task-board (에이전트)' },
+							translations: { ko: 'task-board (agent)' },
 							link: '/examples/task-board/',
 						},
 						{
 							label: 'board-watch (client)',
-							translations: { ko: 'board-watch (클라이언트)' },
+							translations: { ko: 'board-watch (client)' },
 							link: '/examples/board-watch/',
 						},
 					],

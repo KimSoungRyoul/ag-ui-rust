@@ -60,43 +60,46 @@ The link checker fails the build on a link to a page that does not exist *and* o
 a link to a heading anchor that does not exist. Translating a heading changes its
 anchor, so a link into a translated heading has to be updated with it.
 
-## Register
+## Keep the sentences short
 
-Korean technical prose, `합니다`체 — the same plain, direct voice the English
-uses. Not `해요`체, and not the stiff translationese that comes from rendering
-every English clause boundary as a Korean one.
+Shorter than the English, usually. The English here is written to be read
+slowly; Korean carrying the same clause structure reads as translationese, and
+the meaning is what has to survive, not the rhythm.
 
-Established loanwords stay loanwords. `트레이트`, `스트림`, `핸들`, `이벤트`,
-`렌더러` read better to a Rust programmer than a coined native equivalent, and
-the audience for this document is people who already read Rust.
+One idea per sentence. Split a long English sentence into two or three Korean
+ones rather than reproducing its subordinate clauses. Cut every word that is
+doing no work — Korean lets you drop subjects and connectives that English needs,
+so take that.
 
-## Terminology
+`합니다`체 throughout. Not `해요`체, not `한다`체.
 
-Settled, so that five translators do not each pick a different word:
+## Technical terms stay in English
 
-| English | Korean |
-| --- | --- |
-| agent | 에이전트 |
-| run | 실행 |
-| event | 이벤트 |
-| event stream | 이벤트 스트림 |
-| emit | 방출 |
-| handle (RAII) | 핸들 |
-| typestate | 타입스테이트 |
-| borrow checker | 대여 검사기 |
-| ordering (of events) | 순서 |
-| verifier / verification | 검증기 / 검증 |
-| drift check | 드리프트 검사 |
-| transport | 트랜스포트 |
-| session | 세션 |
-| update | 업데이트 |
-| interrupt | 인터럽트 |
-| human in the loop | 사람 개입 |
-| shared state | 공유 상태 |
-| state delta | 상태 델타 |
-| tool call | 도구 호출 |
-| surface (A2UI) | 서피스 |
-| feature flag | 기능 플래그 |
-| doctest | doctest |
-| workspace | 워크스페이스 |
-| crate | 크레이트 |
+Do not translate them, and do not transliterate them into Hangul either. Write
+the English word in Latin script and attach Korean particles to it, which is how
+Korean developers write when they are actually working.
+
+    Good:  emit한 event가 순서대로 도착합니다.
+           borrow checker가 두 번째 handle을 거부합니다.
+           tool call은 client가 실행합니다.
+
+    Bad:   방출한 이벤트가 순서대로 도착합니다.
+           대여 검사기가 두 번째 핸들을 거부합니다.
+           도구 호출은 클라이언트가 실행합니다.
+
+The reader already reads Rust. A coined Korean equivalent makes them translate it
+back before they can use it, and it will not match anything they can search for.
+
+These are the ones a translator is most tempted to convert. Leave every one of
+them as it is written here:
+
+    agent · run · event · event stream · emit · handle · typestate
+    borrow checker · ordering · verifier · verification · drift check
+    transport · session · update · interrupt · human in the loop
+    shared state · state delta · tool call · surface · feature flag
+    doctest · workspace · crate · trait · stream · renderer · client · server
+
+Ordinary words are still Korean. `상태를 바꿉니다`, `순서가 중요합니다`,
+`검증합니다` are fine as plain prose; what must not happen is a *term of art*
+being replaced by an invented Korean one. When you cannot tell which you are
+looking at, keep the English — it is the cheaper mistake.
