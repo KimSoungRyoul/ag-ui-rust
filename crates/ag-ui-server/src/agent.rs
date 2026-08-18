@@ -32,7 +32,7 @@ impl<T> AgentState for T where T: Serialize + DeserializeOwned + Default + Send 
 /// [`ag_ui_client::RemoteAgent`], deliberately spelled differently so that an
 /// agent which calls another agent can import both.
 ///
-/// [`ag_ui_client::RemoteAgent`]: https://docs.rs/ag-ui-client/latest/ag_ui_client/struct.RemoteAgent.html
+/// [`ag_ui_client::RemoteAgent`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_client/agent/struct.RemoteAgent.html
 ///
 /// ```
 /// use ag_ui_core::RunOutcome;

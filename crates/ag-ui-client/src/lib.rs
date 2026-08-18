@@ -71,7 +71,7 @@
 //! [`ag_ui_server::Agent`] is the trait you implement to *be* an agent, and an
 //! agent that calls another agent imports both.
 //!
-//! [`ag_ui_server::Agent`]: https://docs.rs/ag-ui-server/latest/ag_ui_server/trait.Agent.html
+//! [`ag_ui_server::Agent`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/agent/trait.Agent.html
 //!
 //! [`Session`] is the high level: a thread, its accumulated messages, and typed
 //! state. [`session.send(text)`](Session::send) yields [`Update`]s — "this
@@ -128,8 +128,11 @@
 // See `ag_ui_core`'s lib.rs: marks feature-gated items in the rendered docs.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-// The README is the crate's front page on crates.io, so its examples are
-// doctested: a stale one is a red build rather than a bad first impression.
+// `readme = "README.md"` in Cargo.toml makes that file the crate's front page
+// wherever the package is presented, so its examples are doctested: a stale one
+// is a red build rather than a bad first impression. `cfg(doctest)` is what
+// keeps this module out of the rendered docs — it compiles the examples rather
+// than publishing them.
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 mod readme {}

@@ -157,7 +157,7 @@ impl From<RunAgentInput> for RunParams {
 /// `impl Agent for X { … self.upstream: RemoteAgent<_> … }` reads correctly
 /// only because they are spelled differently.
 ///
-/// [`ag_ui_server::Agent`]: https://docs.rs/ag-ui-server/latest/ag_ui_server/trait.Agent.html
+/// [`ag_ui_server::Agent`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/agent/trait.Agent.html
 #[derive(Clone, Debug, Default)]
 pub struct RemoteAgent<T> {
     transport: T,

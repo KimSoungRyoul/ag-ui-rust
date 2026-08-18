@@ -64,7 +64,7 @@
 //! often the right trade, and `examples/board-watch` makes it deliberately and
 //! pins the consequence in a test. It is only a bug when it is an accident.
 //!
-//! [`ag-ui-server`]: https://docs.rs/ag-ui-server
+//! [`ag-ui-server`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/index.html
 
 use std::collections::VecDeque;
 use std::pin::Pin;
