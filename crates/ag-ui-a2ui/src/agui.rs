@@ -1,13 +1,13 @@
-//! Interop with [`ag_ui_core`] (feature `ag-ui`).
+//! Interop with [`ag_ui_core`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/index.html) (feature `ag-ui`).
 //!
 //! A2UI is transport-agnostic and this crate keeps it that way — nothing below
 //! this module knows what AG-UI is. What lives here is the small amount of
 //! glue an agent hosted on AG-UI would otherwise write by hand, twice:
 //!
-//! - [`HistoryMessage`] from an [`ag_ui_core::Message`], so the surface-recovery
+//! - [`HistoryMessage`] from an [`ag_ui_core::Message`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/message/enum.Message.html), so the surface-recovery
 //!   scan can read an AG-UI thread directly.
 //! - [`find_prior_surface_in`], the same scan without the mapping step.
-//! - [`ag_ui_core::Tool`] from a [`ToolDefinition`], so the toolkit's two tool
+//! - [`ag_ui_core::Tool`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/tool/struct.Tool.html) from a [`ToolDefinition`], so the toolkit's two tool
 //!   definitions can be offered on a run.
 //!
 //! Turn the feature off to use A2UI standalone over A2A or MCP; the dependency

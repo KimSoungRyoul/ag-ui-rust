@@ -86,7 +86,7 @@ pub enum Changed {
         run_id: RunId,
     },
     /// `RUN_FINISHED`. An absent outcome is reported as
-    /// [`RunOutcome::Success`], which is what the protocol says it means.
+    /// [`RunOutcome::Success`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/outcome/enum.RunOutcome.html#variant.Success), which is what the protocol says it means.
     RunFinished {
         /// How the run ended.
         outcome: RunOutcome,

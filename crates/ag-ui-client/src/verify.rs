@@ -37,7 +37,7 @@
 //! 7. Everything open must be closed before `RUN_FINISHED`.
 //! 8. An `interrupt` outcome must carry at least one interrupt — the one rule
 //!    the type system cannot express, checked by
-//!    [`RunOutcome::validate`](ag_ui_core::RunOutcome::validate).
+//!    [`RunOutcome::validate`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/outcome/enum.RunOutcome.html#method.validate).
 //!
 //! What is deliberately *not* a rule: that one stream must close before the
 //! next opens. Everything here is keyed by id, exactly as the TypeScript

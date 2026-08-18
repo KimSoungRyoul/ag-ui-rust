@@ -2,7 +2,7 @@
 //!
 //! Everything here happens *before* `RUN_STARTED`. Once the SSE body is open
 //! the status line is already sent, so failures from then on are `RUN_ERROR`
-//! events inside a `200` stream — that is [`ag_ui_server`]'s job, not this
+//! events inside a `200` stream — that is [`ag_ui_server`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/index.html)'s job, not this
 //! module's. What is left is the handful of ways a request can be refused:
 //! a body that is not AG-UI JSON, and an `Accept` header this build cannot
 //! satisfy.
@@ -57,7 +57,7 @@ pub enum Error {
     },
 
     /// The body was JSON, but not a
-    /// [`RunAgentInput`](ag_ui_core::RunAgentInput).
+    /// [`RunAgentInput`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/input/struct.RunAgentInput.html).
     ///
     /// The message is serde's, so it names the field and the offset.
     #[error("the request body is not a valid AG-UI RunAgentInput: {0}")]

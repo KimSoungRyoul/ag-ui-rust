@@ -1,4 +1,4 @@
-//! Reading a [`RunAgentInput`] out of the request.
+//! Reading a [`RunAgentInput`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/input/struct.RunAgentInput.html) out of the request.
 //!
 //! [`AgUiInput`] is a plain axum extractor, so an agent mounted by
 //! [`route_agui`](crate::RouterExt::route_agui) and a hand-written handler that

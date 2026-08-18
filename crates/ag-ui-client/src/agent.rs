@@ -47,6 +47,8 @@ use crate::transport::{HttpTransport, HttpTransportBuilder};
 /// A builder over [`RunAgentInput`]: the two ids are required, everything else
 /// has a sensible empty default. `agent.run(…)` takes anything that converts
 /// into the input, so a hand-built [`RunAgentInput`] works just as well.
+///
+/// [`RunAgentInput`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/input/struct.RunAgentInput.html
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunParams {
     input: RunAgentInput,

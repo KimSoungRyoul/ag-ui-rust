@@ -42,8 +42,8 @@
 #![cfg_attr(
     feature = "ag-ui",
     doc = "- [`agui`] (feature `ag-ui`) — the glue for an agent hosted on AG-UI:",
-    doc = "  history entries from [`ag_ui_core::Message`], toolkit tool definitions as",
-    doc = "  offerable [`ag_ui_core::Tool`]s."
+    doc = "  history entries from [`ag_ui_core::Message`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/message/enum.Message.html), toolkit tool definitions as",
+    doc = "  offerable [`ag_ui_core::Tool`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/tool/struct.Tool.html)s."
 )]
 //!
 //! # Transport

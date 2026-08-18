@@ -1,6 +1,6 @@
 //! The `reqwest`-backed HTTP transport.
 //!
-//! One POST of the [`RunAgentInput`] as JSON, one `text/event-stream` response
+//! One POST of the [`RunAgentInput`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/input/struct.RunAgentInput.html) as JSON, one `text/event-stream` response
 //! decoded by [`crate::transport::sse`]. This module is the only place in the
 //! crate that pulls in an HTTP client, and it sits behind the `http` feature so
 //! that a wasm or custom-transport build never sees it.

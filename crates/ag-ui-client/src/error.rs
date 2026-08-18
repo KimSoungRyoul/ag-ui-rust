@@ -11,7 +11,7 @@ use thiserror::Error;
 pub enum Error {
     /// A frame's payload was not valid JSON, or not a valid [`Event`].
     ///
-    /// [`Event`]: ag_ui_core::Event
+    /// [`Event`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/event/enum.Event.html
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 

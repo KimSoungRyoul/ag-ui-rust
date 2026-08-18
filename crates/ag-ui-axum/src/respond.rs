@@ -3,15 +3,15 @@
 //! Two things happen here that are easy to get wrong.
 //!
 //! **Negotiation is a decision, not a fallback.** [`negotiate`] asks
-//! [`ag_ui_core::encode::media_type`] what to answer with and refuses the
+//! [`ag_ui_core::encode::media_type`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/encode/fn.media_type.html) what to answer with and refuses the
 //! request when the answer is "nothing" — a client that asked for
 //! `application/xml` gets a `406`, not an SSE stream it cannot read.
 //!
 //! **The body owns the run.** Polling the stream *is* running the agent
-//! ([`ag_ui_server::run()`] has no executor of its own), so the response body and
+//! ([`ag_ui_server::run()`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/run/fn.run.html) has no executor of its own), so the response body and
 //! the run have exactly the same lifetime. That is what makes disconnect
 //! handling work: when the client goes away hyper drops the body, and the body
-//! drops a guard that trips the run's [`CancellationToken`]. See
+//! drops a guard that trips the run's [`CancellationToken`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/cancel/struct.CancellationToken.html). See
 //! [`SseResponse::cancellation`].
 
 use std::convert::Infallible;
@@ -113,7 +113,7 @@ impl SseResponse {
     /// Trips `token` when the client disconnects.
     ///
     /// The token to pass is the one the run was built with —
-    /// [`Runner::cancellation_token`](ag_ui_server::Runner::cancellation_token).
+    /// [`Runner::cancellation_token`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/run/struct.Runner.html#method.cancellation_token).
     ///
     /// # How the disconnect is noticed
     ///

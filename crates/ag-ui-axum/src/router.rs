@@ -82,8 +82,8 @@ impl<A> AgentEndpoint<A> {
     ///
     /// # Why a closure and not a transformer
     ///
-    /// A [`StreamTransformer`] takes `&mut self` because a useful one is a
-    /// state machine — [`FilterToolCalls`](ag_ui_server::FilterToolCalls)
+    /// A [`StreamTransformer`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/transform/trait.StreamTransformer.html) takes `&mut self` because a useful one is a
+    /// state machine — [`FilterToolCalls`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/transform/struct.FilterToolCalls.html)
     /// remembers which call ids it dropped. One instance shared across
     /// concurrent runs would leak one run's state into another, so the endpoint
     /// stores the recipe and builds a fresh chain per request.
@@ -102,7 +102,7 @@ impl<A> AgentEndpoint<A> {
 
     /// Echoes the request body back on `RUN_STARTED`.
     ///
-    /// See [`Runner::echo_input`]. Off by default — it is the largest payload
+    /// See [`Runner::echo_input`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/run/struct.Runner.html#method.echo_input). Off by default — it is the largest payload
     /// in the protocol.
     #[must_use]
     pub fn echo_input(mut self, echo: bool) -> Self {

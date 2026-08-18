@@ -199,6 +199,73 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --all-features --no-deps
 
+      # `-D warnings` above does not cover this, which is why it needs its own
+      # step. `--no-deps` cannot emit a path into a crate it is not documenting
+      # and does not say so: a cross-crate intra-doc link silently renders as the
+      # literal text `[Name]`, and the `[text](path)` form silently renders as
+      # `href="path"`, which looks like a link and 404s. Neither is a warning, so
+      # nothing anywhere asked — 31 of them had accumulated across all five
+      # crates, including nine copies of `RunAgentInput`, before anyone looked.
+      #
+      # Two better fixes were measured and rejected; they are recorded here so
+      # nobody re-derives them:
+      #
+      #   * Documenting dependencies (dropping `--no-deps`) resolves every link
+      #     and costs 454M across 142 crate directories instead of 24M across 9 —
+      #     127 other projects' documentation published under our /api/.
+      #   * `--extern-html-root-url` is the mechanism rustdoc provides for exactly
+      #     this, and it is nightly-only: it demands `-Z unstable-options`. This
+      #     repo runs nightly for one check job and says to drop that job if the
+      #     churn stops paying; the published documentation is a larger promise.
+      #
+      # So a reference to one of our own crates is written as an absolute link to
+      # the published rustdoc, and this step keeps it that way. A reference to a
+      # third-party crate stays plain text: that is simply what `--no-deps` does,
+      # and the type is still named.
+      - name: references to our own crates are links, not text
+        run: |
+          dirs=(target/doc/ag_ui_core target/doc/ag_ui_server target/doc/ag_ui_client target/doc/ag_ui_axum target/doc/ag_ui_a2ui)
+
+          # A grep over a directory that does not exist finds nothing, which
+          # would read as a pass. Every failure mode of this check is silent
+          # enough already; refuse to report on a tree that is not all there.
+          for d in "${dirs[@]}"; do
+            if [ ! -d "$d" ]; then
+              echo "::error::$d is missing — the docs build did not produce what this check reads"
+              exit 2
+            fi
+          done
+
+          # Every item this workspace documents, read off the rustdoc filenames
+          # so the check needs no hand-kept list of type names and cannot drift
+          # from the API. `Action` is the one exclusion: we define
+          # `ag_ui_a2ui::message::Action`, and an inlined upstream doc comment
+          # mentions an unrelated `Action::Follow` that would otherwise match. It
+          # is the only collision among 245 names.
+          names=$(find "${dirs[@]}" \
+              \( -name 'struct.*.html' -o -name 'enum.*.html' -o -name 'trait.*.html' \
+                 -o -name 'fn.*.html' -o -name 'type.*.html' \) \
+            | sed -E 's#.*/(struct|enum|trait|fn|type)\.([^./]+)\.html$#\2#' \
+            | grep -vxF 'Action' | sort -u | paste -sd'|' -)
+
+          rc=0
+
+          text=$(grep -rhoE "\[<code>($names)(::[A-Za-z0-9_]+)*</code>\]" "${dirs[@]}" | sort | uniq -c)
+          if [ -n "$text" ]; then
+            echo "$text"
+            echo "::error::the docs name one of our own items without linking to it; use an absolute https://kimsoungryoul.github.io/ag-ui-rust/api/ link"
+            rc=1
+          fi
+
+          href=$(grep -rhoE 'href="ag_ui_[a-z_]*::[^"]*"' "${dirs[@]}" | sort | uniq -c)
+          if [ -n "$href" ]; then
+            echo "$href"
+            echo "::error::those hrefs are Rust paths rather than URLs and will 404; use an absolute https://kimsoungryoul.github.io/ag-ui-rust/api/ link"
+            rc=1
+          fi
+
+          exit $rc
+
   # The same configurations the `features` job checks, documented instead of
   # compiled — because those two jobs between them could not see this class of
   # bug at all. A doc link to an item a feature compiled out is a rustdoc

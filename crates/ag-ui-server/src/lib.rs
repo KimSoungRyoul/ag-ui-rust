@@ -1,7 +1,7 @@
 //! Host an [AG-UI] agent in Rust.
 //!
 //! AG-UI is the protocol between a user-facing application and an agent
-//! backend: a POST carrying [`RunAgentInput`](ag_ui_core::RunAgentInput),
+//! backend: a POST carrying [`RunAgentInput`],
 //! answered by a stream of typed events. This crate is the server half —
 //! implement [`Agent`], hand it to [`run()`], and you have a stream a transport
 //! can serialize. [`ag-ui-axum`] mounts it on a router; nothing here depends on
@@ -107,7 +107,7 @@
 //!
 //! # Human in the loop
 //!
-//! Return [`RunOutcome::Interrupt`](ag_ui_core::RunOutcome::Interrupt) to pause
+//! Return [`RunOutcome::Interrupt`] to pause
 //! a run. The client answers, and the next request carries the answers in
 //! [`RunContext::resume`]:
 //!
@@ -144,6 +144,15 @@
 //!
 //! [AG-UI]: https://docs.ag-ui.com
 //! [`ag-ui-axum`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_axum/index.html
+//
+// `ag-ui-core` items are spelled as absolute links to the published rustdoc
+// rather than as intra-doc paths. `cargo doc --no-deps` — which is what CI and
+// the Pages deploy both run — cannot emit a path into a crate it is not
+// documenting, and it does not warn: a cross-crate intra-doc link silently
+// becomes literal `[text]`, and the `[text](path)` form silently becomes an
+// href of `path`, which renders as a link and 404s. See the `doc-links` job.
+//! [`RunAgentInput`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/input/struct.RunAgentInput.html
+//! [`RunOutcome::Interrupt`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/outcome/enum.RunOutcome.html#variant.Interrupt
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

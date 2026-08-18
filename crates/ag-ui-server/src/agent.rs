@@ -69,7 +69,7 @@ impl<T> AgentState for T where T: Serialize + DeserializeOwned + Default + Send 
 /// agent's last statement.
 pub trait Agent: Send + Sync {
     /// The run's shared state, deserialized from
-    /// [`RunAgentInput::state`](ag_ui_core::RunAgentInput::state) and published
+    /// [`RunAgentInput::state`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/input/struct.RunAgentInput.html#structfield.state) and published
     /// through [`RunContext::set_state`].
     type State: AgentState;
 

@@ -153,7 +153,7 @@ impl<S> RunContext<S> {
     ///
     /// The turn an agent is almost always answering. Non-text parts of a
     /// multimodal message are dropped — see
-    /// [`UserContent::to_text`](ag_ui_core::UserContent::to_text); reach into
+    /// [`UserContent::to_text`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/message/enum.UserContent.html#method.to_text); reach into
     /// [`RunContext::messages`] directly if the images matter.
     ///
     /// `None` when the history holds no user message at all, which is distinct
@@ -209,7 +209,7 @@ impl<S> RunContext<S> {
 
     /// The answer to one interrupt, by its [`Interrupt::id`].
     ///
-    /// [`Interrupt::id`]: ag_ui_core::Interrupt::id
+    /// [`Interrupt::id`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/outcome/struct.Interrupt.html#structfield.id
     pub fn resume_for(&self, interrupt_id: &str) -> Option<&ResumeEntry> {
         self.resume()
             .iter()

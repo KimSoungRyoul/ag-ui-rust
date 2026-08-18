@@ -1,4 +1,4 @@
-//! The driver: an [`Agent`] plus a [`RunAgentInput`] in, a [`Stream`] of
+//! The driver: an [`Agent`] plus a [`RunAgentInput`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/input/struct.RunAgentInput.html) in, a [`Stream`] of
 //! events out.
 //!
 //! The stream owns the agent's future and polls it itself, so this crate needs
