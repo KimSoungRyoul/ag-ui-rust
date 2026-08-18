@@ -3,19 +3,22 @@
 Serve an [AG-UI](https://github.com/ag-ui-protocol/ag-ui) agent from an
 [axum](https://crates.io/crates/axum) router.
 
-[`ag-ui-server`](https://crates.io/crates/ag-ui-server) turns an `Agent` into a stream of
-events and stops there, on purpose: it has no executor and no web framework, so it builds
-for wasm. This crate is the other half — the POST endpoint, the `text/event-stream` body,
-content negotiation, and telling the agent when the client hangs up. It is the only crate
-in the workspace that depends on tokio, axum or tower.
+[`ag-ui-server`](https://github.com/KimSoungRyoul/ag-ui-rust/tree/main/crates/ag-ui-server)
+turns an `Agent` into a stream of events and stops there, on purpose: it has no executor
+and no web framework, so it builds for wasm. This crate is the other half — the POST
+endpoint, the `text/event-stream` body, content negotiation, and telling the agent when the
+client hangs up. It is the only crate in the workspace that depends on tokio, axum or tower.
 
 ```toml
 [dependencies]
-ag-ui-axum = "0.1"
-ag-ui-server = "0.1"
-ag-ui-core = "0.1"
+ag-ui-axum = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui-server = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
 axum = "0.8"
 ```
+
+Not on crates.io — these crates are unpublished, and some of the `ag-ui-*` names there
+belong to other projects, so depend on the repository rather than on a version number.
 
 Mounting an agent is one line, and the router is still an ordinary router:
 

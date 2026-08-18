@@ -8,8 +8,11 @@ surface, and a renderer draws it. This crate is the **agent half** of that excha
 
 ```toml
 [dependencies]
-ag-ui-a2ui = "0.1"
+ag-ui-a2ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
 ```
+
+Not on crates.io — these crates are unpublished, and some of the `ag-ui-*` names there
+belong to other projects, so depend on the repository rather than on a version number.
 
 ```rust
 use ag_ui_a2ui::{catalog::Catalog, message::Component, validate::Validator};

@@ -11,9 +11,12 @@ them, and two levels of API over the top.
 
 ```toml
 [dependencies]
-ag-ui-client = "0.1"
-ag-ui-core = "0.1"
+ag-ui-client = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
 ```
+
+Not on crates.io — these crates are unpublished, and some of the `ag-ui-*` names there
+belong to other projects, so depend on the repository rather than on a version number.
 
 ```rust
 use ag_ui_client::{RunEnd, Session, Update, transport::ReplayTransport};

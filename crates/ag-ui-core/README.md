@@ -12,8 +12,11 @@ clients build on top.
 
 ```toml
 [dependencies]
-ag-ui-core = "0.1"
+ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
 ```
+
+Not on crates.io — these crates are unpublished, and some of the `ag-ui-*` names there
+belong to other projects, so depend on the repository rather than on a version number.
 
 ```rust
 use ag_ui_core::{Event, EventStreamFormatter, SseFormatter, TextMessageRole};

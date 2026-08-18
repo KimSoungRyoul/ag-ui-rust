@@ -5,14 +5,19 @@ Host an [AG-UI](https://github.com/ag-ui-protocol/ag-ui) agent in Rust.
 AG-UI is the protocol between a user-facing application and an agent backend: a POST
 carrying `RunAgentInput`, answered by a stream of typed events. This crate is the server
 half — implement `Agent`, hand it to `run()`, and you have a stream a transport can
-serialize. [`ag-ui-axum`](https://crates.io/crates/ag-ui-axum) mounts it on a router;
-nothing here depends on a web framework, an executor or an LLM client.
+serialize.
+[`ag-ui-axum`](https://github.com/KimSoungRyoul/ag-ui-rust/tree/main/crates/ag-ui-axum)
+mounts it on a router; nothing here depends on a web framework, an executor or an LLM
+client.
 
 ```toml
 [dependencies]
-ag-ui-server = "0.1"
-ag-ui-core = "0.1"
+ag-ui-server = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
 ```
+
+Not on crates.io — these crates are unpublished, and some of the `ag-ui-*` names there
+belong to other projects, so depend on the repository rather than on a version number.
 
 ```rust
 use ag_ui_core::RunOutcome;
