@@ -1,0 +1,51 @@
+/*
+ * Site theme. Almost all of this is the accent ramp — Starlight's greys,
+ * spacing, type scale and layout are already good, and every token replaced
+ * here is one more thing to re-check on every upgrade.
+ *
+ * Starlight derives its whole accented surface from three custom properties,
+ * and it uses them differently in each theme (see
+ * @astrojs/starlight/style/props.css):
+ *
+ *   dark   text-accent = accent-high   bg-accent = accent-high, text accent-low
+ *   light  text-accent = accent        bg-accent = accent,      text white
+ *
+ * So the pair that has to survive a contrast check is not the same pair in both
+ * themes. Hue 18 — rust/ember, the obvious accent for a Rust SDK and far enough
+ * from Starlight's blue that the site does not read as an unconfigured default.
+ * Measured against the backgrounds Starlight actually pairs these with:
+ *
+ *   dark   link text  (accent-high on bg)         10.6:1
+ *   dark   button     (accent-low on accent-high)  8.5:1
+ *   light  link text  (accent on bg)               5.6:1
+ *   light  button     (white on accent)            5.6:1
+ *
+ * All comfortably past WCAG AA for body text. The dark mid-tone, which Starlight
+ * uses for badges and focus rings, lands at 5.5:1 against the page — better than
+ * the 3.9:1 its own default blue manages.
+ */
+
+:root {
+	--sl-color-accent-low: hsl(18, 50%, 17%);
+	--sl-color-accent: hsl(18, 85%, 55%);
+	--sl-color-accent-high: hsl(18, 90%, 80%);
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: hsl(18, 85%, 91%);
+	--sl-color-accent: hsl(18, 92%, 38%);
+	--sl-color-accent-high: hsl(18, 80%, 26%);
+}
+
+/*
+ * Starlight already drops inline code in a heading to the heading's own size,
+ * but keeps its grey background. Nearly every heading on this site is a Rust
+ * path or a crate name, so that background would be the common case rather
+ * than the exception, and a boxed heading fights its own weight. The rule is
+ * scoped the same way Starlight scopes its own, so opted-out content
+ * (`.not-content`) is left alone.
+ */
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) code:not(:where(.not-content *)) {
+	background-color: transparent;
+	padding-inline: 0;
+}

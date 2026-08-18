@@ -12,3 +12,16 @@ target/
 /.idea
 /.vscode
 *.snap.new
+
+# The docs website in website/. `node_modules/` is not anchored for the same
+# reason target/ above is not: pnpm creates one wherever it is run, and none of
+# them is committable. `website/pnpm-lock.yaml` is deliberately absent from this
+# list — the lockfile is what makes a docs build reproducible, so it is tracked.
+node_modules/
+
+# Astro's build output and its generated-types cache. website/ is where both
+# land today, since that is the directory holding astro.config.ts; the bare
+# `.astro/` is the catch-all for the same command run from somewhere else.
+website/dist/
+website/.astro/
+.astro/

@@ -1,0 +1,52 @@
+---
+title: ag-ui-rust
+description: A Rust SDK for the AG-UI protocol — build agent backends and agent clients in Rust.
+template: splash
+hero:
+  tagline: A Rust SDK for the AG-UI protocol — build agent backends and agent clients in Rust.
+  image:
+    file: ../../assets/logo.svg
+    alt: ''
+  actions:
+    # Every link on this page carries the site's base by hand. Frontmatter is
+    # YAML, so there is nothing to interpolate `import.meta.env.BASE_URL` into,
+    # and Starlight emits hero actions as plain `<a href>` without prefixing
+    # anything. Spelling the base out is not the fragile half of the trade —
+    # starlight-links-validator reads these links and fails the build when they
+    # do not resolve, so a change to `base` shows up as a red build here rather
+    # than as a 404 after deploy. It can only do that for literal strings; an
+    # interpolated href is skipped silently, which is why the cards below are
+    # written out too.
+    - text: Get started
+      link: /ag-ui-rust/start/
+      icon: right-arrow
+    - text: GitHub
+      link: https://github.com/KimSoungRyoul/ag-ui-rust
+      icon: external
+      variant: minimal
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+<CardGrid>
+	<LinkCard
+		title="Serve an agent"
+		href="/ag-ui-rust/server/agent/"
+		description="Implement one trait and the endpoint speaks AG-UI. Protocol misuse is a compile error: event ordering is enforced by typestate handles that borrow the run context."
+	/>
+	<LinkCard
+		title="Consume an agent"
+		href="/ag-ui-rust/client/session/"
+		description="Server and client live in one workspace — ag-ui-core, ag-ui-server, ag-ui-client, ag-ui-axum and ag-ui-a2ui — so both ends of a run are written against the same types."
+	/>
+	<LinkCard
+		title="Runs anywhere"
+		href="/ag-ui-rust/reference/platforms/"
+		description="Executor-agnostic below the web binding. Core, server and client build for wasm32-unknown-unknown, and CI asserts that tokio is absent from their dependency graphs."
+	/>
+	<LinkCard
+		title="Tracks the spec"
+		href="/ag-ui-rust/design/commitments/"
+		description="A drift check compares the Rust types against a vendored snapshot of the upstream TypeScript schemas on every pull request."
+	/>
+</CardGrid>

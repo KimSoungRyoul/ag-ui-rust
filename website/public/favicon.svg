@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="ag-ui-rust">
+  <!--
+    The site logo (src/assets/logo.svg) redrawn for a browser tab: heavier
+    strokes and a tighter margin, because the mark is shown at 16px there and
+    the hairlines of the full-size version disappear.
+
+    Kept as a separate file rather than reused, since `public/` is copied
+    verbatim while `src/assets/` goes through Astro's asset pipeline. If the
+    mark changes, both files have to change.
+  -->
+  <style>
+    svg { color: #1a1a1e; }
+    @media (prefers-color-scheme: dark) { svg { color: #f4f4f5; } }
+  </style>
+  <g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 7v18" />
+    <path d="M12 9l7 7-7 7" />
+    <path d="M23 12.5l3.5 3.5-3.5 3.5" />
+  </g>
+</svg>
