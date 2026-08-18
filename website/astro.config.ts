@@ -92,6 +92,21 @@ export default defineConfig({
 					// red build, not a warning nobody reads. Explicit rather than left
 					// to the default, because the value is what the CI gate depends on.
 					failOnError: true,
+					// A Korean page linking to a page that has not been translated
+					// yet is not an error. Starlight serves the English text under
+					// its own "not yet translated" notice at that URL, which is a
+					// working page and a deliberate feature; left at its default of
+					// `true`, this plugin rejects the link anyway, and the whole
+					// site then has to be translated atomically or not linked
+					// across at all. Every new English page would owe a Korean one
+					// before anything Korean could point at it, which is the kind
+					// of tax that ends with someone deleting the check.
+					//
+					// Verified this does not blunt the gate: with it off, a link to
+					// a page that exists in neither locale still fails, and so does
+					// a link to a heading anchor that does not exist. What it
+					// accepts is exactly the fallback case.
+					errorOnFallbackPages: false,
 					// The rustdoc at /ag-ui-rust/api/ is injected at deploy time rather
 					// than built by Astro, so to this plugin the whole directory is
 					// simply missing and any prose link into it is an error. The
