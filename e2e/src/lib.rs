@@ -27,3 +27,7 @@ pub mod llm;
 // The documentation site's Rust snippets, held to the same standard as the
 // README's. See the module's own docs for why the list of pages is written out.
 mod website;
+
+// The agent skills' Rust snippets, held to the same standard again — and for a
+// sharper reason, since their reader is a model rather than a person.
+mod skills;

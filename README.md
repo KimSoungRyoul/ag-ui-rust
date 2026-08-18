@@ -77,6 +77,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Both snippets are compiled by the test suite (`e2e/src/lib.rs` doctests this file), so a
 stale quickstart is a red build.
 
+## Agent skills
+
+`skills/` teaches a coding agent this SDK: the `Agent` trait and its typestate emitters,
+sessions and the update stream, and that these crates are a git dependency rather than the
+similarly-named crates.io ones. Two channels, one source.
+
+Claude Code, as a plugin — namespaced, and `/plugin update` keeps it current:
+
+```text
+/plugin marketplace add KimSoungRyoul/ag-ui-rust
+/plugin install ag-ui-rust@ag-ui-rust
+```
+
+Codex, Cursor, OpenCode and the rest, written into the project (`-g` for the user directory):
+
+```sh
+npx skills add KimSoungRyoul/ag-ui-rust
+```
+
+Every Rust block in a skill is compiled by `e2e/src/skills.rs`, exactly as this README's
+quickstart and the documentation site's pages are, so a skill that has gone stale is a red
+build. That matters more here than it does on the site: the reader is a model, and a model
+handed a plausible wrong signature does not stop to check it.
+
 ## Design commitments
 
 **The `Agent` trait is the boundary.** The .NET SDK builds on `Microsoft.Extensions.AI`
