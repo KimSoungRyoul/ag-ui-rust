@@ -22,24 +22,50 @@
 //! - [`binding`] — JSON Pointer resolution, template scopes, and the
 //!   `formatString` interpolation grammar, so an agent can check its own
 //!   bindings before shipping them.
-//! - [`toolkit`] (feature `toolkit`) — building ops, negotiating a catalog,
-//!   assembling prompts, parsing a model's output as it streams, recovering a
-//!   surface from conversation history, and the validate-and-retry loop around
-//!   a generating model.
-//! - [`agui`] (feature `ag-ui`) — the glue for an agent hosted on AG-UI:
-//!   history entries from [`ag_ui_core::Message`], toolkit tool definitions as
-//!   offerable [`ag_ui_core::Tool`]s.
+// The bullets below name modules that only exist behind their feature, and a
+// doc link to a module that is not compiled is a rustdoc *error*, not a dead
+// link — so `cargo doc --no-default-features` failed on this block for as long
+// as it existed. Gating the text rather than deleting the links keeps every
+// link live in the `--all-features` build that docs.rs and the docs site
+// publish, and keeps the feature-off build documentable, which matters because
+// that build is exactly what this crate advertises for A2A and MCP. The
+// `doc-features` job in CI is what stops it drifting back; nothing caught it
+// before, because the docs job only ever ran `--all-features` and the features
+// job used `cargo check`, which does not resolve intra-doc links at all.
+#![cfg_attr(
+    feature = "toolkit",
+    doc = "- [`toolkit`] (feature `toolkit`) — building ops, negotiating a catalog,",
+    doc = "  assembling prompts, parsing a model's output as it streams, recovering a",
+    doc = "  surface from conversation history, and the validate-and-retry loop around",
+    doc = "  a generating model."
+)]
+#![cfg_attr(
+    feature = "ag-ui",
+    doc = "- [`agui`] (feature `ag-ui`) — the glue for an agent hosted on AG-UI:",
+    doc = "  history entries from [`ag_ui_core::Message`], toolkit tool definitions as",
+    doc = "  offerable [`ag_ui_core::Tool`]s."
+)]
 //!
 //! # Transport
 //!
 //! A2UI says nothing about how messages reach the renderer, and everything
-//! outside [`agui`] keeps it that way — turn the `ag-ui` feature off and the
-//! dependency goes with it, leaving a crate you can drive over A2A or MCP.
+//! outside one module keeps it that way — turn the `ag-ui` feature off and the
+//! dependency goes with it, leaving a crate you can drive over A2A or MCP. That
+//! module is
+#![cfg_attr(feature = "ag-ui", doc = "[`agui`].")]
+#![cfg_attr(
+    not(feature = "ag-ui"),
+    doc = "`agui`, and this build does not have it."
+)]
 //! What every toolkit does in practice is wrap a batch of operations in a
 //! `{"a2ui_operations": [...]}` envelope and let the frontend sniff for that
-//! key; [`toolkit::envelope`] produces exactly that, as a plain JSON string
-//! that fits in an AG-UI assistant message, an A2A data part, or an MCP tool
-//! result without further wrapping.
+//! key.
+#![cfg_attr(
+    feature = "toolkit",
+    doc = "[`toolkit::envelope`] produces exactly that, as a plain JSON string that",
+    doc = "fits in an AG-UI assistant message, an A2A data part, or an MCP tool result",
+    doc = "without further wrapping."
+)]
 //!
 //! # Conformance
 //!

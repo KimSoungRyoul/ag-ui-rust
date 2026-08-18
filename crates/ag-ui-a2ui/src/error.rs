@@ -26,7 +26,14 @@ pub enum Error {
     /// A syntactically well-formed payload that violates A2UI semantics.
     ///
     /// Carries the full machine-readable error list so a caller can feed it
-    /// straight back to a model; see [`crate::toolkit::recovery`].
+    #[cfg_attr(
+        feature = "toolkit",
+        doc = "straight back to a model; see [`crate::toolkit::recovery`]."
+    )]
+    #[cfg_attr(
+        not(feature = "toolkit"),
+        doc = "straight back to a model; see `toolkit::recovery`, behind the `toolkit` feature."
+    )]
     #[error("A2UI validation failed with {} error(s):\n{errors}", errors.len())]
     Validation {
         /// The full machine-readable error list.

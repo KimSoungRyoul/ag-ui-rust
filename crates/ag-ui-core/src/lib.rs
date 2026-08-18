@@ -39,7 +39,17 @@
 //!
 //! # Features
 //!
-//! - `sse` *(default)* — [`SseFormatter`] and `text/event-stream` framing.
+// A feature list is the one place a doc link is guaranteed to name something
+// the current build may not have. Gated so the link stays live where the item
+// exists — see `doc-features` in CI.
+#![cfg_attr(
+    feature = "sse",
+    doc = "- `sse` *(default)* — [`SseFormatter`] and `text/event-stream` framing."
+)]
+#![cfg_attr(
+    not(feature = "sse"),
+    doc = "- `sse` *(default, off in this build)* — `SseFormatter` and `text/event-stream` framing."
+)]
 //! - `protobuf` — the binary transport's media type and a documented stub; the
 //!   `encode::protobuf` module explains why there is no encoder.
 //! - `schemars` — derives `schemars::JsonSchema` on the public types.

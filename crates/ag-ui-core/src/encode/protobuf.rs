@@ -30,7 +30,15 @@
 //!
 //! # What to do instead
 //!
-//! Use [`sse`](crate::encode::sse), which carries all 33 event types. Revisit
+#![cfg_attr(
+    feature = "sse",
+    doc = "Use [`sse`](crate::encode::sse), which carries all 33 event types. Revisit"
+)]
+#![cfg_attr(
+    not(feature = "sse"),
+    doc = "Use the `sse` module — enable the `sse` feature — which carries all 33",
+    doc = "event types. Revisit"
+)]
 //! this module when upstream `events.proto` covers the full set.
 
 use crate::encode::{EventStreamFormatter, PROTOBUF_MEDIA_TYPE};

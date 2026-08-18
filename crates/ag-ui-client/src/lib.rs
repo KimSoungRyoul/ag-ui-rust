@@ -116,9 +116,21 @@
 //!
 //! # Features
 //!
-//! - `http` *(default)* — [`HttpTransport`](transport::HttpTransport) and
-//!   [`HttpAgent`], backed by `reqwest`. Disable it for wasm or for a custom
-//!   transport, and the dependency disappears with it.
+// Gated because a feature list names items the current build may not have, and
+// a link to one of those is a rustdoc error rather than a dead link. See
+// `doc-features` in CI.
+#![cfg_attr(
+    feature = "http",
+    doc = "- `http` *(default)* — [`HttpTransport`](transport::HttpTransport) and",
+    doc = "  [`HttpAgent`], backed by `reqwest`. Disable it for wasm or for a custom",
+    doc = "  transport, and the dependency disappears with it."
+)]
+#![cfg_attr(
+    not(feature = "http"),
+    doc = "- `http` *(default, off in this build)* — `transport::HttpTransport` and",
+    doc = "  `HttpAgent`, backed by `reqwest`. Off, as here, the dependency disappears",
+    doc = "  with it and you bring your own transport."
+)]
 //!
 //! [AG-UI]: https://docs.ag-ui.com
 

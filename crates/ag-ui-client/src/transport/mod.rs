@@ -8,7 +8,14 @@
 //! stream of [`Event`]s. Implementations shipped here:
 //!
 //! - [`sse`] — the `text/event-stream` decoder every HTTP transport needs.
-//! - [`http`] *(feature `http`)* — [`HttpTransport`], backed by `reqwest`.
+#![cfg_attr(
+    feature = "http",
+    doc = "- [`http`] *(feature `http`)* — [`HttpTransport`], backed by `reqwest`."
+)]
+#![cfg_attr(
+    not(feature = "http"),
+    doc = "- `http` *(feature `http`, off in this build)* — `HttpTransport`, backed by `reqwest`."
+)]
 //! - [`replay`] — [`ReplayTransport`], which serves a scripted list of events
 //!   and records what was sent to it. Tests use it; so does the doc example.
 //!

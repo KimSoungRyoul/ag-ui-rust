@@ -1,7 +1,15 @@
 //! Wire encoding for the event stream.
 //!
-//! [`EventStreamFormatter`] is the abstraction a transport implements;
-//! [`sse::SseFormatter`] is the one every AG-UI implementation supports.
+//! [`EventStreamFormatter`] is the abstraction a transport implements.
+#![cfg_attr(
+    feature = "sse",
+    doc = "[`sse::SseFormatter`] is the one every AG-UI implementation supports."
+)]
+#![cfg_attr(
+    not(feature = "sse"),
+    doc = "`sse::SseFormatter` is the one every AG-UI implementation supports, and the",
+    doc = "`sse` feature is off in this build."
+)]
 //!
 //! ```
 //! # #[cfg(feature = "sse")] {

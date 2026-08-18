@@ -66,7 +66,14 @@ impl AgentMessage {
     /// `createSurface`: allocate a surface and fix its `catalogId`.
     ///
     /// Re-creating a `surfaceId` that already exists is an error per spec; see
-    /// [`crate::toolkit::ops::assemble_ops`], which omits this message when the
+    #[cfg_attr(
+        feature = "toolkit",
+        doc = "[`crate::toolkit::ops::assemble_ops`], which omits this message when the"
+    )]
+    #[cfg_attr(
+        not(feature = "toolkit"),
+        doc = "`toolkit::ops::assemble_ops` (behind the `toolkit` feature), which omits this message when the"
+    )]
     /// intent is to update an existing surface.
     pub fn create_surface(surface_id: impl Into<String>, catalog_id: impl Into<String>) -> Self {
         Self::new(AgentPayload::CreateSurface(CreateSurface {

@@ -143,7 +143,14 @@ impl From<RunAgentInput> for RunParams {
 
 /// A remote agent, over any [`Transport`].
 ///
-/// [`HttpAgent`] is this over HTTP; the type is generic so that a wasm
+#[cfg_attr(
+    feature = "http",
+    doc = "[`HttpAgent`] is this over HTTP; the type is generic so that a wasm"
+)]
+#[cfg_attr(
+    not(feature = "http"),
+    doc = "`HttpAgent` (feature `http`) is this over HTTP; the type is generic so that a wasm"
+)]
 /// transport, an in-process agent, or a recorded fixture substitutes without
 /// anything above noticing.
 ///

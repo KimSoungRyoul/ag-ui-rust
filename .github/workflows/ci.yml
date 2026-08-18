@@ -199,6 +199,40 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --all-features --no-deps
 
+  # The same configurations the `features` job checks, documented instead of
+  # compiled — because those two jobs between them could not see this class of
+  # bug at all. A doc link to an item a feature compiled out is a rustdoc
+  # *error*, not a dead link; `cargo check` never resolves doc links, and the
+  # `docs` job only ever builds `--all-features`, which is the one configuration
+  # where every gated target exists. So nothing asked the question, and 17 such
+  # links had accumulated across core, client and a2ui by the time anything did.
+  #
+  # Mirrors `features` deliberately: if the two disagree about which
+  # configurations are supported, one of them is wrong. Two omissions, both
+  # because they buy nothing here — `--all-features` (the `docs` job above
+  # already builds it, and it cannot exercise a gated doc link) and
+  # `ag-ui-axum` (no features to vary).
+  doc-features:
+    name: docs (feature matrix)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps -p ag-ui-core --no-default-features
+      - run: cargo doc --no-deps -p ag-ui-core --no-default-features --features sse
+      - run: cargo doc --no-deps -p ag-ui-core --no-default-features --features protobuf
+      - run: cargo doc --no-deps -p ag-ui-core --no-default-features --features schemars
+      - run: cargo doc --no-deps -p ag-ui-core --no-default-features --features utoipa
+      - run: cargo doc --no-deps -p ag-ui-server --no-default-features
+      - run: cargo doc --no-deps -p ag-ui-client --no-default-features
+      - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features
+      - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features toolkit
+      - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features ag-ui
+
   # Every published crate must carry the metadata and files crates.io needs, and
   # must not ship anything it should not. `--list` is offline and does not
   # publish; it is the cheapest way to notice a README that stopped being
