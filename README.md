@@ -4,8 +4,14 @@ A Rust SDK for the [AG-UI protocol](https://docs.ag-ui.com) — build agent back
 
 AG-UI standardises how an AI agent talks to a user-facing application: a POST carrying
 `RunAgentInput`, answered by a stream of typed events. Official SDKs exist for TypeScript,
-Python, and .NET. Rust has a community SDK, but it is client-only and has drifted from the
-spec. This project fills the gap, with the server story as the priority.
+Python, and .NET. Rust's is a
+[community SDK](https://github.com/ag-ui-protocol/ag-ui/tree/main/sdks/community/rust) that
+consumes an agent but cannot host one, and that stopped tracking the spec: it declares 24 of
+the protocol's 33 event types, so a `REASONING_*` or `ACTIVITY_*` event ends a run rather
+than being skipped, and it carries no `RunFinished.outcome`, so a run cannot pause for a
+human at all. Independent Rust takes have appeared since, so this is not the only option;
+`docs/DESIGN.md` sets out what this one holds itself to instead. The server story is the
+priority here.
 
 ## Crates
 

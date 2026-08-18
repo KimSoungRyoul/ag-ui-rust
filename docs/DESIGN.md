@@ -9,9 +9,11 @@ no CODEOWNERS entry for it, so nobody has merge authority. As of August 2026 fou
 with zero reviews, including a server crate (#972, +5,916 lines) open since January. The core
 team acknowledged the situation on issue #2256.
 
-The concrete result: `ag-ui-core 0.1.0` declares 24 event variants against a spec with 32, is
-missing the entire `REASONING_*` family and both `ACTIVITY_*` events, and has no
-`RunFinished.outcome` field — which means human-in-the-loop is not expressible at all.
+The concrete result: `ag-ui-core 0.1.0` declares 24 event variants against a spec with 33 —
+missing nine, the whole `REASONING_*` family and both `ACTIVITY_*` events — and has no
+`RunFinished.outcome` field, which means human-in-the-loop is not expressible at all. An
+unknown `type` does not degrade to "ignore it": the enum is `#[serde(tag = "type")]` with no
+fallback, so the event fails to deserialize and the run stops there.
 
 That vacuum has since drawn other answers. As of August 2026 crates.io carries several
 independent Rust takes on AG-UI, and more than one of them can host an agent. An earlier draft
