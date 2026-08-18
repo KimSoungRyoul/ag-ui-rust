@@ -1,0 +1,25 @@
+{
+  "name": "ag-ui-rust",
+  "description": "Agent skills for ag-ui-rust — the Rust SDK for the AG-UI protocol.",
+  "owner": {
+    "name": "KimSoungRyoul",
+    "email": "kimsoungryoul@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "ag-ui-rust",
+      "source": "./",
+      "description": "Build AG-UI agent backends and agent clients in Rust: the Agent trait and its typestate emitters, sessions and the update stream, and how to refresh the skills when the SDK moves.",
+      "version": "0.1.0",
+      "author": {
+        "name": "KimSoungRyoul",
+        "url": "https://github.com/KimSoungRyoul"
+      },
+      "homepage": "https://kimsoungryoul.github.io/ag-ui-rust/",
+      "repository": "https://github.com/KimSoungRyoul/ag-ui-rust",
+      "license": "MIT",
+      "keywords": ["ag-ui", "agent", "llm", "protocol", "rust", "axum", "a2ui"],
+      "category": "development"
+    }
+  ]
+}
