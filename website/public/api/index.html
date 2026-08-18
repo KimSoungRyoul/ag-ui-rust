@@ -1,0 +1,201 @@
+<!doctype html>
+<!--
+	The landing page for /ag-ui-rust/api/.
+
+	`cargo doc --workspace` writes one directory per crate and no top-level
+	index.html — verified against this workspace: `target/doc/` came back with
+	ag_ui_core/, ag_ui_server/ and friends, plus crates.js and static.files/, and
+	nothing to open. rustdoc only emits a root index.html when it documents a
+	single crate. Without this file /ag-ui-rust/api/ is a 404 and the sidebar's
+	"API docs (rustdoc)" entry points at nothing.
+
+	Astro copies public/ into dist/ verbatim, so this lands at dist/api/index.html
+	during `pnpm build` and the deploy workflow merges the rustdoc output around
+	it. It is deliberately plain rather than a copy of the Starlight theme: one
+	click later the reader is inside rustdoc's own chrome anyway, and a near-miss
+	imitation of a theme it is about to leave reads worse than something that
+	never pretended.
+
+	`--workspace` also documents the four members carrying `publish = false` —
+	xtask, ag_ui_e2e, task_board, board_watch. They deploy either way, so the
+	footnote after the list links them rather than leaving them reachable but
+	unacknowledged: two are the example programs the guide sends people to read,
+	and a search engine will land someone on /api/xtask/ regardless of what this
+	page admits to. It is a footnote and should stay one — the five crates above
+	are what a reader came here for.
+
+	Do not call those five "published", which an earlier version of this page did
+	in three places. They are this SDK's public API surface, and that is the only
+	distinction this page should draw. The `ag-ui-*` names on crates.io are not
+	ours: `ag-ui-core` there is the stalled community SDK docs/DESIGN.md opens by
+	taking apart — 24 event variants against a spec with 32, no `REASONING_*` at
+	all — so a reader who believes "published" and runs `cargo add ag-ui-core`
+	installs that instead of this, sent there by our own API index. Say nothing
+	about crates.io in either direction; publishing is on hold by a deliberate
+	decision, and a promise about it is not this page's to make.
+-->
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>ag-ui-rust — API documentation</title>
+		<link rel="icon" href="/ag-ui-rust/favicon.svg" type="image/svg+xml" />
+		<style>
+			/* `color-scheme` is what makes the scrollbars and the UA's own defaults
+			   follow the reader's theme; the custom properties below only cover
+			   what this page paints itself. */
+			:root {
+				color-scheme: light dark;
+				--bg: #ffffff;
+				--fg: #1b1b1f;
+				--muted: #55555f;
+				--rule: #d9d9e0;
+				--card: #f7f7f9;
+				--link: #0b57c2;
+			}
+			@media (prefers-color-scheme: dark) {
+				:root {
+					--bg: #16161a;
+					--fg: #ececf1;
+					--muted: #a3a3ad;
+					--rule: #303038;
+					--card: #1e1e24;
+					--link: #82b4ff;
+				}
+			}
+			body {
+				margin: 0 auto;
+				padding: 3rem 1.25rem 4rem;
+				max-width: 46rem;
+				background: var(--bg);
+				color: var(--fg);
+				font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+				line-height: 1.6;
+			}
+			h1 {
+				margin: 0 0 0.25rem;
+				font-size: 1.6rem;
+			}
+			.lede {
+				margin: 0 0 2rem;
+				color: var(--muted);
+			}
+			ul {
+				list-style: none;
+				margin: 0;
+				padding: 0;
+			}
+			li + li {
+				margin-top: 0.75rem;
+			}
+			a {
+				color: var(--link);
+			}
+			li a {
+				display: block;
+				padding: 0.9rem 1.1rem;
+				border: 1px solid var(--rule);
+				border-radius: 0.5rem;
+				background: var(--card);
+				color: inherit;
+				text-decoration: none;
+			}
+			li a:hover,
+			li a:focus-visible {
+				border-color: var(--link);
+			}
+			li code {
+				font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+				font-size: 0.95em;
+				font-weight: 600;
+				color: var(--link);
+			}
+			li p {
+				margin: 0.2rem 0 0;
+				color: var(--muted);
+				font-size: 0.92rem;
+			}
+			/* The footnote about the internal workspace members. Muted and a
+			   size down from the cards on purpose — it should read as an aside to
+			   the list above, not as a second section competing with it. */
+			.also {
+				margin: 1.5rem 0 0;
+				color: var(--muted);
+				font-size: 0.88rem;
+			}
+			footer {
+				margin-top: 2.5rem;
+				padding-top: 1.25rem;
+				border-top: 1px solid var(--rule);
+				color: var(--muted);
+				font-size: 0.9rem;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>ag-ui-rust API documentation</h1>
+		<p class="lede">rustdoc for the SDK's public API, built with all features enabled.</p>
+
+		<ul>
+			<li>
+				<a href="ag_ui_core/index.html">
+					<code>ag-ui-core</code>
+					<p>Core protocol types, events, and wire encoding for the AG-UI protocol.</p>
+				</a>
+			</li>
+			<li>
+				<a href="ag_ui_server/index.html">
+					<code>ag-ui-server</code>
+					<p>
+						Server-side runtime for hosting AG-UI agents: agent trait, typestate event
+						emitters, state deltas, and protocol verification. Executor-agnostic.
+					</p>
+				</a>
+			</li>
+			<li>
+				<a href="ag_ui_client/index.html">
+					<code>ag-ui-client</code>
+					<p>
+						Client-side AG-UI runtime: consume a remote agent's event stream and
+						materialize messages and state.
+					</p>
+				</a>
+			</li>
+			<li>
+				<a href="ag_ui_axum/index.html">
+					<code>ag-ui-axum</code>
+					<p>
+						Axum binding for AG-UI agents: one router extension mounts the canonical
+						POST + SSE endpoint.
+					</p>
+				</a>
+			</li>
+			<li>
+				<a href="ag_ui_a2ui/index.html">
+					<code>ag-ui-a2ui</code>
+					<p>
+						A2UI (Agent-to-UI) protocol types, semantic validator, and agent-side
+						authoring toolkit.
+					</p>
+				</a>
+			</li>
+		</ul>
+
+		<p class="also">
+			The rest of the workspace is documented here too. None of it is part of
+			the SDK's public API and none of it is meant to be built against: the
+			<a href="task_board/index.html">task-board</a> and
+			<a href="board_watch/index.html">board-watch</a> example programs that the
+			guide walks through, the <a href="ag_ui_e2e/index.html">ag-ui-e2e</a>
+			conformance suite, and the <a href="xtask/index.html">xtask</a> build tool.
+		</p>
+
+		<footer>
+			<!-- The base is written out rather than interpolated: this file is copied
+			     verbatim by Astro and never sees `import.meta.env.BASE_URL`. -->
+			<a href="/ag-ui-rust/">&larr; Back to the guide</a>
+			&nbsp;&middot;&nbsp;
+			<a href="https://github.com/KimSoungRyoul/ag-ui-rust">GitHub</a>
+		</footer>
+	</body>
+</html>

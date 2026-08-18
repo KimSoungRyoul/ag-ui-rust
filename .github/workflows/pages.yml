@@ -1,0 +1,203 @@
+name: Pages
+
+# The guide in website/ and the workspace's rustdoc are one deployment, not two.
+# Starlight's sidebar links "API docs (rustdoc)" at /api/, and pages that cite a
+# type link into it, so a deploy that shipped only the Astro build would leave
+# every one of those links 404ing. Both halves are therefore built in the same
+# job and the rustdoc is folded into the Astro output before anything is
+# uploaded — there is no arrangement here where one can be published without the
+# other.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Only what the build needs. The two privileges that actually publish —
+# `pages: write` and the OIDC token `deploy-pages` trades for a deployment —
+# are granted on the deploy job alone, so nothing a pull request can reach is
+# ever running with them. GitHub already downgrades `pages: write` to read for a
+# fork's token, but that is a property of forks rather than of this workflow;
+# this is the part that holds for branch pushes too.
+permissions:
+  contents: read
+
+concurrency:
+  # Keyed by ref rather than a single global "pages" group. A shared group would
+  # make every pull-request build queue behind main's deploy for no reason, and
+  # only main deploys, so the deploying group is `pages-refs/heads/main` and it
+  # is serialised against itself — which is the race that matters, two deploys
+  # overlapping and publishing the older artifact last.
+  group: pages-${{ github.ref }}
+  # Superseded pull-request builds are worth cancelling. A deploy in flight is
+  # not: cancelling one part-way through can leave the live site serving a
+  # partial upload, and the next push is only minutes away regardless.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Runs on every trigger, including pull requests. A pull request cannot
+  # publish — see the deploy job's `if` — but it does everything up to and
+  # including packing the artifact, so a change that breaks the docs build is
+  # red on the pull request rather than after it has landed on main.
+  build:
+    name: build (site + rustdoc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # NOT the default shallow clone. astro.config.ts sets Starlight's
+          # `lastUpdated: true`, which shells out to `git log -1` per page at
+          # build time to find when each one last changed. Under `fetch-depth: 1`
+          # there is exactly one commit in the history, so every page in the site
+          # reports the same "Last updated" — the day of the deploy — and the
+          # dates silently become noise. Full history is the price of the
+          # feature.
+          fetch-depth: 0
+
+      # pnpm before setup-node, not after. `cache: pnpm` below asks setup-node to
+      # locate the pnpm store, which it does by running pnpm; with the order
+      # reversed the step fails outright with "Unable to locate executable file:
+      # pnpm". The version is pinned here rather than read from a
+      # `packageManager` field because website/package.json does not carry one,
+      # and website/pnpm-lock.yaml is lockfileVersion 9.0 — which pnpm 9 writes
+      # and older majors cannot read.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 24, the active LTS line. Astro 7 requires >= 22.12.0, so this
+          # clears the floor with room to spare; development happens on Node 26,
+          # which is still Current and will not be LTS until October 2026, and CI
+          # is the wrong place to be early. Pinned to a major so a patch release
+          # cannot change what is deployed without a commit.
+          node-version: 24
+          cache: pnpm
+          # The lockfile is not at the repository root, and without this the
+          # cache silently never hits.
+          cache-dependency-path: website/pnpm-lock.yaml
+
+      - name: install site dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: website
+
+      # This is also the link check. astro.config.ts runs starlight-links-validator
+      # with `failOnError: true`, so a broken internal link fails the build here
+      # and there is deliberately no second link-checking step to add: one more
+      # would only find the same things later and disagree at the margins. Note
+      # what it does *not* cover — the plugin excludes /ag-ui-rust/api/**,
+      # because at this point that tree does not exist; the "place the rustdoc"
+      # step below is what puts it there. Links into the rustdoc are covered by
+      # that step's own assertions instead.
+      - name: build the guide
+        run: pnpm build
+        working-directory: website
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Deliberately the same command and the same RUSTDOCFLAGS as the `docs` job
+      # in ci.yml. That job proves the docs build clean; this one needs the
+      # output, so it has to build them again regardless — and keeping the flags
+      # identical is what stops the two from drifting into a state where the
+      # deployed site ships rustdoc that ci.yml would have rejected.
+      - name: build the rustdoc
+        run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      # website/dist/ is the site root, so the rustdoc goes in website/dist/api/
+      # and is served at /ag-ui-rust/api/. rustdoc's own pages reference
+      # ../static.files/... and ../crates.js — all relative, no root-absolute
+      # paths — so it does not care that it is being served from a subdirectory
+      # of a project site rather than from a domain root.
+      - name: place the rustdoc at /ag-ui-rust/api/
+        run: |
+          set -euo pipefail
+          mkdir -p website/dist/api
+          # The trailing `/.` copies the *contents* of target/doc, dotfiles
+          # included, instead of nesting it as website/dist/api/doc/.
+          cp -R target/doc/. website/dist/api/
+          # A zero-byte lock rustdoc leaves behind. Build state, not content.
+          rm -f website/dist/api/.lock
+          # `cargo doc` over a workspace emits no top-level index.html — it only
+          # writes one when documenting a single crate — so /ag-ui-rust/api/
+          # would otherwise be a 404 with nine crate directories sitting next to
+          # it. website/public/api/index.html is the hand-written landing page,
+          # already copied into dist/ by the Astro build above; it is copied
+          # again here, after the merge rather than before, so that the crate
+          # list wins deterministically even if a future rustdoc does start
+          # emitting an index of its own.
+          cp website/public/api/index.html website/dist/api/index.html
+
+      # Everything above can succeed while producing an artifact that is missing
+      # the half nobody looks at until it is live. Assert on the tree itself.
+      - name: the artifact contains both a guide and a rustdoc
+        run: |
+          set -uo pipefail
+          status=0
+          check() {
+            if [ ! -s "$1" ]; then
+              echo "::error title=Missing from the Pages artifact::$1 is absent or empty. The deployed site would 404 there. $2"
+              status=1
+            fi
+          }
+          check website/dist/index.html "The Astro build produced no home page."
+          check website/dist/api/index.html "The rustdoc landing page at website/public/api/index.html did not survive the copy."
+          for crate in ag_ui_core ag_ui_server ag_ui_client ag_ui_axum ag_ui_a2ui; do
+            check "website/dist/api/$crate/index.html" "cargo doc did not document $crate, or the copy into website/dist/api/ dropped it."
+          done
+          exit $status
+
+      # Runs on pull requests too. Packing the tar is the last thing that can
+      # fail before a deploy, so letting a pull request do it means the only
+      # untested step on main is the publish itself.
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/dist
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    # The publishing gate, and the only one. Pull requests are excluded because
+    # a pull request must never be able to change what is live. The ref check is
+    # about workflow_dispatch: without it, dispatching this workflow from a topic
+    # branch would push that branch's docs to the production URL. From a topic
+    # branch the dispatch still builds — which is the useful half — and simply
+    # does not publish.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # A job's `permissions` replaces the workflow-level block rather than merging
+    # with it — every scope left out becomes `none`, not "as inherited" — so
+    # `contents: read` has to be restated here even though it is already granted
+    # above. These three are the set GitHub's own Pages starter workflow uses;
+    # trimming `contents` on the grounds that this job never checks anything out
+    # is the obvious-looking mistake, and it is not worth making to save a scope
+    # on a job that only runs on main.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Here rather than in the build job, where GitHub's own starter workflow
+      # puts it. Its outputs (base_url, base_path) are unused either way —
+      # astro.config.ts hardcodes `site` and `base`, on purpose and with its own
+      # comment explaining why — and it fails the run outright when Pages is not
+      # enabled on the repository. In the build job that failure would redden
+      # every pull request; here it fails only the deploy, which is the honest
+      # place for "the repository is not configured to receive this".
+      #
+      # Which is not hypothetical: Pages is not enabled on this repository yet.
+      # Someone has to turn it on under Settings → Pages with **GitHub Actions**
+      # as the source before the first deploy can succeed. Until then this step
+      # is where the run stops, with that error.
+      - uses: actions/configure-pages@v5
+      - id: deployment
+        uses: actions/deploy-pages@v4
