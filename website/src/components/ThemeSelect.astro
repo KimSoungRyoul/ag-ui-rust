@@ -1,0 +1,462 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+
+/*
+ * The companion to LanguageSelect.astro, and it exists for the same reason: the
+ * native `<select>` Starlight ships can only be styled shut. Its open list is
+ * operating-system chrome, which on this site means a grey box over a dark
+ * header. Everything below is markup this repo owns.
+ *
+ * What this component must NOT change is the theme contract, because
+ * ThemeProvider.astro is not overridden and still runs first:
+ *
+ *   - the preference lives in `localStorage` under `starlight-theme`, stored as
+ *     'light', 'dark', or '' for auto — an existing visitor's choice has to
+ *     survive this replacement;
+ *   - `document.documentElement.dataset.theme` is 'light' or 'dark', never
+ *     'auto', and ThemeProvider's inline script sets it before first paint so
+ *     there is no flash of the wrong theme. Nothing here duplicates that;
+ *   - `StarlightThemeProvider.updatePickers()` walks every
+ *     `<starlight-theme-select>` and swaps the children of its
+ *     `svg.label-icon` for the sun/moon/laptop icon in ThemeProvider's
+ *     `<template id="theme-icons">`. The element name and that icon are kept,
+ *     so the trigger icon is still ThemeProvider's job rather than a second
+ *     implementation here. Its `<select>` lookup is null-guarded, so finding
+ *     none is a no-op, not a throw.
+ */
+
+const label = Astro.locals.t('themeSelect.accessibleLabel');
+
+// Same order as the picker this replaces. The labels come from Starlight's own
+// translations, which already cover both locales of this site — hardcoding
+// English here would break the Korean pages, and hardcoding both would be a
+// copy of translations/ko.json.
+const themes = [
+	{ value: 'dark', label: Astro.locals.t('themeSelect.dark') },
+	{ value: 'light', label: Astro.locals.t('themeSelect.light') },
+	{ value: 'auto', label: Astro.locals.t('themeSelect.auto') },
+] as const;
+
+// Rendered as auto, then corrected before paint by the inline script below.
+// Server-side there is no way to know the visitor's stored preference.
+const ssrTheme = 'auto';
+---
+
+<starlight-theme-select data-selected={ssrTheme}>
+	{/*
+	 * `<details>`/`<summary>` for the same reason as the language picker: it is
+	 * keyboard-operable and open-able with nothing loaded, and `<summary>`
+	 * exposes `aria-expanded` natively rather than through an attribute this
+	 * component would have to keep in sync by hand. Using the same disclosure
+	 * for both pickers also means one interaction to learn, not two.
+	 *
+	 * The options are buttons — unlike the language options there is no URL to
+	 * link to, so nothing is lost. Their group is a radiogroup because exactly
+	 * one of three is always in effect, which is what `aria-checked` states.
+	 */}
+	<details data-picker>
+		<summary>
+			<span class="sr-only">{label}</span>
+			<Icon name="laptop" class="icon label-icon" />
+			<span class="value">
+				{
+					themes.map((theme) => <span data-theme-label={theme.value}>{theme.label}</span>)
+				}
+			</span>
+			<Icon name="down-caret" class="icon caret" />
+		</summary>
+		<div class="panel" role="radiogroup" aria-label={label} aria-orientation="vertical">
+			{
+				themes.map((theme) => (
+					<button
+						class="option"
+						type="button"
+						role="radio"
+						aria-checked={theme.value === ssrTheme ? 'true' : 'false'}
+						tabindex={theme.value === ssrTheme ? 0 : -1}
+						data-picker-option
+						data-theme-value={theme.value}
+					>
+						<Icon name="approve-check" class="check" />
+						<span>{theme.label}</span>
+					</button>
+				))
+			}
+		</div>
+	</details>
+</starlight-theme-select>
+
+{/*
+ * Inlined to avoid FOUC, exactly as Starlight's own ThemeSelect inlines the
+ * same call. The document theme is already right by now — ThemeProvider set it
+ * — but the trigger still shows the server-rendered "auto" and its laptop icon,
+ * and the module script below is deferred, so without this the header would
+ * paint once with the wrong label. Two writes are enough: `updatePickers` owns
+ * the icon, and `data-selected` is what the stylesheet reads to pick which of
+ * the three labels is visible. Uses global scope from `ThemeProvider.astro`.
+ *
+ * This runs once per rendered picker — the header has one and the mobile menu
+ * has another — and it is idempotent, so the second run simply catches the
+ * picker that had not been parsed yet when the first one ran.
+ */}
+<script is:inline>
+	(() => {
+		const stored = typeof localStorage !== 'undefined' && localStorage.getItem('starlight-theme');
+		const theme = stored === 'dark' || stored === 'light' ? stored : 'auto';
+		StarlightThemeProvider.updatePickers(theme);
+		document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+			picker.dataset.selected = theme;
+		});
+	})();
+</script>
+
+<script>
+	/*
+	 * Declared rather than imported: Starlight ships this global in its own
+	 * global.d.ts, but nothing that file is reachable from is imported by this
+	 * project, so `astro check` does not see it (verified — it failed with
+	 * ts(2304) before this line was added). The shape is copied from that file.
+	 */
+	declare const StarlightThemeProvider: { updatePickers(theme?: string): void };
+
+	type Theme = 'auto' | 'dark' | 'light';
+
+	/** Key in `localStorage` to store color theme preference at. */
+	const storageKey = 'starlight-theme';
+
+	/** Get a typesafe theme string from any JS value (unknown values are coerced to `'auto'`). */
+	const parseTheme = (theme: unknown): Theme =>
+		theme === 'auto' || theme === 'dark' || theme === 'light' ? theme : 'auto';
+
+	/** Load the user’s preference from `localStorage`. */
+	const loadTheme = (): Theme =>
+		parseTheme(typeof localStorage !== 'undefined' && localStorage.getItem(storageKey));
+
+	/** Store the user’s preference in `localStorage`. */
+	function storeTheme(theme: Theme): void {
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem(storageKey, theme === 'light' || theme === 'dark' ? theme : '');
+		}
+	}
+
+	/** Get the preferred system color scheme. */
+	const getPreferredColorScheme = (): Theme =>
+		matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+
+	/**
+	 * Update every picker's UI, the document theme, and local storage state.
+	 *
+	 * The first three lines are Starlight's `onThemeChange` unchanged, down to
+	 * the storage encoding, so a preference set by either version of the picker
+	 * means the same thing to the other. The loop is the part this component
+	 * adds: `data-selected` drives which label the trigger shows, `aria-checked`
+	 * is what tells assistive tech which of the three is in effect, and the
+	 * roving `tabindex` keeps the whole radiogroup a single tab stop.
+	 */
+	function onThemeChange(theme: Theme): void {
+		StarlightThemeProvider.updatePickers(theme);
+		document.documentElement.dataset.theme = theme === 'auto' ? getPreferredColorScheme() : theme;
+		storeTheme(theme);
+
+		for (const picker of document.querySelectorAll<HTMLElement>('starlight-theme-select')) {
+			picker.dataset.selected = theme;
+			for (const radio of picker.querySelectorAll<HTMLElement>('[data-theme-value]')) {
+				const checked = radio.dataset.themeValue === theme;
+				radio.setAttribute('aria-checked', String(checked));
+				radio.tabIndex = checked ? 0 : -1;
+			}
+		}
+	}
+
+	// React to changes in system color scheme.
+	matchMedia(`(prefers-color-scheme: light)`).addEventListener('change', () => {
+		if (loadTheme() === 'auto') onThemeChange('auto');
+	});
+
+	class StarlightThemeSelect extends HTMLElement {
+		constructor() {
+			super();
+			onThemeChange(loadTheme());
+
+			const details = this.querySelector('details');
+			const summary = this.querySelector('summary');
+			if (!details || !summary) return;
+
+			const options = () => [...this.querySelectorAll<HTMLElement>('[data-picker-option]')];
+
+			const close = (returnFocus: boolean) => {
+				if (!details.open) return;
+				details.open = false;
+				if (returnFocus) summary.focus();
+			};
+
+			const select = (option: HTMLElement | undefined) => {
+				if (!option) return;
+				onThemeChange(parseTheme(option.dataset.themeValue));
+				option.focus();
+			};
+
+			// Only one picker open at a time; the language picker sits right next
+			// to this one and two overlapping panels read as a bug.
+			details.addEventListener('toggle', () => {
+				if (!details.open) return;
+				for (const other of document.querySelectorAll<HTMLDetailsElement>('details[data-picker]')) {
+					if (other !== details) other.open = false;
+				}
+			});
+
+			// Choosing a theme closes the panel and hands focus back to the
+			// trigger, which is where a keyboard user expects to be afterwards.
+			// Enter and Space on a focused button fire this too.
+			for (const option of options()) {
+				option.addEventListener('click', () => {
+					onThemeChange(parseTheme(option.dataset.themeValue));
+					close(true);
+				});
+			}
+
+			this.addEventListener('keydown', (event) => {
+				if (event.key === 'Escape') {
+					close(true);
+					return;
+				}
+				if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+
+				const items = options();
+				const index = items.indexOf(document.activeElement as HTMLElement);
+				if (index === -1) {
+					// Focus is still on the summary. Open and step into the group at
+					// the option that is already in effect, without changing it.
+					event.preventDefault();
+					details.open = true;
+					(items.find((item) => item.getAttribute('aria-checked') === 'true') ?? items[0])?.focus();
+					return;
+				}
+				/*
+				 * Inside a radiogroup, arrow keys move and check in one go — that is
+				 * the pattern's own rule rather than an invention here, and on this
+				 * control it means arrowing through the list previews each theme on
+				 * the page behind the panel. Adding `length - 1` is subtraction that
+				 * cannot go negative, so one modulo serves both directions.
+				 */
+				event.preventDefault();
+				const step = event.key === 'ArrowDown' ? 1 : items.length - 1;
+				select(items[(index + step) % items.length]);
+			});
+
+			// A click anywhere else closes the panel and leaves focus alone.
+			document.addEventListener('click', (event) => {
+				if (!details.open) return;
+				if (event.target instanceof Node && this.contains(event.target)) return;
+				close(false);
+			});
+
+			/*
+			 * Tabbing out of the picker closes it rather than leaving a panel open
+			 * behind the user. A null `relatedTarget` means focus went nowhere
+			 * focusable — dead space is handled by the click listener above, and a
+			 * window switch is not worth closing for.
+			 */
+			this.addEventListener('focusout', (event) => {
+				const next = event.relatedTarget;
+				if (next === null || (next instanceof Node && this.contains(next))) return;
+				close(false);
+			});
+		}
+	}
+
+	customElements.define('starlight-theme-select', StarlightThemeSelect);
+</script>
+
+<style>
+	/*
+	 * Deliberately unlayered, like LanguageSelect.astro: Starlight's own rules
+	 * all sit in the `starlight.*` cascade layers declared in style/layers.css,
+	 * and unlayered rules win over every one of them.
+	 */
+
+	starlight-theme-select {
+		/* The panel is `--sl-color-bg-nav`, which is gray-6 in dark and gray-7 in
+		   light, so one step of contrast is a different token in each theme. */
+		--picker-hover-bg: var(--sl-color-gray-5);
+	}
+
+	:global([data-theme='light']) starlight-theme-select {
+		--picker-hover-bg: var(--sl-color-gray-6);
+	}
+
+	details {
+		position: relative;
+	}
+
+	summary {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.625rem 0.25rem;
+		margin-inline: -0.25rem;
+		color: var(--sl-color-gray-2);
+		cursor: pointer;
+		user-select: none;
+		/* `list-style` covers Firefox and Chrome, the pseudo-element covers older
+		   Safari; between them the default disclosure triangle is gone. */
+		list-style: none;
+	}
+
+	summary::-webkit-details-marker {
+		display: none;
+	}
+
+	summary:hover,
+	details[open] summary {
+		color: var(--sl-color-white);
+	}
+
+	summary:focus-visible {
+		outline: 2px solid var(--sl-color-text-accent);
+		outline-offset: 2px;
+		border-radius: 0.25rem;
+	}
+
+	.label-icon {
+		font-size: 0.875rem;
+	}
+
+	.caret {
+		font-size: 1.25rem;
+		transition: transform 0.15s ease;
+	}
+
+	details[open] .caret {
+		transform: rotate(180deg);
+	}
+
+	/*
+	 * All three labels are rendered and two are hidden, so choosing the visible
+	 * one is a CSS match rather than a JS text write. That is what lets the
+	 * pre-paint inline script above be a single attribute assignment.
+	 *
+	 * The width matches the `width="6.25em"` Starlight passed to its `<Select>`,
+	 * which keeps the header from reflowing as the label changes.
+	 */
+	.value {
+		width: 6.25em;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.value [data-theme-label] {
+		display: none;
+	}
+
+	[data-selected='dark'] .value [data-theme-label='dark'],
+	[data-selected='light'] .value [data-theme-label='light'],
+	[data-selected='auto'] .value [data-theme-label='auto'] {
+		display: block;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.panel {
+		position: absolute;
+		z-index: 1;
+		/* Anchored to the inline end: the picker sits near the end of the header's
+		   right group, so a panel wider than its trigger has to grow inwards. */
+		inset-inline-end: 0;
+		/*
+		 * Mobile-first, and the direction matters. Below 50rem only the mobile
+		 * menu copy renders, inside `.sidebar-pane` — which is `overflow-y: auto`
+		 * and therefore clips on both axes — with the picker pinned to the bottom
+		 * of that pane. Downwards would be cut off; upwards stays inside the
+		 * scroll box. Above 50rem the mobile menu is hidden and only the header
+		 * copy renders, where downwards is the only option.
+		 */
+		inset-block-end: calc(100% + 0.5rem);
+		min-width: 100%;
+		max-width: min(16rem, calc(100vw - 2rem));
+		padding: 0.25rem;
+		background-color: var(--sl-color-bg-nav);
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 0.5rem;
+		box-shadow: var(--sl-shadow-md);
+	}
+
+	/* A fade rather than a slide, because the panel opens upwards on mobile and
+	   downwards on desktop and one translate would be wrong in one of them. */
+	@keyframes picker-panel-in {
+		from {
+			opacity: 0;
+		}
+	}
+
+	details[open] .panel {
+		animation: picker-panel-in 0.12s ease-out;
+	}
+
+	.option {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		width: 100%;
+		padding: 0.375rem 0.5rem;
+		border: 0;
+		border-radius: 0.25rem;
+		background: none;
+		color: var(--sl-color-gray-2);
+		font-size: var(--sl-text-sm);
+		line-height: 1.5;
+		text-align: start;
+		white-space: nowrap;
+		cursor: pointer;
+	}
+
+	.option:hover {
+		background-color: var(--picker-hover-bg);
+		color: var(--sl-color-white);
+	}
+
+	.option:focus-visible {
+		/* Drawn inside so the panel's rounded corner cannot clip the ring. */
+		outline: 2px solid var(--sl-color-text-accent);
+		outline-offset: var(--sl-outline-offset-inside);
+	}
+
+	.option[aria-checked='true'] {
+		color: var(--sl-color-white);
+		font-weight: 600;
+	}
+
+	/* Always in the DOM and only ever hidden, so the labels do not shift
+	   sideways by the width of an icon when the selection moves. */
+	.check {
+		font-size: 0.875rem;
+		visibility: hidden;
+		color: var(--sl-color-text-accent);
+	}
+
+	.option[aria-checked='true'] .check {
+		visibility: visible;
+	}
+
+	@media (min-width: 50rem) {
+		summary {
+			font-size: var(--sl-text-sm);
+		}
+
+		.panel {
+			inset-block-end: auto;
+			inset-block-start: calc(100% + 0.5rem);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.caret {
+			transition: none;
+		}
+
+		details[open] .panel {
+			animation: none;
+		}
+	}
+</style>

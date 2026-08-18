@@ -64,6 +64,25 @@ export default defineConfig({
 			// the aside titles and the untranslated-content notice. A
 			// src/content/i18n/ collection is therefore deliberately absent — an
 			// override file would only be a copy of the package's, and copies rot.
+			// Both pickers Starlight ships are a native `<select>`. `appearance:
+			// none` reaches the closed box and stops there — the open list is drawn
+			// by the operating system, so on this site it arrived as grey OS chrome
+			// floating over a dark header, and no stylesheet here could touch it.
+			// The replacements are ordinary markup with ordinary CSS.
+			//
+			// The language one is not only a reskin: its options are real
+			// `<a href>` links, so switching language survives JavaScript being
+			// off, opens in a new tab on middle-click or cmd-click, and shows its
+			// destination on hover. A `<select>` can do none of that.
+			//
+			// ThemeProvider is deliberately *not* overridden. It is what sets
+			// `data-theme` before first paint, and its `updatePickers` still owns
+			// the theme trigger's icon; ThemeSelect.astro keeps the element name
+			// and the `svg.label-icon` that contract is written against.
+			components: {
+				LanguageSelect: './src/components/LanguageSelect.astro',
+				ThemeSelect: './src/components/ThemeSelect.astro',
+			},
 			logo: {
 				src: './src/assets/logo.svg',
 				alt: 'ag-ui-rust',
