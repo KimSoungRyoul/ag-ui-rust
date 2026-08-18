@@ -275,16 +275,6 @@ const ssrTheme = 'auto';
 	 * and unlayered rules win over every one of them.
 	 */
 
-	starlight-theme-select {
-		/* The panel is `--sl-color-bg-nav`, which is gray-6 in dark and gray-7 in
-		   light, so one step of contrast is a different token in each theme. */
-		--picker-hover-bg: var(--sl-color-gray-5);
-	}
-
-	:global([data-theme='light']) starlight-theme-select {
-		--picker-hover-bg: var(--sl-color-gray-6);
-	}
-
 	details {
 		position: relative;
 	}
@@ -411,8 +401,11 @@ const ssrTheme = 'auto';
 		cursor: pointer;
 	}
 
+	/* The accent tint rather than a grey step, for the reasons written out in
+	   LanguageSelect.astro: one token instead of a per-theme fork, and it is the
+	   same rust the sidebar's current page uses. */
 	.option:hover {
-		background-color: var(--picker-hover-bg);
+		background-color: var(--sl-color-accent-low);
 		color: var(--sl-color-white);
 	}
 

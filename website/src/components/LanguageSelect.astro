@@ -35,6 +35,12 @@ import config from 'virtual:starlight/user-config';
  * `useTranslations` and `getStarlightEcConfigPreprocessor`. Checked, not
  * assumed.
  *
+ * A relative specifier is what gets past that, because `exports` is consulted
+ * only for bare ones; a path is just a path. It also carries no version:
+ * website/node_modules/@astrojs/starlight is pnpm's symlink into the store, so
+ * this line does not have to name 0.41.7 or a store hash and does not change
+ * when either does.
+ *
  * That is a real cost: a Starlight upgrade that moves or renames this file
  * breaks the build. It breaks it *loudly*, at build time, on a pull request —
  * the Pages workflow builds the site on every one. The alternative fails the
@@ -208,20 +214,6 @@ const label = Astro.locals.t('languageSelect.accessibleLabel');
 	 * war with the styles that used to dress the `<select>`.
 	 */
 
-	starlight-lang-select {
-		/*
-		 * The hover fill has to be a step away from the panel, and the panel is
-		 * `--sl-color-bg-nav`, which is gray-6 in dark and gray-7 in light. One
-		 * step in each direction is a different token, so the token is what forks
-		 * rather than the rule.
-		 */
-		--picker-hover-bg: var(--sl-color-gray-5);
-	}
-
-	:global([data-theme='light']) starlight-lang-select {
-		--picker-hover-bg: var(--sl-color-gray-6);
-	}
-
 	details {
 		position: relative;
 	}
@@ -336,8 +328,18 @@ const label = Astro.locals.t('languageSelect.accessibleLabel');
 		white-space: nowrap;
 	}
 
+	/*
+	 * The accent tint rather than a grey step, and that choice was made by
+	 * looking at all four combinations rendered. A grey has to fork per theme —
+	 * the panel is `--sl-color-bg-nav`, which is gray-6 in dark and gray-7 in
+	 * light, so one step of separation is a different token in each — and in
+	 * light it lands 1.08:1 against the panel, which is close to invisible.
+	 * `--sl-color-accent-low` is one token for both, it is the same rust the
+	 * sidebar's current page uses, and its warmth reads clearly against a cool
+	 * grey panel even where the luminance difference is small.
+	 */
 	.option:hover {
-		background-color: var(--picker-hover-bg);
+		background-color: var(--sl-color-accent-low);
 		color: var(--sl-color-white);
 	}
 
