@@ -1,10 +1,16 @@
 //! The high-level API: a conversation you send text to.
 //!
+//! *Thread* and *run* are the protocol's words; `Session` is this crate's. The
+//! wire carries a `threadId` and a `runId` and nothing else — there is no
+//! session on it, and no thread object either, only an id — so a [`Session`]
+//! sits *over* that id, adding the transport, the conversation so far, the
+//! typed state and the tools. It is deliberately not called `Thread`:
+//! borrowing the name would imply a protocol entity that does not exist.
+//!
 //! [`RemoteAgent`] gives you events. A UI does not want events — it
 //! wants "this message grew by three characters", "the state changed, here it
 //! is typed", "the agent is waiting for you to approve something". A [`Session`]
-//! is the thread, its accumulated messages and its typed state, and it yields
-//! [`Update`]s instead of raw events.
+//! yields [`Update`]s instead of raw events.
 //!
 //! Everything the protocol makes fiddly happens inside: chunk events are
 //! normalized, the stream is verified, deltas are folded into messages, and the

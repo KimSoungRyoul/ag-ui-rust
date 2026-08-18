@@ -3,11 +3,17 @@ title: Sessions
 description: Opening a session against a remote agent, sending it a turn, and reading the messages and state it accumulates.
 ---
 
+The protocol says *thread* and *run*; this SDK says `Session`. The wire carries
+a `threadId` and a `runId` and nothing else — there is no session on it, and no
+thread object either, only an id — so a `Session` is what sits *over* that id,
+adding the transport, the conversation so far, the typed state and the tools. It
+is deliberately not called `Thread`: borrowing the name would imply a protocol
+entity that does not exist.
+
 An AG-UI run arrives as deltas. A message opens, text arrives a fragment at a
 time, tool arguments accumulate as partial JSON, state moves by RFC 6902 patch,
 and the run may pause to ask a human something. A `Session` is what folds all of
-that back into a conversation: a thread id, the messages both sides have said,
-and the application state, updated as the events land.
+that back into a conversation, as the events land.
 
 `Session` is the high level. Below it, `RemoteAgent` hands you the events
 exactly as the agent sent them, unassembled — the right level for a proxy, a

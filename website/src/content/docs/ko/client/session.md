@@ -3,13 +3,19 @@ title: session
 description: 원격 agent에 session을 열고, 한 턴을 보내고, session이 쌓아 두는 message와 state를 읽는 방법.
 ---
 
+thread와 run은 protocol의 단어입니다. `Session`은 이 SDK의 단어입니다.
+wire에 실리는 것은 `threadId`와 `runId`뿐입니다. session도 thread
+object도 없고, id 하나뿐입니다. `Session`은 그 id *위에* 놓여
+transport, 지금까지의 대화, typed state, tool을 더합니다. 이름을
+`Thread`로 하지 않은 것은 일부러입니다. 없는 protocol entity가 있는
+것처럼 읽히기 때문입니다.
+
 AG-UI run은 delta로 도착합니다. message가 열립니다. text는 조각 단위로
 옵니다. tool argument는 부분 JSON으로 쌓입니다. state는 RFC 6902
 patch로 움직입니다. run이 사람에게 무언가를 물으려고 멈추기도 합니다.
 
-`Session`은 이 전부를 다시 하나의 대화로 접어 넣습니다. thread id,
-양쪽이 주고받은 message, 그리고 event가 도착할 때마다 갱신되는
-application state입니다.
+`Session`은 event가 도착하는 대로 이 전부를 다시 하나의 대화로 접어
+넣습니다.
 
 `Session`은 상위 계층입니다. 그 아래에 `RemoteAgent`가 있습니다.
 `RemoteAgent`는 agent가 보낸 event를 조립하지 않고 그대로 건네줍니다.
