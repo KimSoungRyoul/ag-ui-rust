@@ -80,7 +80,7 @@ build에서도 기본이 on입니다. `HashSet` 조회 몇 번까지 되찾고 �
 network를 세 번 건넌 하류에서 보고될지가 바뀝니다.
 
 **`ag-ui-client/http`.** 끄면 `HttpTransport`와 `HttpAgent`를 잃습니다. `reqwest`
-dependency도 함께 갑니다. crate의 나머지는 계속 동작합니다. event 적용, 정규화,
+dependency도 함께 갑니다. crate의 나머지는 계속 동작합니다. event application, normalisation,
 verification은 평범한 동기 state machine입니다. `Transport`는 trait입니다. wasm frontend나
 tokio 아닌 runtime은 자기 것을 끼워 넣습니다. off 상태가 크기 절충이 아니라
 [platform 약속](/ag-ui-rust/ko/reference/platforms/)인 feature는 이것뿐입니다. `reqwest`가
@@ -128,9 +128,9 @@ cargo check --all-targets -p ag-ui-a2ui   --all-features
 cargo check --all-targets -p ag-ui-axum
 ```
 
-멱집합은 아닙니다. job의 주석이 이유를 밝힙니다. 멱집합이면 `ag-ui-core` 하나만으로 2⁴입니다.
+powerset은 아닙니다. job의 주석이 이유를 밝힙니다. powerset이면 `ag-ui-core` 하나만으로 2⁴입니다.
 그런데 얻는 것은 적습니다. 이 feature들은 가산적이고 서로 독립입니다. 어느 것도 다른 것이
-무엇으로 compile되는지를 바꾸지 않습니다. 멱집합이 잡을 만한 것은 어떤 조합에서 맞고 다른
+무엇으로 compile되는지를 바꾸지 않습니다. powerset이 잡을 만한 것은 어떤 조합에서 맞고 다른
 조합에서 틀린 `cfg`입니다. 이 feature들의 생김새로는 그럴 일이 드뭅니다. build 열여섯 번을
 치를 만큼은 아닙니다.
 

@@ -140,7 +140,7 @@ framework 연동은 별도 crate 안의 `impl Agent for …`입니다. 예제 �
 `serde` struct 두 개로 진짜 model과 대화합니다. 그것이 증명입니다.
 
 renderer도 없습니다. `ag-ui-a2ui`는 A2UI를 만들고 검증하고 실어 나릅니다. 그것을
-그리려면 widget toolkit과 event loop과 반응형 data model이 필요합니다. 그것은 다른
+그리려면 widget toolkit과 event loop와 반응형 data model이 필요합니다. 그것은 다른
 program입니다.
 
 ## 다음

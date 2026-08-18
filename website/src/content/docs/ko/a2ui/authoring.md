@@ -64,7 +64,7 @@ assert_eq!(assemble_ops(Intent::Update, &spec).len(), 2);
 만듭니다. collection scope를 여는 것도 이것입니다. 그래서 `row` 안의 `${name}`은 data model의
 root가 아니라 현재 원소를 기준으로 해석됩니다.
 
-기본값은 wire 상수에서 옵니다. catalog를 명시하지 않은 spec은 `BASIC_CATALOG_ID`를 씁니다.
+기본값은 wire constant에서 옵니다. catalog를 명시하지 않은 spec은 `BASIC_CATALOG_ID`를 씁니다.
 `SurfaceSpec::default()`로 만든 spec은 surface id `dynamic-surface`를 대상으로 합니다.
 
 `Intent::Update`는 겉치레 구분이 아닙니다. `createSurface`는 `surfaceId`를 할당하고 그
@@ -74,7 +74,7 @@ surface의 수명 동안 catalog를 고정합니다. renderer가 이미 들고 �
 
 :::caution[data model 전체를 교체하면 사용자 입력이 사라집니다]
 `SurfaceSpec::data_path`의 기본값은 `/`입니다. data model 전체를 교체한다는 뜻입니다.
-renderer의 양방향 binding은 사용자 입력을 그 model에 바로 씁니다. 살아 있는 surface를
+renderer의 two-way binding은 사용자 입력을 그 model에 바로 씁니다. 살아 있는 surface를
 update할 때는 실제로 의도한 좁은 path를 가리키십시오.
 :::
 
@@ -163,7 +163,7 @@ rendering합니다. 역할, 요청, workflow 규칙, catalog, 선택적인 few-s
 
 기본 규칙은 `GENERATION_GUIDELINES`에서 옵니다. 이 crate의 validator가 무엇을 거부하는지에
 맞춰져 있습니다. 모든 component에 고유한 `id`가 있어야 하고, 그중 하나는 `root`여야 합니다.
-reference cycle이 없어야 합니다. binding은 함께 보내는 data를 가리켜야 합니다. 상대 path는
+reference cycle이 없어야 합니다. binding은 함께 보내는 data를 가리켜야 합니다. relative path는
 list template 안에서만 됩니다. 자체 style이 있는 application은 `PromptSpec::workflow_rules`로
 규칙을 교체합니다.
 
@@ -244,7 +244,7 @@ assert_eq!(parts[0].a2ui.as_ref().unwrap().len(), 1);
 A2UI입니다. 그래서 scanner는 string 상태와 escape를 추적합니다.
 
 `parse_and_fix`는 수리를 두 가지 합니다. 그것도 그냥 parsing이 실패한 뒤에만 합니다. smart
-quote 정규화와 trailing comma 제거입니다. 둘 다 유효한 JSON의 의미를 바꿀 수 없어
+quote를 normalise하고, trailing comma를 버립니다. 둘 다 유효한 JSON의 의미를 바꿀 수 없어
 안전합니다. 홀로 있는 object는 array로 감쌉니다. A2UI payload는 message의 list이기
 때문입니다.
 
@@ -308,7 +308,7 @@ assert_eq!(
 이 loop는 **동기**이고 model을 closure로 받습니다. 그래서 async runtime을 강요하지 않습니다.
 blocking 호출을 그대로 감싸도 되고, host가 이미 쓰는 executor로 async client를 구동해도
 됩니다. 모든 단계는 `on_activity`로 보고됩니다. activity type은 `a2ui_recovery`이고,
-`RecoveryActivity::activity_type`이 그 상수입니다. 호출자는 그것으로 분기해서 멈춘 것처럼
+`RecoveryActivity::activity_type`이 그 constant입니다. 호출자는 그것으로 분기해서 멈춘 것처럼
 보이는 대신 진행 상황을 보여 줄 수 있습니다. 그 보고로 무엇을 할지는 호출자가 정합니다.
 toolkit 자체는 아무것도 emit하지 않습니다.
 
@@ -346,12 +346,12 @@ mechanism 넷이 이 일을 합니다. 이것이 한 byte씩 먹이는 JSON pars
 - **잘린 token 치유.** chunk 경계는 string 한가운데에 떨어질 수 있습니다. parser는 열린
   중괄호와 대괄호를 닫아 조각을 parsing 가능하게 만듭니다. 하지만 열린 *string*은 잘라도 되는
   key에 대해서만 닫습니다. `text`, `label`, `hint`, 그리고 `DEFAULT_CUTTABLE_KEYS`의 나머지
-  넷입니다. `"id"`나 `"path"`를 일찍 닫으면 model이 쓴 적 없는 식별자나 binding을 지어내게
+  넷입니다. `"id"`나 `"path"`를 일찍 닫으면 model이 쓴 적 없는 identifier나 binding을 지어내게
   됩니다. 그런 조각은 다음 chunk를 기다립니다.
 - **placeholder 합성.** 부모는 대개 자식보다 먼저 도착합니다. 그래서 자식 reference를
   `loading_<id>`로 고쳐 쓰고 대역 component를 함께 emit합니다. renderer는 tree를 즉시
   배치하고, 진짜 component가 도착하면 바꿔 끼웁니다.
-- **reachability 필터링.** `root`에서 닿는 component만 emit합니다. 부모보다 먼저 온
+- **reachability filtering.** `root`에서 닿는 component만 emit합니다. 부모보다 먼저 온
   component는 붙을 곳이 없습니다. 보내지 않고 cache해 두었다가 root에서 오는 path가 생기면
   보냅니다.
 - **관문이 아니라 filter로서의 검증.** 부분 조각도 검증합니다. 아직 성립하지 않으면 조용히

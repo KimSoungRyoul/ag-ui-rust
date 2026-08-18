@@ -72,7 +72,7 @@ emit path가 가장 분명한 사례입니다. emitter handle이
 `ag-ui-client`는 **`http` feature가 off일 때만** executor에 종속되지 않습니다. `http`는
 `reqwest`를, `reqwest`는 tokio를 끌어옵니다. 사고가 아니라 의도한 기본값입니다. 대부분의
 소비자는 HTTP transport를 원하고 이미 tokio 위에 있습니다. crate의 나머지는 평범한 동기 state
-machine입니다. event 적용, 정규화, verification이 그렇습니다. 그래서 `http`를 끄면 transport
+machine입니다. event application, normalisation, verification이 그렇습니다. 그래서 `http`를 끄면 transport
 자리에 구멍 하나만 난 client가 남습니다. 나머지는 그대로 쓸 수 있습니다.
 
 그 구멍은 trait입니다.

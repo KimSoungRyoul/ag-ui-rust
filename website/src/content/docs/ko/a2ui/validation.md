@@ -29,7 +29,7 @@ validator는 첫 error에서 멈추지 않고 *모든* error를 모읍니다. �
 
 ## surface가 어디서 왔는지가 검사 방식을 정합니다
 
-[`Validator`](/ag-ui-rust/api/ag_ui_a2ui/validate/struct.Validator.html)에는 진입점이
+[`Validator`](/ag-ui-rust/api/ag_ui_a2ui/validate/struct.Validator.html)에는 entry point가
 다섯입니다. 무엇을 건네받는지가 다릅니다:
 
 | method | 입력 | 추가로 검사하는 것 |
@@ -42,9 +42,9 @@ validator는 첫 error에서 멈추지 않고 *모든* error를 모읍니다. �
 
 마지막 둘은 stream을 접습니다. 모든 `createSurface`와 `updateComponents`의 component를 한데
 모읍니다. `updateDataModel` operation을 재생해 data model을 복원합니다. contract는 자동으로
-고릅니다. `createSurface`가 없는 stream은 증분 update로 봅니다.
+고릅니다. `createSurface`가 없는 stream은 incremental update로 봅니다.
 
-`validate_json_messages`의 검사 셋은 거기에만 있습니다. 셋 다 typed message로 역직렬화하면
+`validate_json_messages`의 검사 셋은 거기에만 있습니다. 셋 다 typed message로 deserialize하면
 사라지기 때문입니다. 셋 모두 개별 component가 아니라 문서 전체의 성질입니다.
 
 ```rust
@@ -75,7 +75,7 @@ assert!(codes.contains(&ErrorCode::MissingField));
 ## 전체 contract와 완화된 contract
 
 surface를 만드는 payload는 contract 전체를 지켜야 합니다. `root`가 있어야 하고, 모든 child
-reference가 그 payload 안에서 해석되어야 합니다. 증분 `updateComponents`는 다릅니다. 그
+reference가 그 payload 안에서 해석되어야 합니다. incremental `updateComponents`는 다릅니다. 그
 component는 renderer가 이미 들고 있는 id를 정당하게 참조할 수 있습니다. root를 넣을 필요도
 없습니다.
 
@@ -91,7 +91,7 @@ let patch = [Component::new("heading", "Text").with("text", json!("Updated"))];
 let strict = Validator::new(&catalog).validate(&patch);
 assert!(strict.errors.iter().any(|e| e.code == ErrorCode::NoRoot));
 
-// 증분 update는 아닙니다. tree의 나머지는 renderer가 이미 들고 있습니다.
+// incremental update는 아닙니다. tree의 나머지는 renderer가 이미 들고 있습니다.
 assert!(Validator::incremental(&catalog).validate(&patch).is_valid());
 ```
 
@@ -111,9 +111,9 @@ switch입니다. `Validator::with_options`가 그것을 받습니다:
 | `check_component_types` | `true` | component type이 catalog에 있어야 하는지. catalog가 아무것도 정의하지 않으면 자동으로 off입니다. catalog가 주어지지 않았다는 뜻이기 때문입니다. |
 | `check_required_props` | `true` | catalog가 필수로 표시한 property를 강제하는지. |
 | `check_prop_types` | `true` | 값이 catalog가 선언한 JSON type과 맞는지. |
-| `check_envelope` | `true` | message가 v0.9 wire contract를 만족하는지. 날 message 진입점에만 해당합니다. |
-| `check_bindings` | `true` | binding이 해석되는지, 상대 path가 list template 안에 있는지. |
-| `check_binding_syntax` | `true` | 절대 path가 문법적으로 유효한 JSON Pointer인지. |
+| `check_envelope` | `true` | message가 v0.9 wire contract를 만족하는지. 날 message entry point에만 해당합니다. |
+| `check_bindings` | `true` | binding이 해석되는지, relative path가 list template 안에 있는지. |
+| `check_binding_syntax` | `true` | absolute path가 문법적으로 유효한 JSON Pointer인지. |
 | `max_depth` | `50` | component graph와 날 JSON의 최대 중첩 깊이. |
 | `max_function_call_depth` | `5` | 중첩된 function call의 최대 연쇄 길이. |
 
@@ -236,9 +236,9 @@ assert!(codes.contains(&ErrorCode::UnknownComponent));  // 이 catalog에 Sparkl
 
 그 검사에서 두 가지는 보기보다 좁습니다.
 
-**component를 잇는 것은 구조적 property뿐입니다.** 명세는 catalog가 child reference를 맨
+**component를 잇는 것은 structural property뿐입니다.** 명세는 catalog가 child reference를 맨
 string이 아니라 `ComponentId`나 `ChildList`로 typing하도록 요구합니다. validator는 정확히
-그것으로 어떤 field가 link인지 판단합니다. 그냥 `"type": "string"`이면 정적 text입니다. URL이나
+그것으로 어떤 field가 link인지 판단합니다. 그냥 `"type": "string"`이면 static text입니다. URL이나
 label 같은 것이고, 그 값은 component id로 해석되지 않습니다.
 
 **property type은 옮겨 담을 뿐 해석하지 않습니다.** 각 property는 자기 schema가 못 박은 JSON
@@ -258,7 +258,7 @@ catalog는 구성 제약을 하나도 선언하지 않습니다. custom catalog�
 
 `check_bindings`는 data model이 주어졌을 때 binding을 그것에 대해 해석합니다. 보고하는
 실패는 셋이고 모두 `unresolved_binding`입니다. data에 없는 path, array가 아닌 것을 가리키는
-template path, 그리고 list template 밖에 있는 component의 상대 path입니다. 상대 path는
+template path, 그리고 list template 밖에 있는 component의 relative path입니다. relative path는
 collection scope 안에서만 의미가 있습니다.
 
 `check_binding_syntax`는 data가 필요 없는 쪽입니다. JSON Pointer 안에서 `~`는 `~0`으로, `/`는
@@ -266,9 +266,9 @@ collection scope 안에서만 의미가 있습니다.
 
 ## 깊이는 안전장치가 아니라 정책입니다
 
-component graph는 언제나 반복으로 순회합니다. 명시적인 worklist를 씁니다. cycle 탐지,
+component graph는 언제나 반복으로 순회합니다. 명시적인 worklist를 씁니다. cycle detection,
 reachability, scope 할당 모두 그렇습니다. 취향의 문제가 아닙니다. graph는 model이 만든
-것이고 깊이에 제한이 없습니다. 재귀로 순회하면 요청을 실패시키는 대신 process를 죽입니다.
+것이고 깊이에 제한이 없습니다. recursion으로 순회하면 요청을 실패시키는 대신 process를 죽입니다.
 
 그래서 `MAX_DEPTH`(50)와 `MAX_FUNCTION_CALL_DEPTH`(5)는 *정책*입니다. renderer가 무엇을
 그릴지에 대한 정책이지, 이 crate를 버티게 하는 장치가 아닙니다. 여기서는 값을 올려도
@@ -308,7 +308,7 @@ skip은 모두 이유를 달고 집계됩니다. 조용히 무시하는 것은 �
 | 개수 | 이유 |
 | ---: | --- |
 | 63 | **v0.8 wire format.** v0.8은 component property를 type 이름 아래에 중첩합니다. message 이름도 다릅니다. 이 crate는 component가 flat한 v0.9를 구현합니다. |
-| 4 | **renderer 접근성.** 접근성 tree와 axe-core 규칙은 renderer의 몫입니다. 이 crate는 rendering하지 않습니다. |
+| 4 | **renderer accessibility.** accessibility tree와 axe-core 규칙은 renderer의 몫입니다. 이 crate는 rendering하지 않습니다. |
 | 2 | **prompt 안의 v0.8 schema bundle.** `generate_prompt` case 둘이 v0.8 schema 문서를 끼워 넣기를 요구합니다. 나머지 prompt case 여섯은 실행됩니다. |
 | 1 | **예제 파일의 JSON Schema 검증.** 한 case는 `load_examples`가 호출자가 준 schema로 예제를 검증하기를 요구합니다. JSON Schema engine이 통째로 필요합니다. upstream의 schema 이야기 중 이 crate가 재현하지 않는 유일한 부분입니다. |
 
@@ -323,7 +323,7 @@ format 연산이라 gating합니다. schema를 손보는 작업은 아닙니다.
 
 `validate` case에서 harness는 upstream의 범위에 맞춥니다. component type 검사와 필수 property
 검사는 off입니다. 비교 대상 case에서 upstream이 그것을 JSON Schema에 맡기기 때문입니다.
-binding 해석도 off입니다. upstream의 구조 validator는 binding을 보지 않습니다. Pointer 문법과
+binding 해석도 off입니다. upstream의 구조 validator는 binding을 보지 않습니다. Pointer syntax와
 envelope, property type 검사는 on입니다. upstream도 그것들은 검사하기 때문입니다. 범위를
 맞춰야 비교에 의미가 생깁니다.
 :::

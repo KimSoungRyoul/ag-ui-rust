@@ -16,7 +16,7 @@ cargo test --doc --workspace --all-features
 
 이 workspace에서는 그것이 특히 중요합니다. 여기서 증명되는 것의 상당 부분이
 doctest에 있기 때문입니다. crate별 README, workspace quickstart, 이 문서 사이트의
-모든 Rust 스니펫이 그렇습니다. `crates/ag-ui-server/src/emit/mod.rs`의
+모든 Rust snippet이 그렇습니다. `crates/ag-ui-server/src/emit/mod.rs`의
 `compile_fail` 예제도 그렇습니다. 그것은
 [설계 원칙](/ag-ui-rust/ko/design/commitments/)이 대표 기능으로 내세우는 typestate
 보증의, 유일한 실행 가능한 증명입니다. emitter API를 느슨하게 만들어도 nextest는
@@ -40,11 +40,11 @@ compile됩니다. 페이지는 `e2e/src/website.rs`에 module 문서로 포함�
 rustdoc이 fenced Rust block을 뽑아, `lib.rs`에 있는 것과 똑같이 compile합니다.
 frontmatter와 산문과 `:::note` directive는 손대지 않은 채 통과합니다.
 
-그래서 낡은 스니펫은 빨간 build가 됩니다. 그것을 망가뜨린 사람의 기계에서 납니다.
+그래서 낡은 snippet은 빨간 build가 됩니다. 그것을 망가뜨린 사람의 기계에서 납니다.
 초심자가 붙여넣기를 해 보고 발견하는 것이 아닙니다. 실제로 돌면 안 되는 block은
-`no_run`으로 표시합니다. port를 잡거나 network에 닿는 것들입니다. 그래도 타입
+`no_run`으로 표시합니다. port를 잡거나 network에 닿는 것들입니다. 그래도 type
 검사는 받습니다. 페이지 목록은 glob이 아니라 손으로 적습니다. 독자가 신뢰할 수
-있는 것이 그 목록이기 때문입니다. 스니펫이 compile되지 않는 페이지는 일부러
+있는 것이 그 목록이기 때문입니다. snippet이 compile되지 않는 페이지는 일부러
 목록에서 빼야 합니다.
 
 ## 직접 쓴 agent를 test하기
@@ -82,7 +82,7 @@ fn main() {
 ```
 
 여기서는 아무것도 `RUN_STARTED`를 emit하지 않습니다. 그것은 run driver의 일입니다.
-그것을 건너뛰기에 test가 method 하나만 따로 다룰 수 있습니다. 메시지 id는 UUID가
+그것을 건너뛰기에 test가 method 하나만 따로 다룰 수 있습니다. message id는 UUID가
 아니라 run id와 counter에서 나왔습니다. 그래서 위와 같은 기대 event 목록을 애초에
 쓸 수 있습니다.
 
@@ -92,17 +92,17 @@ fn main() {
 
 | tier | 무엇을 증명하나 | 언제 도나 |
 | --- | --- | --- |
-| **Deterministic E2E** | 프로토콜 배관이 올바르다는 것. event ordering 전체, state delta, human in the loop 왕복을 `ag-ui-client`가 실제 axum server를 상대로 진짜 HTTP 위에서 돌립니다. 기록된 SSE frame으로 돌리는 LLM 매핑도 여기 있습니다. | 항상. CI gate입니다. |
+| **Deterministic E2E** | protocol 배관이 올바르다는 것. event ordering 전체, state delta, human in the loop 왕복을 `ag-ui-client`가 실제 axum server를 상대로 진짜 HTTP 위에서 돌립니다. 기록된 SSE frame으로 돌리는 LLM 매핑도 여기 있습니다. | 항상. CI gate입니다. |
 | **Live smoke** | 실제 streaming model에 닿는다는 것, 그것이 AG-UI event로 올바르게 매핑된다는 것, 그리고 이 SDK가 정말 어떤 LLM crate에도 의존하지 않는다는 것. | `#[ignore]`입니다. key나 로컬 endpoint가 설정된 경우에만 돕니다. 결코 CI gate가 아닙니다. |
 
 deterministic tier는 각본대로 움직이는 mock agent와 기록된 model frame을 씁니다.
-그래서 빠르고 흔들리지 않습니다. **매핑을 지키는 것도 이 tier입니다.** 파싱과 누적
-규칙 하나하나가 `e2e/src/llm.rs`의 unit test로 덮여 있습니다. 캡처했거나 합성한
-frame으로 돌립니다. live test가 증명하는 것은 선이 닿아 있다는 것뿐입니다.
+그래서 빠르고 흔들리지 않습니다. **매핑을 지키는 것도 이 tier입니다.** parsing과
+누적 규칙 하나하나가 `e2e/src/llm.rs`의 unit test로 덮여 있습니다. capture했거나
+합성한 frame으로 돌립니다. live test가 증명하는 것은 선이 닿아 있다는 것뿐입니다.
 
 ### live tier가 gate에서 빠진 이유
 
-남의 서비스와 이야기하고, 그 서비스는 용량이 빠듯합니다. 그것이 동작하지 않는
+남의 service와 이야기하고, 그 service는 용량이 빠듯합니다. 그것이 동작하지 않는
 방식 대부분은 이 SDK에 대해 아무것도 말해 주지 않습니다. `503 high demand`가 test
 실패로 보고되면, 누군가는 있지도 않은 bug를 찾느라 한 시간을 씁니다.
 
@@ -113,14 +113,14 @@ frame으로 돌립니다. live test가 증명하는 것은 선이 닿아 있다�
 시도합니다. `404`는 그 model이 여기 없다는 뜻입니다. socket에서 아무도 응답하지
 않으면 **skip**합니다. endpoint가 떠 있지 않은 것입니다. 시도할 model이 떨어져도
 **skip**하되, 어느 model이 어떻게 실패했는지 이름을 댑니다. 그 밖은 실패입니다.
-`400`이나 agent 오류는 우리 것이기 때문입니다.
+`400`이나 agent error는 우리 것이기 때문입니다.
 
 **실패는 응답을 했는데 잘못 매핑된 model에게만 예약되어 있습니다.**
 
 그 방침 뒤의 숫자는 읽은 것이 아니라 재 본 것입니다. Gemini 무료 등급은 project별,
 model별로 분당 약 10회를 허용합니다. 하루에는 약 **20회**뿐입니다. 일일 할당량도
 약 1분의 `RetryInfo.retryDelay`를 보고하는데, 그 할당량에 대해서는 거짓말입니다.
-실행은 직렬화합니다. `--test-threads=1`을 쓰고 프로세스 안에서 mutex도 씁니다.
+실행은 직렬화합니다. `--test-threads=1`을 쓰고 process 안에서 mutex도 씁니다.
 병렬 test가 분당 제한을 곧바로 건드리기 때문입니다.
 
 ### live tier 돌리기
@@ -138,7 +138,7 @@ cargo test -p ag-ui-e2e --test live_llm -- --ignored --test-threads=1 --nocaptur
 | --- | --- | --- |
 | `AG_UI_LLM_BASE_URL` | Gemini의 OpenAI 호환 endpoint | 여기에 `/chat/completions`가 덧붙습니다 |
 | `AG_UI_LLM_MODEL` | `gemini-2.5-flash-lite` | model id. 고정하며, `*-latest` 별칭은 쓰지 않습니다 |
-| `AG_UI_LLM_API_KEY` | `GEMINI_API_KEY`로 폴백 | Bearer token |
+| `AG_UI_LLM_API_KEY` | `GEMINI_API_KEY`로 fallback | Bearer token |
 
 harness는 OpenAI 호환 `POST {base}/chat/completions` 모양으로 말합니다. 어느 벤더의
 고유 방언도 쓰지 않습니다. 거의 모든 곳이 제공하는 모양이 그것 하나이기
@@ -148,14 +148,14 @@ OpenRouter, OpenAI 자체를 가리킬 수 있습니다.
 :::caution[key 규칙 세 가지, 모두 하중을 집니다]
 - key는 **`Authorization: Bearer` header**에 넣습니다. query parameter에는 절대
   넣지 않습니다. query 문자열은 log에 남습니다. key는 출력되지 않습니다. 일부도,
-  오류 안에도, `Debug` 덤프에도 나오지 않습니다. `LlmAgent`의 `Debug` 구현은
+  error 안에도, `Debug` 덤프에도 나오지 않습니다. `LlmAgent`의 `Debug` 구현은
   그것을 가리도록 손으로 썼고, 그에 대한 test가 있습니다.
 - key가 아예 없으면 live test는 **skip**합니다. 찾던 변수의 이름을 대며
   skip합니다. 그것 때문에 실패하지는 않습니다. 그래서 key가 없는 기여자도 초록
   실행을 봅니다.
 - **없는 것은 없는 채로 두어야 합니다.** 빈 `Authorization: Bearer`는 익명 요청이
   아니라 *거부되는* 요청입니다. 그래서 key가 없다는 것은 endpoint가 기본값일 때만
-  오류입니다. "꺼 두려고" 변수에 빈 문자열을 넣지 마십시오. 설정하지 않은 채로
+  error입니다. "꺼 두려고" 변수에 빈 문자열을 넣지 마십시오. 설정하지 않은 채로
   두십시오.
 :::
 
@@ -171,8 +171,8 @@ export AG_UI_LLM_MODEL=qwen3:4b
 cargo test -p ag-ui-e2e --test live_llm -- --ignored --test-threads=1 --nocapture
 ```
 
-key는 설정하지 마십시오. base URL이 기본값이 아니면 model 폴백은 꺼집니다. 로컬
-server에는 올린 model 하나뿐이고, 우회할 model별 할당량도 없습니다. tool call을
+key는 설정하지 마십시오. base URL이 기본값이 아니면 model fallback은 꺼집니다.
+로컬 server에는 올린 model 하나뿐이고, 우회할 model별 할당량도 없습니다. tool call을
 실제로 지원하는 model을 고르십시오. 그러지 않으면 tool test가 실패합니다. 진짜
 이유로 실패하지만, 그 이유는 SDK의 것이 아닙니다. 작은 instruct model은 tool call을
 산문으로 뱉는 일이 잦습니다.
@@ -180,7 +180,7 @@ server에는 올린 model 하나뿐이고, 우회할 model별 할당량도 없�
 ### architecture test도 겸합니다
 
 `LlmAgent`는 평범한 `reqwest`로 model에 닿고, `Agent` 말고는 아무것도 구현하지
-않습니다. 어떤 `ag-ui-*` crate도 LLM 라이브러리에 의존하지 않습니다. 그 agent가
+않습니다. 어떤 `ag-ui-*` crate도 LLM library에 의존하지 않습니다. 그 agent가
 compile되고 stream을 흘리면,
 [`Agent` trait이 LLM 경계라는](/ag-ui-rust/ko/design/commitments/) 주장은 주장이
 아니라 실증이 됩니다. `rig`와 `async-openai` 같은 것들이 `e2e/Cargo.toml` 바깥에
@@ -213,10 +213,10 @@ MSRV, 문서, wasm과 의존성 graph 검사, drift check를 맡고 있습니다
 매 commit마다 되풀이하면, 새로 잡히는 것 없이 모든 commit이 느려집니다.
 
 제외 목록도 있고, 그 목록은 우연이 아닙니다. A2UI 적합성 suite, spec fixture,
-insta snapshot, drift baseline은 모두 다른 프로젝트에서 복사했거나 도구가 쓴
+insta snapshot, drift baseline은 모두 다른 project에서 복사했거나 도구가 쓴
 것입니다. 그 가치는 원본과 byte까지 같은 데 달려 있습니다. 이 설정의 첫 실행이
-vendoring된 fixture 열일곱 개에 조용히 후행 개행을 더했습니다. 그렇게 해서 이
-목록이 생겼습니다.
+vendor한 fixture 열일곱 개에 조용히 후행 개행을 더했습니다. 그렇게 해서 이 목록이
+생겼습니다.
 
 ## CI가 돌리는 것
 
@@ -227,7 +227,7 @@ timer로 돕니다. 어느 것이든 손으로 발동시킬 수 있습니다.
 | --- | --- |
 | `hygiene (prek)` | 위의 `.pre-commit-config.yaml`을 `--all-files`로. `cargo fmt --all -- --check`가 사는 곳입니다. 포매팅 gate는 하나이고, 기여자가 직접 돌리는 그 자리에 있습니다. |
 | `test` | `cargo clippy --workspace --all-targets --all-features -- -D warnings`, 그다음 `cargo test --workspace --all-features`, 그다음 `cargo test --doc --workspace --all-features`를 일부러 한 번 더. |
-| `doctest error codes (nightly)` | doctest를 nightly에서 한 번 더. `compile_fail,E0499` annotation의 오류 코드를 강제하는 유일한 장치입니다. build에서 nightly를 쓰는 유일한 곳입니다. |
+| `doctest error codes (nightly)` | doctest를 nightly에서 한 번 더. `compile_fail,E0499` annotation의 error code를 강제하는 유일한 장치입니다. build에서 nightly를 쓰는 유일한 곳입니다. |
 | `executor-agnostic` | core, server, client, a2ui를 `wasm32-unknown-unknown`으로 build하고(`cargo check` 다섯 번), 의존성 graph 네 개에 tokio가 없음을 단언합니다. |
 | `feature matrix` | `cargo check --all-targets` 열다섯 번. feature를 하나씩 단독으로, 그리고 crate마다 기본 feature를 끈 채로. |
 | `MSRV 1.85` | 1.85에서 `cargo check --workspace --all-features --all-targets`. edition 2024를 이해하는 첫 compiler라, 그 약속에는 여유분이 없습니다. |
@@ -239,7 +239,7 @@ timer로 돕니다. 어느 것이든 손으로 발동시킬 수 있습니다.
 마지막 두 개는 [검증 체계](/ag-ui-rust/ko/design/verification/)입니다.
 
 이 가운데 두 job은 손대기 전에 근거를 알아 둘 값어치가 있습니다. `hygiene` job의
-Rust toolchain은 하중을 집니다. `cargo-fmt` hook이 `cargo fmt`를 셸로 불러내는데,
+Rust toolchain은 하중을 집니다. `cargo-fmt` hook이 `cargo fmt`를 shell로 불러내는데,
 rustfmt가 없으면 건너뛰지 않고 실패합니다. 그리고 이 job을 지우면 CI에서 포매팅이
 통째로 사라집니다. clippy는 일부러 `hygiene`에 넣지 *않았습니다*. 설정이 그것을
 pre-push 단계에 두는데, `prek run`은 기본적으로 거기에 닿지 않습니다. 그래서

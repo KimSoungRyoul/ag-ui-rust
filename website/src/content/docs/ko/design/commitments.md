@@ -7,10 +7,10 @@ description: 이 SDK가 스스로에게 지우는 약속, 그 근거, 그리고 
 중이라면, 여기 적힌 것이 이 SDK의 약속이고 그 약속의 값입니다.
 
 논거는 "다른 선택지가 없다"가 아닙니다. 2026년 8월 현재 crates.io에는 AG-UI를
-독자적으로 구현한 Rust crate가 여럿 있습니다. 그중 하나 이상은 agent를 host할
-수 있습니다. `docs/DESIGN.md`의 이전 초안은 희소성을 근거로 삼았습니다. 그
-주장은 쓰일 당시에는 사실이었고, 지금은 사실이 아닙니다. 그래서 철회했습니다.
-남은 것은 품질에 대한 주장입니다. 그런 주장은 계속 증명해야 합니다.
+독자적으로 구현한 Rust crate가 여럿 있습니다. 그중 하나 이상은 agent를 host할 수
+있습니다. `docs/DESIGN.md`의 이전 초안은 희소성을 근거로 삼았습니다. 그 주장은
+쓰일 당시에는 사실이었고, 지금은 사실이 아닙니다. 그래서 철회했습니다. 남은 것은
+품질에 대한 주장입니다. 그런 주장은 계속 증명해야 합니다.
 
 ## 네 가지 약속
 
@@ -21,18 +21,18 @@ description: 이 SDK가 스스로에게 지우는 약속, 그 근거, 그리고 
 닫으리라고 믿는 셈입니다. 이른 return을 포함한 모든 경로에서 말입니다. 이 SDK는
 대신 RAII handle을 넘깁니다. handle을 만들면 여는 event가 emit됩니다. handle은
 run context를 mutable로 빌립니다. 그래서 겹치는 두 번째 handle은 **borrow check
-오류**입니다. `Drop`이 종료 event를 emit합니다. 그래서 `end()`를 잊어도, 메시지
+error**입니다. `Drop`이 종료 event를 emit합니다. 그래서 `end()`를 잊어도, message
 중간에서 `?`로 `Err`를 반환해도, stream은 올바른 형태로 남습니다.
 
-**server에서 검증하는 ordering.** 프로토콜이 금지하는 것을 타입 시스템으로 다
+**server에서 검증하는 ordering.** protocol이 금지하는 것을 type system으로 다
 표현할 수는 없습니다. borrow checker가 못 잡는 것은 runtime state machine이
 잡습니다. 앞선 `START` 없는 `TEXT_MESSAGE_CONTENT`는 원인이 생긴 자리에서
 보고됩니다. network를 세 번 건너간 곳에서 혼란에 빠진 frontend로 드러나지
 않습니다. TypeScript SDK는 client에서 검증하고, .NET SDK는 아예 검증하지
 않습니다. server 쪽에서 ordering을 검사하는 것은 어느 쪽도 아닙니다.
 
-**exhaustive한 `Event`.** 프로토콜에 event가 추가되면 consumer 쪽에서 compile
-오류가 납니다. `_` 갈래가 삼켜 버리지 않습니다.
+**exhaustive한 `Event`.** protocol에 event가 추가되면 consumer 쪽에서 compile
+error가 납니다. `_` 갈래가 삼켜 버리지 않습니다.
 
 **CI의 drift check.** 이 port는 upstream의 TypeScript schema를 보고 손으로
 썼습니다. 둘을 잇는 것이 compiler에는 없습니다.
@@ -45,18 +45,18 @@ run context를 mutable로 빌립니다. 그래서 겹치는 두 번째 handle은
 
 ## 진실의 원천은 TypeScript Zod schema입니다
 
-protobuf 정의가 아닙니다. upstream `events.proto`의 `Event` 메시지는 33개 event
-타입 중 18개만 담는 `oneof`입니다. reasoning도, activity도, thinking도,
-`tool_call_result`도 없습니다. 바이너리 transport는 프로토콜의 손실 있는
+protobuf 정의가 아닙니다. upstream `events.proto`의 `Event` message는 33개 event
+type 중 18개만 담는 `oneof`입니다. reasoning도, activity도, thinking도,
+`tool_call_result`도 없습니다. binary transport는 protocol의 손실 있는
 부분집합입니다. port의 대상이 될 수 없습니다. upstream에는 생성에 쓸 JSON Schema
 export도 없습니다.
 
 그래서 port는 `core/src/events.ts`를 보고 손으로 썼습니다. drift check가 그것을
 정직하게 유지합니다. 생성이 아니라 탐지입니다. upstream의 `EventType` enum과 Zod
-객체 key를 파싱해, Rust 쪽과 어긋나면 build를 실패시킵니다. 완전한 code 생성은
+객체 key를 parse해서, Rust 쪽과 어긋나면 build를 실패시킵니다. 완전한 code 생성은
 Zod-to-Rust compiler를 만들어 유지한다는 뜻입니다. 아직 그럴 값어치는 없습니다.
 
-[event reference](/ag-ui-rust/ko/reference/events/)가 바이너리 transport가 싣는
+[event 레퍼런스](/ag-ui-rust/ko/reference/events/)가 binary transport가 싣는
 18개와 싣지 못하는 15개를 짚어 줍니다.
 
 ## `Event`는 일부러 exhaustive하고, error는 아닙니다
@@ -64,38 +64,37 @@ Zod-to-Rust compiler를 만들어 유지한다는 뜻입니다. 아직 그럴 �
 이 workspace의 error enum은 모두 `#[non_exhaustive]`입니다.
 [`Event`](/ag-ui-rust/api/ag_ui_core/event/enum.Event.html)와
 [`EventType`](/ag-ui-rust/api/ag_ui_core/event/enum.EventType.html)은 아닙니다.
-이 비대칭은 의도입니다. 프로토콜은 지난 1년 사이 두 번 자랐습니다.
-`REASONING_*`와 `ACTIVITY_*`입니다. 그러니 이것은 가정이 아니라 실제로 시험받는
-문제입니다.
+이 비대칭은 의도입니다. protocol은 지난 1년 사이 두 번 자랐습니다. `REASONING_*`와
+`ACTIVITY_*`입니다. 그러니 이것은 가정이 아니라 실제로 시험받는 문제입니다.
 
 이 SDK가 바로잡으려는 실패는 조용한 coverage 누락입니다. `#[non_exhaustive]`는
 그것을 제도화합니다. 모든 consumer에게 `_` 갈래를 쓰게 만듭니다. 그리고 `_`
 갈래야말로 "34번 event가 도착했다"를 아무 진단도 없는 상태로 바꿉니다. 새 event를
 처리하는 일은 그대로 남습니다. 그런 일이 있다는 통지만 사라집니다.
 
-그러므로 새 프로토콜 event는 Rust consumer에게 compile 오류여야 *합니다*.
-`serde_json::Value` 대신 타입이 붙은 SDK를 쓰는 이유가 그것입니다. drift checker가
+그러므로 새 protocol event는 Rust consumer에게 compile error여야 *합니다*.
+`serde_json::Value` 대신 type이 붙은 SDK를 쓰는 이유가 그것입니다. drift checker가
 이야기를 완성합니다. upstream이 event를 추가하면 이 저장소의 build가 실패합니다.
 이 crate가 variant를 추가하면, 하위의 모든 match가 compile되지 않습니다. 누군가
 그 event가 자기에게 무엇을 뜻하는지 정해야 풀립니다. 고리 세 개가 하나같이
 시끄럽습니다.
 
 **대가는 정직하게 받아들입니다. event 하나를 추가하는 것은 이 SDK의 major
-버전입니다.** 그래야 합니다. wire 계약이 바뀌었으니까요. `Event`를 직접
+version입니다.** 그래야 합니다. wire 계약이 바뀌었으니까요. `Event`를 직접
 match한다면 그 비용을 예산에 넣으십시오. 그러고 싶지 않다면 상위의
 [`Update`](/ag-ui-rust/api/ag_ui_client/session/enum.Update.html) stream을
 match하십시오. 이쪽은 그 attribute를 답니다.
 
 error는 논리가 뒤집힙니다. 그래서 attribute를 답니다. 실패 모드를 exhaustive하게
 match하고 싶어 하는 사람은 없습니다. 호출자는 몇 개의 variant로 분기하고 나머지는
-흘려보냅니다. 새 실패 모드는 프로토콜 변경이 아닙니다.
+흘려보냅니다. 새 실패 모드는 protocol 변경이 아닙니다.
 
 ### `RunEnd`와 `Update`는 어디에 서는가
 
-두 client 타입은 그 선의 반대편에 각각 서 있습니다. 그 갈림이 규칙을 보여 줍니다.
+두 client type은 그 선의 반대편에 각각 서 있습니다. 그 갈림이 규칙을 보여 줍니다.
 
 [`RunEnd`](/ag-ui-rust/api/ag_ui_client/session/enum.RunEnd.html)는 `Event`
-쪽입니다. exhaustive합니다. run은 프로토콜이 정의한 세 가지 방식으로만 끝납니다.
+쪽입니다. exhaustive합니다. run은 protocol이 정의한 세 가지 방식으로만 끝납니다.
 frontend가 가장 검사받고 싶어 하는 match도 그것입니다. 입력을 다시 살릴지
 결정하니까요. 그리고 run이 끝나는 네 번째 방식은 wire 계약 변경이 맞습니다.
 
@@ -104,7 +103,7 @@ use ag_ui_client::RunEnd;
 
 fn on_end(end: &RunEnd) -> String {
     // `_` 갈래가 없습니다. run이 끝나는 네 번째 방식이 생기면 이 코드는
-    // compile되지 않습니다. 그것이 요점입니다. 프로토콜이 바뀌었고, 이 함수는
+    // compile되지 않습니다. 그것이 요점입니다. protocol이 바뀌었고, 이 함수는
     // 결정을 내려야 합니다.
     match end {
         RunEnd::Success { .. } => "done".to_owned(),
@@ -124,13 +123,13 @@ fn main() {
 }
 ```
 
-`Update`는 `#[non_exhaustive]`를 유지합니다. wire 타입이 아니라 view model입니다.
-다시 그릴 만한 종류가 하나 늘어나는 것은 프로토콜 변경이 아닙니다.
+`Update`는 `#[non_exhaustive]`를 유지합니다. wire type이 아니라 view model입니다.
+다시 그릴 만한 종류가 하나 늘어나는 것은 protocol 변경이 아닙니다.
 
-runtime 쪽도 타입 쪽과 같은 편입니다. 이 build가 모르는 event 타입은
+runtime 쪽도 type 쪽과 같은 편입니다. 이 build가 모르는 event type은
 deserialize에 실패합니다. session이 그것을 보고하고 run을 `RunEnd::Failed`로
-끝냅니다. 더 새로운 agent와 이야기하는 frontend는 모르는 타입의 이름을 대며
-오류로 멈춥니다. 대화의 4분의 3만 조용히 그리지 않습니다.
+끝냅니다. 더 새로운 agent와 이야기하는 frontend는 모르는 type의 이름을 대며
+error로 멈춥니다. 대화의 4분의 3만 조용히 그리지 않습니다.
 
 ## LLM 추상화는 없습니다
 
@@ -176,7 +175,7 @@ graph에 tokio가 없음을 단언합니다. tokio의 `rt`, `sync`, `macros`, `i
 따라 `msg.delta(t).await?`였습니다. 그것은 RAII 보증과 공존할 수 없습니다. 둘 중
 하나는 사라져야 했습니다.
 
-borrow가 금지하는 것은 두 번째로 열린 block뿐입니다. 프로토콜의 규칙이 그것이고,
+borrow가 금지하는 것은 두 번째로 열린 block뿐입니다. protocol의 규칙이 그것이고,
 그 밖에는 없습니다. 그래서 handle은 run context 자체가 아니라 그 *field* 두 개를
 쥡니다. event sink와 state입니다. 덕분에 call이 열려 있는 동안에도
 `call.state_mut()`과 `call.publish_state()`가 동작합니다. tool이 자기 일을 하는
@@ -193,10 +192,10 @@ borrow가 금지하는 것은 두 번째로 열린 block뿐입니다. 프로토�
 ## ID는 문자열입니다
 
 spec은 `threadId`, `runId`, `messageId`를 문자열로 규정합니다. 기존 커뮤니티
-crate 하나는 이들을 UUID로 파싱합니다. LangGraph 앞에서 곧바로 깨집니다.
+crate 하나는 이들을 UUID로 parse합니다. LangGraph 앞에서 곧바로 깨집니다.
 LangGraph는 `"thread-abc"` 같은 thread id와 평범한 정수인 run id를 보냅니다. 자체
 id 체계를 쓰는 다른 무엇 앞에서도 마찬가지입니다(upstream 이슈 #2195, #2196).
-`String` 위의 newtype은 타입 구분을 지키면서, 프로토콜에 없는 제약을 만들지
+`String` 위의 newtype은 type 구분을 지키면서, protocol에 없는 제약을 만들지
 않습니다.
 
 ```rust
@@ -210,7 +209,7 @@ fn main() {
     assert_eq!(thread.as_str(), "thread-abc");
     assert_eq!(run.as_str(), "42");
 
-    // 서로 다른 타입이라 한쪽을 다른 쪽 자리에 넘길 수 없습니다.
+    // 서로 다른 type이라 한쪽을 다른 쪽 자리에 넘길 수 없습니다.
     assert_eq!(serde_json::to_string(&thread).unwrap(), r#""thread-abc""#);
 }
 ```
@@ -221,9 +220,9 @@ fn main() {
 ## crate는 일곱이 아니라 다섯
 
 첫 초안은 .NET의 assembly 분할을 일대일로 흉내 냈습니다. 잘못된 직관입니다.
-.NET에서 assembly는 배포와 버전 관리의 단위라 쪼개는 것이 싸고 자연스럽습니다.
+.NET에서 assembly는 배포와 version 관리의 단위라 쪼개는 것이 싸고 자연스럽습니다.
 Rust에서는 **feature가 일차 도구**입니다. crate를 쪼개는 일은 의존성 격리나
-독립적인 버전 관리로 정당화되어야 합니다.
+독립적인 version 관리로 정당화되어야 합니다.
 
 그래서 crate 두 개가 접혀 들어갔습니다. SSE encoder는 `ag-ui-core::encode`가
 되었습니다. 추가 의존성 없는 수백 줄이고, 무거운 것은 protobuf뿐인데 그것은 이미
@@ -232,7 +231,7 @@ prompt 문자열과 orchestration뿐이라 격리할 것이 없습니다.
 
 따로 남은 것과 그 이유입니다. `ag-ui-axum`은 axum, tokio, tower를 끌고 옵니다.
 `ag-ui-client`는 그 자체로 쓸모가 있습니다. `ag-ui-a2ui`는 AG-UI 없이도 쓸 수
-있는 다른 프로토콜입니다. [crate 구성](/ag-ui-rust/ko/start/crates/)이 그
+있는 다른 protocol입니다. [crate 구성](/ag-ui-rust/ko/start/crates/)이 그
 안내입니다.
 
 ## 확장 지점은 둘이 아니라 하나
@@ -263,7 +262,7 @@ frontend로 실어 나르려고 `render_a2ui`를 emit합니다. frontend가 그�
 마찬가지입니다.
 
 알아보지 못하는 call을 client가 어떻게 다룰지는 client의 결정입니다. 무시하든,
-activity로 그리든, 보고하든 말입니다. 프로토콜이 제약하는 것은 *ordering*입니다.
+activity로 그리든, 보고하든 말입니다. protocol이 제약하는 것은 *ordering*입니다.
 `START` 없는 `TOOL_CALL_ARGS`, call이 끝나기 전에 온 result가 그것입니다. 검사받는
 것도 그것입니다.
 

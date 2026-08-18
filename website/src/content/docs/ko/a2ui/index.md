@@ -9,7 +9,7 @@ data입니다. renderer는 그것을 그립니다. `ag-ui-a2ui`는 그 교환의
 
 이 crate는 pixel을 그리지 않습니다. tree를 배치하지도, runtime에 UI를 평가하지도
 않습니다. A2UI를 만들고 검증하고 transport용으로 감쌀 뿐입니다. rendering은 완전히 다른
-program입니다. widget toolkit과 event loop, 반응형 data model이 있어야 합니다. 그리고
+program입니다. widget toolkit과 event loop, reactive data model이 있어야 합니다. 그리고
 wire 반대편에 있습니다.
 
 ```rust
@@ -173,7 +173,7 @@ interop되지 않습니다. 그래서 이 crate는 생태계가 실제로 말하
 | [`message`](/ag-ui-rust/api/ag_ui_a2ui/message/index.html) | protocol envelope 열 개와 `Component`, `ChildList`, data model update semantics. |
 | [`catalog`](/ag-ui-rust/api/ag_ui_a2ui/catalog/index.html) | surface가 담을 수 있는 것. `Catalog::basic()`은 표준 18-component catalog입니다. `Catalog::from_schema`는 custom catalog를 parsing합니다. |
 | [`validate`](/ag-ui-rust/api/ag_ui_a2ui/validate/index.html) | JSON Schema로 표현할 수 없는 의미 검사. 생성 model이 자주 틀리는 envelope 검사와 property type 검사도 함께. |
-| [`binding`](/ag-ui-rust/api/ag_ui_a2ui/binding/index.html) | JSON Pointer 해석, template scope, `formatString` interpolation 문법. |
+| [`binding`](/ag-ui-rust/api/ag_ui_a2ui/binding/index.html) | JSON Pointer 해석, template scope, `formatString` interpolation syntax. |
 | [`constants`](/ag-ui-rust/api/ag_ui_a2ui/constants/index.html) | 언어를 가로지르는 wire 값: envelope key, protocol version, tool 이름 둘. |
 | [`toolkit`](/ag-ui-rust/api/ag_ui_a2ui/toolkit/index.html) *(feature)* | "사용자가 UI를 요청했다"와 "유효한 A2UI가 wire에 올랐다" 사이의 모든 것. |
 | [`agui`](/ag-ui-rust/api/ag_ui_a2ui/agui/index.html) *(feature)* | AG-UI glue. crate의 나머지는 AG-UI의 존재를 모릅니다. |
