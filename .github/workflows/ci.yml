@@ -263,7 +263,17 @@ jobs:
 
           rc=0
 
-          text=$(grep -rhoE "\[<code>($names)(::[A-Za-z0-9_]+)*</code>\]" "${dirs[@]}" | sort | uniq -c)
+          # Two more inlined-upstream collisions, excluded by the exact path
+          # rather than by name so our own `CancellationToken` stays covered.
+          # tokio-util blanket-impls `FutureExt` for every `Future`, so once the
+          # `axum` feature puts tokio-util in the graph, rustdoc renders those
+          # methods on our `Cancelled` and inlines their doc comments — which
+          # link to tokio-util's *own* `CancellationToken`, unresolvable under
+          # `--no-deps`. Same name as ours, different type, not our text.
+          inlined='\[<code>CancellationToken::run_until_cancelled(_owned)?</code>\]'
+
+          text=$(grep -rhoE "\[<code>($names)(::[A-Za-z0-9_]+)*</code>\]" "${dirs[@]}" \
+            | grep -vE "$inlined" | sort | uniq -c)
           if [ -n "$text" ]; then
             echo "$text"
             echo "::error::the docs name one of our own items without linking to it; use an absolute https://kimsoungryoul.github.io/ag-ui-rust/api/ link"

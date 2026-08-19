@@ -21,18 +21,44 @@
 //! no async — that part compiles for everyone.
 //!
 //! Everything past it is a feature, because most programs want one side of the
-//! protocol and should not pay to compile the other:
+//! protocol and should not pay to compile the other. Each entry below is
+//! gated the same way its module is: a link to an item this build does not
+//! have is a rustdoc error, not a dead link, which is what the `doc-features`
+//! CI job exists to catch.
 //!
-//! - [`serve`] — host an agent. Implement [`serve::Agent`], hand it to
-//!   [`serve::run()`], and you have a stream a transport can serialize.
-//! - [`client`] — consume a remote agent, materializing its events into
-//!   messages and state.
-//! - [`axum`] — mount a hosted agent on an axum router, one call.
+#![cfg_attr(
+    feature = "serve",
+    doc = "- [`serve`] — host an agent. Implement [`serve::Agent`], hand it to",
+    doc = "  [`serve::run()`], and you have a stream a transport can serialize."
+)]
+#![cfg_attr(
+    not(feature = "serve"),
+    doc = "- `serve` *(off in this build)* — host an agent: the `Agent` trait, and",
+    doc = "  `run()` to turn one into a stream a transport can serialize."
+)]
+#![cfg_attr(
+    feature = "client",
+    doc = "- [`client`] — consume a remote agent, materializing its events into",
+    doc = "  messages and state."
+)]
+#![cfg_attr(
+    not(feature = "client"),
+    doc = "- `client` *(off in this build)* — consume a remote agent, materializing",
+    doc = "  its events into messages and state."
+)]
+#![cfg_attr(
+    feature = "axum",
+    doc = "- [`axum`] — mount a hosted agent on an axum router, one call."
+)]
+#![cfg_attr(
+    not(feature = "axum"),
+    doc = "- `axum` *(off in this build)* — mount a hosted agent on an axum router."
+)]
 //!
 //! Each runtime keeps its own `Error` and `Result` under its own module. A
-//! bare [`Error`] is always a protocol error; [`serve::Error`] is a hosting
-//! error. Collapsing them into the root would hide a distinction that matters
-//! at every `?`.
+//! bare [`Error`] is always a protocol error, `ag_ui::serve::Error` is a
+//! hosting error, and collapsing them into the root would hide a distinction
+//! that matters at every `?`.
 //!
 //! ```
 //! # #[cfg(feature = "sse")] {
