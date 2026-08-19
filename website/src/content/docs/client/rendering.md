@@ -71,7 +71,7 @@ that sequence is all the wire says about what was open when it arrived.
 
 The case that makes this concrete: an agent that does a tool's work *while the
 call is open* publishes state between `TOOL_CALL_ARGS` and `TOOL_CALL_END` —
-which `ag_ui::serve`'s handles support, and which the protocol allows because
+which `ag_ui::server`'s handles support, and which the protocol allows because
 `STATE_*` is unordered. The `Update::State` that comes out carries no mention of
 the call.
 

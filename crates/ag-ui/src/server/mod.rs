@@ -9,7 +9,7 @@
 //!
 //! ```
 //! use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
-//! use ag_ui::serve::{Agent, Result, RunContext, run};
+//! use ag_ui::server::{Agent, Result, RunContext, run};
 //! use futures_util::StreamExt;
 //! use serde::{Deserialize, Serialize};
 //!
@@ -113,7 +113,7 @@
 //!
 //! ```
 //! # use ag_ui::{Interrupt, ResumeStatus, RunOutcome};
-//! # use ag_ui::serve::{Agent, Result, RunContext};
+//! # use ag_ui::server::{Agent, Result, RunContext};
 //! # struct Approver;
 //! impl Agent for Approver {
 //!     type State = ();

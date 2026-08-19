@@ -16,10 +16,10 @@ back on the next request.
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("get_weather")?;
@@ -58,10 +58,10 @@ a tool message on the next request:
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("open_settings_panel")?;
@@ -90,7 +90,7 @@ the finished struct to execute against once the provider is done:
 
 ```rust
 use ag_ui::RunAgentInput;
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -98,7 +98,7 @@ struct Query {
     city: String,
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("get_weather")?;
@@ -139,7 +139,7 @@ for anything unoffered:
 
 ```rust
 use ag_ui::{RunAgentInput, RunOutcome, Tool};
-use ag_ui::serve::{Agent, Error, Result, RunContext, ToolCallHandle};
+use ag_ui::server::{Agent, Error, Result, RunContext, ToolCallHandle};
 use serde_json::json;
 
 /// Opens a call only when the client offered the tool. A rule this agent
@@ -166,7 +166,7 @@ impl Agent for Board {
     }
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let mut input = RunAgentInput::new("t", "r");
     input.tools = vec![Tool::new("add_task", "Add a task to the board.", json!({}))];
     let (mut ctx, _events) = RunContext::<()>::new(input)?;
@@ -187,7 +187,7 @@ work belongs *between* the arguments and the result:
 
 ```rust
 use ag_ui::RunAgentInput;
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -196,7 +196,7 @@ struct Board {
     tasks: Vec<String>,
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<Board>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("add_task")?;
@@ -230,10 +230,10 @@ complete. It is also the only one that cannot splice two calls' arguments into e
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use std::collections::BTreeMap;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let names = ["get_weather", "roll_dice"];
@@ -270,10 +270,10 @@ stream. What it will not let you do is close a call you never opened.
 
 ## API
 
-- [`RunContext::tool_call`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tool_call)
-  and [`tool_call_with_id`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tool_call_with_id)
-- [`RunContext::tools`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tools) and
-  [`tool`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tool)
-- [`ag_ui::serve::ToolCallHandle`](/ag-ui-rust/api/ag_ui/serve/struct.ToolCallHandle.html)
+- [`RunContext::tool_call`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tool_call)
+  and [`tool_call_with_id`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tool_call_with_id)
+- [`RunContext::tools`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tools) and
+  [`tool`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tool)
+- [`ag_ui::server::ToolCallHandle`](/ag-ui-rust/api/ag_ui/server/struct.ToolCallHandle.html)
 - [`ag_ui::Tool`](/ag-ui-rust/api/ag_ui/struct.Tool.html) and
   [`ToolCall`](/ag-ui-rust/api/ag_ui/struct.ToolCall.html)

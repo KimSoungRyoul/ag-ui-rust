@@ -159,7 +159,7 @@ TEXT_MESSAGE_CHUNK { messageId: "msg-2", delta: "Bye" }   <- msg-1 just ended
 On the consuming side that bookkeeping is `ag_ui::client::chunks`, which expands
 a run of chunks back into the equivalent start/content/end triple before
 anything else sees them. On the emitting side there is deliberately **no
-handle**. The typestate emitters in `ag_ui::serve` exist to make sure what you
+handle**. The typestate emitters in `ag_ui::server` exist to make sure what you
 open gets closed; a chunk has nothing to close, so wrapping one in an RAII
 handle would only add a way to get it wrong. Emit them with `ctx.emit` — the
 supported path, not a gap waiting for an API.

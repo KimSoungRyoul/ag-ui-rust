@@ -338,7 +338,7 @@ crate를 wasm에서 쓸 수 있게 유지하는 방법입니다. 끄면 `HttpTra
 
 ```toml
 [dependencies.ag-ui]
-version = "0.1"
+version = "0.2"
 default-features = false
 features = ["client", "sse"]
 ```

@@ -13,7 +13,7 @@
 mod common;
 
 use ag_ui::client::{InterruptExt as _, RunEnd, Session, Update};
-use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::server::{Agent, Error, Result, RunContext};
 use ag_ui::{Interrupt, JsonObject, Message, ResumeStatus, RunOutcome};
 use common::{serve, transport};
 use futures_util::StreamExt as _;

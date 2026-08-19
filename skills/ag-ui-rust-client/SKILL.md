@@ -6,7 +6,7 @@ description: "MUST USE when writing Rust against ag-ui-rust to consume an agent 
 # Consuming an AG-UI agent from Rust
 
 Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.1.0**. If the API here disagrees with the compiler, the compiler is
+workspace version **0.2.0**. If the API here disagrees with the compiler, the compiler is
 right and the skill is stale — see `ag-ui-rust-update`.
 
 ## Adding the crates
@@ -17,7 +17,7 @@ different, unrelated project. Which half of the protocol you get is a feature:
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.1", features = ["http"] }
+ag-ui = { version = "0.2", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```

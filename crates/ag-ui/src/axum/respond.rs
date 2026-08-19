@@ -8,10 +8,10 @@
 //! `application/xml` gets a `406`, not an SSE stream it cannot read.
 //!
 //! **The body owns the run.** Polling the stream *is* running the agent
-//! ([`crate::serve::run()`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/run/fn.run.html) has no executor of its own), so the response body and
+//! ([`crate::server::run()`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/run/fn.run.html) has no executor of its own), so the response body and
 //! the run have exactly the same lifetime. That is what makes disconnect
 //! handling work: when the client goes away hyper drops the body, and the body
-//! drops a guard that trips the run's [`CancellationToken`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/cancel/struct.CancellationToken.html). See
+//! drops a guard that trips the run's [`CancellationToken`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/cancel/struct.CancellationToken.html). See
 //! [`SseResponse::cancellation`].
 
 use std::convert::Infallible;
@@ -20,7 +20,7 @@ use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use crate::encode::sse;
-use crate::serve::CancellationToken;
+use crate::server::CancellationToken;
 use crate::{Event, EventStreamFormatter, RunErrorEvent, SSE_MEDIA_TYPE, SseFormatter, media_type};
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderValue, header};
@@ -70,7 +70,7 @@ pub fn negotiate(accept: Option<&str>) -> Result<SseFormatter> {
 /// ```
 /// use ag_ui::axum::SseResponse;
 /// use ag_ui::{RunAgentInput, RunOutcome};
-/// use ag_ui::serve::{Agent, Result, RunContext, Runner};
+/// use ag_ui::server::{Agent, Result, RunContext, Runner};
 ///
 /// # struct Greeter;
 /// # impl Agent for Greeter {
@@ -111,7 +111,7 @@ impl SseResponse {
     /// Trips `token` when the client disconnects.
     ///
     /// The token to pass is the one the run was built with —
-    /// [`Runner::cancellation_token`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/run/struct.Runner.html#method.cancellation_token).
+    /// [`Runner::cancellation_token`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/run/struct.Runner.html#method.cancellation_token).
     ///
     /// # How the disconnect is noticed
     ///
@@ -142,7 +142,7 @@ impl SseResponse {
     /// Attaches the run's events and builds the response.
     pub fn stream<S>(self, events: S) -> Response
     where
-        S: Stream<Item = crate::serve::Result<Event>> + Send + 'static,
+        S: Stream<Item = crate::server::Result<Event>> + Send + 'static,
     {
         let body = EventBody {
             // Cancel first, then drop the run: an agent whose own `Drop` looks
@@ -186,7 +186,7 @@ impl SseResponse {
 struct EventBody {
     /// Declared first so it drops first — see [`SseResponse::stream`].
     guard: DisconnectGuard,
-    events: Pin<Box<dyn Stream<Item = crate::serve::Result<Event>> + Send>>,
+    events: Pin<Box<dyn Stream<Item = crate::server::Result<Event>> + Send>>,
     formatter: SseFormatter,
     keep_alive: Option<KeepAlive>,
     done: bool,

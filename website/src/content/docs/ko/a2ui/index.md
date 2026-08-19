@@ -46,7 +46,7 @@ form을 띄우려는 AG-UI agent에게 필요하기 때문입니다. AG-UI가 A2
 
 ```toml
 [dependencies.ag-ui-a2ui]
-version = "0.1"
+version = "0.2"
 default-features = false
 features = ["toolkit"]
 ```
@@ -107,7 +107,7 @@ use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
 use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
 use ag_ui_a2ui::{Component, wrap_as_operations_envelope};
 use ag_ui::RunOutcome;
-use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::server::{Agent, Error, Result, RunContext};
 use serde_json::json;
 
 struct Merchant;
@@ -134,7 +134,7 @@ impl Agent for Merchant {
 
 `render_a2ui`는 agent가 스스로 답하는 call입니다. client가 offer한 적이 없습니다. client가
 실행할 것이 없기 때문입니다. frontend는 tool을 실행하지 않고 그 result를 그립니다. 그래서
-`ag_ui::serve`는 `RunAgentInput.tools`를 allow-list가 아니라 capability list로 취급합니다.
+`ag_ui::server`는 `RunAgentInput.tools`를 allow-list가 아니라 capability list로 취급합니다.
 그 list에 없는 이름으로 call을 emit해도 형식이 올바른 stream입니다. ordering verifier는 그에
 대해 아무 말도 하지 않습니다. protocol이 제약하는 것은 ordering이고, 검사되는 것도
 그것입니다.

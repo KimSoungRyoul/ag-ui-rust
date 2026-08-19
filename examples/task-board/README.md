@@ -3,7 +3,7 @@
 A workshop task board, spoken over AG-UI. Both halves of the protocol in one
 crate: an agent you can host, and a terminal that talks to it.
 
-It exists to be a first outside consumer of this SDK. It uses `ag_ui::serve`,
+It exists to be a first outside consumer of this SDK. It uses `ag_ui::server`,
 `ag-ui-client`, `ag-ui-axum`, `ag-ui-a2ui` and `ag-ui-core` exactly as a crates.io
 user would — public items only, nothing reached into — and every major subsystem
 appears once:

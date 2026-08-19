@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "ag-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "futures-channel",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "ag-ui-a2ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ag-ui",
  "jsonptr 0.8.1",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "ag-ui-e2e"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ag-ui",
  "ag-ui-a2ui",
@@ -155,7 +155,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "board-watch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ag-ui",
  "ag-ui-a2ui",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "task-board"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ag-ui",
  "ag-ui-a2ui",
@@ -2040,7 +2040,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",

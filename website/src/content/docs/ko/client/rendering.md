@@ -76,7 +76,7 @@ event가 그 순서열의 어디에 놓였는지만 말합니다. 그 event가 �
 
 이를 손에 잡히게 만드는 사례가 있습니다. 어떤 agent는 tool이 할 일을
 *call이 열려 있는 동안* 처리합니다. 그런 agent는 `TOOL_CALL_ARGS`와
-`TOOL_CALL_END` 사이에서 state를 내보냅니다. `ag_ui::serve`의 handle이
+`TOOL_CALL_END` 사이에서 state를 내보냅니다. `ag_ui::server`의 handle이
 이를 지원합니다. `STATE_*`에는 순서 제약이 없으니 protocol도
 허용합니다. 그렇게 나온 `Update::State`에는 그 call에 대한 언급이 전혀
 없습니다.

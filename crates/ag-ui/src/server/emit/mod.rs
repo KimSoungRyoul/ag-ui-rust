@@ -7,7 +7,7 @@
 //! early return. This module hands out RAII handles instead:
 //!
 //! - creating a handle emits the opening event;
-//! - the handle borrows the [`RunContext`](crate::serve::RunContext) mutably, so a
+//! - the handle borrows the [`RunContext`](crate::server::RunContext) mutably, so a
 //!   second overlapping handle is a **borrow-check error**, not a runtime
 //!   protocol violation;
 //! - `Drop` emits the terminator, so forgetting `end()` — or returning `Err`
@@ -15,7 +15,7 @@
 //!   stream.
 //!
 //! ```compile_fail,E0499
-//! use ag_ui::serve::RunContext;
+//! use ag_ui::server::RunContext;
 //!
 //! fn interleave(ctx: &mut RunContext<()>) {
 //!     let mut first = ctx.assistant_message().unwrap();
@@ -57,7 +57,7 @@
 //! borrow-check error — including from inside an open call:
 //!
 //! ```compile_fail,E0499
-//! use ag_ui::serve::RunContext;
+//! use ag_ui::server::RunContext;
 //!
 //! fn narrate(ctx: &mut RunContext<()>) {
 //!     let mut call = ctx.tool_call("search").unwrap();
@@ -70,7 +70,7 @@
 //! # What has no handle, and why that is the answer
 //!
 //! Two things an agent may legitimately put on the wire are
-//! [`RunContext::emit`](crate::serve::RunContext::emit) territory, and the escape
+//! [`RunContext::emit`](crate::server::RunContext::emit) territory, and the escape
 //! hatch is the supported path for both rather than a gap waiting for an API.
 //!
 //! The `*_CHUNK` family is unbracketed by definition: a chunk carries its own
@@ -98,10 +98,10 @@ use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_core::Stream;
 use futures_util::StreamExt as _;
 
-use crate::serve::cancel::CancellationToken;
-use crate::serve::error::{Error, Result};
-use crate::serve::transform::TransformerChain;
-use crate::serve::verify::Verifier;
+use crate::server::cancel::CancellationToken;
+use crate::server::error::{Error, Result};
+use crate::server::transform::TransformerChain;
+use crate::server::verify::Verifier;
 
 pub use message::MessageHandle;
 pub use reasoning::ReasoningHandle;
@@ -112,7 +112,7 @@ pub use tool::ToolCallHandle;
 /// then the channel.
 ///
 /// Not public: the only way to reach one is through a
-/// [`RunContext`](crate::serve::RunContext) or a handle, which is what keeps the
+/// [`RunContext`](crate::server::RunContext) or a handle, which is what keeps the
 /// ordering guarantees intact.
 pub(crate) struct EventSink {
     tx: UnboundedSender<Event>,
@@ -192,9 +192,9 @@ impl EventSink {
 
 /// The read end of a run's event stream.
 ///
-/// Yielded by [`RunContext::new`](crate::serve::RunContext::new) for agents under
+/// Yielded by [`RunContext::new`](crate::server::RunContext::new) for agents under
 /// test. Transports get a [`Stream`] from
-/// [`Runner::run`](crate::serve::Runner::run) instead.
+/// [`Runner::run`](crate::server::Runner::run) instead.
 #[derive(Debug)]
 pub struct EventReceiver {
     rx: UnboundedReceiver<Event>,
@@ -213,7 +213,7 @@ impl EventReceiver {
     ///
     /// ```
     /// # use ag_ui::{Event, RunAgentInput, TextMessageRole};
-    /// # use ag_ui::serve::RunContext;
+    /// # use ag_ui::server::RunContext;
     /// let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
     /// ctx.say("hello")?;
     /// assert_eq!(events.drain(), vec![
@@ -221,7 +221,7 @@ impl EventReceiver {
     ///     Event::text_message_content("r-msg-1", "hello"),
     ///     Event::text_message_end("r-msg-1"),
     /// ]);
-    /// # Ok::<(), ag_ui::serve::Error>(())
+    /// # Ok::<(), ag_ui::server::Error>(())
     /// ```
     pub fn drain(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
@@ -234,7 +234,7 @@ impl EventReceiver {
     /// Closes the channel, so the next emit fails with
     /// [`Error::Disconnected`].
     ///
-    /// [`Error::Disconnected`]: crate::serve::Error::Disconnected
+    /// [`Error::Disconnected`]: crate::server::Error::Disconnected
     pub fn close(&mut self) {
         self.rx.close();
     }

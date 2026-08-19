@@ -11,7 +11,7 @@ request in the same thread that happens to carry answers.
 
 ```rust
 use ag_ui::{Event, Interrupt, ResumeEntry, ResumeStatus, RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Error, Result, RunContext, run};
+use ag_ui::server::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
@@ -89,7 +89,7 @@ what is still outstanding and report all of it:
 
 ```rust
 use ag_ui::{Interrupt, RunOutcome};
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 
 struct Planner;
 
@@ -120,7 +120,7 @@ validates before emitting, so it becomes a `RUN_ERROR` with the `PROTOCOL` code.
 
 ## Errors
 
-`ag_ui::serve::Error` is what every method returns, through `Result<T, E = Error>`. Each
+`ag_ui::server::Error` is what every method returns, through `Result<T, E = Error>`. Each
 variant has a stable code that lands on `RUN_ERROR`:
 
 | Variant | Code | Raised when |
@@ -144,9 +144,9 @@ zero-sized type. It catches what the borrow checker cannot see, which is `ctx.em
 
 ```rust
 use ag_ui::{Event, RunAgentInput};
-use ag_ui::serve::{Error, RunContext, Rule};
+use ag_ui::server::{Error, RunContext, Rule};
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let error = ctx
@@ -166,7 +166,7 @@ mid-message could not have closed it.
 
 ## Cancellation
 
-`ag_ui::serve::CancellationToken` — deliberately not `tokio_util`'s, because these crates
+`ag_ui::server::CancellationToken` — deliberately not `tokio_util`'s, because these crates
 build for wasm. A transport trips it when the client hangs up, and **every emit after
 cancellation fails**, so the next `?` unwinds the run without any cooperation from the agent.
 
@@ -176,7 +176,7 @@ cancellation is meant to stop paying for:
 
 ```rust
 use ag_ui::{RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::server::{Agent, Error, Result, RunContext};
 
 struct Slow;
 
@@ -198,7 +198,7 @@ async fn call_the_model() -> String {
 }
 
 #[tokio::main]
-async fn main() -> ag_ui::serve::Result<()> {
+async fn main() -> ag_ui::server::Result<()> {
     let (ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
     assert_eq!(
         ctx.until_cancelled(call_the_model()).await.as_deref(),

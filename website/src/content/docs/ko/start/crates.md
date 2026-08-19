@@ -10,7 +10,7 @@ crate 둘, 그리고 feature 한 묶음입니다. 나뉘는 선은 protocol 하�
 | crate / feature | 무엇인가 |
 | --- | --- |
 | `ag-ui` | protocol type, 33개 event variant 전부, 그리고 wire encoding. `serde`와 `serde_json`뿐. |
-| ↳ `serve` | agent를 띄웁니다. `Agent` trait, typestate event emitter, 자동 state delta, protocol verification. executor를 가리지 않습니다. |
+| ↳ `server` | agent를 띄웁니다. `Agent` trait, typestate event emitter, 자동 state delta, protocol verification. executor를 가리지 않습니다. |
 | ↳ `client` | 원격 agent를 소비합니다. transport, event 적용, 실체화된 message와 state. |
 | ↳ `http` | `client`를 위한 `reqwest` transport. |
 | ↳ `axum` | agent를 axum router에 올립니다. tokio를 끌어오는 유일한 feature. |
@@ -18,11 +18,11 @@ crate 둘, 그리고 feature 한 묶음입니다. 나뉘는 선은 protocol 하�
 
 ## 어느 것이 필요한가
 
-**HTTP로 agent를 serving하려면:** `features = ["axum"]`. `serve`와 `sse`를 함의합니다.
+**HTTP로 agent를 serving하려면:** `features = ["axum"]`. `server`와 `sse`를 함의합니다.
 signature에 이름을 쓰게 될 protocol type은 어느 쪽이든 crate root에 있습니다.
 
-**agent를 다른 곳에서 serving하려면** `features = ["serve"]`입니다. Lambda, WebSocket,
-process 안의 test가 그렇습니다. `serve::run(agent, input)`은 event `Stream`을 건네고
+**agent를 다른 곳에서 serving하려면** `features = ["server"]`입니다. Lambda, WebSocket,
+process 안의 test가 그렇습니다. `server::run(agent, input)`은 event `Stream`을 건네고
 거기서 멈춥니다. 직렬화는 transport의 일입니다. axum이 아닌 무언가 위에 SSE를 얹어야
 한다면 crate root의 `SseFormatter`가 frame을 만들어 줍니다.
 
@@ -54,7 +54,7 @@ runtime을 받습니다. `Transport`를 직접 구현하세요. wasm을 위해, 
 그 사용자가 `ag-ui`라는 이름의 crate에 의존할 이유가 없습니다.
 
 비용은 실재하고 알아 둘 값어치가 있습니다. cargo는 dependency graph 전체에서 feature를
-합칩니다. build 안의 어떤 crate가 `serve`를 요청하고 다른 crate가 `client`를 요청하면 둘
+합칩니다. build 안의 어떤 crate가 `server`를 요청하고 다른 crate가 `client`를 요청하면 둘
 다 compile됩니다. 섞인 graph에서의 compile 시간이지 runtime이나 정확성 비용은 아닙니다.
 
 ## 전체 모양
@@ -65,9 +65,9 @@ runtime을 받습니다. `Transport`를 직접 구현하세요. wasm을 위해, 
             │                              (ag-ui optional)
   ┌─────────┼──────────┐
   │         │          │
-serve     client     axum
+server    client     axum
 futures · futures ·  axum · tower · tokio
-json-patch  json-patch     (serve와 sse를 함의)
+json-patch  json-patch     (server와 sse를 함의)
             └ http
               reqwest
 ```
@@ -75,12 +75,12 @@ json-patch  json-patch     (serve와 sse를 함의)
 저 그림에서 무게를 지는 것이 셋입니다.
 
 **tokio는 `axum`과 함께 들어오고 다른 곳에서는 들어오지 않습니다.** protocol type과
-`serve`·`client` runtime은 `futures` primitive를 씁니다. emit 경로에
+`server`·`client` runtime은 `futures` primitive를 씁니다. emit 경로에
 `tokio::sync::mpsc`가 아니라 `futures::channel::mpsc`를 쓰는 식입니다. 그래서 wasm
 target과 tokio가 아닌 executor가 계속 돕니다. CI가 두 방향으로 강제합니다. feature마다
 `wasm32-unknown-unknown`으로 build해 봅니다. tokio 자체도 wasm으로 compile되므로, 그
 dependency graph에 tokio가 없다는 것까지 확인합니다. 이 단언은 crate였을 때보다 지금 더
-중요합니다. cargo는 graph 전체에서 feature를 합치므로, `serve`에 `dep:tokio`를 한 번
+중요합니다. cargo는 graph 전체에서 feature를 합치므로, `server`에 `dep:tokio`를 한 번
 잘못 달면 `axum`을 요청한 적 없는 모든 소비자에게 닿습니다. 자세한 것은
 [platform과 MSRV](/ag-ui-rust/ko/reference/platforms/)에 있습니다.
 
@@ -130,11 +130,11 @@ orchestration입니다. 이것도 격리할 것이 없습니다.
 | crate | feature | 기본값 | 무엇을 더하는가 |
 | --- | --- | --- | --- |
 | `ag-ui` | `sse` | 켜짐 | `SseFormatter`와 `text/event-stream` framing. 추가 dependency 없음. |
-| `ag-ui` | `verify` | 켜짐 | `serve`의 protocol ordering state machine. 끄면 통째로 사라집니다. |
-| `ag-ui` | `serve` | 꺼짐 | agent를 host합니다. `futures`, `json-patch`. |
+| `ag-ui` | `verify` | 켜짐 | `server`의 protocol ordering state machine. 끄면 통째로 사라집니다. |
+| `ag-ui` | `server` | 꺼짐 | agent를 host합니다. `futures`, `json-patch`. |
 | `ag-ui` | `client` | 꺼짐 | agent를 소비합니다. transport를 가리지 않습니다. `futures`, `json-patch`. |
 | `ag-ui` | `http` | 꺼짐 | `reqwest`를 쓰는 transport. `client`와 `sse`를 함의합니다. |
-| `ag-ui` | `axum` | 꺼짐 | axum binding. `serve`와 `sse`를 함의하고, tokio를 끌어오는 유일한 feature입니다. |
+| `ag-ui` | `axum` | 꺼짐 | axum binding. `server`와 `sse`를 함의하고, tokio를 끌어오는 유일한 feature입니다. |
 | `ag-ui` | `protobuf` | 꺼짐 | binary transport의 media type과 content negotiation. encoder는 없음. `events.proto`가 33개 event type 중 18개만 다룹니다. |
 | `ag-ui` | `schemars` | 꺼짐 | 공개 type에 `schemars::JsonSchema`를 derive합니다. |
 | `ag-ui` | `utoipa` | 꺼짐 | 공개 type에 `utoipa::ToSchema`를 derive합니다. |
@@ -160,6 +160,6 @@ program입니다.
 ## 다음
 
 - [시작하기](/ag-ui-rust/ko/start/) — 의존성 선언, 그리고 돌아가는 agent 하나.
-- [Agent trait](/ag-ui-rust/ko/server/agent/) — `ag_ui::serve`가 요구하는 것.
+- [Agent trait](/ag-ui-rust/ko/server/agent/) — `ag_ui::server`가 요구하는 것.
 - [session](/ag-ui-rust/ko/client/session/) — `ag_ui::client`가 내어 주는 것.
 - [API 문서](/ag-ui-rust/api/ag_ui/index.html) — crate 둘 모두의 rustdoc.

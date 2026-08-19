@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use ag_ui::axum::AgentEndpoint;
 use ag_ui::client::{RunEnd, Session, Update};
-use ag_ui::serve::{Agent, Result, RunContext, StreamTransformer};
+use ag_ui::server::{Agent, Result, RunContext, StreamTransformer};
 use ag_ui::{Event, Message, RunOutcome, UserContent};
 use common::{serve, serve_endpoint, transport};
 use futures_util::StreamExt as _;

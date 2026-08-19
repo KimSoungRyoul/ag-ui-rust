@@ -1,9 +1,9 @@
 //! Every run starts with `RUN_STARTED` and ends with exactly one of
 //! `RUN_FINISHED` / `RUN_ERROR` — whatever the agent does or fails to do.
 
-#![cfg(feature = "serve")]
+#![cfg(feature = "server")]
 
-use ag_ui::serve::{Agent, Error, Result, RunContext, run};
+use ag_ui::server::{Agent, Error, Result, RunContext, run};
 use ag_ui::{Event, EventType, Interrupt, RunAgentInput, RunOutcome};
 use futures_util::StreamExt as _;
 
@@ -258,7 +258,7 @@ fn the_run_stream_is_send_and_static() {
 
 #[tokio::test]
 async fn a_boxed_agent_runs_like_any_other() {
-    let agent: ag_ui::serve::BoxAgent<()> = Box::new(Idle);
+    let agent: ag_ui::server::BoxAgent<()> = Box::new(Idle);
     let events = collect(agent, input()).await;
     assert_eq!(events.len(), 2);
 }

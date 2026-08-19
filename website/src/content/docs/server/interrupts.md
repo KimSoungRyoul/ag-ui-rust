@@ -18,7 +18,7 @@ next request is an ordinary request in the same thread that happens to carry ans
 ```rust
 // src/agent.rs
 use ag_ui::{Event, Interrupt, ResumeEntry, ResumeStatus, RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Error, Result, RunContext, run};
+use ag_ui::server::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
@@ -167,10 +167,10 @@ finish successfully. A run that fails because the answer was malformed is an
 
 ```rust
 use ag_ui::{ResumeEntry, ResumeStatus, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let mut input = RunAgentInput::new("t", "r");
     input.resume = Some(vec![
         ResumeEntry::resolved("approve-deploy", json!({"build": 42})),
@@ -210,7 +210,7 @@ and a client should answer all of them together:
 
 ```rust
 use ag_ui::{Interrupt, RunOutcome};
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 
 const BUDGET: &str = "approve-budget";
 const DATE: &str = "confirm-date";
@@ -266,5 +266,5 @@ kills the stream.
 - [`ag_ui::Interrupt`](/ag-ui-rust/api/ag_ui/struct.Interrupt.html)
 - [`ag_ui::ResumeEntry`](/ag-ui-rust/api/ag_ui/struct.ResumeEntry.html) and
   [`ResumeStatus`](/ag-ui-rust/api/ag_ui/enum.ResumeStatus.html)
-- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.resume_for)
+- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.resume_for)
 - The client half of the round trip: [The update stream](/ag-ui-rust/client/updates/)

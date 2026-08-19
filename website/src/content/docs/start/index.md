@@ -39,12 +39,12 @@ earlier, unrelated community SDK and are not this project. This project is the s
 :::
 
 One crate, and which half of the protocol you get is a feature. For an agent, that is
-`axum` — which implies `serve` — and a web server:
+`axum` — which implies `server` — and a web server:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.1", features = ["axum"] }
+ag-ui = { version = "0.2", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
@@ -54,7 +54,7 @@ For a client, `http`:
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.1", features = ["http"] }
+ag-ui = { version = "0.2", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -78,7 +78,7 @@ through it, and returns how the run ended.
 // src/main.rs
 use ag_ui::axum::RouterExt;
 use ag_ui::RunOutcome;
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use axum::Router;
 
 struct Greeter;
@@ -163,14 +163,14 @@ and the framing properly.
 
 ## The same run, without a port
 
-`ag_ui::axum` is a wrapper. Underneath it, `ag_ui::serve::run` turns an agent into a
+`ag_ui::axum` is a wrapper. Underneath it, `ag_ui::server::run` turns an agent into a
 `Stream` of events and has no opinion about how they reach anyone — which means an agent
 is testable as a pure stream, with no server, no port and no client:
 
 ```rust
 // tests/greeter.rs
 use ag_ui::{Event, EventStreamFormatter, EventType, RunAgentInput, RunOutcome, SseFormatter};
-use ag_ui::serve::{Agent, Result, RunContext, run};
+use ag_ui::server::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Greeter;

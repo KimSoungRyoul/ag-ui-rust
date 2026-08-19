@@ -6,7 +6,7 @@ description: Emitting an assistant message as it is generated, and the handle th
 An assistant message is three events on the wire — `TEXT_MESSAGE_START`, some number of
 `TEXT_MESSAGE_CONTENT`, then `TEXT_MESSAGE_END` — all carrying the same message id. Handing
 an agent three raw emit calls means trusting it to close what it opened, in order, on every
-path including the early return. `ag_ui::serve` hands out an RAII handle instead.
+path including the early return. `ag_ui::server` hands out an RAII handle instead.
 
 ## The whole message at once
 
@@ -14,9 +14,9 @@ When you already have the text, `say` emits all three:
 
 ```rust
 use ag_ui::{Event, RunAgentInput, TextMessageRole};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     // `RunContext::new` is the unit-test harness: a context, and the receiving
     // end of its event stream. Inside an agent this is just `ctx`.
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
@@ -48,9 +48,9 @@ content; `end` closes it:
 
 ```rust
 use ag_ui::{Event, RunAgentInput, TextMessageRole};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut message = ctx.assistant_message()?;
@@ -88,16 +88,16 @@ stream:
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::{Error, RunContext};
+use ag_ui::server::{Error, RunContext};
 
-fn write_it(ctx: &mut RunContext<()>) -> ag_ui::serve::Result<()> {
+fn write_it(ctx: &mut RunContext<()>) -> ag_ui::server::Result<()> {
     let mut message = ctx.assistant_message()?;
     message.delta("Looking that up")?;
     // The message is still open, and this returns.
     Err(Error::agent("the weather service is down"))
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
     assert!(write_it(&mut ctx).is_err());
 
@@ -140,7 +140,7 @@ message while the first is open is a borrow-check error rather than a protocol v
 frontend discovers later:
 
 ```rust,compile_fail
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 
 fn interleave(ctx: &mut RunContext<()>) {
     let mut first = ctx.assistant_message().unwrap();
@@ -152,7 +152,7 @@ fn interleave(ctx: &mut RunContext<()>) {
 ```
 
 That block is `compile_fail`, so this page's build fails if it ever starts compiling. The
-same example lives in `crates/ag-ui/src/serve/emit/mod.rs` as a `compile_fail,E0499`
+same example lives in `crates/ag-ui/src/server/emit/mod.rs` as a `compile_fail,E0499`
 doctest, which is the executable proof that the guarantee is still there — weaken the
 emitter API and that test goes red.
 
@@ -170,7 +170,7 @@ while the message is open:
 
 ```rust
 use ag_ui::RunAgentInput;
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Serialize, Deserialize)]
@@ -178,7 +178,7 @@ struct Progress {
     words: u32,
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<Progress>::new(RunAgentInput::new("t", "r"))?;
 
     let mut message = ctx.assistant_message()?;
@@ -219,9 +219,9 @@ REASONING_END            ← on end() or Drop
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     // The one-shot form, like `say`.
@@ -253,9 +253,9 @@ handle for it. Emit one through `ctx.emit` when you need it:
 
 ```rust
 use ag_ui::{Event, MessageId, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     ctx.emit(Event::text_message_chunk(
@@ -273,10 +273,10 @@ the event for having no start.
 
 ## API
 
-- [`RunContext::say`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.say),
-  [`assistant_message`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.assistant_message),
-  [`message_with_id`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.message_with_id)
-- [`ag_ui::serve::MessageHandle`](/ag-ui-rust/api/ag_ui/serve/struct.MessageHandle.html)
-- [`ag_ui::serve::ReasoningHandle`](/ag-ui-rust/api/ag_ui/serve/struct.ReasoningHandle.html)
-- [`ag_ui::serve::emit`](/ag-ui-rust/api/ag_ui/serve/emit/index.html) — the module that
+- [`RunContext::say`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.say),
+  [`assistant_message`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.assistant_message),
+  [`message_with_id`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.message_with_id)
+- [`ag_ui::server::MessageHandle`](/ag-ui-rust/api/ag_ui/server/struct.MessageHandle.html)
+- [`ag_ui::server::ReasoningHandle`](/ag-ui-rust/api/ag_ui/server/struct.ReasoningHandle.html)
+- [`ag_ui::server::emit`](/ag-ui-rust/api/ag_ui/server/emit/index.html) — the module that
   explains the typestate design

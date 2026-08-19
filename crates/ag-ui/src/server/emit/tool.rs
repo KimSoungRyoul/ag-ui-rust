@@ -4,14 +4,14 @@ use crate::{Event, MessageId, ReasoningEncryptedValueSubtype, ToolCallId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::serve::agent::AgentState;
-use crate::serve::emit::EventSink;
-use crate::serve::error::Result;
-use crate::serve::state::RunState;
+use crate::server::agent::AgentState;
+use crate::server::emit::EventSink;
+use crate::server::error::Result;
+use crate::server::state::RunState;
 
 /// One open tool call.
 ///
-/// Created by [`RunContext::tool_call`](crate::serve::RunContext::tool_call).
+/// Created by [`RunContext::tool_call`](crate::server::RunContext::tool_call).
 /// `TOOL_CALL_START` has already gone out; `Drop` emits `TOOL_CALL_END`.
 ///
 /// Arguments stream as text because providers stream them as text — a partial
@@ -21,7 +21,7 @@ use crate::serve::state::RunState;
 ///
 /// ```
 /// # use ag_ui::RunAgentInput;
-/// # use ag_ui::serve::RunContext;
+/// # use ag_ui::server::RunContext;
 /// # use serde::Deserialize;
 /// #[derive(Deserialize)]
 /// struct Query { city: String }
@@ -33,7 +33,7 @@ use crate::serve::state::RunState;
 /// let query: Query = call.parse_args()?;
 /// assert_eq!(query.city, "Seoul");
 /// call.result(r#"{"tempC":21}"#)?;    // emits TOOL_CALL_END then TOOL_CALL_RESULT
-/// # Ok::<(), ag_ui::serve::Error>(())
+/// # Ok::<(), ag_ui::server::Error>(())
 /// ```
 ///
 /// # Doing the work while the call is open
@@ -46,7 +46,7 @@ use crate::serve::state::RunState;
 ///
 /// ```
 /// # use ag_ui::RunAgentInput;
-/// # use ag_ui::serve::RunContext;
+/// # use ag_ui::server::RunContext;
 /// # use serde::{Deserialize, Serialize};
 /// # use serde_json::json;
 /// #[derive(Default, Serialize, Deserialize)]
@@ -61,7 +61,7 @@ use crate::serve::state::RunState;
 ///
 /// call.result_json(&json!({"ok": true}))?;
 /// assert_eq!(ctx.state().tasks, ["ship it"]);
-/// # Ok::<(), ag_ui::serve::Error>(())
+/// # Ok::<(), ag_ui::server::Error>(())
 /// ```
 ///
 /// What the handle still cannot do is open a second message, reasoning block or
@@ -151,7 +151,7 @@ impl<'a, S> ToolCallHandle<'a, S> {
     }
 
     /// Emits an unrelated event without closing the call. See
-    /// [`MessageHandle::emit`](crate::serve::MessageHandle::emit).
+    /// [`MessageHandle::emit`](crate::server::MessageHandle::emit).
     pub fn emit(&mut self, event: Event) -> Result<()> {
         self.sink.emit(event)
     }
@@ -190,7 +190,7 @@ impl<'a, S> ToolCallHandle<'a, S> {
 }
 
 /// The run's state, reachable while the call is open. Same three methods as on
-/// [`RunContext`](crate::serve::RunContext), forwarded — a tool that changes the state
+/// [`RunContext`](crate::server::RunContext), forwarded — a tool that changes the state
 /// is the ordinary case, and it changes it in the middle of the call.
 impl<S: AgentState> ToolCallHandle<'_, S> {
     /// The typed state, as of the last publish.

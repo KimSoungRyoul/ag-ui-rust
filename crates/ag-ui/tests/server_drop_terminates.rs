@@ -3,9 +3,9 @@
 //! This is the guarantee the whole synchronous emit path exists to make
 //! possible — `Drop` cannot await, so `delta()` cannot either.
 
-#![cfg(feature = "serve")]
+#![cfg(feature = "server")]
 
-use ag_ui::serve::{Agent, Error, Result, RunContext, run};
+use ag_ui::server::{Agent, Error, Result, RunContext, run};
 use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
 use futures_util::StreamExt as _;
 

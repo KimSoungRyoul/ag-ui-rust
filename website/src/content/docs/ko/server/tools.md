@@ -16,10 +16,10 @@ emit합니다. [message handle](/ag-ui-rust/ko/server/text/)과 똑같습니다.
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("get_weather")?;
@@ -58,10 +58,10 @@ frontend tool은 `end()`로 닫고 끝입니다. client가 실행할 수 있어�
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("open_settings_panel")?;
@@ -92,7 +92,7 @@ handle은 자기가 emit한 것을 모두 간직합니다. 그래서 provider가
 
 ```rust
 use ag_ui::RunAgentInput;
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -100,7 +100,7 @@ struct Query {
     city: String,
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("get_weather")?;
@@ -141,7 +141,7 @@ call도 마찬가지입니다.
 
 ```rust
 use ag_ui::{RunAgentInput, RunOutcome, Tool};
-use ag_ui::serve::{Agent, Error, Result, RunContext, ToolCallHandle};
+use ag_ui::server::{Agent, Error, Result, RunContext, ToolCallHandle};
 use serde_json::json;
 
 /// client가 제공한 tool일 때만 call을 엽니다. client가 실행해 주기를 기대하는
@@ -168,7 +168,7 @@ impl Agent for Board {
     }
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let mut input = RunAgentInput::new("t", "r");
     input.tools = vec![Tool::new("add_task", "Add a task to the board.", json!({}))];
     let (mut ctx, _events) = RunContext::<()>::new(input)?;
@@ -189,7 +189,7 @@ handle은 run context가 아니라 그 run의 event sink와 상태를 빌립니�
 
 ```rust
 use ag_ui::RunAgentInput;
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -198,7 +198,7 @@ struct Board {
     tasks: Vec<String>,
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<Board>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("add_task")?;
@@ -231,10 +231,10 @@ call의 인자를 서로 뒤섞지 않는 유일한 방식이기도 합니다.
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use std::collections::BTreeMap;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let names = ["get_weather", "roll_dice"];
@@ -271,10 +271,10 @@ fn main() -> ag_ui::serve::Result<()> {
 
 ## API
 
-- [`RunContext::tool_call`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tool_call)과
-  [`tool_call_with_id`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tool_call_with_id)
-- [`RunContext::tools`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tools)와
-  [`tool`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tool)
-- [`ag_ui::serve::ToolCallHandle`](/ag-ui-rust/api/ag_ui/serve/struct.ToolCallHandle.html)
+- [`RunContext::tool_call`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tool_call)과
+  [`tool_call_with_id`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tool_call_with_id)
+- [`RunContext::tools`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tools)와
+  [`tool`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tool)
+- [`ag_ui::server::ToolCallHandle`](/ag-ui-rust/api/ag_ui/server/struct.ToolCallHandle.html)
 - [`ag_ui::Tool`](/ag-ui-rust/api/ag_ui/struct.Tool.html)과
   [`ToolCall`](/ag-ui-rust/api/ag_ui/struct.ToolCall.html)

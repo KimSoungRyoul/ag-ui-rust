@@ -1,8 +1,8 @@
 //! Cancellation stops a run, whether or not the agent thought about it.
 
-#![cfg(feature = "serve")]
+#![cfg(feature = "server")]
 
-use ag_ui::serve::{Agent, CancellationToken, Error, Result, RunContext, Runner};
+use ag_ui::server::{Agent, CancellationToken, Error, Result, RunContext, Runner};
 use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
 use futures_util::StreamExt as _;
 

@@ -17,12 +17,12 @@ description: event stream을 올바른 형태로 지키는 세 layer. typestate 
 
 ## Layer 1: borrow checker
 
-`ag_ui::serve`의 emitter는 typestate handle입니다. `ctx.assistant_message()`는
+`ag_ui::server`의 emitter는 typestate handle입니다. `ctx.assistant_message()`는
 run context를 mutable로 빌리는 handle을 돌려줍니다. 그래서 겹치는 두 번째 block은
 compile되지 않습니다.
 
 ```rust,compile_fail,E0499
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 
 fn interleave(ctx: &mut RunContext<()>) {
     let mut first = ctx.assistant_message().unwrap();
@@ -34,7 +34,7 @@ fn interleave(ctx: &mut RunContext<()>) {
 ```
 
 저 block은 `compile_fail`입니다. 언젠가 compile되기 시작하면 이 페이지가
-빨개집니다. 같은 예제가 `crates/ag-ui/src/serve/emit/mod.rs`에도 있습니다.
+빨개집니다. 같은 예제가 `crates/ag-ui/src/server/emit/mod.rs`에도 있습니다.
 [설계 원칙](/ag-ui-rust/ko/design/commitments/)이 대표 기능으로 내세우는 보증에
 대한, 유일한 실행 가능한 증명이 그것입니다. emitter API를 느슨하게 만들면 그
 doctest는 초록이 됩니다. 그것이 곧 실패입니다.
@@ -66,13 +66,13 @@ agent는 아무도 열지 않은 message에 `TEXT_MESSAGE_CONTENT`를 emit할 �
 
 ### server에서
 
-`ag_ui::serve`는 나가는 모든 event에 ordering state machine을 돌립니다. transport가
+`ag_ui::server`는 나가는 모든 event에 ordering state machine을 돌립니다. transport가
 그것을 보기 전에 돕니다. 규칙을 어기는 emit은 `Err`를 돌려줍니다. 그래서 agent의
 다음 `?`가 run을 풀어냅니다. 실패는 규칙 이름을 담은 `RUN_ERROR`로 보고됩니다.
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::{Error, Rule, RunContext};
+use ag_ui::server::{Error, Rule, RunContext};
 
 fn main() {
     let (mut ctx, _events) =
@@ -91,7 +91,7 @@ fn main() {
 }
 ```
 
-[`Rule`](/ag-ui-rust/api/ag_ui/serve/error/enum.Rule.html)은 이 machine이 검사하는
+[`Rule`](/ag-ui-rust/api/ag_ui/server/error/enum.Rule.html)은 이 machine이 검사하는
 것의 닫힌 목록입니다.
 
 | Rule | 거부되는 것 |
@@ -108,7 +108,7 @@ fn main() {
 닫았을 리 없습니다.
 
 거부는 하나하나가
-[`VerificationError`](/ag-ui-rust/api/ag_ui/serve/error/struct.VerificationError.html)입니다.
+[`VerificationError`](/ag-ui-rust/api/ag_ui/server/error/struct.VerificationError.html)입니다.
 문제가 된 event type과 규칙, 그리고 detail 문자열을 담습니다. 실제로 열린 message가
 `msg-1`인데 `msg-2`에 content를 emit하면, `Display`는 이렇게 읽힙니다.
 
@@ -135,12 +135,12 @@ id가 자기 자신과 겹칠 수 없다는 것입니다.
 
 측정해 보고 그 조회를 되찾고 싶다면 `verify` feature를 끄십시오. state machine
 전체가 크기 0인 type으로 바뀝니다. 그 type의 `observe`는 inline된 `Ok(())`입니다.
-`verify`가 `serve`에 함의되지 않고 crate의 default 집합에 있는 이유가 이것입니다.
+`verify`가 `server`에 함의되지 않고 crate의 default 집합에 있는 이유가 이것입니다.
 다른 feature가 끌어온 집합에서 feature 하나를 빼낼 수는 없습니다.
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.1", default-features = false, features = ["serve", "sse"] }
+ag-ui = { version = "0.2", default-features = false, features = ["server", "sse"] }
 ```
 
 그 스위치를 넘어 살아남는 것이 하나 있습니다. 종료 event가 이미 나갔는지는

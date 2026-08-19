@@ -191,7 +191,7 @@ next run is a run like any other.
 
 ## Streams the protocol forbids
 
-`ag_ui::serve` will not emit a malformed stream, which is what it is for. So the
+`ag_ui::server` will not emit a malformed stream, which is what it is for. So the
 `/raw` endpoint frames the bytes by hand with `SseFormatter`, the way a producer
 in another language does, and the client's own verifier is what has to catch it:
 

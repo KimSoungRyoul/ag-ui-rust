@@ -16,15 +16,15 @@ the two halves against each other over a real port rather than against a mock.
 ## Crate layout
 
 Two published crates. **`ag-ui`** is the SDK: the protocol types at the crate root, always
-compiled, with `serve` (host an agent), `client` / `http` (consume one) and `axum` behind
+compiled, with `server` (host an agent), `client` / `http` (consume one) and `axum` behind
 features. Each runtime keeps its own `Error` under its own module — `ag_ui::Error` is a
-protocol error, `ag_ui::serve::Error` is a hosting error. **`ag-ui-a2ui`** stays separate
+protocol error, `ag_ui::server::Error` is a hosting error. **`ag-ui-a2ui`** stays separate
 because A2UI is a different protocol, usable with no AG-UI at all.
 
 Features rather than crates because in Rust features are how a dependency is kept out of a
 build, and this workspace versions in lockstep so a split bought no independent versioning
 either — `docs/DESIGN.md`, "Crate boundaries", has the reasoning. The one cost is feature
-unification: a graph that wants `serve` in one place and `client` in another compiles both.
+unification: a graph that wants `server` in one place and `client` in another compiles both.
 
 `ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are an earlier, unrelated
 community SDK. Do not write them as dependency lines for this project.

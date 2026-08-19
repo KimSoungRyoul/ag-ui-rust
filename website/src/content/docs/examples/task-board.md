@@ -5,7 +5,7 @@ description: A read through the worked agent example — streamed text, tool cal
 
 `task-board` is a workshop task board spoken over AG-UI: an agent you can host, and a
 terminal that talks to it, in one crate. It exists to be the SDK's first outside consumer.
-It uses `ag_ui::serve`, `ag_ui::client`, `ag_ui::axum`, `ag-ui-a2ui` and `ag-ui` the way
+It uses `ag_ui::server`, `ag_ui::client`, `ag_ui::axum`, `ag-ui-a2ui` and `ag-ui` the way
 anyone else would — public items only, nothing reached into — and every major subsystem
 appears in it exactly once.
 
@@ -87,7 +87,7 @@ after it is done:
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Result, RunContext, run};
+use ag_ui::server::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

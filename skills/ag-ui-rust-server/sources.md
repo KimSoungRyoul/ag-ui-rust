@@ -19,8 +19,8 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
   capability-list semantics, parallel calls
 - `website/src/content/docs/server/state.md` — `update_state` and the snapshot/delta choice
 - `website/src/content/docs/server/axum.md` — `route_agui`, `AgentEndpoint`, the status codes
-- `crates/ag-ui/src/serve/agent.rs`, `crates/ag-ui/src/serve/context.rs`,
-  `crates/ag-ui/src/serve/emit/mod.rs`, `crates/ag-ui/src/serve/state.rs`
+- `crates/ag-ui/src/server/agent.rs`, `crates/ag-ui/src/server/context.rs`,
+  `crates/ag-ui/src/server/emit/mod.rs`, `crates/ag-ui/src/server/state.rs`
 - `crates/ag-ui/src/axum/router.rs`
 
 ## references/state-and-interrupts.md
@@ -30,6 +30,6 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
 - `website/src/content/docs/server/errors.md` — the error variants and codes, the seven
   verifier rules, cancellation
 - `website/src/content/docs/server/state.md`
-- `crates/ag-ui/src/serve/verify.rs`, `crates/ag-ui/src/serve/error.rs`,
-  `crates/ag-ui/src/serve/cancel.rs`
+- `crates/ag-ui/src/server/verify.rs`, `crates/ag-ui/src/server/error.rs`,
+  `crates/ag-ui/src/server/cancel.rs`
 - `e2e/tests/human_in_the_loop.rs` — the multi-interrupt case, pinned

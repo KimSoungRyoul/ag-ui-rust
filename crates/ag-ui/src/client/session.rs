@@ -55,7 +55,7 @@
 //!
 //! So whatever the run *nested* survives as arrival order and nothing else. An
 //! agent that publishes state while a tool call is open (which
-//! [`ag-ui-server`]'s handles support, and the protocol allows because
+//! [`ag_ui::server`]'s handles support, and the protocol allows because
 //! `STATE_*` is unordered) puts the `STATE_*` event between that call's
 //! `TOOL_CALL_ARGS` and its `TOOL_CALL_END` — and the [`Update::State`] that
 //! comes out carries no mention of the call. That is not an omission to be
@@ -70,7 +70,7 @@
 //! often the right trade, and `examples/board-watch` makes it deliberately and
 //! pins the consequence in a test. It is only a bug when it is an accident.
 //!
-//! [`ag-ui-server`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/index.html
+//! [`ag_ui::server`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/index.html
 
 use std::collections::VecDeque;
 use std::pin::Pin;

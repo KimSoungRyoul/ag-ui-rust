@@ -2,7 +2,7 @@
 //! that draws it.
 //!
 //! Nothing here knows about AG-UI events. The state is a plain `serde` struct
-//! that [`ag_ui::serve::RunContext`] publishes as `STATE_SNAPSHOT` /
+//! that [`ag_ui::server::RunContext`] publishes as `STATE_SNAPSHOT` /
 //! `STATE_DELTA`, the tools are [`ag_ui::Tool`] definitions the client
 //! offers, and the surface is an [`ag_ui_a2ui`] component tree. Keeping the
 //! domain free of the protocol is what makes [`crate::agent`] short.
@@ -167,7 +167,7 @@ impl Board {
 /// The tools the client offers and the agent executes.
 ///
 /// The client sends these on every run and the agent reads them back out of
-/// [`RunContext::tools`](ag_ui::serve::RunContext::tools), so a run that names
+/// [`RunContext::tools`](ag_ui::server::RunContext::tools), so a run that names
 /// a tool the client never offered is a bug this example can actually catch.
 pub fn tools() -> Vec<Tool> {
     vec![

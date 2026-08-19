@@ -17,9 +17,9 @@
 use crate::{Event, JsonPatch, PatchOperation};
 use serde_json::Value;
 
-use crate::serve::agent::AgentState;
-use crate::serve::emit::EventSink;
-use crate::serve::error::Result;
+use crate::server::agent::AgentState;
+use crate::server::emit::EventSink;
+use crate::server::error::Result;
 
 /// What a publish decided to send.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,7 +47,7 @@ impl StatePublish {
 ///
 /// ```
 /// # use ag_ui::PatchOperation;
-/// # use ag_ui::serve::{StateManager, StatePublish};
+/// # use ag_ui::server::{StateManager, StatePublish};
 /// # use serde_json::json;
 /// let mut states = StateManager::new();
 /// let notes = "the document the user is editing, at some length";
@@ -71,7 +71,7 @@ impl StatePublish {
 ///     small.publish(json!({"b": 2}))?,
 ///     StatePublish::Snapshot(json!({"b": 2}))
 /// );
-/// # Ok::<(), ag_ui::serve::Error>(())
+/// # Ok::<(), ag_ui::server::Error>(())
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct StateManager {
@@ -134,7 +134,7 @@ impl StateManager {
 
 /// A run's typed state together with the publish history that encodes it.
 ///
-/// One cell rather than two fields on [`RunContext`](crate::serve::RunContext),
+/// One cell rather than two fields on [`RunContext`](crate::server::RunContext),
 /// because an open handle borrows it *beside* the event sink: `&mut self.state`
 /// and `&mut self.sink` are disjoint borrows of the context, so a tool call can
 /// mutate and publish the state without holding a reference to the context

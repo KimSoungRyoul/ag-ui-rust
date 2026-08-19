@@ -62,7 +62,7 @@ jobs:
       # `cargo test`, not `cargo nextest run`. nextest does not run doctests at
       # all, and a large part of what this workspace proves lives in them: every
       # crate README, the workspace quickstart, and — in
-      # crates/ag-ui/src/serve/emit/mod.rs — the `compile_fail` example that is
+      # crates/ag-ui/src/server/emit/mod.rs — the `compile_fail` example that is
       # the only executable proof of the typestate guarantee docs/DESIGN.md
       # sells as a headline feature. The local loop is nextest, so "535 tests
       # pass" locally silently excludes all of that.
@@ -111,7 +111,7 @@ jobs:
       # one that is allowed to be native-only.
       - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features
       - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features sse,protobuf,schemars,utoipa
-      - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features serve,verify,sse
+      - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features server,verify,sse
       - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features client,sse
       - run: cargo check -p ag-ui-a2ui --target wasm32-unknown-unknown --all-features
 
@@ -119,13 +119,13 @@ jobs:
       # docs/DESIGN.md ("Executor-agnostic below the web binding"). tokio's `rt`,
       # `sync`, `macros`, `io-util` and `time` features all compile for
       # wasm32-unknown-unknown, so adding `tokio.workspace = true` to the
-      # `serve` feature's dependencies passes every check above. Verified by
+      # `server` feature's dependencies passes every check above. Verified by
       # doing exactly that: the wasm build stayed green.
       #
       # Since the merge into one crate this is a per-*feature* assertion rather
       # than a per-crate one, and it matters more than it did: cargo unifies
       # features across a dependency graph, so a single careless `dep:tokio` on
-      # `serve` would put tokio under every consumer that never asked for
+      # `server` would put tokio under every consumer that never asked for
       # `axum`. The feature set below is the boundary that claim lives on.
       #
       # The dependency graph is what carries the guarantee, so assert on that.
@@ -149,7 +149,7 @@ jobs:
           forbid_tokio ag-ui --no-default-features
           forbid_tokio ag-ui --no-default-features --features sse,protobuf,schemars,utoipa
           # The two runtimes. Neither may reach an executor.
-          forbid_tokio ag-ui --no-default-features --features serve,verify,sse
+          forbid_tokio ag-ui --no-default-features --features server,verify,sse
           forbid_tokio ag-ui --no-default-features --features client,sse
           forbid_tokio ag-ui-a2ui --all-features
           # `http` deliberately pulls reqwest and `axum` deliberately pulls
@@ -174,8 +174,8 @@ jobs:
       - run: cargo check --all-targets -p ag-ui --no-default-features --features protobuf
       - run: cargo check --all-targets -p ag-ui --no-default-features --features schemars
       - run: cargo check --all-targets -p ag-ui --no-default-features --features utoipa
-      - run: cargo check --all-targets -p ag-ui --no-default-features --features serve
-      - run: cargo check --all-targets -p ag-ui --no-default-features --features serve,verify,sse
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features server
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features server,verify,sse
       - run: cargo check --all-targets -p ag-ui --no-default-features --features client
       - run: cargo check --all-targets -p ag-ui --no-default-features --features http
       - run: cargo check --all-targets -p ag-ui --no-default-features --features axum
@@ -317,7 +317,7 @@ jobs:
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features protobuf
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features schemars
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features utoipa
-      - run: cargo doc --no-deps -p ag-ui --no-default-features --features serve
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features server
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features client
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features axum
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features

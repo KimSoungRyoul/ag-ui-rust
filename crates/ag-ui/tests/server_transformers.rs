@@ -1,8 +1,8 @@
 //! Transformers, in a real run rather than in isolation.
 
-#![cfg(feature = "serve")]
+#![cfg(feature = "server")]
 
-use ag_ui::serve::{
+use ag_ui::server::{
     Agent, FilterToolCalls, Result, RunContext, Runner, StreamTransformer, ToolResultToState,
 };
 use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};

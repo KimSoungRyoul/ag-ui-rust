@@ -224,7 +224,7 @@ ways:
 - `STATE_DELTA` carries an RFC 6902 JSON Patch and is applied to it.
 
 Which one to send is a size judgement, not a protocol rule, and a client must handle both.
-`ag_ui::serve` makes the choice per publish: the first is always a snapshot, and a later
+`ag_ui::server` makes the choice per publish: the first is always a snapshot, and a later
 one is a delta unless the patch would be no smaller than the state it describes. On a small
 state that happens often — [Shared state](/ag-ui-rust/server/state/) works through it.
 

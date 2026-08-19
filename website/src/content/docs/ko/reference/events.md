@@ -156,7 +156,7 @@ TEXT_MESSAGE_CHUNK { messageId: "msg-2", delta: "Bye" }   <- msg-1이 방금 끝
 
 소비하는 쪽에서 그 장부 정리는 `ag_ui::client::chunks`가 맡습니다. 연달아 이어진
 chunk를 다른 무엇이 보기 전에 start/content/end 세 짝으로 되펼칩니다. emit하는
-쪽에는 일부러 **handle이 없습니다**. `ag_ui::serve`의 typestate emitter는 연 것이
+쪽에는 일부러 **handle이 없습니다**. `ag_ui::server`의 typestate emitter는 연 것이
 닫히도록 보장하려고 있습니다. chunk에는 닫을 것이 없습니다. RAII handle로 감싸면
 틀릴 방법만 하나 늘어납니다. 이들은 `ctx.emit`으로 emit하십시오. API를 기다리는
 빈틈이 아니라 지원되는 경로입니다.

@@ -12,7 +12,7 @@ mod common;
 use std::time::Duration;
 
 use ag_ui::client::{RemoteAgent, RunParams, Session};
-use ag_ui::serve::{Agent, CancellationToken, Result, RunContext};
+use ag_ui::server::{Agent, CancellationToken, Result, RunContext};
 use ag_ui::{EventType, RunOutcome};
 use common::{serve, transport};
 use futures_util::StreamExt as _;

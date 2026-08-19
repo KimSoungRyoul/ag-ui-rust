@@ -4,9 +4,9 @@
 //! agent body, these exact events come out, in this exact order, under these
 //! exact ids.
 
-#![cfg(feature = "serve")]
+#![cfg(feature = "server")]
 
-use ag_ui::serve::{Agent, Result, RunContext, run};
+use ag_ui::server::{Agent, Result, RunContext, run};
 use ag_ui::{
     Event, RunAgentInput, RunFinishedEvent, RunOutcome, TextMessageRole, ToolCallResultEvent,
     ToolResultRole,
@@ -158,7 +158,7 @@ async fn a_state_that_does_not_fit_the_agent_becomes_run_error() {
 #[tokio::test]
 async fn the_request_can_be_echoed_on_run_started() {
     let input = RunAgentInput::new("t", "r");
-    let events: Vec<Event> = ag_ui::serve::Runner::new(Scripted)
+    let events: Vec<Event> = ag_ui::server::Runner::new(Scripted)
         .echo_input(true)
         .run(input.clone())
         .map(|event| event.expect("the run stream should not break"))

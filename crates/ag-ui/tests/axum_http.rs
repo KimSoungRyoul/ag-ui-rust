@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ag_ui::axum::{AgentEndpoint, RouterExt};
-use ag_ui::serve::{
+use ag_ui::server::{
     Agent, CancellationToken, Error as AgentError, FilterToolCalls, Result, RunContext,
 };
 use ag_ui::{Event, EventType, Interrupt, RunAgentInput, RunOutcome};

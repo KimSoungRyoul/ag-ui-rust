@@ -1,22 +1,23 @@
 # ag-ui
 
-An independent Rust SDK for the [AG-UI protocol](https://github.com/ag-ui-protocol/ag-ui) —
-hosting an agent and consuming one.
+A Rust SDK for the [AG-UI protocol](https://github.com/ag-ui-protocol/ag-ui) — hosting an
+agent and consuming one.
 
 AG-UI is the protocol between a user-facing application and an agent backend. A run is a
 stream of events: the agent opens messages, streams text and reasoning, calls tools,
 publishes state, and finishes — or pauses for human input.
 
-> **Not an official AG-UI SDK.** This is not affiliated with or endorsed by the AG-UI
-> protocol organisation. It is a separate implementation that tracks the protocol's
-> TypeScript schemas, with a drift check in CI that fails the build when they move.
+It implements all 33 event types, both halves of the protocol, and a drift check in CI that
+fails the build when upstream's event set moves — held to what an official SDK would have to
+be, because becoming the official AG-UI Rust SDK is the goal. It is not that yet: this crate
+is not affiliated with or endorsed by the AG-UI protocol organisation.
 
 ```toml
 [dependencies]
 # host an agent behind axum
-ag-ui = { version = "0.1", features = ["axum"] }
+ag-ui = { version = "0.2", features = ["axum"] }
 # or consume one over HTTP
-ag-ui = { version = "0.1", features = ["http"] }
+ag-ui = { version = "0.2", features = ["http"] }
 ```
 
 ## What is in the box
@@ -49,7 +50,7 @@ assert!(body.starts_with(r#"data: {"type":"RUN_STARTED","threadId":"thread-1""#)
 ```
 
 Each runtime keeps its own `Error` and `Result` under its own module. A bare `ag_ui::Error`
-is always a protocol error; `ag_ui::serve::Error` is a hosting error. Collapsing them into
+is always a protocol error; `ag_ui::server::Error` is a hosting error. Collapsing them into
 the root would hide a distinction that matters at every `?`.
 
 ## Identifiers are strings
@@ -63,16 +64,16 @@ valid traffic.
 | Feature | Default | What it adds |
 | --- | --- | --- |
 | `sse` | yes | `SseFormatter` and `text/event-stream` framing. No extra dependencies. |
-| `verify` | yes | `serve`'s ordering state machine. Off, the verifier is a zero-sized type whose checks compile away. |
-| `serve` | no | Host an agent: the `Agent` trait, typestate emitters, state deltas. Executor-agnostic — no tokio. |
+| `verify` | yes | `server`'s ordering state machine. Off, the verifier is a zero-sized type whose checks compile away. |
+| `server` | no | Host an agent: the `Agent` trait, typestate emitters, state deltas. Executor-agnostic — no tokio. |
 | `client` | no | Consume a remote agent, transport-agnostic. |
 | `http` | no | Adds the reqwest-backed transport to `client`. What most consumers want; leave it off for wasm. |
-| `axum` | no | Mount a hosted agent on an axum router. Implies `serve` and `sse`, and is the one feature that pulls in tokio. |
+| `axum` | no | Mount a hosted agent on an axum router. Implies `server` and `sse`, and is the one feature that pulls in tokio. |
 | `protobuf` | no | The binary transport's media type and a documented stub. `events.proto` covers only 18 of the 33 event types, so there is no encoder. |
 | `schemars` | no | Derives `schemars::JsonSchema` on the public types. |
 | `utoipa` | no | Derives `utoipa::ToSchema` on the public types. |
 
-`verify` sits in `default` rather than being implied by `serve` so that
+`verify` sits in `default` rather than being implied by `server` so that
 `default-features = false` can drop it: a feature cannot be subtracted from the set another
 feature pulls in.
 

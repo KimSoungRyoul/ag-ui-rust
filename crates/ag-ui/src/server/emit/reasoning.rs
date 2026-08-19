@@ -2,14 +2,14 @@
 
 use crate::{Event, MessageId, ReasoningEncryptedValueSubtype};
 
-use crate::serve::agent::AgentState;
-use crate::serve::emit::EventSink;
-use crate::serve::error::Result;
-use crate::serve::state::RunState;
+use crate::server::agent::AgentState;
+use crate::server::emit::EventSink;
+use crate::server::error::Result;
+use crate::server::state::RunState;
 
 /// One open reasoning block.
 ///
-/// Created by [`RunContext::reasoning`](crate::serve::RunContext::reasoning). The
+/// Created by [`RunContext::reasoning`](crate::server::RunContext::reasoning). The
 /// `REASONING_*` family nests a message inside a block, so the handle brackets
 /// four events rather than two:
 ///
@@ -80,7 +80,7 @@ impl<'a, S> ReasoningHandle<'a, S> {
     }
 
     /// Emits an unrelated event without closing the block. See
-    /// [`MessageHandle::emit`](crate::serve::MessageHandle::emit).
+    /// [`MessageHandle::emit`](crate::server::MessageHandle::emit).
     pub fn emit(&mut self, event: Event) -> Result<()> {
         self.sink.emit(event)
     }
@@ -105,7 +105,7 @@ impl<'a, S> ReasoningHandle<'a, S> {
 }
 
 /// The run's state, reachable while the block is open. See
-/// [`ToolCallHandle`](crate::serve::ToolCallHandle), where this matters most.
+/// [`ToolCallHandle`](crate::server::ToolCallHandle), where this matters most.
 impl<S: AgentState> ReasoningHandle<'_, S> {
     /// The typed state, as of the last publish.
     pub fn state(&self) -> &S {

@@ -1,7 +1,7 @@
 //! Errors raised while hosting a run.
 //!
 //! Everything an agent can fail with funnels through [`enum@Error`]. The run driver
-//! turns whatever escapes [`Agent::run`](crate::serve::Agent::run) into a `RUN_ERROR`
+//! turns whatever escapes [`Agent::run`](crate::server::Agent::run) into a `RUN_ERROR`
 //! event, so an error is never a panic and never a silently truncated stream.
 
 use std::fmt;
@@ -55,7 +55,7 @@ impl Error {
     /// Wraps an arbitrary agent-side error.
     ///
     /// ```
-    /// # use ag_ui::serve::Error;
+    /// # use ag_ui::server::Error;
     /// let err = Error::agent("the weather service is down");
     /// assert_eq!(err.code(), "AGENT_ERROR");
     /// ```
@@ -93,7 +93,7 @@ impl Error {
 /// The ordering rule an event broke.
 ///
 /// Each variant is one check in the state machine described on
-/// [`verify`](crate::serve::verify).
+/// [`verify`](crate::server::verify).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Rule {

@@ -10,7 +10,7 @@
 mod common;
 
 use ag_ui::client::{RemoteAgent, RunParams, Session, Update};
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use ag_ui::{AssistantMessage, Event, EventType, Message, MessageId, RunOutcome, ToolCallId};
 use common::{serve, transport};
 use futures_util::StreamExt as _;

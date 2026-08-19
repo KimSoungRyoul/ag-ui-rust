@@ -4,14 +4,19 @@ A Rust SDK for the [AG-UI protocol](https://docs.ag-ui.com) — build agent back
 
 AG-UI standardises how an AI agent talks to a user-facing application: a POST carrying
 `RunAgentInput`, answered by a stream of typed events. Official SDKs exist for TypeScript,
-Python, and .NET. Rust's is a
-[community SDK](https://github.com/ag-ui-protocol/ag-ui/tree/main/sdks/community/rust) that
-consumes an agent but cannot host one, and that stopped tracking the spec: it declares 24 of
-the protocol's 33 event types, so a `REASONING_*` or `ACTIVITY_*` event ends a run rather
-than being skipped, and it carries no `RunFinished.outcome`, so a run cannot pause for a
-human at all. Independent Rust takes have appeared since, so this is not the only option;
-`docs/DESIGN.md` sets out what this one holds itself to instead. The server story is the
-priority here.
+Python, and .NET.
+
+**The goal is to become the official Rust one.** It is not that yet — this project is not
+affiliated with or endorsed by the AG-UI protocol organisation. What it can do meanwhile is
+hold itself to what an official SDK would have to be, and make each claim something a test
+enforces rather than something a README asserts: **all 33 event types**, **both halves of
+the protocol** — hosting an agent and consuming one — **ordering verified on the server**,
+and **a drift check that fails CI** when upstream's event set moves.
+
+The existing `sdks/community/rust` covers 24 of the 33 event types and cannot host an agent
+at all, so a `REASONING_*` or `ACTIVITY_*` event ends a run rather than being skipped, and
+without `RunFinished.outcome` a run cannot pause for a human. `docs/DESIGN.md` has the
+numbers and the reasoning.
 
 ## Crates
 
@@ -20,7 +25,7 @@ Two of them. `ag-ui` is the SDK; which half of the protocol you compile is a fea
 | Crate / feature | What it is |
 | --- | --- |
 | `ag-ui` | Protocol types, all 33 event variants, and wire encoding. `serde` + `serde_json` only. Always compiled. |
-| ↳ `serve` | Host an agent: `Agent` trait, typestate event emitters, automatic state deltas, protocol verification. Executor-agnostic. |
+| ↳ `server` | Host an agent: `Agent` trait, typestate event emitters, automatic state deltas, protocol verification. Executor-agnostic. |
 | ↳ `client` | Consume a remote agent: transport, event application, materialised messages and state. |
 | ↳ `http` | The reqwest transport for `client`. |
 | ↳ `axum` | Mount an agent on an axum router. The only feature that pulls in tokio. |
@@ -28,8 +33,8 @@ Two of them. `ag-ui` is the SDK; which half of the protocol you compile is a fea
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.1", features = ["axum"] }   # host an agent
-ag-ui = { version = "0.1", features = ["http"] }   # or consume one
+ag-ui = { version = "0.2", features = ["axum"] }   # host an agent
+ag-ui = { version = "0.2", features = ["http"] }   # or consume one
 ```
 
 > `ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are an earlier, unrelated
@@ -47,7 +52,7 @@ Serving an agent. Implement `Agent`, mount it, and the endpoint speaks AG-UI:
 ```rust
 use ag_ui::axum::RouterExt;
 use ag_ui::RunOutcome;
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use axum::Router;
 
 struct Greeter;
@@ -126,7 +131,7 @@ because .NET has a blessed chat abstraction. Rust does not — the ecosystem is 
 `async-openai`, `rig-core`, and `genai`. So this SDK depends on no LLM crate at all. Bring
 your own client; implement `Agent`.
 
-**Executor-agnostic below the web binding.** The protocol types and the `serve` and `client`
+**Executor-agnostic below the web binding.** The protocol types and the `server` and `client`
 runtimes use `futures` primitives rather than tokio, so wasm targets and non-tokio executors
 keep working. tokio enters with the `axum` feature and nowhere else. CI enforces this two
 ways: by building each feature for `wasm32-unknown-unknown`, and — because tokio itself
@@ -167,7 +172,7 @@ cargo test --doc --workspace --all-features
 **`cargo nextest` does not run doctests.** It says nothing about them — it does not skip
 them loudly, it never sees them — so a green nextest run is a partial result. A lot of what
 this workspace proves lives in doctests: every crate README, the quickstart above, and the
-`compile_fail` example in `crates/ag-ui/src/serve/emit/mod.rs` that is the only executable
+`compile_fail` example in `crates/ag-ui/src/server/emit/mod.rs` that is the only executable
 proof that two overlapping message handles fail to compile. Weaken the emitter API and
 nextest stays green.
 

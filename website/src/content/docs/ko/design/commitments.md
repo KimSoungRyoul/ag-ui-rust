@@ -6,11 +6,9 @@ description: 이 SDK가 스스로에게 지우는 약속, 그 근거, 그리고 
 이 페이지는 이 SDK를 바깥에서 본 논거입니다. 이 위에 무언가를 만들지 고민
 중이라면, 여기 적힌 것이 이 SDK의 약속이고 그 약속의 값입니다.
 
-논거는 "다른 선택지가 없다"가 아닙니다. 2026년 8월 현재 crates.io에는 AG-UI를
-독자적으로 구현한 Rust crate가 여럿 있습니다. 그중 하나 이상은 agent를 host할 수
-있습니다. `docs/DESIGN.md`의 이전 초안은 희소성을 근거로 삼았습니다. 그 주장은
-쓰일 당시에는 사실이었고, 지금은 사실이 아닙니다. 그래서 철회했습니다. 남은 것은
-품질에 대한 주장입니다. 그런 주장은 계속 증명해야 합니다.
+하나하나가 품질에 대한 주장이고, 그 각각은 이 page가 단언해서가 아니라 build를
+빨갛게 만드는 무언가가 강제합니다. 약속에 대가가 따르는 곳에서는 그 대가도 함께
+적었습니다.
 
 ## 네 가지 약속
 
@@ -151,7 +149,7 @@ error로 멈춥니다. 대화의 4분의 3만 조용히 그리지 않습니다.
 
 ## web binding 아래는 executor에 의존하지 않습니다
 
-`ag-ui`, `ag_ui::serve`, `ag_ui::client`는 `futures` primitive를 씁니다. emit
+`ag-ui`, `ag_ui::server`, `ag_ui::client`는 `futures` primitive를 씁니다. emit
 경로에 `tokio::sync::mpsc`가 아니라 `futures::channel::mpsc`를 씁니다. tokio는
 `ag_ui::axum`에만 있습니다. 그래야 wasm target과 tokio가 아닌 executor가 가능한
 선택지로 남습니다.
@@ -159,7 +157,7 @@ error로 멈춥니다. 대화의 4분의 3만 조용히 그리지 않습니다.
 CI는 이것을 두 가지 방법으로 강제합니다. 두 번째가 있는 이유는 첫 번째로 부족하기
 때문입니다. 그 crate들을 `wasm32-unknown-unknown`으로 build하고, *또한* 의존성
 graph에 tokio가 없음을 단언합니다. tokio의 `rt`, `sync`, `macros`, `io-util`,
-`time` feature는 모두 wasm으로 compile됩니다. 그래서 `ag_ui::serve`에 `tokio`를
+`time` feature는 모두 wasm으로 compile됩니다. 그래서 `ag_ui::server`에 `tokio`를
 추가해도 wasm 검사는 전부 통과합니다. 실제로 그렇게 해 보고 wasm build가 초록으로
 남는 것을 확인했습니다. 보증을 지는 것은 의존성 graph입니다. 그래서 단언하는
 대상도 그것입니다.
@@ -231,9 +229,9 @@ tokio도 reqwest도 compile하지 않고, CI가 그것을 feature 단위로 단�
 정당화는 독립 version 관리인데, 이 workspace는 그것을 하지 않습니다.
 `workspace.version` 하나로 전부 함께 release합니다.
 
-그래서 `ag-ui`가 crate 하나입니다. protocol type은 언제나 compile되고, `serve`와
+그래서 `ag-ui`가 crate 하나입니다. protocol type은 언제나 compile되고, `server`와
 `client`와 `axum`이 같은 이름의 feature 뒤에 있습니다. runtime마다 자기 `Error`를
-자기 module에 둡니다. `ag_ui::Error`는 protocol 오류이고 `ag_ui::serve::Error`는
+자기 module에 둡니다. `ag_ui::Error`는 protocol 오류이고 `ag_ui::server::Error`는
 hosting 오류입니다.
 
 `ag-ui-a2ui`는 feature가 할 수 없는 격리 논거로 따로 남습니다. A2UI는 별개
@@ -243,7 +241,7 @@ encoder는 `ag_ui::encode`이고, 추가 의존성 없는 수백 줄입니다. A
 `ag-ui-a2ui`의 feature입니다.
 
 비용은 분할이 사 주고 feature가 못 사 주는 그 하나입니다. cargo는 dependency
-graph 전체에서 feature를 합칩니다. 한쪽이 `serve`를, 다른 쪽이 `client`를
+graph 전체에서 feature를 합칩니다. 한쪽이 `server`를, 다른 쪽이 `client`를
 요청하는 build는 둘 다 compile합니다. 섞인 graph에서의 compile 시간이지 runtime
 이나 정확성 비용은 아닙니다. [crate 구성](/ag-ui-rust/ko/start/crates/)이 그
 안내입니다.
