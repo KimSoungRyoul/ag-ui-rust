@@ -5,20 +5,11 @@
 //! text and reasoning, calls tools, publishes state, and finishes — or pauses
 //! for human input.
 //!
-//! <div class="warning">
-//!
-//! **Goal: to become the official AG-UI Rust SDK.** It is not that today — this
-//! is an independent implementation, neither affiliated with nor endorsed by
-//! the AG-UI protocol organisation, and adoption is that organisation's call
-//! rather than this project's.
-//!
-//! What it is doing in the meantime is holding itself to what an official SDK
-//! would have to be: all 33 event types, both halves of the protocol, and a
-//! drift check in CI that fails the build when upstream's event set moves.
-//! `docs/DESIGN.md` sets out the gap it is closing and how each claim is
-//! enforced.
-//!
-//! </div>
+//! It implements all 33 event types, both halves of the protocol, and a drift
+//! check in CI that fails the build when upstream's event set moves — held to
+//! what an official SDK would have to be, because becoming the official AG-UI
+//! Rust SDK is the goal. It is not that yet: this crate is not affiliated with
+//! or endorsed by the AG-UI protocol organisation.
 //!
 //! # What is in the box
 //!

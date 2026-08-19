@@ -4,22 +4,19 @@ A Rust SDK for the [AG-UI protocol](https://docs.ag-ui.com) — build agent back
 
 AG-UI standardises how an AI agent talks to a user-facing application: a POST carrying
 `RunAgentInput`, answered by a stream of typed events. Official SDKs exist for TypeScript,
-Python, and .NET. Rust's is a
-[community SDK](https://github.com/ag-ui-protocol/ag-ui/tree/main/sdks/community/rust) that
-consumes an agent but cannot host one, and that stopped tracking the spec: it declares 24 of
-the protocol's 33 event types, so a `REASONING_*` or `ACTIVITY_*` event ends a run rather
-than being skipped, and it carries no `RunFinished.outcome`, so a run cannot pause for a
-human at all. Independent Rust takes have appeared since, so this is not the only option;
-`docs/DESIGN.md` sets out what this one holds itself to instead. The server story is the
-priority here.
+Python, and .NET.
 
-**The goal is to become the official AG-UI Rust SDK.** It is not that today — this project
-is not affiliated with or endorsed by the AG-UI protocol organisation, and adoption is
-that organisation's call rather than this one's. What it can do in the meantime is hold
-itself to what an official SDK would have to be, and make each of those claims something a
-test enforces rather than something a README asserts: all 33 event types, both halves of
-the protocol, ordering verified on the server, and a drift check that fails CI when
-upstream's event set moves.
+**The goal is to become the official Rust one.** It is not that yet — this project is not
+affiliated with or endorsed by the AG-UI protocol organisation. What it can do meanwhile is
+hold itself to what an official SDK would have to be, and make each claim something a test
+enforces rather than something a README asserts: **all 33 event types**, **both halves of
+the protocol** — hosting an agent and consuming one — **ordering verified on the server**,
+and **a drift check that fails CI** when upstream's event set moves.
+
+The existing `sdks/community/rust` covers 24 of the 33 event types and cannot host an agent
+at all, so a `REASONING_*` or `ACTIVITY_*` event ends a run rather than being skipped, and
+without `RunFinished.outcome` a run cannot pause for a human. `docs/DESIGN.md` has the
+numbers and the reasoning.
 
 ## Crates
 

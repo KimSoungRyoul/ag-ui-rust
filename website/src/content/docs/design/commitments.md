@@ -6,11 +6,9 @@ description: What this SDK holds itself to, the reasoning behind each commitment
 This page is the case for the SDK, from the outside. If you are deciding whether
 to build on it, this is what it promises and what those promises cost you.
 
-The case is not that there is nothing else. As of August 2026 crates.io carries
-several independent Rust takes on AG-UI, and more than one of them can host an
-agent. An earlier draft of `docs/DESIGN.md` argued from scarcity; that argument
-was true when it was written, is not true now, and has been retracted. What is
-left is a quality claim, which is the kind that has to keep being earned.
+Each one is a quality claim, and each is enforced by something that fails the
+build rather than by this page asserting it. Where a commitment costs you
+something, that cost is stated with it.
 
 ## The four commitments
 

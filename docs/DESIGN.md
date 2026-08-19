@@ -33,8 +33,9 @@ each of which is a decision the rest of this document explains and a test enforc
 - **A drift check in CI.** `xtask drift-check` fails the build when upstream's event set moves,
   so the port cannot quietly fall behind the way the community crate did.
 
-Those are quality claims rather than availability ones, which means they have to keep being
-earned.
+The goal is for this to become the official Rust SDK. That is the AG-UI organisation's
+decision to make, not this project's, so the only thing worth doing about it is the list
+above — and keeping every item on it enforced by something that fails the build.
 
 ## The source of truth is the TypeScript Zod schemas
 
