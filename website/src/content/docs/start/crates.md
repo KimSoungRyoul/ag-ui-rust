@@ -60,32 +60,33 @@ compile time in a mixed graph, not a runtime or correctness cost.
 ## The shape
 
 ```text
-                      ag-ui
-                serde · serde_json · thiserror
-                            │
-             ┌──────────────┼──────────────┐
-             │              │              │
-      ag_ui::serve    ag_ui::client   ag-ui-a2ui
-       futures ·       futures ·      jsonptr
-      json-patch      json-patch ·   (core optional)
-             │        reqwest (opt)
-             │
-       ag_ui::axum
-    axum · tower · tokio
+  ag-ui  (default)                         ag-ui-a2ui
+  serde · serde_json · thiserror           jsonptr
+            │                              (ag-ui optional)
+  ┌─────────┼──────────┐
+  │         │          │
+serve     client     axum
+futures · futures ·  axum · tower · tokio
+json-patch  json-patch     (implies serve, sse)
+            └ http
+              reqwest
 ```
 
 Three things about that picture are load-bearing.
 
-**tokio enters at `ag_ui::axum` and nowhere else.** `core`, `server` and `client` use
-`futures` primitives — `futures::channel::mpsc` for the emit path rather than
-`tokio::sync::mpsc` — so wasm targets and non-tokio executors keep working. CI enforces it
-two ways: by building those crates for `wasm32-unknown-unknown`, and, because tokio itself
-compiles for wasm, by asserting tokio is absent from their dependency graphs.
-[Platforms and MSRV](/ag-ui-rust/reference/platforms/) has the specifics.
+**tokio enters with `axum` and nowhere else.** The protocol types and the `serve` and
+`client` runtimes use `futures` primitives — `futures::channel::mpsc` for the emit path
+rather than `tokio::sync::mpsc` — so wasm targets and non-tokio executors keep working. CI
+enforces it two ways: by building each feature for `wasm32-unknown-unknown`, and, because
+tokio itself compiles for wasm, by asserting tokio is absent from those dependency graphs.
+That assertion matters more now than it did when these were crates: cargo unifies features
+across a graph, so one careless `dep:tokio` on `serve` would reach every consumer that never
+asked for `axum`. [Platforms and MSRV](/ag-ui-rust/reference/platforms/) has the specifics.
 
-**`ag-ui` stays small on purpose.** It has no runtime, no I/O and no async: the types,
-their exact JSON representation, and the SSE framing that carries them. That is what lets
-it sit under both halves without dragging anything into either.
+**The default build stays small on purpose.** With no features past `sse`, the crate has no
+runtime, no I/O and no async: the types, their exact JSON representation, and the SSE framing
+that carries them. That is what lets it sit under both halves without dragging anything into
+either.
 
 **`ag-ui-a2ui` does not depend on the rest.** A2UI is a separate protocol — an agent
 streams JSON describing a surface, and a renderer draws it — and this crate is the agent
@@ -108,26 +109,16 @@ assert!(report.is_valid());
 
 Nothing in there mentions AG-UI. [A2UI](/ag-ui-rust/a2ui/) is the section on it.
 
-## Why five, and not seven
+## What was folded in earlier
 
-The first draft mirrored the .NET SDK's assembly split one-for-one, which is the wrong
-instinct. In .NET an assembly is the deployment and versioning unit, so splitting is cheap
-and natural. In Rust, **features are the primary tool**, and a crate split has to be
-justified by something features cannot do: dependency isolation, or independent versioning.
+The same rule had already collapsed seven crates into five, and those two folds stand.
 
-Two crates failed that test and were folded in.
-
-`ag-ui-encoder` became `ag-ui::encode`. SSE framing is a few hundred lines with zero
+`ag-ui-encoder` became `ag_ui::encode`. SSE framing is a few hundred lines with zero
 extra dependencies, so there was nothing to isolate. The only heavy part is protobuf, and
 an optional dependency already handles that.
 
 `ag-ui-a2ui-toolkit` became `ag-ui-a2ui`'s `toolkit` feature. It is prompt strings and
 orchestration — again, nothing to isolate.
-
-The three that stayed separate each pass the test for a different reason. `ag_ui::axum`
-drags in axum, tower and tokio, and that is exactly the dependency isolation the rule is
-about. `ag_ui::client` is useful entirely on its own — a frontend has no reason to compile
-the server. And `ag-ui-a2ui` is a different protocol, usable without AG-UI at all.
 
 The full argument, including what it costs, is in `docs/DESIGN.md` and summarised in
 [Design commitments](/ag-ui-rust/design/commitments/).
@@ -137,11 +128,14 @@ The full argument, including what it costs, is in `docs/DESIGN.md` and summarise
 | Crate | Feature | Default | What it adds |
 | --- | --- | --- | --- |
 | `ag-ui` | `sse` | yes | `SseFormatter` and `text/event-stream` framing. No extra dependencies. |
+| `ag-ui` | `verify` | yes | `serve`'s protocol ordering state machine. Off, it compiles away entirely. |
+| `ag-ui` | `serve` | no | Hosting an agent. `futures`, `json-patch`. |
+| `ag-ui` | `client` | no | Consuming one, transport-agnostic. `futures`, `json-patch`. |
+| `ag-ui` | `http` | no | The `reqwest`-backed transport. Implies `client` and `sse`. |
+| `ag-ui` | `axum` | no | The axum binding. Implies `serve` and `sse`; the only feature that pulls tokio. |
 | `ag-ui` | `protobuf` | no | The binary transport's media type and content negotiation. No encoder — `events.proto` covers 18 of 33 event types. |
 | `ag-ui` | `schemars` | no | Derives `schemars::JsonSchema` on the public types. |
 | `ag-ui` | `utoipa` | no | Derives `utoipa::ToSchema` on the public types. |
-| `ag_ui::serve` | `verify` | yes | The protocol ordering state machine. Off, it compiles away entirely. |
-| `ag_ui::client` | `http` | yes | The `reqwest`-backed HTTP transport. Off, the crate builds for wasm. |
 | `ag-ui-a2ui` | `toolkit` | yes | Agent-side authoring: op builders, prompt assembly, the recovery loop. |
 | `ag-ui-a2ui` | `ag-ui` | yes | Interop with `ag-ui`. Implies `toolkit`. |
 
@@ -166,4 +160,4 @@ program.
 - [Getting started](/ag-ui-rust/start/) — the dependency declarations, and a running agent.
 - [The Agent trait](/ag-ui-rust/server/agent/) — what `ag_ui::serve` asks of you.
 - [Sessions](/ag-ui-rust/client/session/) — what `ag_ui::client` gives you.
-- [API docs](/ag-ui-rust/api/ag_ui/index.html) — rustdoc for all five crates.
+- [API docs](/ag-ui-rust/api/ag_ui/index.html) — rustdoc for both crates.

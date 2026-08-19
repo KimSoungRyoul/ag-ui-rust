@@ -277,7 +277,7 @@ drop하는 것이 곧 취소입니다. byte를 끌어오는 일이 stream을 pol
 
 - [AG-UI 동작 방식](/ag-ui-rust/ko/start/protocol/) — wire. request body, run
   lifecycle, event 계열, SSE framing.
-- [crate 구성](/ag-ui-rust/ko/start/crates/) — 다섯 crate가 각각 무엇을 위한 것이고
+- [crate 구성](/ag-ui-rust/ko/start/crates/) — crate 둘과 그 feature가 각각 무엇을 위한 것이고
   어떤 일에 어느 것이 필요한지.
 - [Agent trait](/ag-ui-rust/ko/server/agent/) — server 쪽 전부. tool call, shared
   state, human in the loop, error와 cancellation.

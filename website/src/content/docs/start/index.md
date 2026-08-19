@@ -275,7 +275,7 @@ it early is also how you cancel, because polling the stream is what pulls the by
 
 - [How AG-UI works](/ag-ui-rust/start/protocol/) — the wire: the request body, the run
   lifecycle, the event families, the SSE framing.
-- [The crates](/ag-ui-rust/start/crates/) — five crates, what each is for, and which you
+- [The crates](/ag-ui-rust/start/crates/) — two crates and their features, what each is for, and which you
   need for which job.
 - [The Agent trait](/ag-ui-rust/server/agent/) — the server side properly: tool calls,
   shared state, human-in-the-loop pauses, errors and cancellation.

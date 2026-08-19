@@ -60,33 +60,34 @@ runtime을 받습니다. `Transport`를 직접 구현하세요. wasm을 위해, 
 ## 전체 모양
 
 ```text
-                      ag-ui
-                serde · serde_json · thiserror
-                            │
-             ┌──────────────┼──────────────┐
-             │              │              │
-      ag_ui::serve    ag_ui::client   ag-ui-a2ui
-       futures ·       futures ·      jsonptr
-      json-patch      json-patch ·   (core optional)
-             │        reqwest (opt)
-             │
-       ag_ui::axum
-    axum · tower · tokio
+  ag-ui  (기본)                             ag-ui-a2ui
+  serde · serde_json · thiserror           jsonptr
+            │                              (ag-ui optional)
+  ┌─────────┼──────────┐
+  │         │          │
+serve     client     axum
+futures · futures ·  axum · tower · tokio
+json-patch  json-patch     (serve와 sse를 함의)
+            └ http
+              reqwest
 ```
 
 저 그림에서 무게를 지는 것이 셋입니다.
 
-**tokio는 `ag_ui::axum`에서 들어오고 다른 곳에서는 들어오지 않습니다.** `core`와
-`server`와 `client`는 `futures` primitive를 씁니다. emit 경로에
+**tokio는 `axum`과 함께 들어오고 다른 곳에서는 들어오지 않습니다.** protocol type과
+`serve`·`client` runtime은 `futures` primitive를 씁니다. emit 경로에
 `tokio::sync::mpsc`가 아니라 `futures::channel::mpsc`를 쓰는 식입니다. 그래서 wasm
-target과 tokio가 아닌 executor가 계속 돕니다. CI가 두 방향으로 강제합니다. 그
-crate들을 `wasm32-unknown-unknown`으로 build해 봅니다. tokio 자체도 wasm으로
-compile되므로, 그들의 dependency graph에 tokio가 없다는 것까지 확인합니다. 자세한 것은
+target과 tokio가 아닌 executor가 계속 돕니다. CI가 두 방향으로 강제합니다. feature마다
+`wasm32-unknown-unknown`으로 build해 봅니다. tokio 자체도 wasm으로 compile되므로, 그
+dependency graph에 tokio가 없다는 것까지 확인합니다. 이 단언은 crate였을 때보다 지금 더
+중요합니다. cargo는 graph 전체에서 feature를 합치므로, `serve`에 `dep:tokio`를 한 번
+잘못 달면 `axum`을 요청한 적 없는 모든 소비자에게 닿습니다. 자세한 것은
 [platform과 MSRV](/ag-ui-rust/ko/reference/platforms/)에 있습니다.
 
-**`ag-ui`는 일부러 작게 둡니다.** runtime도 I/O도 async도 없습니다. type, 그
-type의 정확한 JSON 표현, 그리고 그것을 실어 나르는 SSE framing뿐입니다. 그래서 양쪽
-절반 아래에 놓이면서도 어느 쪽으로도 무언가를 끌고 들어가지 않습니다.
+**기본 build는 일부러 작게 둡니다.** `sse` 말고 아무 feature도 없으면 runtime도 I/O도
+async도 없습니다. type, 그 type의 정확한 JSON 표현, 그리고 그것을 실어 나르는 SSE
+framing뿐입니다. 그래서 양쪽 절반 아래에 놓이면서도 어느 쪽으로도 무언가를 끌고 들어가지
+않습니다.
 
 **`ag-ui-a2ui`는 나머지에 의존하지 않습니다.** A2UI는 별개의 protocol입니다. agent가
 surface를 서술하는 JSON을 흘려보내면 renderer가 그것을 그립니다. 이 crate는 그 교환의
@@ -110,26 +111,16 @@ assert!(report.is_valid());
 저기 어디에도 AG-UI 이야기가 없습니다. [A2UI](/ag-ui-rust/ko/a2ui/)가 그것을 다루는
 절입니다.
 
-## 왜 일곱이 아니라 다섯인가
+## 앞서 접혀 들어간 것
 
-첫 초안은 .NET SDK의 assembly 분할을 하나씩 그대로 옮겼습니다. 잘못된 직관입니다.
-.NET에서 assembly는 배포와 version 관리의 단위입니다. 쪼개는 값이 싸고 자연스럽습니다.
-Rust에서는 **feature가 일차 도구**입니다. crate를 쪼개려면 feature가 못 하는 것으로
-정당화해야 합니다. dependency 격리, 아니면 독립적인 version 관리입니다.
+같은 규칙이 이미 일곱을 다섯으로 접었고, 그 둘은 그대로 남습니다.
 
-그 시험을 통과하지 못하고 흡수된 crate가 둘입니다.
-
-`ag-ui-encoder`는 `ag-ui::encode`가 되었습니다. SSE framing은 추가 dependency가
+`ag-ui-encoder`는 `ag_ui::encode`가 되었습니다. SSE framing은 추가 dependency가
 하나도 없는 수백 줄입니다. 격리할 것이 없었습니다. 무거운 부분은 protobuf뿐인데, 그것은
 이미 optional dependency가 처리합니다.
 
 `ag-ui-a2ui-toolkit`은 `ag-ui-a2ui`의 `toolkit` feature가 되었습니다. prompt 문자열과
 orchestration입니다. 이것도 격리할 것이 없습니다.
-
-따로 남은 셋은 저마다 다른 이유로 시험을 통과합니다. `ag_ui::axum`은 axum과 tower와
-tokio를 끌고 들어옵니다. 이 규칙이 말하는 dependency 격리가 바로 그것입니다.
-`ag_ui::client`는 그 자체로 온전히 쓸모가 있습니다. frontend가 server를 compile할 이유는
-없습니다. `ag-ui-a2ui`는 다른 protocol이고, AG-UI 없이도 씁니다.
 
 값까지 포함한 전체 논거는 `docs/DESIGN.md`에 있습니다.
 [설계 원칙](/ag-ui-rust/ko/design/commitments/)에 요약해 두었습니다.
@@ -139,15 +130,18 @@ tokio를 끌고 들어옵니다. 이 규칙이 말하는 dependency 격리가 �
 | crate | feature | 기본값 | 무엇을 더하는가 |
 | --- | --- | --- | --- |
 | `ag-ui` | `sse` | 켜짐 | `SseFormatter`와 `text/event-stream` framing. 추가 dependency 없음. |
+| `ag-ui` | `verify` | 켜짐 | `serve`의 protocol ordering state machine. 끄면 통째로 사라집니다. |
+| `ag-ui` | `serve` | 꺼짐 | agent를 host합니다. `futures`, `json-patch`. |
+| `ag-ui` | `client` | 꺼짐 | agent를 소비합니다. transport를 가리지 않습니다. `futures`, `json-patch`. |
+| `ag-ui` | `http` | 꺼짐 | `reqwest`를 쓰는 transport. `client`와 `sse`를 함의합니다. |
+| `ag-ui` | `axum` | 꺼짐 | axum binding. `serve`와 `sse`를 함의하고, tokio를 끌어오는 유일한 feature입니다. |
 | `ag-ui` | `protobuf` | 꺼짐 | binary transport의 media type과 content negotiation. encoder는 없음. `events.proto`가 33개 event type 중 18개만 다룹니다. |
 | `ag-ui` | `schemars` | 꺼짐 | 공개 type에 `schemars::JsonSchema`를 derive합니다. |
 | `ag-ui` | `utoipa` | 꺼짐 | 공개 type에 `utoipa::ToSchema`를 derive합니다. |
-| `ag_ui::serve` | `verify` | 켜짐 | protocol ordering state machine. 끄면 통째로 사라집니다. |
-| `ag_ui::client` | `http` | 켜짐 | `reqwest`를 쓰는 HTTP transport. 끄면 crate가 wasm으로 build됩니다. |
 | `ag-ui-a2ui` | `toolkit` | 켜짐 | agent 쪽 authoring. op builder, prompt 조립, 복구 loop. |
 | `ag-ui-a2ui` | `ag-ui` | 켜짐 | `ag-ui`와의 상호운용. `toolkit`을 함의합니다. |
 
-`ag_ui::axum`에는 feature가 없습니다. 각 feature가 무엇을 치르고 언제 끄면 되는지는
+각 feature가 무엇을 치르고 언제 끄면 되는지는
 [feature flag](/ag-ui-rust/ko/reference/features/)가 설명합니다.
 
 ## 여기 없는 것
@@ -168,4 +162,4 @@ program입니다.
 - [시작하기](/ag-ui-rust/ko/start/) — 의존성 선언, 그리고 돌아가는 agent 하나.
 - [Agent trait](/ag-ui-rust/ko/server/agent/) — `ag_ui::serve`가 요구하는 것.
 - [session](/ag-ui-rust/ko/client/session/) — `ag_ui::client`가 내어 주는 것.
-- [API 문서](/ag-ui-rust/api/ag_ui/index.html) — 다섯 crate 전부의 rustdoc.
+- [API 문서](/ag-ui-rust/api/ag_ui/index.html) — crate 둘 모두의 rustdoc.

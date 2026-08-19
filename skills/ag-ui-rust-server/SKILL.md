@@ -23,9 +23,8 @@ axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
 
-There are no release tags yet, so pin `rev = "<sha>"` for anything you rely on. Rust
-**1.85+**, edition 2024. No LLM crate is involved anywhere: bring your own model client and
-call it inside `run`.
+Rust **1.85+**, edition 2024. No LLM crate is involved anywhere: bring your own model client
+and call it inside `run`.
 
 ## The whole extension point
 
@@ -296,6 +295,6 @@ there for a hand-written handler.
 - [Serving over HTTP](https://kimsoungryoul.github.io/ag-ui-rust/server/axum/) ·
   [A2UI](https://kimsoungryoul.github.io/ag-ui-rust/a2ui/) ·
   [Feature flags](https://kimsoungryoul.github.io/ag-ui-rust/reference/features/)
-- rustdoc for all five crates:
+- rustdoc for both crates:
   <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/index.html>
 - The client half is the `ag-ui-rust-client` skill.
