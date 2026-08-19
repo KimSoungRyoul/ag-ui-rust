@@ -27,16 +27,16 @@
 //! dull one: however the deltas landed, the client assembled exactly one
 //! message out of them.
 
-use ag_ui_client::Session;
-use ag_ui_client::transport::HttpTransport;
-use ag_ui_core::Message;
+use ag_ui::Message;
+use ag_ui::client::Session;
+use ag_ui::client::transport::HttpTransport;
 use board_watch::Board;
 use board_watch::watch::{Console, Watch};
 use tokio::net::TcpListener;
 
 /// Serves `agent` on a free loopback port and returns its URL.
 async fn serve(agent: ag_ui_e2e::llm::LlmAgent) -> String {
-    use ag_ui_axum::RouterExt;
+    use ag_ui::axum::RouterExt;
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

@@ -16,7 +16,7 @@ something better.
 
 ```rust
 // src/render.rs
-use ag_ui_client::{RunEnd, Update};
+use ag_ui::client::{RunEnd, Update};
 use serde_json::Value;
 
 fn render(update: Update<Value>) {
@@ -93,7 +93,7 @@ mid-sentence.
 
 ```rust
 // src/render.rs
-use ag_ui_client::RunEnd;
+use ag_ui::client::RunEnd;
 
 /// Whether the input goes live again — the decision `RunEnd` exists for.
 fn prompt_again(end: &RunEnd) -> bool {
@@ -144,8 +144,8 @@ nor asked.
 
 ```rust
 // src/main.rs
-use ag_ui_client::{RunEnd, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, PatchOperation};
+use ag_ui::client::{RunEnd, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, PatchOperation};
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -202,10 +202,10 @@ the run stops. The transport below is the smallest one that can demonstrate it �
 
 ```rust
 // src/main.rs
-use ag_ui_client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::encode::sse::frame;
-use ag_ui_core::{Event, RunAgentInput, SseFormatter, TextMessageRole};
+use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::encode::sse::frame;
+use ag_ui::{Event, RunAgentInput, SseFormatter, TextMessageRole};
 use futures_util::StreamExt;
 
 /// A transport that answers every run with the same recorded response body.
@@ -261,7 +261,7 @@ it is reported.
 
 ## Errors
 
-`Update::Error` carries `ag_ui_client::Error`, which is `#[non_exhaustive]` —
+`Update::Error` carries `ag_ui::client::Error`, which is `#[non_exhaustive]` —
 new transports and validation rules are expected to add variants without a
 breaking release. The variants worth routing on:
 
@@ -283,6 +283,6 @@ change.
 - [Rendering a run](/ag-ui-rust/client/rendering/) — what to do with
   `Update::Message` when two tool calls are open at once.
 - [Transports](/ag-ui-rust/client/transports/) — where the events came from.
-- [`Update`](/ag-ui-rust/api/ag_ui_client/session/enum.Update.html) and
-  [`RunEnd`](/ag-ui-rust/api/ag_ui_client/session/enum.RunEnd.html) in the API
+- [`Update`](/ag-ui-rust/api/ag_ui/client/session/enum.Update.html) and
+  [`RunEnd`](/ag-ui-rust/api/ag_ui/client/session/enum.RunEnd.html) in the API
   docs.

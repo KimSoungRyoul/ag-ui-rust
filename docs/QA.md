@@ -4,7 +4,7 @@ Two tiers, because they answer different questions.
 
 | Tier | What it proves | Runs |
 | --- | --- | --- |
-| Deterministic E2E | The protocol plumbing is correct: full event ordering, state deltas, and the human-in-the-loop round trip, driven over real HTTP by `ag-ui-client` against a real axum server. Plus the LLM mapping itself, driven from recorded SSE frames. | Always. CI gate. |
+| Deterministic E2E | The protocol plumbing is correct: full event ordering, state deltas, and the human-in-the-loop round trip, driven over real HTTP by `ag_ui::client` against a real axum server. Plus the LLM mapping itself, driven from recorded SSE frames. | Always. CI gate. |
 | Live smoke | A real streaming LLM is reachable and maps onto AG-UI events correctly, and the SDK genuinely depends on no LLM crate. | `#[ignore]`, only when a key or a local endpoint is configured. Not a CI gate. |
 
 The deterministic tier uses a scripted mock agent and recorded model frames, so it is fast and

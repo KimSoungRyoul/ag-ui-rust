@@ -6,11 +6,11 @@
 //! with a scripted stdin and a `Vec<u8>` for a screen, so the transcripts in
 //! `README.md` are assertions rather than illustrations.
 
+use ag_ui::client::transport::HttpTransport;
+use ag_ui::client::{HttpAgent, RunEnd, RunParams, Session, Update};
+use ag_ui::{Event, EventType, Message};
 use ag_ui_a2ui::message::AgentPayload;
 use ag_ui_a2ui::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
-use ag_ui_client::transport::HttpTransport;
-use ag_ui_client::{HttpAgent, RunEnd, RunParams, Session, Update};
-use ag_ui_core::{Event, EventType, Message};
 use futures_util::StreamExt as _;
 use serde_json::Value;
 use task_board::board::{self, Board};

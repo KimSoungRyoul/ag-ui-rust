@@ -22,11 +22,11 @@
 //! the events arriving one by one. Set `ADDR` to bind somewhere else.
 //!
 //! The agent is [`ag_ui_e2e::llm::LlmAgent`], which reaches the model with
-//! `reqwest` and implements nothing but [`Agent`](ag_ui_server::Agent). Mounting
+//! `reqwest` and implements nothing but [`Agent`](ag_ui::serve::Agent). Mounting
 //! it is one line, and there is no LLM crate anywhere in the dependency tree —
 //! that is the point of the example as much as the streaming is.
 
-use ag_ui_axum::RouterExt;
+use ag_ui::axum::RouterExt;
 use ag_ui_e2e::llm::{API_KEY_ENV, BASE_URL_ENV, LlmAgent, MODEL_ENV};
 use axum::Router;
 use axum::routing::get;

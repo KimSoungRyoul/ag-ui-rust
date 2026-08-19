@@ -3,7 +3,7 @@ title: transport
 description: client에서 비동기인 유일한 계층 — HTTP transport, SSE decoder, replay transport, 그리고 직접 하나 만드는 데 필요한 것.
 ---
 
-`ag-ui-client`의 나머지는 전부 동기입니다. 적용, chunk normalization,
+`ag_ui::client`의 나머지는 전부 동기입니다. 적용, chunk normalization,
 verification 모두 평범한 state machine입니다. loop에서도, test에서도,
 event handler에서도 직접 돌릴 수 있습니다. transport는 바깥 세상과
 이야기하는 유일한 계층입니다. `async`가 나타나는 유일한 자리이기도
@@ -19,8 +19,8 @@ wasm frontend, 프로세스 안의 agent, websocket, 녹화해 둔 fixture. 각�
 ```rust
 // 인용이 아니라 여기에 다시 적은 전부입니다. signature가 옮겨 가면 이
 // 페이지가 컴파일되지 않도록.
-use ag_ui_client::transport::TransportFuture;
-use ag_ui_core::RunAgentInput;
+use ag_ui::client::transport::TransportFuture;
+use ag_ui::RunAgentInput;
 
 trait Transport {
     fn run(&self, input: RunAgentInput) -> TransportFuture;
@@ -50,9 +50,9 @@ application 전체에 끌고 다니지 않아도 됩니다.
 
 ```rust
 // src/main.rs
-use ag_ui_client::transport::{ReplayTransport, Transport};
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::Event;
+use ag_ui::client::transport::{ReplayTransport, Transport};
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::Event;
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -85,10 +85,10 @@ decode합니다. crate 안에서 HTTP client를 끌어오는 유일한 곳입니
 
 ```rust
 // src/main.rs
-use ag_ui_client::transport::HttpTransport;
+use ag_ui::client::transport::HttpTransport;
 use std::time::Duration;
 
-fn main() -> Result<(), ag_ui_client::Error> {
+fn main() -> Result<(), ag_ui::client::Error> {
     let transport = HttpTransport::builder("https://example.com/agent")
         .header("authorization", "Bearer token")
         .header("x-tenant", "acme")
@@ -135,8 +135,8 @@ model까지 있어야 합니다. 게다가 그럴 필요도 없습니다. 대화
 
 ```rust
 // tests/client.rs
-use ag_ui_client::{Session, transport::ReplayTransport};
-use ag_ui_core::{Event, Interrupt};
+use ag_ui::client::{Session, transport::ReplayTransport};
+use ag_ui::{Event, Interrupt};
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -192,9 +192,9 @@ UTF-8 시퀀스 중간에서도 끊깁니다. 형식이 요구하는 마지막 �
 
 ```rust
 // src/transport.rs
-use ag_ui_client::transport::SseDecoder;
+use ag_ui::client::transport::SseDecoder;
 
-fn main() -> Result<(), ag_ui_client::Error> {
+fn main() -> Result<(), ag_ui::client::Error> {
     let mut decoder = SseDecoder::new();
 
     // proxy의 heartbeat, 그리고 반쪽짜리 event.
@@ -236,9 +236,9 @@ adapter입니다. byte stream에서 난 error는 stream을 끝냅니다. payload
 
 ```rust
 // src/transport.rs
-use ag_ui_client::transport::{EventStream, Transport, TransportFuture};
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::{Event, RunAgentInput, TextMessageRole};
+use ag_ui::client::transport::{EventStream, Transport, TransportFuture};
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::{Event, RunAgentInput, TextMessageRole};
 use futures_util::StreamExt;
 
 /// 무엇을 요청받든 정해진 event 목록을 내어 줍니다.
@@ -287,9 +287,9 @@ helper입니다.
 
 ```rust
 // src/transport.rs
-use ag_ui_client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::{Event, RunAgentInput, SseFormatter};
+use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::{Event, RunAgentInput, SseFormatter};
 use futures_util::StreamExt;
 
 /// 모든 run에 녹화해 둔 response body로 답합니다.
@@ -337,22 +337,20 @@ crate를 wasm에서 쓸 수 있게 유지하는 방법입니다. 끄면 `HttpTra
 `HttpAgent`도 함께 사라집니다. `Transport`는 직접 가져오세요.
 
 ```toml
-[dependencies.ag-ui-client]
-git = "https://github.com/KimSoungRyoul/ag-ui-rust"
+[dependencies.ag-ui]
+version = "0.1"
 default-features = false
-
-[dependencies.ag-ui-core]
-git = "https://github.com/KimSoungRyoul/ag-ui-rust"
+features = ["client", "sse"]
 ```
 
 CI는 이 주장의 양쪽 절반을 모두 강제합니다. feature flag 밖의 무언가가
-`reqwest`에 손을 뻗으면 `cargo check -p ag-ui-client
---no-default-features --target wasm32-unknown-unknown`이 실패합니다.
+`reqwest`에 손을 뻗으면 `cargo check -p ag-ui
+--no-default-features --features client --target wasm32-unknown-unknown`이 실패합니다.
 별도의 job은 그 구성의 의존성 그래프에 `tokio`가 없음을 단언합니다.
 tokio 자체는 wasm으로 컴파일되기 때문입니다. wasm build가 초록이라는
 것만으로는 이를 잡지 못합니다. `reqwest`를 조건 없이 넣는 manifest
 수정은 모든 컴파일을 통과합니다. 그래서
-`crates/ag-ui-client/tests/features.rs`가 manifest를 읽어 그것까지
+`crates/ag-ui/tests/client_features.rs`가 manifest를 읽어 그것까지
 검사합니다.
 
 feature flag 각각의 비용은 [feature
@@ -365,5 +363,5 @@ flag](/ag-ui-rust/ko/reference/features/) 문서에 있습니다. 무엇이 어�
 - [session](/ag-ui-rust/ko/client/session/) — transport 위에 무엇이
   얹히는지.
 - API 문서의
-  [`Transport`](/ag-ui-rust/api/ag_ui_client/transport/trait.Transport.html)와
-  [`HttpTransport`](/ag-ui-rust/api/ag_ui_client/transport/http/struct.HttpTransport.html).
+  [`Transport`](/ag-ui-rust/api/ag_ui/client/transport/trait.Transport.html)와
+  [`HttpTransport`](/ag-ui-rust/api/ag_ui/client/transport/http/struct.HttpTransport.html).

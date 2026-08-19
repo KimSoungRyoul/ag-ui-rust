@@ -64,8 +64,8 @@ transport does carry and the 15 it does not.
 ## `Event` is exhaustive on purpose; the errors are not
 
 Every error enum in this workspace is `#[non_exhaustive]`.
-[`Event`](/ag-ui-rust/api/ag_ui_core/event/enum.Event.html) and
-[`EventType`](/ag-ui-rust/api/ag_ui_core/event/enum.EventType.html) are not, and
+[`Event`](/ag-ui-rust/api/ag_ui/event/enum.Event.html) and
+[`EventType`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html) are not, and
 the asymmetry is deliberate. The protocol *has* grown twice in the last year —
 `REASONING_*`, `ACTIVITY_*` — so this gets tested rather than remaining
 hypothetical.
@@ -86,7 +86,7 @@ each loud.
 **The price is honest and accepted: adding an event is a major version of this
 SDK.** It should be — the wire contract changed. If you match on `Event`
 directly, budget for that. If you would rather not, match on the higher-level
-[`Update`](/ag-ui-rust/api/ag_ui_client/session/enum.Update.html) stream instead,
+[`Update`](/ag-ui-rust/api/ag_ui/client/session/enum.Update.html) stream instead,
 which does carry the attribute.
 
 The reasoning inverts for errors, which is why they carry it. Nobody wants an
@@ -98,14 +98,14 @@ fall through on the rest, and a new failure mode is not a protocol change.
 The two client types sit on opposite sides of that line, and the split shows
 what the rule actually is.
 
-[`RunEnd`](/ag-ui-rust/api/ag_ui_client/session/enum.RunEnd.html) sits with
+[`RunEnd`](/ag-ui-rust/api/ag_ui/client/session/enum.RunEnd.html) sits with
 `Event`: exhaustive. A run ends in exactly the three ways the protocol defines,
 that match is the one a front-end most wants checked — it decides whether the
 input goes live again — and a fourth way to end a run *would* be a wire-contract
 change.
 
 ```rust
-use ag_ui_client::RunEnd;
+use ag_ui::client::RunEnd;
 
 fn on_end(end: &RunEnd) -> String {
     // No `_` arm. A fourth way to end a run would stop this compiling, which is
@@ -156,15 +156,15 @@ evidence — see [Testing](/ag-ui-rust/design/testing/).
 
 ## Executor-agnostic below the web binding
 
-`ag-ui-core`, `ag-ui-server` and `ag-ui-client` use `futures` primitives —
+`ag-ui`, `ag_ui::serve` and `ag_ui::client` use `futures` primitives —
 notably `futures::channel::mpsc` for the emit path rather than
-`tokio::sync::mpsc`. tokio appears only in `ag-ui-axum`. This keeps wasm targets
+`tokio::sync::mpsc`. tokio appears only in `ag_ui::axum`. This keeps wasm targets
 and non-tokio executors viable.
 
 CI enforces it two ways, and the second exists because the first is not enough:
 those crates are built for `wasm32-unknown-unknown`, *and* tokio is asserted
 absent from their dependency graphs. tokio's `rt`, `sync`, `macros`, `io-util`
-and `time` features all compile for wasm, so adding `tokio` to `ag-ui-server`
+and `time` features all compile for wasm, so adding `tokio` to `ag_ui::serve`
 passes every wasm check. That was verified by doing exactly that and watching the
 wasm build stay green. The dependency graph is what carries the guarantee, so
 that is what gets asserted.
@@ -205,7 +205,7 @@ and against anything else using its own id scheme (upstream issues #2195 and
 constraint the protocol does not have:
 
 ```rust
-use ag_ui_core::{RunId, ThreadId};
+use ag_ui::{RunId, ThreadId};
 
 fn main() {
     // Whatever the producer sends round-trips byte for byte.
@@ -223,7 +223,7 @@ fn main() {
 Generate a UUID and pass its string form if that is what you want. The SDK takes
 no `uuid` dependency and has no opinion.
 
-## Five crates, not seven
+## Two crates, not seven
 
 The first draft mirrored the .NET assembly split one-for-one, which is the wrong
 instinct: in .NET an assembly is the deployment and versioning unit, so
@@ -231,16 +231,31 @@ splitting is cheap and natural. In Rust, **features are the primary tool** and a
 crate split should be justified by dependency isolation or independent
 versioning.
 
-Two crates were folded in as a result. The SSE encoder became
-`ag-ui-core::encode` — a few hundred lines with zero extra dependencies, where
-only protobuf is heavy and an optional dependency already handles that. The A2UI
-toolkit became a feature of `ag-ui-a2ui`, because it is prompt strings and
-orchestration with nothing to isolate.
+That rule folded seven crates into five, and then — applied to its own
+conclusion — five into two. The five-crate arrangement failed its own test.
+Feature gates isolate dependencies exactly as well as a split does:
+`--no-default-features` compiles no axum, no tokio, no reqwest, and CI asserts
+that per feature. Independent versioning would have been the other
+justification, and this workspace does not do it — one `workspace.version`,
+everything released together.
 
-What stayed separate, and why: `ag-ui-axum` drags in axum, tokio and tower;
-`ag-ui-client` is useful on its own; `ag-ui-a2ui` is a different protocol that
-can be used without AG-UI at all. [The crates](/ag-ui-rust/start/crates/) is the
-tour.
+So `ag-ui` is one crate: the protocol types always compiled, with `serve`,
+`client` and `axum` behind features of those names. Each runtime keeps its own
+`Error` under its own module, so `ag_ui::Error` is a protocol error and
+`ag_ui::serve::Error` is a hosting error.
+
+`ag-ui-a2ui` stays separate on the isolation argument a feature cannot make:
+A2UI is a different protocol, drivable over A2A or MCP with no AG-UI anywhere,
+and its users should not have to depend on a crate named `ag-ui` to reach it.
+Two earlier folds stand for the same reason they always did — the SSE encoder is
+`ag_ui::encode`, a few hundred lines with zero extra dependencies, and the A2UI
+toolkit is a feature of `ag-ui-a2ui`.
+
+The cost is the one thing a split buys and features cannot: cargo unifies
+features across a dependency graph, so a build that wants `serve` in one place
+and `client` in another compiles both. That is compile time in a mixed graph,
+not a runtime or correctness cost.
+[The crates](/ag-ui-rust/start/crates/) is the tour.
 
 ## One extension point, not two
 

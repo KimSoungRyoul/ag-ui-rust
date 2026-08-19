@@ -17,7 +17,7 @@ parameter가 나타나는 자리가 여기입니다. session에 더 나은 것�
 
 ```rust
 // src/render.rs
-use ag_ui_client::{RunEnd, Update};
+use ag_ui::client::{RunEnd, Update};
 use serde_json::Value;
 
 fn render(update: Update<Value>) {
@@ -98,7 +98,7 @@ rendering](/ag-ui-rust/ko/client/rendering/) 한 페이지가 그 이야기입�
 
 ```rust
 // src/render.rs
-use ag_ui_client::RunEnd;
+use ag_ui::client::RunEnd;
 
 /// 입력창을 다시 살릴지 여부. `RunEnd`가 존재하는 이유인 그 결정.
 fn prompt_again(end: &RunEnd) -> bool {
@@ -152,8 +152,8 @@ agent는 이를 듣지도, 묻지도 않기 때문입니다.
 
 ```rust
 // src/main.rs
-use ag_ui_client::{RunEnd, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, PatchOperation};
+use ag_ui::client::{RunEnd, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, PatchOperation};
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -202,7 +202,7 @@ async fn main() {
 ## 이 build가 모르는 event
 
 protocol의 `Event` enum도 exhaustive합니다. 그 exhaustive함이
-바로잡으려는 실패는 소리 없는 누락입니다. 커뮤니티판 `ag-ui-core
+바로잡으려는 실패는 소리 없는 누락입니다. 커뮤니티판 `ag-ui
 0.1.0`은 event variant를 24개만 선언했습니다. 당시 명세에는 32개가
 있었습니다. 지금은 33개입니다. 아무도 알아채지 못했습니다. 모든 소비자
 code에 있던 `_` 갈래가 그 침묵의 모습이기 때문입니다.
@@ -215,10 +215,10 @@ transport는 그것을 보일 수 있는 가장 작은 transport입니다. 그 �
 
 ```rust
 // src/main.rs
-use ag_ui_client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::encode::sse::frame;
-use ag_ui_core::{Event, RunAgentInput, SseFormatter, TextMessageRole};
+use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::encode::sse::frame;
+use ag_ui::{Event, RunAgentInput, SseFormatter, TextMessageRole};
 use futures_util::StreamExt;
 
 /// 모든 run에 같은 녹화 response body로 답하는 transport.
@@ -275,7 +275,7 @@ async fn main() {
 
 ## error
 
-`Update::Error`는 `ag_ui_client::Error`를 실어 나릅니다. 이 type은
+`Update::Error`는 `ag_ui::client::Error`를 실어 나릅니다. 이 type은
 `#[non_exhaustive]`입니다. 새 transport와 새 validation rule이 호환성을 깨는
 release 없이 variant를 추가하리라 보기 때문입니다. 분기해 볼 값어치가
 있는 variant는 다음과 같습니다.
@@ -300,5 +300,5 @@ release 없이 variant를 추가하리라 보기 때문입니다. 분기해 볼 
 - [transport](/ag-ui-rust/ko/client/transports/) — event가 어디서
   왔는지.
 - API 문서의
-  [`Update`](/ag-ui-rust/api/ag_ui_client/session/enum.Update.html)와
-  [`RunEnd`](/ag-ui-rust/api/ag_ui_client/session/enum.RunEnd.html).
+  [`Update`](/ag-ui-rust/api/ag_ui/client/session/enum.Update.html)와
+  [`RunEnd`](/ag-ui-rust/api/ag_ui/client/session/enum.RunEnd.html).

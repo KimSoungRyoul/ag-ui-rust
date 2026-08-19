@@ -9,10 +9,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "ag-ui"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
+ "insta",
+ "json-patch",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tower",
+ "utoipa",
+]
+
+[[package]]
 name = "ag-ui-a2ui"
 version = "0.1.0"
 dependencies = [
- "ag-ui-core",
+ "ag-ui",
  "jsonptr 0.8.1",
  "serde",
  "serde_json",
@@ -21,76 +41,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "ag-ui-axum"
-version = "0.1.0"
-dependencies = [
- "ag-ui-client",
- "ag-ui-core",
- "ag-ui-server",
- "axum",
- "futures-util",
- "serde_json",
- "thiserror",
- "tokio",
- "tower",
-]
-
-[[package]]
-name = "ag-ui-client"
-version = "0.1.0"
-dependencies = [
- "ag-ui-core",
- "futures-core",
- "futures-util",
- "json-patch",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "ag-ui-core"
-version = "0.1.0"
-dependencies = [
- "insta",
- "schemars",
- "serde",
- "serde_json",
- "thiserror",
- "utoipa",
-]
-
-[[package]]
 name = "ag-ui-e2e"
 version = "0.1.0"
 dependencies = [
+ "ag-ui",
  "ag-ui-a2ui",
- "ag-ui-axum",
- "ag-ui-client",
- "ag-ui-core",
- "ag-ui-server",
  "axum",
  "futures-util",
  "reqwest",
  "serde",
  "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "ag-ui-server"
-version = "0.1.0"
-dependencies = [
- "ag-ui-core",
- "futures-channel",
- "futures-core",
- "futures-util",
- "json-patch",
- "serde",
- "serde_json",
- "thiserror",
  "tokio",
 ]
 
@@ -197,12 +157,9 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 name = "board-watch"
 version = "0.1.0"
 dependencies = [
+ "ag-ui",
  "ag-ui-a2ui",
- "ag-ui-axum",
- "ag-ui-client",
- "ag-ui-core",
  "ag-ui-e2e",
- "ag-ui-server",
  "axum",
  "futures-util",
  "serde",
@@ -1563,11 +1520,8 @@ dependencies = [
 name = "task-board"
 version = "0.1.0"
 dependencies = [
+ "ag-ui",
  "ag-ui-a2ui",
- "ag-ui-axum",
- "ag-ui-client",
- "ag-ui-core",
- "ag-ui-server",
  "axum",
  "futures-util",
  "reqwest",

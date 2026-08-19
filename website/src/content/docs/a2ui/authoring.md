@@ -182,7 +182,7 @@ use ag_ui_a2ui::toolkit::prompt::{PromptSpec, build_subagent_prompt};
 use ag_ui_a2ui::{
     AgentMessage, Catalog, Component, find_prior_surface_in, wrap_as_operations_envelope,
 };
-use ag_ui_core::Message;
+use ag_ui::Message;
 use serde_json::json;
 
 let rendered = wrap_as_operations_envelope(&[
@@ -409,7 +409,7 @@ what it wants, and the inner call produces it.
 ```rust
 use ag_ui_a2ui::Catalog;
 use ag_ui_a2ui::toolkit::tools::{generate_a2ui_tool, render_a2ui_tool};
-use ag_ui_core::Tool;
+use ag_ui::Tool;
 
 let catalog = Catalog::basic();
 let tools: Vec<Tool> = vec![
@@ -424,7 +424,7 @@ assert_eq!(tools[1].parameters["type"], "object");
 
 `ToolDefinition` is provider-neutral: `name`, `description`, and `parameters` as a JSON Schema
 object. `to_anthropic_value()` renders the Messages API shape, where the schema key is
-`input_schema`; the `From<ToolDefinition> for ag_ui_core::Tool` impl above is the AG-UI shape,
+`input_schema`; the `From<ToolDefinition> for ag_ui::Tool` impl above is the AG-UI shape,
 and it needs the `ag-ui` feature.
 
 Once a surface exists, [Validation](/ag-ui-rust/a2ui/validation/) is what decides whether it is

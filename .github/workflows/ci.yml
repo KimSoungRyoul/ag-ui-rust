@@ -62,7 +62,7 @@ jobs:
       # `cargo test`, not `cargo nextest run`. nextest does not run doctests at
       # all, and a large part of what this workspace proves lives in them: every
       # crate README, the workspace quickstart, and — in
-      # crates/ag-ui-server/src/emit/mod.rs — the `compile_fail` example that is
+      # crates/ag-ui/src/serve/emit/mod.rs — the `compile_fail` example that is
       # the only executable proof of the typestate guarantee docs/DESIGN.md
       # sells as a headline feature. The local loop is nextest, so "535 tests
       # pass" locally silently excludes all of that.
@@ -106,19 +106,27 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
 
-      # Building for wasm proves the crates carry no native-only assumptions.
-      - run: cargo check -p ag-ui-core --target wasm32-unknown-unknown --no-default-features
-      - run: cargo check -p ag-ui-core --target wasm32-unknown-unknown --all-features
-      - run: cargo check -p ag-ui-server --target wasm32-unknown-unknown --all-features
-      - run: cargo check -p ag-ui-client --target wasm32-unknown-unknown --no-default-features
+      # Building for wasm proves the crate carries no native-only assumptions.
+      # Feature by feature rather than `--all-features`, because `axum` is the
+      # one that is allowed to be native-only.
+      - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features
+      - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features sse,protobuf,schemars,utoipa
+      - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features serve,verify,sse
+      - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features client,sse
       - run: cargo check -p ag-ui-a2ui --target wasm32-unknown-unknown --all-features
 
       # ...but it does NOT prove the tokio ban, which is the actual commitment in
       # docs/DESIGN.md ("Executor-agnostic below the web binding"). tokio's `rt`,
       # `sync`, `macros`, `io-util` and `time` features all compile for
-      # wasm32-unknown-unknown, so adding `tokio.workspace = true` to
-      # ag-ui-server's [dependencies] passes every check above. Verified by
+      # wasm32-unknown-unknown, so adding `tokio.workspace = true` to the
+      # `serve` feature's dependencies passes every check above. Verified by
       # doing exactly that: the wasm build stayed green.
+      #
+      # Since the merge into one crate this is a per-*feature* assertion rather
+      # than a per-crate one, and it matters more than it did: cargo unifies
+      # features across a dependency graph, so a single careless `dep:tokio` on
+      # `serve` would put tokio under every consumer that never asked for
+      # `axum`. The feature set below is the boundary that claim lives on.
       #
       # The dependency graph is what carries the guarantee, so assert on that.
       # `-e normal` excludes dev-dependencies, which may use tokio freely.
@@ -133,16 +141,20 @@ jobs:
             # No `grep -q`: an early close would SIGPIPE `cargo tree` and, under
             # pipefail, turn a real hit into a silent pass.
             if printf '%s\n' "$tree" | grep -E '^tokio v'; then
-              echo "::error title=Executor-agnostic violation::$crate depends on tokio. docs/DESIGN.md keeps core/server/client on futures primitives (futures::channel::mpsc, not tokio::sync::mpsc) so wasm and non-tokio executors stay viable. tokio belongs in ag-ui-axum and nowhere else. Move the dependency, or change the design doc first."
+              echo "::error title=Executor-agnostic violation::$crate $* depends on tokio. docs/DESIGN.md keeps the protocol types and the serve/client runtimes on futures primitives (futures::channel::mpsc, not tokio::sync::mpsc) so wasm and non-tokio executors stay viable. tokio belongs to the \`axum\` feature and nowhere else. Move the dependency, or change the design doc first."
               status=1
             fi
           }
-          forbid_tokio ag-ui-core --all-features
-          forbid_tokio ag-ui-server --all-features
+          # The protocol types alone, then with every core-side feature on.
+          forbid_tokio ag-ui --no-default-features
+          forbid_tokio ag-ui --no-default-features --features sse,protobuf,schemars,utoipa
+          # The two runtimes. Neither may reach an executor.
+          forbid_tokio ag-ui --no-default-features --features serve,verify,sse
+          forbid_tokio ag-ui --no-default-features --features client,sse
           forbid_tokio ag-ui-a2ui --all-features
-          # `http` deliberately pulls reqwest, which pulls tokio; the crate is
-          # executor-agnostic only with that feature off.
-          forbid_tokio ag-ui-client --no-default-features
+          # `http` deliberately pulls reqwest and `axum` deliberately pulls
+          # tokio, so those two features are the documented exceptions and are
+          # not asserted on here.
           exit $status
 
   features:
@@ -157,21 +169,22 @@ jobs:
       # would be 2^4 for core alone and would not buy much: the features are
       # additive and independent. `--all-targets` so feature-gated tests are
       # compiled too, not just the library.
-      - run: cargo check --all-targets -p ag-ui-core --no-default-features
-      - run: cargo check --all-targets -p ag-ui-core --no-default-features --features sse
-      - run: cargo check --all-targets -p ag-ui-core --no-default-features --features protobuf
-      - run: cargo check --all-targets -p ag-ui-core --no-default-features --features schemars
-      - run: cargo check --all-targets -p ag-ui-core --no-default-features --features utoipa
-      - run: cargo check --all-targets -p ag-ui-core --all-features
-      - run: cargo check --all-targets -p ag-ui-server --no-default-features
-      - run: cargo check --all-targets -p ag-ui-server --all-features
-      - run: cargo check --all-targets -p ag-ui-client --no-default-features
-      - run: cargo check --all-targets -p ag-ui-client --all-features
+      - run: cargo check --all-targets -p ag-ui --no-default-features
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features sse
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features protobuf
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features schemars
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features utoipa
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features serve
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features serve,verify,sse
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features client
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features http
+      - run: cargo check --all-targets -p ag-ui --no-default-features --features axum
+      - run: cargo check --all-targets -p ag-ui --all-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features toolkit
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui
       - run: cargo check --all-targets -p ag-ui-a2ui --all-features
-      - run: cargo check --all-targets -p ag-ui-axum
+      - run: cargo check --all-targets -p ag-ui --features axum
 
   # `rust-version = "1.85"` is a promise to anyone pinning an older toolchain,
   # and edition 2024 stabilised in exactly 1.85, so there is no slack in it.
@@ -224,7 +237,7 @@ jobs:
       # and the type is still named.
       - name: references to our own crates are links, not text
         run: |
-          dirs=(target/doc/ag_ui_core target/doc/ag_ui_server target/doc/ag_ui_client target/doc/ag_ui_axum target/doc/ag_ui_a2ui)
+          dirs=(target/doc/ag_ui target/doc/ag_ui_a2ui)
 
           # A grep over a directory that does not exist finds nothing, which
           # would read as a pass. Every failure mode of this check is silent
@@ -278,7 +291,7 @@ jobs:
   # configurations are supported, one of them is wrong. Two omissions, both
   # because they buy nothing here — `--all-features` (the `docs` job above
   # already builds it, and it cannot exercise a gated doc link) and
-  # `ag-ui-axum` (no features to vary).
+  # the `axum` feature (nothing gated below it to vary).
   doc-features:
     name: docs (feature matrix)
     runs-on: ubuntu-latest
@@ -289,13 +302,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps -p ag-ui-core --no-default-features
-      - run: cargo doc --no-deps -p ag-ui-core --no-default-features --features sse
-      - run: cargo doc --no-deps -p ag-ui-core --no-default-features --features protobuf
-      - run: cargo doc --no-deps -p ag-ui-core --no-default-features --features schemars
-      - run: cargo doc --no-deps -p ag-ui-core --no-default-features --features utoipa
-      - run: cargo doc --no-deps -p ag-ui-server --no-default-features
-      - run: cargo doc --no-deps -p ag-ui-client --no-default-features
+      - run: cargo doc --no-deps -p ag-ui --no-default-features
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features sse
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features protobuf
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features schemars
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features utoipa
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features serve
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features client
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features axum
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features toolkit
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features ag-ui
@@ -316,7 +330,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          for crate in ag-ui-core ag-ui-server ag-ui-client ag-ui-axum ag-ui-a2ui; do
+          for crate in ag-ui ag-ui-a2ui; do
             echo "--- $crate ---"
             files=$(cargo package --list -p "$crate") || exit 2
             printf '%s\n' "$files"

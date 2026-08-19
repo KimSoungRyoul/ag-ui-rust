@@ -5,8 +5,8 @@ description: protocol의 33개 event type 전부, 각각을 담는 Rust variant,
 
 AG-UI run은 event의 나열입니다. wire에서는 각각이 JSON 객체입니다. `type` field에
 SCREAMING_SNAKE_CASE 이름이 들어갑니다. Rust에서는 각각이
-[`Event`](/ag-ui-rust/api/ag_ui_core/event/enum.Event.html)의 variant입니다.
-[`EventType`](/ag-ui-rust/api/ag_ui_core/event/enum.EventType.html)은 그
+[`Event`](/ag-ui-rust/api/ag_ui/event/enum.Event.html)의 variant입니다.
+[`EventType`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html)은 그
 discriminator만 따로 뗀 것입니다.
 
 모두 **33개**입니다. 그 숫자는 `EventType::ALL.len()`입니다.
@@ -72,7 +72,7 @@ hatch 2개, Lifecycle 5개, Reasoning 7개입니다.
 `type`이 tag이고, payload는 그 옆에 평평하게 놓입니다.
 
 ```rust
-use ag_ui_core::{Event, EventType};
+use ag_ui::{Event, EventType};
 
 fn main() {
     // protocol이 정의하는 모든 event type, upstream 순서 그대로.
@@ -106,7 +106,7 @@ agent와 이야기하는 frontend는 모르는 type의 이름을 대며 error로
 `THINKING_TEXT_MESSAGE_CONTENT`는 message id를 싣지 않습니다. 그래서 thinking
 block은 동시에 message 하나만 가질 수 있었습니다.
 
-Rust variant와 payload struct에는 `#[deprecated]`가 붙습니다. `ag-ui-core` 자신의
+Rust variant와 payload struct에는 `#[deprecated]`가 붙습니다. `ag-ui` 자신의
 event module은 `#![allow(deprecated)]`를 답니다. 이 module은 union에서도,
 `event_type()`에서도, factory에서도 이 type들의 이름을 대야 합니다. spec을 쓰인
 대로 구현했다고 자기 자신에게 경고하는 것은 아무에게도 도움이 안 됩니다. 이 억제는
@@ -116,7 +116,7 @@ event module은 `#![allow(deprecated)]`를 답니다. 이 module은 union에서�
 `Event::is_deprecated`는 match 없이 runtime에 답합니다.
 
 ```rust
-use ag_ui_core::Event;
+use ag_ui::Event;
 
 fn main() {
     let event: Event = serde_json::from_str(r#"{"type":"THINKING_END"}"#).unwrap();
@@ -154,9 +154,9 @@ TEXT_MESSAGE_CHUNK { delta: "lo" }
 TEXT_MESSAGE_CHUNK { messageId: "msg-2", delta: "Bye" }   <- msg-1이 방금 끝났습니다
 ```
 
-소비하는 쪽에서 그 장부 정리는 `ag_ui_client::chunks`가 맡습니다. 연달아 이어진
+소비하는 쪽에서 그 장부 정리는 `ag_ui::client::chunks`가 맡습니다. 연달아 이어진
 chunk를 다른 무엇이 보기 전에 start/content/end 세 짝으로 되펼칩니다. emit하는
-쪽에는 일부러 **handle이 없습니다**. `ag-ui-server`의 typestate emitter는 연 것이
+쪽에는 일부러 **handle이 없습니다**. `ag_ui::serve`의 typestate emitter는 연 것이
 닫히도록 보장하려고 있습니다. chunk에는 닫을 것이 없습니다. RAII handle로 감싸면
 틀릴 방법만 하나 늘어납니다. 이들은 `ctx.emit`으로 emit하십시오. API를 기다리는
 빈틈이 아니라 지원되는 경로입니다.
@@ -187,11 +187,11 @@ protocol은 protobuf encoding도 정의합니다. 그것은 손실 있는 부분
 돌려주는 agent는 자기 stream을 그 형식으로 표현할 수 없습니다. 대부분의 agent가
 그렇습니다.
 
-그래서 `ag-ui-core`는 그중 무엇도 encode하지 않습니다. `protobuf` feature는 build가
+그래서 `ag-ui`는 그중 무엇도 encode하지 않습니다. `protobuf` feature는 build가
 media type을 협상하고 그 이름을 댈 수 있도록 존재합니다. formatter의 `encode`는
 언제나 `Error::UnsupportedTransport`로 실패합니다. protocol의 절반 가까이를 조용히
 버리는 것은 거절하는 것보다 나쁩니다. 33개를 모두 싣는 SSE를 쓰십시오.
-[`encode::protobuf`](/ag-ui-rust/api/ag_ui_core/encode/protobuf/index.html)
+[`encode::protobuf`](/ag-ui-rust/api/ag_ui/encode/protobuf/index.html)
 module은 다뤄지는 집합을 `COVERED_EVENT_TYPES`로 나열하고 `is_covered`를
 제공합니다. 그래서 주어진 stream이 binary transport에서 살아남았을지 test로
 단언할 수 있습니다.

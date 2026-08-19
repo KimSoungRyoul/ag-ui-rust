@@ -180,7 +180,7 @@ use ag_ui_a2ui::toolkit::prompt::{PromptSpec, build_subagent_prompt};
 use ag_ui_a2ui::{
     AgentMessage, Catalog, Component, find_prior_surface_in, wrap_as_operations_envelope,
 };
-use ag_ui_core::Message;
+use ag_ui::Message;
 use serde_json::json;
 
 let rendered = wrap_as_operations_envelope(&[
@@ -407,7 +407,7 @@ toolkit은 tool 두 개를 노출합니다. 둘은 층위가 다릅니다:
 ```rust
 use ag_ui_a2ui::Catalog;
 use ag_ui_a2ui::toolkit::tools::{generate_a2ui_tool, render_a2ui_tool};
-use ag_ui_core::Tool;
+use ag_ui::Tool;
 
 let catalog = Catalog::basic();
 let tools: Vec<Tool> = vec![
@@ -422,7 +422,7 @@ assert_eq!(tools[1].parameters["type"], "object");
 
 `ToolDefinition`은 provider 중립입니다. `name`, `description`, 그리고 JSON Schema object인
 `parameters`로 이루어집니다. `to_anthropic_value()`는 Messages API 형태로 rendering합니다.
-거기서는 schema key가 `input_schema`입니다. 위의 `From<ToolDefinition> for ag_ui_core::Tool`
+거기서는 schema key가 `input_schema`입니다. 위의 `From<ToolDefinition> for ag_ui::Tool`
 구현은 AG-UI 형태이고, `ag-ui` feature가 필요합니다.
 
 surface가 만들어지면, 내보낼 만한지 결정하는 것은

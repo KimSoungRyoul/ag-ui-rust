@@ -73,9 +73,9 @@
 
 use std::time::Duration;
 
-use ag_ui_axum::RouterExt;
-use ag_ui_client::{HttpAgent, RunParams, verify_all};
-use ag_ui_core::{Event, EventType};
+use ag_ui::axum::RouterExt;
+use ag_ui::client::{HttpAgent, RunParams, verify_all};
+use ag_ui::{Event, EventType};
 use ag_ui_e2e::llm::{DEFAULT_BASE_URL, LlmAgent, WEATHER_TOOL};
 use axum::Router;
 use futures_util::StreamExt as _;

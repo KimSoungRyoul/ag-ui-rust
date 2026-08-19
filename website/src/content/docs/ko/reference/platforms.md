@@ -41,15 +41,15 @@ wasm 행은 검사 다섯 번입니다. 각각에 붙은 feature 집합도 주�
 
 ```sh
 # .github/workflows/ci.yml, job `executor-agnostic`
-cargo check -p ag-ui-core   --target wasm32-unknown-unknown --no-default-features
-cargo check -p ag-ui-core   --target wasm32-unknown-unknown --all-features
-cargo check -p ag-ui-server --target wasm32-unknown-unknown --all-features
-cargo check -p ag-ui-client --target wasm32-unknown-unknown --no-default-features
+cargo check -p ag-ui   --target wasm32-unknown-unknown --no-default-features
+cargo check -p ag-ui   --target wasm32-unknown-unknown --all-features
+cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features serve,verify,sse
+cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features client,sse
 cargo check -p ag-ui-a2ui   --target wasm32-unknown-unknown --all-features
 ```
 
-`ag-ui-client`는 `--no-default-features`와 함께 나옵니다. 기본 `http` feature가 `reqwest`를
-끌어오고, 그것은 이 workspace가 하는 wasm 이야기가 아니기 때문입니다. `ag-ui-axum`은 아예
+`ag_ui::client`는 `--no-default-features`와 함께 나옵니다. 기본 `http` feature가 `reqwest`를
+끌어오고, 그것은 이 workspace가 하는 wasm 이야기가 아니기 때문입니다. `ag_ui::axum`은 아예
 나오지 않습니다. 빠뜨린 것이 아닙니다. web binding입니다. axum과 tower, tokio로 server를
 돌립니다. browser에서 돌 물건이 아닙니다.
 
@@ -60,29 +60,29 @@ dependency graph가 wasm에 깨끗함"으로 읽으십시오.
 
 ## web binding 아래는 executor에 종속되지 않습니다
 
-`ag-ui-core`, `ag-ui-server`, `ag-ui-client`는 tokio가 아니라 `futures`의 기본 요소를 씁니다.
+`ag-ui`, `ag_ui::serve`, `ag_ui::client`는 tokio가 아니라 `futures`의 기본 요소를 씁니다.
 emit path가 가장 분명한 사례입니다. emitter handle이
 `futures_channel::mpsc::UnboundedSender`에 밀어 넣고 transport 층이 그것을 비웁니다. 뻔한
-대안은 `tokio::sync::mpsc`였을 것입니다. tokio는 `ag-ui-axum`에서만 workspace에 들어옵니다.
+대안은 `tokio::sync::mpsc`였을 것입니다. tokio는 `ag_ui::axum`에서만 workspace에 들어옵니다.
 
 덕분에 tokio 아닌 executor도, browser도 쓸 만한 host로 남습니다. emit path가 처음부터 끝까지
 동기인 이유이기도 합니다. handle은 `Drop`에서 종료 event를 emit합니다. `Drop`은 async일 수
 없습니다. 그래서 handle은 emit하면서 `await`할 수 없습니다.
 
-`ag-ui-client`는 **`http` feature가 off일 때만** executor에 종속되지 않습니다. `http`는
+`ag_ui::client`는 **`http` feature가 off일 때만** executor에 종속되지 않습니다. `http`는
 `reqwest`를, `reqwest`는 tokio를 끌어옵니다. 사고가 아니라 의도한 기본값입니다. 대부분의
 소비자는 HTTP transport를 원하고 이미 tokio 위에 있습니다. crate의 나머지는 평범한 동기 state
 machine입니다. event application, normalisation, verification이 그렇습니다. 그래서 `http`를 끄면 transport
 자리에 구멍 하나만 난 client가 남습니다. 나머지는 그대로 쓸 수 있습니다.
 
 그 구멍은 trait입니다.
-[`Transport`](/ag-ui-rust/api/ag_ui_client/transport/trait.Transport.html)이고, 채우는 것은
+[`Transport`](/ag-ui-rust/api/ag_ui/client/transport/trait.Transport.html)이고, 채우는 것은
 여러분입니다:
 
 ```rust
-use ag_ui_client::transport::{Transport, TransportFuture, boxed_stream};
-use ag_ui_client::Result;
-use ag_ui_core::{Event, RunAgentInput};
+use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream};
+use ag_ui::client::Result;
+use ag_ui::{Event, RunAgentInput};
 use futures_util::stream;
 
 /// 정해진 script를 재생합니다. `fetch`와 `EventSource` 위에 세운
@@ -111,17 +111,17 @@ impl Transport for Canned {
 
 wasm build는 tokio 금지를 증명하지 **않습니다**. CI도 그런 척하지 않습니다. tokio의 `rt`,
 `sync`, `macros`, `io-util`, `time` feature는 모두 `wasm32-unknown-unknown`으로 compile됩니다.
-CI 주석에 그 실험이 기록되어 있습니다. `ag-ui-server`의 `[dependencies]`에
+CI 주석에 그 실험이 기록되어 있습니다. `ag_ui::serve`의 `[dependencies]`에
 `tokio.workspace = true`를 넣고도 위 wasm 검사를 전부 통과했습니다. build는 초록이었습니다.
 
 그래서 이 보증을 떠받치는 것은 dependency graph입니다. CI는 그 graph에 직접 단언합니다:
 
 ```sh
 # .github/workflows/ci.yml, job `executor-agnostic`
-cargo tree -p ag-ui-core   -e normal --prefix none --no-dedupe --all-features
-cargo tree -p ag-ui-server -e normal --prefix none --no-dedupe --all-features
+cargo tree -p ag-ui   -e normal --prefix none --no-dedupe --all-features
+cargo tree -p ag-ui -e normal --prefix none --no-dedupe --no-default-features --features serve,verify,sse
 cargo tree -p ag-ui-a2ui   -e normal --prefix none --no-dedupe --all-features
-cargo tree -p ag-ui-client -e normal --prefix none --no-dedupe --no-default-features
+cargo tree -p ag-ui -e normal --prefix none --no-dedupe --no-default-features --features client,sse
 ```
 
 각 tree에서 `tokio v`로 시작하는 줄을 찾습니다. 걸리면 job이 실패합니다. message는 grep이
@@ -130,10 +130,10 @@ cargo tree -p ag-ui-client -e normal --prefix none --no-dedupe --no-default-feat
 그 네 줄에서 짚을 것이 셋입니다.
 
 `-e normal`은 dev-dependencies를 뺍니다. test는 tokio를 마음껏 써도 되고, 실제로 씁니다.
-`ag-ui-server`의 `[dev-dependencies]`가 `#[tokio::test]`를 위해 끌어옵니다. 이 약속이 말하는
+`ag_ui::serve`의 `[dev-dependencies]`가 `#[tokio::test]`를 위해 끌어옵니다. 이 약속이 말하는
 것은 crate의 *소비자*가 받는 것입니다. 그것이 normal graph입니다.
 
-`ag-ui-client`는 `--no-default-features`로 검사합니다. `http`가 on이면 그 단언은 그냥 거짓이기
+`ag_ui::client`는 `--no-default-features`로 검사합니다. `http`가 on이면 그 단언은 그냥 거짓이기
 때문입니다. 검사의 범위가 곧 주장의 범위입니다.
 
 script는 `grep -q`를 피합니다. pipe를 일찍 닫으면 `cargo tree`에 `SIGPIPE`가 갑니다.
@@ -143,12 +143,12 @@ script는 `grep -q`를 피합니다. pipe를 일찍 닫으면 `cargo tree`에 `S
 같은 검사를 local에서도 돌릴 수 있습니다:
 
 ```sh
-cargo tree -p ag-ui-server --all-features -e normal --prefix none --no-dedupe | grep '^tokio v'
+cargo tree -p ag-ui --no-default-features --features serve,verify,sse -e normal --prefix none --no-dedupe | grep '^tokio v'
 ```
 
-이 workspace에서는 아무것도 나오지 않습니다. `ag-ui-server`의 normal graph는 자기까지 26개
-crate이고, 그중 tokio는 없습니다. 같은 명령을 `ag-ui-client --all-features`에 돌리면
-`tokio v1.53.1`이 나옵니다. `reqwest`를 거쳐 닿습니다. `ag-ui-client --no-default-features`에
+이 workspace에서는 아무것도 나오지 않습니다. `ag_ui::serve`의 normal graph는 자기까지 26개
+crate이고, 그중 tokio는 없습니다. 같은 명령을 `ag_ui::client --all-features`에 돌리면
+`tokio v1.53.1`이 나옵니다. `reqwest`를 거쳐 닿습니다. `ag_ui::client --no-default-features`에
 대해서는 아무것도 나오지 않습니다.
 
 ## 요약

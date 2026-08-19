@@ -10,14 +10,14 @@
 
 mod common;
 
-use ag_ui_axum::AgentEndpoint;
-use ag_ui_client::{RemoteAgent, Session, Update};
-use ag_ui_core::{
+use ag_ui::axum::AgentEndpoint;
+use ag_ui::client::{RemoteAgent, Session, Update};
+use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::{
     ActivityMessage, AssistantMessage, Context, Event, InputContent, InputContentSource,
     MediaInputContent, Message, PatchOperation, RunAgentInput, RunOutcome, TextInputContent, Tool,
     ToolCall, ToolMessage, UserContent, UserMessage,
 };
-use ag_ui_server::{Agent, Error, Result, RunContext};
 use common::{serve, serve_endpoint, transport};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};

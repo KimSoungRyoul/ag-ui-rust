@@ -8,8 +8,8 @@ Two calls open before either closes, and their fragments alternate on the wire. 
 does not reorder them, so they alternate in the update stream too:
 
 ```rust
-use ag_ui_client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
-use ag_ui_core::Event;
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::Event;
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -60,8 +60,8 @@ not say which call the state belongs to, so any attribution would be invented.
 Drawing in arrival order shows what happened. Buffering by entity is choosing to reorder:
 
 ```rust
-use ag_ui_client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, ToolCallId};
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, ToolCallId};
 use futures_util::StreamExt;
 use serde_json::json;
 

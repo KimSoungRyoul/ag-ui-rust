@@ -5,7 +5,7 @@ description: 끝까지 만들어 본 agent 예제를 읽어 나갑니다. stream
 
 `task-board`는 AG-UI로 말하는 workshop 작업 board입니다. 직접 띄우는 agent와 그것과
 대화하는 terminal이 crate 하나에 들어 있습니다. 이 SDK의 첫 외부 소비자가 되려고
-존재합니다. `ag-ui-server`, `ag-ui-client`, `ag-ui-axum`, `ag-ui-a2ui`, `ag-ui-core`를
+존재합니다. `ag_ui::serve`, `ag_ui::client`, `ag_ui::axum`, `ag-ui-a2ui`, `ag-ui`를
 남들과 똑같이 씁니다. 공개 항목만 쓰고, 안으로 손을 뻗지 않습니다. 주요 subsystem이
 하나도 빠짐없이 정확히 한 번씩 나옵니다.
 
@@ -86,8 +86,8 @@ event, 그다음 `TOOL_CALL_END`와 결과 순입니다. state event는 순서�
 근거이기도 합니다:
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext, run};
+use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

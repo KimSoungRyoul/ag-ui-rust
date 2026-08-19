@@ -8,7 +8,7 @@ describes everything the agent does until the run ends. There is no second endpo
 polling channel and no negotiation step.
 
 This page is about the wire, not about this SDK's API. The types named here live in
-`ag-ui-core`, which is deliberately just the vocabulary: no runtime, no I/O, no async.
+`ag-ui`, which is deliberately just the vocabulary: no runtime, no I/O, no async.
 
 ## One request, one run
 
@@ -28,7 +28,7 @@ conversation arrives in it, because the agent is not assumed to remember anythin
 | `resume` | Answers to what a previous run paused on. Present only when resuming. |
 
 ```rust
-use ag_ui_core::RunAgentInput;
+use ag_ui::RunAgentInput;
 
 let body = r#"{
     "threadId": "thread-1",
@@ -68,7 +68,7 @@ SCREAMING_SNAKE_CASE name, and the payload's fields sit beside it rather than ne
 a key:
 
 ```rust
-use ag_ui_core::{Event, EventStreamFormatter, SseFormatter, TextMessageRole};
+use ag_ui::{Event, EventStreamFormatter, SseFormatter, TextMessageRole};
 
 let formatter = SseFormatter::new();
 let run = [
@@ -96,7 +96,7 @@ assert_eq!(body.matches("\n\n").count(), 6);
 
 SSE is the interoperable default and the only transport this SDK fully implements. The
 protocol also defines a binary media type, `application/vnd.ag-ui.event+proto`, and
-`ag-ui-core` will negotiate it — but upstream's `events.proto` covers 18 of the protocol's
+`ag-ui` will negotiate it — but upstream's `events.proto` covers 18 of the protocol's
 33 event types, so encoding to it would silently drop events, and there is no encoder
 here. [Feature flags](/ag-ui-rust/reference/features/) has the details.
 
@@ -176,16 +176,16 @@ id **only on the first one** of a sequence, and everything after it inherits tha
 Five chunk events can therefore be one message.
 
 A consumer normalizes chunks back into explicit start/content/end triples before anything
-else looks at them — `ag-ui-client` does that in its `chunks` stage, and
+else looks at them — `ag_ui::client` does that in its `chunks` stage, and
 [The update stream](/ag-ui-rust/client/updates/) shows what a view sees as a result.
 
 ## The event families
 
-There are **33 event types**, and `ag-ui-core` models them as one exhaustive `Event` enum
+There are **33 event types**, and `ag-ui` models them as one exhaustive `Event` enum
 plus an `EventType` discriminator:
 
 ```rust
-use ag_ui_core::{Event, EventType};
+use ag_ui::{Event, EventType};
 
 let event = Event::text_message_content("msg-1", "Hello");
 
@@ -224,7 +224,7 @@ ways:
 - `STATE_DELTA` carries an RFC 6902 JSON Patch and is applied to it.
 
 Which one to send is a size judgement, not a protocol rule, and a client must handle both.
-`ag-ui-server` makes the choice per publish: the first is always a snapshot, and a later
+`ag_ui::serve` makes the choice per publish: the first is always a snapshot, and a later
 one is a delta unless the patch would be no smaller than the state it describes. On a small
 state that happens often — [Shared state](/ag-ui-rust/server/state/) works through it.
 
@@ -266,4 +266,4 @@ upstream event surface against the Rust types and fails the build when they dive
 
 - [Event reference](/ag-ui-rust/reference/events/) — every event and its fields.
 - [The crates](/ag-ui-rust/start/crates/) — where these types live and what builds on them.
-- [ag_ui_core](/ag-ui-rust/api/ag_ui_core/index.html) — the rustdoc.
+- [ag_ui](/ag-ui-rust/api/ag_ui/index.html) — the rustdoc.

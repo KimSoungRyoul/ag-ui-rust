@@ -11,9 +11,9 @@ mod common;
 
 use std::time::Duration;
 
-use ag_ui_client::{RemoteAgent, RunParams, Session};
-use ag_ui_core::{EventType, RunOutcome};
-use ag_ui_server::{Agent, CancellationToken, Result, RunContext};
+use ag_ui::client::{RemoteAgent, RunParams, Session};
+use ag_ui::serve::{Agent, CancellationToken, Result, RunContext};
+use ag_ui::{EventType, RunOutcome};
 use common::{serve, transport};
 use futures_util::StreamExt as _;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};

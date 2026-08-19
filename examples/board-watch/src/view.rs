@@ -7,14 +7,14 @@
 //! bound on the impl blocks that make requests, and this module is what spends
 //! that.
 
+use ag_ui::Message;
+use ag_ui::client::Session;
 use ag_ui_a2ui::agui::find_prior_surface_in;
 use ag_ui_a2ui::binding::Scope;
 use ag_ui_a2ui::constants::ROOT_ID;
 use ag_ui_a2ui::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
 use ag_ui_a2ui::toolkit::history::PriorSurface;
 use ag_ui_a2ui::{AgentPayload, ChildList, Component};
-use ag_ui_client::Session;
-use ag_ui_core::Message;
 use serde_json::Value;
 
 use crate::board::Board;
@@ -183,7 +183,7 @@ pub fn clip(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ag_ui_client::transport::ReplayTransport;
+    use ag_ui::client::transport::ReplayTransport;
 
     /// The compile-time half of this module's claim: a helper that names a
     /// session needs no transport bound. If the bound migrates back onto

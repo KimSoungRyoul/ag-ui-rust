@@ -1,7 +1,7 @@
 //! Small text utilities shared by the TypeScript and Rust scanners.
 //!
 //! Both scanners read source as plain text — the drift check must work when
-//! `ag-ui-core` does not compile and when no TypeScript toolchain is present.
+//! `ag-ui` does not compile and when no TypeScript toolchain is present.
 //! Everything here is therefore delimiter counting with string-literal
 //! awareness, nothing more.
 

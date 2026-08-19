@@ -16,7 +16,7 @@ cargo test --doc --workspace --all-features
 
 이 workspace에서는 그것이 특히 중요합니다. 여기서 증명되는 것의 상당 부분이
 doctest에 있기 때문입니다. crate별 README, workspace quickstart, 이 문서 사이트의
-모든 Rust snippet이 그렇습니다. `crates/ag-ui-server/src/emit/mod.rs`의
+모든 Rust snippet이 그렇습니다. `crates/ag-ui/src/serve/emit/mod.rs`의
 `compile_fail` 예제도 그렇습니다. 그것은
 [설계 원칙](/ag-ui-rust/ko/design/commitments/)이 대표 기능으로 내세우는 typestate
 보증의, 유일한 실행 가능한 증명입니다. emitter API를 느슨하게 만들어도 nextest는
@@ -55,8 +55,8 @@ test할 수 있습니다. `RunContext::new`는 context와 그 event stream의 �
 `drain`이 그것을 가져옵니다.
 
 ```rust
-use ag_ui_core::{Event, RunAgentInput, TextMessageRole};
-use ag_ui_server::{Result, RunContext};
+use ag_ui::{Event, RunAgentInput, TextMessageRole};
+use ag_ui::serve::{Result, RunContext};
 
 fn greet(ctx: &mut RunContext<()>) -> Result<()> {
     let mut message = ctx.assistant_message()?;
@@ -92,7 +92,7 @@ fn main() {
 
 | tier | 무엇을 증명하나 | 언제 도나 |
 | --- | --- | --- |
-| **Deterministic E2E** | protocol 배관이 올바르다는 것. event ordering 전체, state delta, human in the loop 왕복을 `ag-ui-client`가 실제 axum server를 상대로 진짜 HTTP 위에서 돌립니다. 기록된 SSE frame으로 돌리는 LLM 매핑도 여기 있습니다. | 항상. CI gate입니다. |
+| **Deterministic E2E** | protocol 배관이 올바르다는 것. event ordering 전체, state delta, human in the loop 왕복을 `ag_ui::client`가 실제 axum server를 상대로 진짜 HTTP 위에서 돌립니다. 기록된 SSE frame으로 돌리는 LLM 매핑도 여기 있습니다. | 항상. CI gate입니다. |
 | **Live smoke** | 실제 streaming model에 닿는다는 것, 그것이 AG-UI event로 올바르게 매핑된다는 것, 그리고 이 SDK가 정말 어떤 LLM crate에도 의존하지 않는다는 것. | `#[ignore]`입니다. key나 로컬 endpoint가 설정된 경우에만 돕니다. 결코 CI gate가 아닙니다. |
 
 deterministic tier는 각본대로 움직이는 mock agent와 기록된 model frame을 씁니다.
@@ -232,7 +232,7 @@ timer로 돕니다. 어느 것이든 손으로 발동시킬 수 있습니다.
 | `feature matrix` | `cargo check --all-targets` 열다섯 번. feature를 하나씩 단독으로, 그리고 crate마다 기본 feature를 끈 채로. |
 | `MSRV 1.85` | 1.85에서 `cargo check --workspace --all-features --all-targets`. edition 2024를 이해하는 첫 compiler라, 그 약속에는 여유분이 없습니다. |
 | `docs` | `RUSTDOCFLAGS: -D warnings`로 `cargo doc --workspace --all-features --no-deps`. 공개 API가 곧 제품이라, 깨진 intra-doc link는 산출물의 결함입니다. |
-| `package manifest` | `publish = false`가 없는 crate 다섯 개에 `cargo package --list`를 돌립니다. `xtask`, e2e suite, 예제와 대비되는 SDK crate들입니다. 각각이 자기 `README.md`와 `LICENSE`를 packaging하는지 단언합니다. offline입니다. archive를 만들지도, 무엇을 올리지도 않습니다. |
+| `package manifest` | `publish = false`가 없는 crate 둘에 `cargo package --list`를 돌립니다. `ag-ui`와 `ag-ui-a2ui`입니다. `xtask`, e2e suite, 예제와 대비됩니다. 각각이 자기 `README.md`와 `LICENSE`를 packaging하는지 단언합니다. offline입니다. archive를 만들지도, 무엇을 올리지도 않습니다. |
 | `protocol drift vs upstream` | `cargo run -p xtask -- drift-check`. offline이고 결정적이라, 필수 검사가 될 자격이 있습니다. |
 | `upstream freshness (scheduled)` | 주간으로 도는 `drift-check --upstream`. network가 필요하므로 gate가 아니라 timer입니다. rate limit은 이것을 실패시킬 수 없고, 진짜 upstream 변화만 실패시킵니다. |
 

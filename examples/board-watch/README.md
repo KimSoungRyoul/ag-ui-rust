@@ -5,8 +5,8 @@ aimed at.
 
 Round one (`../task-board`) was an agent with a client attached. This is the
 other way round: the application is the **client**, and the server in this crate
-exists only to give it streams worth surviving. It uses `ag-ui-client`,
-`ag-ui-core` and `ag-ui-a2ui` the way an outside consumer does — public items
+exists only to give it streams worth surviving. It uses `ag_ui::client`,
+`ag-ui` and `ag-ui-a2ui` the way an outside consumer does — public items
 only — and needs no key and no network beyond loopback.
 
 | Command | What it is |
@@ -106,7 +106,7 @@ arrival order, each tool line tagged with its call:
 
 That is where the wire put it. Arrival order *is* the nesting — `Update::State`
 carries no association with the call it arrived during, and
-[`ag-ui-client`'s session docs](https://docs.rs/ag-ui-client) explain why one
+[`ag_ui::client`'s session docs](https://docs.rs/ag_ui::client) explain why one
 would be invented rather than reported: under parallel calls two calls are open
 and the wire does not attribute the state either.
 
@@ -191,7 +191,7 @@ next run is a run like any other.
 
 ## Streams the protocol forbids
 
-`ag-ui-server` will not emit a malformed stream, which is what it is for. So the
+`ag_ui::serve` will not emit a malformed stream, which is what it is for. So the
 `/raw` endpoint frames the bytes by hand with `SseFormatter`, the way a producer
 in another language does, and the client's own verifier is what has to catch it:
 

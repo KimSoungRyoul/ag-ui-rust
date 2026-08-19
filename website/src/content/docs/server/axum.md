@@ -3,9 +3,9 @@ title: Serving over HTTP
 description: Mounting an agent on an axum router, and the request and response the resulting endpoint speaks.
 ---
 
-`ag-ui-server` turns an [`Agent`](/ag-ui-rust/server/agent/) into a stream of events and
+`ag_ui::serve` turns an [`Agent`](/ag-ui-rust/server/agent/) into a stream of events and
 stops there, on purpose: it has no executor and no web framework, so it builds for wasm.
-`ag-ui-axum` is the other half — the POST endpoint, the `text/event-stream` body, content
+`ag_ui::axum` is the other half — the POST endpoint, the `text/event-stream` body, content
 negotiation, and telling the agent when the client hangs up. It is the only crate in this
 workspace that depends on tokio, axum or tower.
 
@@ -13,9 +13,9 @@ workspace that depends on tokio, axum or tower.
 
 ```rust,no_run
 // src/main.rs
-use ag_ui_axum::RouterExt;
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::axum::RouterExt;
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use axum::Router;
 use axum::routing::get;
 
@@ -56,9 +56,9 @@ An agent that needs values from the application state should capture them when i
 constructed:
 
 ```rust
-use ag_ui_axum::RouterExt;
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::axum::RouterExt;
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use axum::Router;
 use std::sync::Arc;
 
@@ -129,7 +129,7 @@ connection task and the client sees a truncated stream.
 Each event is one SSE frame carrying the event's JSON:
 
 ```rust
-use ag_ui_core::{Event, SseFormatter};
+use ag_ui::{Event, SseFormatter};
 
 fn main() {
     let formatter = SseFormatter::new();
@@ -157,7 +157,7 @@ that asked for `application/xml` gets a `406`, not an SSE stream it cannot read.
 empty `Accept` means `*/*`:
 
 ```rust
-use ag_ui_axum::negotiate;
+use ag_ui::axum::negotiate;
 
 fn main() {
     assert!(negotiate(None).is_ok());
@@ -175,9 +175,9 @@ fn main() {
 `AgentEndpoint` is the agent plus its per-run settings; `route_agui_with` mounts one.
 
 ```rust
-use ag_ui_axum::{AgentEndpoint, RouterExt};
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, FilterToolCalls, Result, RunContext};
+use ag_ui::axum::{AgentEndpoint, RouterExt};
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, FilterToolCalls, Result, RunContext};
 use axum::Router;
 use std::time::Duration;
 
@@ -232,7 +232,7 @@ request first — auth, tenant routing, a path segment naming which agent to run
 body exactly the same way the mounted endpoint does:
 
 ```rust
-use ag_ui_axum::AgUiInput;
+use ag_ui::axum::AgUiInput;
 use axum::Router;
 use axum::extract::Path;
 use axum::routing::post;
@@ -247,7 +247,7 @@ fn main() {
 }
 ```
 
-Its rejection type is `ag_ui_axum::Error`, which implements `IntoResponse`. Take
+Its rejection type is `ag_ui::axum::Error`, which implements `IntoResponse`. Take
 `AgUiInput` and axum answers the `4xx` for you; take `Result<AgUiInput, Error>` and inspect
 the failure first.
 
@@ -255,9 +255,9 @@ the failure first.
 run. `route_agui` is this, with the defaults filled in:
 
 ```rust
-use ag_ui_axum::SseResponse;
-use ag_ui_core::{RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext, Runner};
+use ag_ui::axum::SseResponse;
+use ag_ui::{RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext, Runner};
 
 struct Greeter;
 
@@ -306,12 +306,12 @@ tower already ships, and they compose with this endpoint like any other route.
 
 ## API
 
-- [`ag_ui_axum::RouterExt`](/ag-ui-rust/api/ag_ui_axum/trait.RouterExt.html) and
-  [`AgentEndpoint`](/ag-ui-rust/api/ag_ui_axum/struct.AgentEndpoint.html)
-- [`ag_ui_axum::AgUiInput`](/ag-ui-rust/api/ag_ui_axum/struct.AgUiInput.html)
-- [`ag_ui_axum::SseResponse`](/ag-ui-rust/api/ag_ui_axum/struct.SseResponse.html) and
-  [`negotiate`](/ag-ui-rust/api/ag_ui_axum/fn.negotiate.html)
-- [`ag_ui_axum::Error`](/ag-ui-rust/api/ag_ui_axum/enum.Error.html)
-- [`ag_ui_server::Runner`](/ag-ui-rust/api/ag_ui_server/struct.Runner.html), for a transport
+- [`ag_ui::axum::RouterExt`](/ag-ui-rust/api/ag_ui/axum/trait.RouterExt.html) and
+  [`AgentEndpoint`](/ag-ui-rust/api/ag_ui/axum/struct.AgentEndpoint.html)
+- [`ag_ui::axum::AgUiInput`](/ag-ui-rust/api/ag_ui/axum/struct.AgUiInput.html)
+- [`ag_ui::axum::SseResponse`](/ag-ui-rust/api/ag_ui/axum/struct.SseResponse.html) and
+  [`negotiate`](/ag-ui-rust/api/ag_ui/axum/fn.negotiate.html)
+- [`ag_ui::axum::Error`](/ag-ui-rust/api/ag_ui/axum/enum.Error.html)
+- [`ag_ui::serve::Runner`](/ag-ui-rust/api/ag_ui/serve/struct.Runner.html), for a transport
   of your own
 - The other end of the wire: [Transports](/ag-ui-rust/client/transports/)

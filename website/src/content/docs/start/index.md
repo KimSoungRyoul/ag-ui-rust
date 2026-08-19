@@ -22,56 +22,51 @@ Rust **1.85 or newer**. The workspace sets `rust-version = "1.85"` and
 `edition = "2024"`, and 1.85 is the first compiler that understands that edition.
 
 That is the whole list. There is no protobuf compiler and no code generation step:
-`ag-ui-core` depends on `serde` and `serde_json` and nothing else, and the crates that
+`ag-ui` depends on `serde` and `serde_json` and nothing else, and the crates that
 build on it add `futures` primitives rather than a runtime. tokio enters only when you
-reach for `ag-ui-axum`.
+reach for `ag_ui::axum`.
 
-The one thing in the tree that reaches outside Rust is TLS. `ag-ui-client`'s default
+The one thing in the tree that reaches outside Rust is TLS. `ag_ui::client`'s default
 `http` feature pulls `reqwest` with `rustls`, whose crypto backend compiles C, so a client
 build wants a C toolchain. Nothing on the agent side does.
 
 ## Adding the crates
 
-:::caution[Not on crates.io]
-None of these crates are published, so `cargo add` is not the route. Three of the names —
-`ag-ui-core`, `ag-ui-server`, `ag-ui-client` — do exist on crates.io and belong to other
-projects, which is worth knowing if you search for them. Depend on the git repository
-instead.
+:::caution[`ag-ui` here is not the community crate]
+The `ag-ui-core`, `ag-ui-server` and `ag-ui-client` names on crates.io belong to an
+earlier, unrelated community SDK and are not this project. This project is the single
+`ag-ui` crate, plus `ag-ui-a2ui`.
 :::
 
-For an agent, that is three crates and a web server:
+One crate, and which half of the protocol you get is a feature. For an agent, that is
+`axum` — which implies `serve` — and a web server:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
-ag-ui-server = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
-ag-ui-axum = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui = { version = "0.1", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
 
-For a client, two of ours. `ag-ui-core` is there because you will name its types —
-`Tool`, `Message`, `Event` — as soon as you do anything beyond printing text:
+For a client, `http`:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
-ag-ui-client = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui = { version = "0.1", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-`ag-ui-client`'s `http` feature is on by default, and it is what brings the `reqwest`
-transport with it. Turn it off and the crate is executor-agnostic and builds for
-`wasm32-unknown-unknown`, with your own transport underneath.
+The protocol types — `Tool`, `Message`, `Event` — are at the crate root either way, so
+they are there as soon as you do anything beyond printing text.
 
-A git dependency with no `rev` follows the default branch, which is fine while you are
-trying this out and is not what you want in anything you rely on. There are no release
-tags yet, so pin a commit with `rev = "<sha>"` when it starts to matter.
+`http` is what brings the `reqwest` transport with it. Ask for `client` instead and the
+crate is executor-agnostic and builds for `wasm32-unknown-unknown`, with your own
+transport underneath.
 
-Which crate does what, and why there are five of them, is
+Which feature does what, and why this is one crate rather than five, is
 [The crates](/ag-ui-rust/start/crates/).
 
 ## Your first agent
@@ -81,9 +76,9 @@ through it, and returns how the run ended.
 
 ```rust,no_run
 // src/main.rs
-use ag_ui_axum::RouterExt;
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::axum::RouterExt;
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use axum::Router;
 
 struct Greeter;
@@ -168,14 +163,14 @@ and the framing properly.
 
 ## The same run, without a port
 
-`ag-ui-axum` is a wrapper. Underneath it, `ag_ui_server::run` turns an agent into a
+`ag_ui::axum` is a wrapper. Underneath it, `ag_ui::serve::run` turns an agent into a
 `Stream` of events and has no opinion about how they reach anyone — which means an agent
 is testable as a pure stream, with no server, no port and no client:
 
 ```rust
 // tests/greeter.rs
-use ag_ui_core::{Event, EventStreamFormatter, EventType, RunAgentInput, RunOutcome, SseFormatter};
-use ag_ui_server::{Agent, Result, RunContext, run};
+use ag_ui::{Event, EventStreamFormatter, EventType, RunAgentInput, RunOutcome, SseFormatter};
+use ag_ui::serve::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Greeter;
@@ -235,7 +230,7 @@ grew" rather than "a `TEXT_MESSAGE_CONTENT` arrived":
 // src/main.rs
 use std::io::Write;
 
-use ag_ui_client::{MessageChangeKind, RunEnd, Session, Update, transport::HttpTransport};
+use ag_ui::client::{MessageChangeKind, RunEnd, Session, Update, transport::HttpTransport};
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -289,4 +284,4 @@ it early is also how you cancel, because polling the stream is what pulls the by
 - [task-board](/ag-ui-rust/examples/task-board/) and
   [board-watch](/ag-ui-rust/examples/board-watch/) — two worked examples, each an agent
   and a client that talk to each other over a real port.
-- [API docs](/ag-ui-rust/api/ag_ui_core/index.html) — the rustdoc for every crate.
+- [API docs](/ag-ui-rust/api/ag_ui/index.html) — the rustdoc for every crate.

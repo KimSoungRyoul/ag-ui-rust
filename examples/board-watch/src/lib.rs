@@ -27,8 +27,8 @@ pub mod watch;
 pub use board::Board;
 pub use watch::{Console, Policy, Watch};
 
-use ag_ui_client::transport::ReplayTransport;
-use ag_ui_core::Event;
+use ag_ui::Event;
+use ag_ui::client::transport::ReplayTransport;
 
 /// Reads the tools this client is willing to have called.
 ///
@@ -44,13 +44,13 @@ use ag_ui_core::Event;
 /// # Errors
 ///
 /// The file's contents, if they are not a JSON array of tool definitions.
-pub fn load_tools(json: &str) -> serde_json::Result<Vec<ag_ui_core::Tool>> {
+pub fn load_tools(json: &str) -> serde_json::Result<Vec<ag_ui::Tool>> {
     serde_json::from_str(json)
 }
 
 /// Reads a recorded run — a JSON array of events — into a transport.
 ///
-/// The reason [`Transport`](ag_ui_client::Transport) is a trait: a fixture on
+/// The reason [`Transport`](ag_ui::client::Transport) is a trait: a fixture on
 /// disk substitutes for a server, and nothing above it changes. `board-watch
 /// replay` is the whole client with the network taken out.
 ///

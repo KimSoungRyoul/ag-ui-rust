@@ -8,7 +8,7 @@ surface, and a renderer draws it. This crate is the **agent half** of that excha
 
 ```toml
 [dependencies]
-ag-ui-a2ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui-a2ui = "0.1"
 ```
 
 Not on crates.io — these crates are unpublished, and some of the `ag-ui-*` names there
@@ -64,7 +64,7 @@ was skipped, and why.
 | Feature | Default | What it adds |
 | --- | --- | --- |
 | `toolkit` | yes | Agent-side authoring: op builders, prompt assembly, recovery loop. |
-| `ag-ui` | yes | Interop with `ag-ui-core`: history entries from AG-UI messages, toolkit tool definitions as offerable tools. Implies `toolkit`. |
+| `ag-ui` | yes | Interop with `ag-ui`: history entries from AG-UI messages, toolkit tool definitions as offerable tools. Implies `toolkit`. |
 
 Nothing below `agui` knows what AG-UI is, so turning that feature off leaves a crate you
 can drive over A2A or MCP instead. Wrapping operations for the wire is `toolkit::envelope`

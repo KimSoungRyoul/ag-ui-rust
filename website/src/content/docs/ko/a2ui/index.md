@@ -40,13 +40,13 @@ form을 띄우려는 AG-UI agent에게 필요하기 때문입니다. AG-UI가 A2
 | feature | 기본값 | 무엇인가 |
 | --- | --- | --- |
 | `toolkit` | on | agent 쪽 authoring: operation builder, catalog negotiation, prompt assembly, stream parsing, recovery loop. |
-| `ag-ui` | on | `ag-ui-core`와의 interop: AG-UI message에서 만드는 history entry, offer 가능한 tool로 바뀌는 toolkit tool 정의. `toolkit`을 함의합니다. |
+| `ag-ui` | on | `ag-ui`와의 interop: AG-UI message에서 만드는 history entry, offer 가능한 tool로 바뀌는 toolkit tool 정의. `toolkit`을 함의합니다. |
 
-`ag-ui`를 끄면 `ag-ui-core` dependency도 함께 사라집니다:
+`ag-ui`를 끄면 `ag-ui` dependency도 함께 사라집니다:
 
 ```toml
 [dependencies.ag-ui-a2ui]
-git = "https://github.com/KimSoungRyoul/ag-ui-rust"
+version = "0.1"
 default-features = false
 features = ["toolkit"]
 ```
@@ -106,8 +106,8 @@ MCP tool result에 그대로 들어갑니다. AG-UI 위에서는 `render_a2ui`�
 use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
 use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
 use ag_ui_a2ui::{Component, wrap_as_operations_envelope};
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Error, Result, RunContext};
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Error, Result, RunContext};
 use serde_json::json;
 
 struct Merchant;
@@ -134,13 +134,13 @@ impl Agent for Merchant {
 
 `render_a2ui`는 agent가 스스로 답하는 call입니다. client가 offer한 적이 없습니다. client가
 실행할 것이 없기 때문입니다. frontend는 tool을 실행하지 않고 그 result를 그립니다. 그래서
-`ag-ui-server`는 `RunAgentInput.tools`를 allow-list가 아니라 capability list로 취급합니다.
+`ag_ui::serve`는 `RunAgentInput.tools`를 allow-list가 아니라 capability list로 취급합니다.
 그 list에 없는 이름으로 call을 emit해도 형식이 올바른 stream입니다. ordering verifier는 그에
 대해 아무 말도 하지 않습니다. protocol이 제약하는 것은 ordering이고, 검사되는 것도
 그것입니다.
 
 `e2e/tests/a2ui_surface.rs`가 이것을 정직하게 유지합니다. agent가 toolkit으로 surface를
-만들어 tool result로 보냅니다. 진짜 `ag-ui-client`가 진짜 port로 그것을 받습니다. 반대편으로
+만들어 tool result로 보냅니다. 진짜 `ag_ui::client`가 진짜 port로 그것을 받습니다. 반대편으로
 나온 operation이 들어간 것과 같은지, 그리고 authoring 대상이었던 catalog로 여전히
 검증되는지를 단언합니다.
 

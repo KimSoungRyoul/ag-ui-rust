@@ -20,8 +20,8 @@ stream too:
 
 ```rust
 // src/main.rs
-use ag_ui_client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
-use ag_ui_core::Event;
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::Event;
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -71,7 +71,7 @@ that sequence is all the wire says about what was open when it arrived.
 
 The case that makes this concrete: an agent that does a tool's work *while the
 call is open* publishes state between `TOOL_CALL_ARGS` and `TOOL_CALL_END` —
-which `ag-ui-server`'s handles support, and which the protocol allows because
+which `ag_ui::serve`'s handles support, and which the protocol allows because
 `STATE_*` is unordered. The `Update::State` that comes out carries no mention of
 the call.
 
@@ -95,8 +95,8 @@ drawing and nothing else:
 
 ```rust
 // src/render.rs
-use ag_ui_client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, ToolCallId};
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, ToolCallId};
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -302,5 +302,5 @@ dedupe.
 
 - [The update stream](/ag-ui-rust/client/updates/) — the variants themselves.
 - [Sessions](/ag-ui-rust/client/session/) — what is accumulating while you draw.
-- [`MessageChangeKind`](/ag-ui-rust/api/ag_ui_client/apply/enum.MessageChangeKind.html)
+- [`MessageChangeKind`](/ag-ui-rust/api/ag_ui/client/apply/enum.MessageChangeKind.html)
   in the API docs.

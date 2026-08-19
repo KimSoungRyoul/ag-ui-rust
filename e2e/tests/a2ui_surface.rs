@@ -9,6 +9,9 @@
 
 mod common;
 
+use ag_ui::client::{Session, Update};
+use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::{Message, RunOutcome};
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::constants::{
     A2UI_OPERATIONS_KEY, BASIC_CATALOG_ID, PROTOCOL_VERSION, RENDER_A2UI_TOOL_NAME,
@@ -21,9 +24,6 @@ use ag_ui_a2ui::toolkit::envelope::{
 use ag_ui_a2ui::toolkit::history::{HistoryMessage, find_prior_surface};
 use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
 use ag_ui_a2ui::validate::Validator;
-use ag_ui_client::{Session, Update};
-use ag_ui_core::{Message, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext};
 use common::{serve, transport};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};

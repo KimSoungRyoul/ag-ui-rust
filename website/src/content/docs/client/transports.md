@@ -3,7 +3,7 @@ title: Transports
 description: The one async layer in the client — the HTTP transport, the SSE decoder, the replay transport, and what writing your own takes.
 ---
 
-Everything else in `ag-ui-client` is synchronous. Application, chunk
+Everything else in `ag_ui::client` is synchronous. Application, chunk
 normalization, verification: all plain state machines you can drive from a loop,
 a test, or an event handler. The transport is the one layer that talks to the
 outside world, and the only place `async` appears.
@@ -18,8 +18,8 @@ changes.
 ```rust
 // The whole of it, restated here rather than quoted — so this page stops
 // compiling if the signature ever moves.
-use ag_ui_client::transport::TransportFuture;
-use ag_ui_core::RunAgentInput;
+use ag_ui::client::transport::TransportFuture;
+use ag_ui::RunAgentInput;
 
 trait Transport {
     fn run(&self, input: RunAgentInput) -> TransportFuture;
@@ -45,9 +45,9 @@ at runtime without a generic parameter reaching through the whole application:
 
 ```rust
 // src/main.rs
-use ag_ui_client::transport::{ReplayTransport, Transport};
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::Event;
+use ag_ui::client::transport::{ReplayTransport, Transport};
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::Event;
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -79,10 +79,10 @@ the crate that pulls in an HTTP client.
 
 ```rust
 // src/main.rs
-use ag_ui_client::transport::HttpTransport;
+use ag_ui::client::transport::HttpTransport;
 use std::time::Duration;
 
-fn main() -> Result<(), ag_ui_client::Error> {
+fn main() -> Result<(), ag_ui::client::Error> {
     let transport = HttpTransport::builder("https://example.com/agent")
         .header("authorization", "Bearer token")
         .header("x-tenant", "acme")
@@ -126,8 +126,8 @@ also unnecessary: the agent's half of the conversation is just a list of events.
 
 ```rust
 // tests/client.rs
-use ag_ui_client::{Session, transport::ReplayTransport};
-use ag_ui_core::{Event, Interrupt};
+use ag_ui::client::{Session, transport::ReplayTransport};
+use ag_ui::{Event, Interrupt};
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -179,9 +179,9 @@ and end without the terminating blank line the format calls for.
 
 ```rust
 // src/transport.rs
-use ag_ui_client::transport::SseDecoder;
+use ag_ui::client::transport::SseDecoder;
 
-fn main() -> Result<(), ag_ui_client::Error> {
+fn main() -> Result<(), ag_ui::client::Error> {
     let mut decoder = SseDecoder::new();
 
     // A proxy's heartbeat, then half an event.
@@ -220,9 +220,9 @@ frontend takes — no HTTP client anywhere in it:
 
 ```rust
 // src/transport.rs
-use ag_ui_client::transport::{EventStream, Transport, TransportFuture};
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::{Event, RunAgentInput, TextMessageRole};
+use ag_ui::client::transport::{EventStream, Transport, TransportFuture};
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::{Event, RunAgentInput, TextMessageRole};
 use futures_util::StreamExt;
 
 /// Serves a fixed list of events, whatever it is asked.
@@ -271,9 +271,9 @@ the trait returns:
 
 ```rust
 // src/transport.rs
-use ag_ui_client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::{Event, RunAgentInput, SseFormatter};
+use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::{Event, RunAgentInput, SseFormatter};
 use futures_util::StreamExt;
 
 /// Answers every run from a recorded response body.
@@ -320,21 +320,19 @@ crate wasm-viable, and it removes `HttpTransport` and `HttpAgent` with it —
 bring your own `Transport`.
 
 ```toml
-[dependencies.ag-ui-client]
-git = "https://github.com/KimSoungRyoul/ag-ui-rust"
+[dependencies.ag-ui]
+version = "0.1"
 default-features = false
-
-[dependencies.ag-ui-core]
-git = "https://github.com/KimSoungRyoul/ag-ui-rust"
+features = ["client", "sse"]
 ```
 
-CI enforces both halves of that claim. `cargo check -p ag-ui-client
---no-default-features --target wasm32-unknown-unknown` fails if anything outside
+CI enforces both halves of that claim. `cargo check -p ag-ui
+--no-default-features --features client --target wasm32-unknown-unknown` fails if anything outside
 the feature reaches for `reqwest`, and a separate job asserts that `tokio` is
 absent from the dependency graph in that configuration — because tokio itself
 compiles for wasm, so a green wasm build alone would not have caught it. A
 manifest edit that made `reqwest` unconditional would pass every compile, so
-`crates/ag-ui-client/tests/features.rs` reads the manifest and checks that too.
+`crates/ag-ui/tests/client_features.rs` reads the manifest and checks that too.
 
 More on what each feature costs is in the [feature
 reference](/ag-ui-rust/reference/features/), and what builds where is in
@@ -343,6 +341,6 @@ reference](/ag-ui-rust/reference/features/), and what builds where is in
 ## Next
 
 - [Sessions](/ag-ui-rust/client/session/) — what sits on top of a transport.
-- [`Transport`](/ag-ui-rust/api/ag_ui_client/transport/trait.Transport.html) and
-  [`HttpTransport`](/ag-ui-rust/api/ag_ui_client/transport/http/struct.HttpTransport.html)
+- [`Transport`](/ag-ui-rust/api/ag_ui/client/transport/trait.Transport.html) and
+  [`HttpTransport`](/ag-ui-rust/api/ag_ui/client/transport/http/struct.HttpTransport.html)
   in the API docs.

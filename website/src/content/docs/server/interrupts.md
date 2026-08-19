@@ -17,8 +17,8 @@ next request is an ordinary request in the same thread that happens to carry ans
 
 ```rust
 // src/agent.rs
-use ag_ui_core::{Event, Interrupt, ResumeEntry, ResumeStatus, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext, run};
+use ag_ui::{Event, Interrupt, ResumeEntry, ResumeStatus, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
@@ -121,7 +121,7 @@ a client can render the question without knowing anything about your agent.
 A `response_schema` is worth setting whenever the answer is more than yes or no:
 
 ```rust
-use ag_ui_core::{Interrupt, JsonObject};
+use ag_ui::{Interrupt, JsonObject};
 use serde_json::json;
 
 fn confirm_clear(count: usize) -> Interrupt {
@@ -166,11 +166,11 @@ finish successfully. A run that fails because the answer was malformed is an
 [error](/ag-ui-rust/server/errors/), and reaches the client as `RUN_ERROR`.
 
 ```rust
-use ag_ui_core::{ResumeEntry, ResumeStatus, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{ResumeEntry, ResumeStatus, RunAgentInput};
+use ag_ui::serve::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let mut input = RunAgentInput::new("t", "r");
     input.resume = Some(vec![
         ResumeEntry::resolved("approve-deploy", json!({"build": 42})),
@@ -209,8 +209,8 @@ So an agent that pauses on several things at once should report the ones still o
 and a client should answer all of them together:
 
 ```rust
-use ag_ui_core::{Interrupt, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::{Interrupt, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext};
 
 const BUDGET: &str = "approve-budget";
 const DATE: &str = "confirm-date";
@@ -248,7 +248,7 @@ The driver validates the outcome before emitting, so an empty interrupt list bec
 `RUN_ERROR` with the `PROTOCOL` code rather than a `RUN_FINISHED` no client can act on:
 
 ```rust
-use ag_ui_core::RunOutcome;
+use ag_ui::RunOutcome;
 
 fn main() {
     assert!(RunOutcome::Success.validate().is_ok());
@@ -262,9 +262,9 @@ kills the stream.
 
 ## API
 
-- [`ag_ui_core::RunOutcome`](/ag-ui-rust/api/ag_ui_core/enum.RunOutcome.html)
-- [`ag_ui_core::Interrupt`](/ag-ui-rust/api/ag_ui_core/struct.Interrupt.html)
-- [`ag_ui_core::ResumeEntry`](/ag-ui-rust/api/ag_ui_core/struct.ResumeEntry.html) and
-  [`ResumeStatus`](/ag-ui-rust/api/ag_ui_core/enum.ResumeStatus.html)
-- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.resume_for)
+- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/enum.RunOutcome.html)
+- [`ag_ui::Interrupt`](/ag-ui-rust/api/ag_ui/struct.Interrupt.html)
+- [`ag_ui::ResumeEntry`](/ag-ui-rust/api/ag_ui/struct.ResumeEntry.html) and
+  [`ResumeStatus`](/ag-ui-rust/api/ag_ui/enum.ResumeStatus.html)
+- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.resume_for)
 - The client half of the round trip: [The update stream](/ag-ui-rust/client/updates/)

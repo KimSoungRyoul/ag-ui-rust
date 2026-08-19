@@ -10,15 +10,15 @@
 
 use std::io::{self, BufRead, Write};
 
+use ag_ui::client::transport::Transport;
+use ag_ui::client::{
+    MessageChangeKind, MessageUpdate, ReasoningChangeKind, RunEnd, RunStream, Session, Update,
+};
+use ag_ui::{Interrupt, Message};
 use ag_ui_a2ui::binding::Scope;
 use ag_ui_a2ui::constants::ROOT_ID;
 use ag_ui_a2ui::message::{AgentPayload, ChildList, Component};
 use ag_ui_a2ui::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
-use ag_ui_client::transport::Transport;
-use ag_ui_client::{
-    MessageChangeKind, MessageUpdate, ReasoningChangeKind, RunEnd, RunStream, Session, Update,
-};
-use ag_ui_core::{Interrupt, Message};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 

@@ -55,8 +55,8 @@
 use std::fmt;
 use std::time::Duration;
 
-use ag_ui_core::{Message, MessageId, RunOutcome, TextMessageRole, Tool, ToolCallId};
-use ag_ui_server::{Agent, Error, Result, RunContext};
+use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::{Message, MessageId, RunOutcome, TextMessageRole, Tool, ToolCallId};
 use futures_util::stream::{Stream, StreamExt as _};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -116,7 +116,7 @@ impl std::error::Error for MissingApiKey {}
 ///
 /// ```no_run
 /// # use ag_ui_e2e::llm::LlmAgent;
-/// # use ag_ui_axum::RouterExt;
+/// # use ag_ui::axum::RouterExt;
 /// let agent = LlmAgent::from_env().expect("AG_UI_LLM_API_KEY");
 /// let app: axum::Router = axum::Router::new().route_agui("/agent", agent);
 /// # let _ = app;
@@ -368,7 +368,7 @@ impl Call {
 ///
 /// # Why text streams and calls do not
 ///
-/// A [`MessageHandle`](ag_ui_server::MessageHandle) borrows the run context
+/// A [`MessageHandle`](ag_ui::serve::MessageHandle) borrows the run context
 /// mutably for as long as it lives, so it cannot be opened lazily inside a loop
 /// that also uses the context. The first phase therefore reads frames with
 /// nothing open, until text actually shows up; the second holds the message
@@ -381,7 +381,7 @@ impl Call {
 /// borrow-check error by design. Accumulating first is the only mapping that
 /// keeps interleaved arguments from being spliced into each other.
 ///
-/// [`ToolCallHandle`]: ag_ui_server::ToolCallHandle
+/// [`ToolCallHandle`]: ag_ui::serve::ToolCallHandle
 async fn stream_turn<S, B, E>(ctx: &mut RunContext<()>, stream: S) -> Result<Turn>
 where
     S: Stream<Item = std::result::Result<B, E>> + Unpin,
@@ -943,11 +943,11 @@ fn payload(block: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ag_ui_core::{Event, RunAgentInput};
+    use ag_ui::{Event, RunAgentInput};
 
     /// A run context and its event stream, for driving the mapping without a
     /// network. `RunContext::new` exists for exactly this.
-    fn context() -> (RunContext<()>, ag_ui_server::EventReceiver) {
+    fn context() -> (RunContext<()>, ag_ui::serve::EventReceiver) {
         RunContext::new(RunAgentInput::new("t1", "r1")).expect("an empty state decodes")
     }
 
@@ -1004,7 +1004,7 @@ mod tests {
         assert_eq!(ids, ["iiGDaurJKvnE0-kPrsjvuA8"]);
         assert_eq!(
             events.last().map(Event::event_type),
-            Some(ag_ui_core::EventType::TextMessageEnd)
+            Some(ag_ui::EventType::TextMessageEnd)
         );
     }
 
@@ -1302,10 +1302,10 @@ mod tests {
         assert_eq!(
             types,
             [
-                ag_ui_core::EventType::ToolCallStart,
-                ag_ui_core::EventType::ToolCallArgs,
-                ag_ui_core::EventType::ToolCallEnd,
-                ag_ui_core::EventType::ToolCallResult,
+                ag_ui::EventType::ToolCallStart,
+                ag_ui::EventType::ToolCallArgs,
+                ag_ui::EventType::ToolCallEnd,
+                ag_ui::EventType::ToolCallResult,
             ],
             "{types:?}"
         );
@@ -1366,9 +1366,9 @@ mod tests {
         assert_eq!(
             types,
             [
-                ag_ui_core::EventType::ToolCallStart,
-                ag_ui_core::EventType::ToolCallArgs,
-                ag_ui_core::EventType::ToolCallEnd,
+                ag_ui::EventType::ToolCallStart,
+                ag_ui::EventType::ToolCallArgs,
+                ag_ui::EventType::ToolCallEnd,
             ],
             "{types:?}"
         );
@@ -1436,9 +1436,9 @@ mod tests {
         let messages = vec![
             Message::system("m0", "Be brief."),
             Message::user("m1", "weather in Seoul?"),
-            Message::Assistant(ag_ui_core::AssistantMessage {
+            Message::Assistant(ag_ui::AssistantMessage {
                 id: MessageId::new("m2"),
-                tool_calls: Some(vec![ag_ui_core::ToolCall::new(
+                tool_calls: Some(vec![ag_ui::ToolCall::new(
                     "c1",
                     WEATHER_TOOL,
                     r#"{"city":"Seoul"}"#,

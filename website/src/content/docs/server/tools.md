@@ -15,11 +15,11 @@ back on the next request.
 ## A call the agent answers itself
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("get_weather")?;
@@ -57,11 +57,11 @@ closed with `end()` and nothing else. There is no result to report from here; it
 a tool message on the next request:
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("open_settings_panel")?;
@@ -89,8 +89,8 @@ exactly that reason. The handle keeps everything it emitted, so `parse_args` can
 the finished struct to execute against once the provider is done:
 
 ```rust
-use ag_ui_core::RunAgentInput;
-use ag_ui_server::RunContext;
+use ag_ui::RunAgentInput;
+use ag_ui::serve::RunContext;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -98,7 +98,7 @@ struct Query {
     city: String,
 }
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("get_weather")?;
@@ -138,8 +138,8 @@ An agent that wants the stricter rule can have it, because `ctx.tool(name)` retu
 for anything unoffered:
 
 ```rust
-use ag_ui_core::{RunAgentInput, RunOutcome, Tool};
-use ag_ui_server::{Agent, Error, Result, RunContext, ToolCallHandle};
+use ag_ui::{RunAgentInput, RunOutcome, Tool};
+use ag_ui::serve::{Agent, Error, Result, RunContext, ToolCallHandle};
 use serde_json::json;
 
 /// Opens a call only when the client offered the tool. A rule this agent
@@ -166,7 +166,7 @@ impl Agent for Board {
     }
 }
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let mut input = RunAgentInput::new("t", "r");
     input.tools = vec![Tool::new("add_task", "Add a task to the board.", json!({}))];
     let (mut ctx, _events) = RunContext::<()>::new(input)?;
@@ -186,8 +186,8 @@ A handle borrows the run's event sink and its state, not the run context, so a t
 work belongs *between* the arguments and the result:
 
 ```rust
-use ag_ui_core::RunAgentInput;
-use ag_ui_server::RunContext;
+use ag_ui::RunAgentInput;
+use ag_ui::serve::RunContext;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -196,7 +196,7 @@ struct Board {
     tasks: Vec<String>,
 }
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<Board>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("add_task")?;
@@ -229,11 +229,11 @@ The mapping that works is to accumulate each call and emit it whole once its arg
 complete. It is also the only one that cannot splice two calls' arguments into each other:
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::RunContext;
 use std::collections::BTreeMap;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let names = ["get_weather", "roll_dice"];
@@ -270,10 +270,10 @@ stream. What it will not let you do is close a call you never opened.
 
 ## API
 
-- [`RunContext::tool_call`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.tool_call)
-  and [`tool_call_with_id`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.tool_call_with_id)
-- [`RunContext::tools`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.tools) and
-  [`tool`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.tool)
-- [`ag_ui_server::ToolCallHandle`](/ag-ui-rust/api/ag_ui_server/struct.ToolCallHandle.html)
-- [`ag_ui_core::Tool`](/ag-ui-rust/api/ag_ui_core/struct.Tool.html) and
-  [`ToolCall`](/ag-ui-rust/api/ag_ui_core/struct.ToolCall.html)
+- [`RunContext::tool_call`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tool_call)
+  and [`tool_call_with_id`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tool_call_with_id)
+- [`RunContext::tools`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tools) and
+  [`tool`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.tool)
+- [`ag_ui::serve::ToolCallHandle`](/ag-ui-rust/api/ag_ui/serve/struct.ToolCallHandle.html)
+- [`ag_ui::Tool`](/ag-ui-rust/api/ag_ui/struct.Tool.html) and
+  [`ToolCall`](/ag-ui-rust/api/ag_ui/struct.ToolCall.html)

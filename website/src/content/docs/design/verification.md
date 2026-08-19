@@ -17,12 +17,12 @@ Each catches something the others cannot. This page is all three.
 
 ## Layer 1: the borrow checker
 
-The emitters in `ag-ui-server` are typestate handles. `ctx.assistant_message()`
+The emitters in `ag_ui::serve` are typestate handles. `ctx.assistant_message()`
 returns a handle that borrows the run context mutably, so a second overlapping
 block does not compile:
 
 ```rust,compile_fail,E0499
-use ag_ui_server::RunContext;
+use ag_ui::serve::RunContext;
 
 fn interleave(ctx: &mut RunContext<()>) {
     let mut first = ctx.assistant_message().unwrap();
@@ -34,7 +34,7 @@ fn interleave(ctx: &mut RunContext<()>) {
 ```
 
 That block is `compile_fail`, so this page goes red if it ever starts compiling.
-The same example lives in `crates/ag-ui-server/src/emit/mod.rs`, and it is the
+The same example lives in `crates/ag-ui/src/serve/emit/mod.rs`, and it is the
 only executable proof of the guarantee that
 [Design commitments](/ag-ui-rust/design/commitments/) sells as a headline
 feature. Weaken the emitter API and that doctest goes green, which is a failure.
@@ -68,14 +68,14 @@ three network hops from where it was caused.
 
 ### On the server
 
-`ag-ui-server` runs an ordering state machine over every event on its way out,
+`ag_ui::serve` runs an ordering state machine over every event on its way out,
 before the transport sees it. An emit that breaks a rule returns `Err`, so the
 agent's next `?` unwinds the run and the failure is reported as a `RUN_ERROR`
 naming the rule:
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::{Error, Rule, RunContext};
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::{Error, Rule, RunContext};
 
 fn main() {
     let (mut ctx, _events) =
@@ -94,7 +94,7 @@ fn main() {
 }
 ```
 
-[`Rule`](/ag-ui-rust/api/ag_ui_server/error/enum.Rule.html) is the closed list of
+[`Rule`](/ag-ui-rust/api/ag_ui/serve/error/enum.Rule.html) is the closed list of
 what the machine checks:
 
 | Rule | Rejected |
@@ -111,7 +111,7 @@ what the machine checks:
 not have closed it.
 
 Each rejection is a
-[`VerificationError`](/ag-ui-rust/api/ag_ui_server/error/struct.VerificationError.html)
+[`VerificationError`](/ag-ui-rust/api/ag_ui/serve/error/struct.VerificationError.html)
 carrying the offending event type, the rule, and a detail string. Emit content
 for `msg-2` while `msg-1` is the message actually open, and its `Display` reads:
 
@@ -138,13 +138,15 @@ A handful of `HashSet`s and one lookup per event. It is on by default in release
 builds too, because that price is not worth thinking about next to a protocol
 bug that reaches a user.
 
-If you have measured it and want the lookups back, turn off the `verify` feature
-on `ag-ui-server`. The whole state machine is then replaced by a zero-sized type
-whose `observe` is an inlined `Ok(())`:
+If you have measured it and want the lookups back, turn off the `verify` feature.
+The whole state machine is then replaced by a zero-sized type whose `observe` is
+an inlined `Ok(())`. `verify` is in the crate's default set rather than implied
+by `serve`, which is what makes it droppable — a feature cannot be subtracted
+from the set another feature pulls in:
 
 ```toml
 [dependencies]
-ag-ui-server = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", default-features = false }
+ag-ui = { version = "0.1", default-features = false, features = ["serve", "sse"] }
 ```
 
 One thing survives that switch. Whether a terminal event has already gone out is
@@ -153,7 +155,7 @@ out cannot make the run driver emit a second `RUN_FINISHED`.
 
 ### On the client
 
-`ag-ui-client` verifies too, and for a different reason: the events arrive from
+`ag_ui::client` verifies too, and for a different reason: the events arrive from
 someone else's process, and a stream that breaks the rules should produce one
 clear error rather than a confused UI. This is where the TypeScript SDK puts its
 verifier, and for a consumer that is the right instinct.
@@ -173,8 +175,8 @@ That last one is what `Verifier::finish` is for, and `verify_all` is the
 convenience that runs a whole recorded stream and then calls it:
 
 ```rust
-use ag_ui_client::verify_all;
-use ag_ui_core::{Event, TextMessageRole};
+use ag_ui::client::verify_all;
+use ag_ui::{Event, TextMessageRole};
 
 fn main() {
     // A response the transport cut short: no RUN_FINISHED, no RUN_ERROR.
@@ -225,7 +227,7 @@ cargo run -p xtask -- drift-check
 drift-check
   baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@8ec096f94b, captured 2026-08-17)
   upstream  33 event types
-  rust      crates/ag-ui-core/src/event  (9 files, 33 event types, tagged enum `Event`)
+  rust      crates/ag-ui/src/event  (9 files, 33 event types, tagged enum `Event`)
 
 OK  33 event types match the baseline.
 ```
@@ -233,7 +235,7 @@ OK  33 event types match the baseline.
 It compares `xtask/baseline/events.json` — a vendored snapshot of upstream's
 `sdks/typescript/packages/core/src/events.ts`, recording the commit it came from,
 the `EventType` values in upstream order, and each event's payload fields with an
-optional/required flag — against `crates/ag-ui-core/src/event/`, **read as text**
+optional/required flag — against `crates/ag-ui/src/event/`, **read as text**
 so the check keeps working while that module does not compile.
 
 It is offline and deterministic, which is what qualifies it to be a required
@@ -270,7 +272,7 @@ cargo run -p xtask -- drift-check --refresh
 That re-captures the baseline and records the upstream commit and fetch date.
 The diff to `events.json` **is** the protocol change, and it is the part of the
 resulting pull request that deserves the closest review. Then
-`crates/ag-ui-core/src/event/` is updated to match, in the same pull request,
+`crates/ag-ui/src/event/` is updated to match, in the same pull request,
 until `drift-check` is clean again.
 
 `events.json` is generated, never hand-edited. Editing it by hand is editing the

@@ -62,8 +62,8 @@ Zod-to-Rust compiler를 만들어 유지한다는 뜻입니다. 아직 그럴 �
 ## `Event`는 일부러 exhaustive하고, error는 아닙니다
 
 이 workspace의 error enum은 모두 `#[non_exhaustive]`입니다.
-[`Event`](/ag-ui-rust/api/ag_ui_core/event/enum.Event.html)와
-[`EventType`](/ag-ui-rust/api/ag_ui_core/event/enum.EventType.html)은 아닙니다.
+[`Event`](/ag-ui-rust/api/ag_ui/event/enum.Event.html)와
+[`EventType`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html)은 아닙니다.
 이 비대칭은 의도입니다. protocol은 지난 1년 사이 두 번 자랐습니다. `REASONING_*`와
 `ACTIVITY_*`입니다. 그러니 이것은 가정이 아니라 실제로 시험받는 문제입니다.
 
@@ -82,7 +82,7 @@ Zod-to-Rust compiler를 만들어 유지한다는 뜻입니다. 아직 그럴 �
 **대가는 정직하게 받아들입니다. event 하나를 추가하는 것은 이 SDK의 major
 version입니다.** 그래야 합니다. wire 계약이 바뀌었으니까요. `Event`를 직접
 match한다면 그 비용을 예산에 넣으십시오. 그러고 싶지 않다면 상위의
-[`Update`](/ag-ui-rust/api/ag_ui_client/session/enum.Update.html) stream을
+[`Update`](/ag-ui-rust/api/ag_ui/client/session/enum.Update.html) stream을
 match하십시오. 이쪽은 그 attribute를 답니다.
 
 error는 논리가 뒤집힙니다. 그래서 attribute를 답니다. 실패 모드를 exhaustive하게
@@ -93,13 +93,13 @@ match하고 싶어 하는 사람은 없습니다. 호출자는 몇 개의 varian
 
 두 client type은 그 선의 반대편에 각각 서 있습니다. 그 갈림이 규칙을 보여 줍니다.
 
-[`RunEnd`](/ag-ui-rust/api/ag_ui_client/session/enum.RunEnd.html)는 `Event`
+[`RunEnd`](/ag-ui-rust/api/ag_ui/client/session/enum.RunEnd.html)는 `Event`
 쪽입니다. exhaustive합니다. run은 protocol이 정의한 세 가지 방식으로만 끝납니다.
 frontend가 가장 검사받고 싶어 하는 match도 그것입니다. 입력을 다시 살릴지
 결정하니까요. 그리고 run이 끝나는 네 번째 방식은 wire 계약 변경이 맞습니다.
 
 ```rust
-use ag_ui_client::RunEnd;
+use ag_ui::client::RunEnd;
 
 fn on_end(end: &RunEnd) -> String {
     // `_` 갈래가 없습니다. run이 끝나는 네 번째 방식이 생기면 이 code는
@@ -151,15 +151,15 @@ error로 멈춥니다. 대화의 4분의 3만 조용히 그리지 않습니다.
 
 ## web binding 아래는 executor에 의존하지 않습니다
 
-`ag-ui-core`, `ag-ui-server`, `ag-ui-client`는 `futures` primitive를 씁니다. emit
+`ag-ui`, `ag_ui::serve`, `ag_ui::client`는 `futures` primitive를 씁니다. emit
 경로에 `tokio::sync::mpsc`가 아니라 `futures::channel::mpsc`를 씁니다. tokio는
-`ag-ui-axum`에만 있습니다. 그래야 wasm target과 tokio가 아닌 executor가 가능한
+`ag_ui::axum`에만 있습니다. 그래야 wasm target과 tokio가 아닌 executor가 가능한
 선택지로 남습니다.
 
 CI는 이것을 두 가지 방법으로 강제합니다. 두 번째가 있는 이유는 첫 번째로 부족하기
 때문입니다. 그 crate들을 `wasm32-unknown-unknown`으로 build하고, *또한* 의존성
 graph에 tokio가 없음을 단언합니다. tokio의 `rt`, `sync`, `macros`, `io-util`,
-`time` feature는 모두 wasm으로 compile됩니다. 그래서 `ag-ui-server`에 `tokio`를
+`time` feature는 모두 wasm으로 compile됩니다. 그래서 `ag_ui::serve`에 `tokio`를
 추가해도 wasm 검사는 전부 통과합니다. 실제로 그렇게 해 보고 wasm build가 초록으로
 남는 것을 확인했습니다. 보증을 지는 것은 의존성 graph입니다. 그래서 단언하는
 대상도 그것입니다.
@@ -199,7 +199,7 @@ id 체계를 쓰는 다른 무엇 앞에서도 마찬가지입니다(upstream �
 않습니다.
 
 ```rust
-use ag_ui_core::{RunId, ThreadId};
+use ag_ui::{RunId, ThreadId};
 
 fn main() {
     // producer가 보낸 값이 무엇이든 byte 단위 그대로 왕복합니다.
@@ -217,21 +217,35 @@ fn main() {
 그런 것이 필요하면 UUID를 만들어 문자열로 넘기십시오. 이 SDK는 `uuid` 의존성이
 없고, 이에 대한 의견도 없습니다.
 
-## crate는 일곱이 아니라 다섯
+## crate는 일곱이 아니라 둘
 
 첫 초안은 .NET의 assembly 분할을 일대일로 흉내 냈습니다. 잘못된 직관입니다.
 .NET에서 assembly는 배포와 version 관리의 단위라 쪼개는 것이 싸고 자연스럽습니다.
 Rust에서는 **feature가 일차 도구**입니다. crate를 쪼개는 일은 의존성 격리나
 독립적인 version 관리로 정당화되어야 합니다.
 
-그래서 crate 두 개가 접혀 들어갔습니다. SSE encoder는 `ag-ui-core::encode`가
-되었습니다. 추가 의존성 없는 수백 줄이고, 무거운 것은 protobuf뿐인데 그것은 이미
-optional 의존성이 처리합니다. A2UI toolkit은 `ag-ui-a2ui`의 feature가 되었습니다.
-prompt 문자열과 orchestration뿐이라 격리할 것이 없습니다.
+그 규칙이 일곱을 다섯으로 접었고, 그 결론을 자기 자신에게 적용하자 다섯이 둘이
+되었습니다. crate 다섯이라는 구성은 자기 시험을 통과하지 못했습니다. feature
+gate는 분할과 똑같이 의존성을 격리합니다. `--no-default-features`는 axum도
+tokio도 reqwest도 compile하지 않고, CI가 그것을 feature 단위로 단언합니다. 남은
+정당화는 독립 version 관리인데, 이 workspace는 그것을 하지 않습니다.
+`workspace.version` 하나로 전부 함께 release합니다.
 
-따로 남은 것과 그 이유입니다. `ag-ui-axum`은 axum, tokio, tower를 끌고 옵니다.
-`ag-ui-client`는 그 자체로 쓸모가 있습니다. `ag-ui-a2ui`는 AG-UI 없이도 쓸 수
-있는 다른 protocol입니다. [crate 구성](/ag-ui-rust/ko/start/crates/)이 그
+그래서 `ag-ui`가 crate 하나입니다. protocol type은 언제나 compile되고, `serve`와
+`client`와 `axum`이 같은 이름의 feature 뒤에 있습니다. runtime마다 자기 `Error`를
+자기 module에 둡니다. `ag_ui::Error`는 protocol 오류이고 `ag_ui::serve::Error`는
+hosting 오류입니다.
+
+`ag-ui-a2ui`는 feature가 할 수 없는 격리 논거로 따로 남습니다. A2UI는 별개
+protocol이고 AG-UI 없이 A2A나 MCP 위에서 구동되며, 그 사용자가 `ag-ui`라는 이름의
+crate에 의존할 이유가 없습니다. 앞서 접힌 둘은 접힌 이유 그대로 남습니다. SSE
+encoder는 `ag_ui::encode`이고, 추가 의존성 없는 수백 줄입니다. A2UI toolkit은
+`ag-ui-a2ui`의 feature입니다.
+
+비용은 분할이 사 주고 feature가 못 사 주는 그 하나입니다. cargo는 dependency
+graph 전체에서 feature를 합칩니다. 한쪽이 `serve`를, 다른 쪽이 `client`를
+요청하는 build는 둘 다 compile합니다. 섞인 graph에서의 compile 시간이지 runtime
+이나 정확성 비용은 아닙니다. [crate 구성](/ag-ui-rust/ko/start/crates/)이 그
 안내입니다.
 
 ## 확장 지점은 둘이 아니라 하나
