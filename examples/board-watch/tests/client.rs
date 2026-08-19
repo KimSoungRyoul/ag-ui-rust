@@ -11,9 +11,9 @@
 
 use std::time::Duration;
 
-use ag_ui_client::transport::HttpTransport;
-use ag_ui_client::{HttpAgent, Session};
-use ag_ui_core::{Message, Tool};
+use ag_ui::client::transport::HttpTransport;
+use ag_ui::client::{HttpAgent, Session};
+use ag_ui::{Message, Tool};
 use board_watch::view::message_count;
 use board_watch::watch::{Console, Policy, Watch};
 use board_watch::{Board, fake, load_tools, replay_fixture, trace, watch};
@@ -80,7 +80,7 @@ fn configured(
 }
 
 /// Runs `script` through the real client and returns what it printed.
-async fn transcript<T: ag_ui_client::Transport>(
+async fn transcript<T: ag_ui::client::Transport>(
     session: &mut Session<T, Board>,
     settings: Watch,
     script: &str,
@@ -444,7 +444,7 @@ async fn a_second_run_in_the_same_thread_carries_what_the_first_established() {
 ///
 /// `task-board` publishes state from inside the call — which the server's
 /// handles now allow — so the wire is `START ARGS STATE END RESULT`. An
-/// [`Update::State`](ag_ui_client::Update::State) carries no association with
+/// [`Update::State`](ag_ui::client::Update::State) carries no association with
 /// the call it arrived during, so a renderer that groups a call onto one line
 /// at `ToolCallEnded` prints the state *before* the call. Pinned in both
 /// directions: what the wire says, and what the client can say about it.
@@ -645,7 +645,7 @@ async fn an_agent_that_needs_a_tool_says_so_when_the_client_offers_none() {
 /// definition, converted rather than retyped.
 ///
 /// Round one found `ToolDefinition::to_value` emitting `input_schema` —
-/// Anthropic's key — where `ag_ui_core::Tool` wants `parameters`, so the
+/// Anthropic's key — where `ag_ui::Tool` wants `parameters`, so the
 /// obvious `from_value(def.to_value())` produced a tool with an empty schema.
 /// The conversion is now a `From` impl and the old name says whose shape it is.
 /// This is the regression guard for both halves.

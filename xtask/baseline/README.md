@@ -24,7 +24,7 @@ nothing mechanically linked the two.
     cargo run -p xtask -- drift-check --upstream   # is this snapshot itself stale? (network)
     cargo run -p xtask -- drift-check --refresh    # re-capture it (network)
 
-The offline check compares this file against `crates/ag-ui-core/src/event/`,
+The offline check compares this file against `crates/ag-ui/src/event/`,
 read as text so it keeps working while that module does not compile. It exits
 non-zero when an event type or a payload field differs. CI depends on that run
 only — the network-using modes are for a scheduled job and for a human.
@@ -36,7 +36,7 @@ When `--upstream` reports that upstream has moved:
 1. Run `--refresh`.
 2. Read the diff to this file. That diff *is* the protocol change — it is the
    part of the pull request that deserves the closest review.
-3. Update `crates/ag-ui-core/src/event/` to match, in the same pull request.
+3. Update `crates/ag-ui/src/event/` to match, in the same pull request.
 4. Re-run `drift-check` until it is clean.
 
 ## `unparsed`

@@ -1,19 +1,19 @@
-//! Interop with [`ag_ui_core`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/index.html) (feature `ag-ui`).
+//! Interop with [`ag_ui`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/index.html) (feature `ag-ui`).
 //!
 //! A2UI is transport-agnostic and this crate keeps it that way — nothing below
 //! this module knows what AG-UI is. What lives here is the small amount of
 //! glue an agent hosted on AG-UI would otherwise write by hand, twice:
 //!
-//! - [`HistoryMessage`] from an [`ag_ui_core::Message`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/message/enum.Message.html), so the surface-recovery
+//! - [`HistoryMessage`] from an [`ag_ui::Message`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/message/enum.Message.html), so the surface-recovery
 //!   scan can read an AG-UI thread directly.
 //! - [`find_prior_surface_in`], the same scan without the mapping step.
-//! - [`ag_ui_core::Tool`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/tool/struct.Tool.html) from a [`ToolDefinition`], so the toolkit's two tool
+//! - [`ag_ui::Tool`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/tool/struct.Tool.html) from a [`ToolDefinition`], so the toolkit's two tool
 //!   definitions can be offered on a run.
 //!
 //! Turn the feature off to use A2UI standalone over A2A or MCP; the dependency
 //! on `ag-ui-core` goes with it.
 
-use ag_ui_core::{Message, Tool};
+use ag_ui::{Message, Tool};
 use serde_json::Value;
 
 use crate::toolkit::history::{HistoryMessage, PriorSurface, find_prior_surface};
@@ -60,7 +60,7 @@ impl From<ToolDefinition> for Tool {
 /// use ag_ui_a2ui::agui::find_prior_surface_in;
 /// use ag_ui_a2ui::toolkit::envelope::wrap_as_operations_envelope;
 /// use ag_ui_a2ui::{AgentMessage, Component};
-/// use ag_ui_core::Message;
+/// use ag_ui::Message;
 /// use serde_json::json;
 ///
 /// let rendered = wrap_as_operations_envelope(&[
@@ -93,7 +93,7 @@ mod tests {
     use crate::toolkit::envelope::wrap_as_operations_envelope;
     use crate::toolkit::tools::{generate_a2ui_tool, render_a2ui_tool};
     use crate::{AgentMessage, Component};
-    use ag_ui_core::{ActivityMessage, InputContent, JsonObject, UserContent};
+    use ag_ui::{ActivityMessage, InputContent, JsonObject, UserContent};
     use serde_json::json;
 
     #[test]

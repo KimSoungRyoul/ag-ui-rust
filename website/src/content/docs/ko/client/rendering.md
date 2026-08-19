@@ -24,8 +24,8 @@ update stream에서도 번갈아 나타납니다.
 
 ```rust
 // src/main.rs
-use ag_ui_client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
-use ag_ui_core::Event;
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::Event;
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -76,7 +76,7 @@ event가 그 순서열의 어디에 놓였는지만 말합니다. 그 event가 �
 
 이를 손에 잡히게 만드는 사례가 있습니다. 어떤 agent는 tool이 할 일을
 *call이 열려 있는 동안* 처리합니다. 그런 agent는 `TOOL_CALL_ARGS`와
-`TOOL_CALL_END` 사이에서 state를 내보냅니다. `ag-ui-server`의 handle이
+`TOOL_CALL_END` 사이에서 state를 내보냅니다. `ag_ui::serve`의 handle이
 이를 지원합니다. `STATE_*`에는 순서 제약이 없으니 protocol도
 허용합니다. 그렇게 나온 `Update::State`에는 그 call에 대한 언급이 전혀
 없습니다.
@@ -101,8 +101,8 @@ call 하나를 한 줄로 그리려고 argument를 모아 두는 것은 바랄 �
 
 ```rust
 // src/render.rs
-use ag_ui_client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, ToolCallId};
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, ToolCallId};
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -321,4 +321,4 @@ message를 엽니다. 둘은 같은 id를 씁니다. 그래도
 - [session](/ag-ui-rust/ko/client/session/) — 그리는 동안 무엇이 쌓이고
   있는지.
 - API 문서의
-  [`MessageChangeKind`](/ag-ui-rust/api/ag_ui_client/apply/enum.MessageChangeKind.html).
+  [`MessageChangeKind`](/ag-ui-rust/api/ag_ui/client/apply/enum.MessageChangeKind.html).

@@ -18,12 +18,12 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
 - `website/src/content/docs/client/transports.md` — the trait, `HttpTransport`'s two timeouts,
   `ReplayTransport`, `SseDecoder`, turning `http` off
 - `website/src/content/docs/client/rendering.md` — arrival order
-- `crates/ag-ui-client/src/session.rs`, `crates/ag-ui-client/src/interrupts.rs`,
-  `crates/ag-ui-client/src/transport/`, `crates/ag-ui-client/src/error.rs`
+- `crates/ag-ui/src/client/session.rs`, `crates/ag-ui/src/client/interrupts.rs`,
+  `crates/ag-ui/src/client/transport/`, `crates/ag-ui/src/client/error.rs`
 
 ## references/rendering.md
 
 - `website/src/content/docs/client/rendering.md`
-- `crates/ag-ui-client/src/apply.rs` — `MessageChangeKind` and what is materialised
-- `crates/ag-ui-client/src/chunks.rs` — the `*_CHUNK` normalizer
+- `crates/ag-ui/src/client/apply.rs` — `MessageChangeKind` and what is materialised
+- `crates/ag-ui/src/client/chunks.rs` — the `*_CHUNK` normalizer
 - `examples/board-watch/tests/client.rs` — both renderings, pinned

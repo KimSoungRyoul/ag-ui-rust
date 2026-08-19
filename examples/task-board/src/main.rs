@@ -12,8 +12,8 @@
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
-use ag_ui_client::Session;
-use ag_ui_client::transport::HttpTransport;
+use ag_ui::client::Session;
+use ag_ui::client::transport::HttpTransport;
 use task_board::chat::Terminal;
 use task_board::llm::Voice;
 use task_board::{ROUTE, TaskBoard, board, chat, router};

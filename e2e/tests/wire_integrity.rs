@@ -8,9 +8,9 @@
 
 mod common;
 
-use ag_ui_client::{Session, Update};
-use ag_ui_core::{Event, Message, PatchOperation, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::client::{Session, Update};
+use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::{Event, Message, PatchOperation, RunOutcome};
 use common::{serve, transport};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -92,7 +92,7 @@ fn split_evenly(text: &str, parts: usize) -> Vec<&str> {
 }
 
 /// One run against a served [`Awkward`].
-async fn run_once() -> Session<ag_ui_client::transport::HttpTransport, Document> {
+async fn run_once() -> Session<ag_ui::client::transport::HttpTransport, Document> {
     let url = serve(Awkward).await;
     let mut session = Session::<_, Document>::new(transport(&url), "wire");
     {

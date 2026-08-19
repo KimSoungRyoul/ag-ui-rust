@@ -3,13 +3,13 @@ title: Agent trait
 description: 이 SDK의 유일한 경계인 trait를 구현하는 법. 그리고 run context가 구현체에 건네주는 것들.
 ---
 
-`Agent`는 `ag-ui-server`의 확장 지점 전부입니다. trait는 하나뿐입니다. 연관 타입 하나와
+`Agent`는 `ag_ui::serve`의 확장 지점 전부입니다. trait는 하나뿐입니다. 연관 타입 하나와
 메서드 하나를 가집니다. 이 문서의 나머지는 전부 run context가 그 메서드에 건네주는 것들입니다.
 
 ```rust
-// crates/ag-ui-server/src/agent.rs — 문서 주석을 걷어낸 선언부.
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{AgentState, Result, RunContext};
+// crates/ag-ui/src/serve/agent.rs — 문서 주석을 걷어낸 선언부.
+use ag_ui::RunOutcome;
+use ag_ui::serve::{AgentState, Result, RunContext};
 use std::future::Future;
 
 pub trait Agent: Send + Sync {
@@ -28,7 +28,7 @@ pub trait Agent: Send + Sync {
 때문입니다. Rust에는 없습니다. 생태계가 `async-openai`, `rig-core`, `genai`로 갈라져 있고
 승자가 없습니다. 그중 하나에 묶으면 이 crate는 나머지 대부분에게 쓸모없어집니다.
 
-그래서 `ag-ui-server`는 LLM crate에 전혀 의존하지 않습니다. 쓰던 client를 그대로
+그래서 `ag_ui::serve`는 LLM crate에 전혀 의존하지 않습니다. 쓰던 client를 그대로
 가져오십시오. `run` 안에서 호출하고, 나오는 것을 emit하면 됩니다. 프레임워크 연동은 별도
 crate에 있는 `impl Agent for …` 하나입니다.
 
@@ -38,8 +38,8 @@ crate에 있는 `impl Agent for …` 하나입니다.
 
 ```rust
 // src/main.rs
-use ag_ui_core::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext, run};
+use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Greeter;
@@ -98,8 +98,8 @@ bound는 `AgentState`입니다. 직접 구현할 일은 없습니다. 자격을 
 덮습니다.
 
 ```rust
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use serde::{Deserialize, Serialize};
 
 /// `Serialize + DeserializeOwned + Default + Send`가 bound의 전부입니다.
@@ -144,8 +144,8 @@ agent를 등록해 두는 경우입니다. `DynAgent`가 그 박싱된 형태이
 똑같이 받습니다.
 
 ```rust
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, BoxAgent, Result, RunContext};
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, BoxAgent, Result, RunContext};
 
 struct Fixed(&'static str);
 
@@ -178,11 +178,11 @@ verifier를 거쳐서 말입니다. context를 값으로 넘기면 둘 다 agent
 `&mut`이 필요 없습니다.
 
 ```rust
-use ag_ui_core::{Message, RunAgentInput, Tool};
-use ag_ui_server::RunContext;
+use ag_ui::{Message, RunAgentInput, Tool};
+use ag_ui::serve::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let mut input = RunAgentInput::new("thread-1", "run-1");
     input.messages = vec![Message::user("msg-1", "what is the weather in Seoul?")];
     input.tools = vec![Tool::new(
@@ -237,8 +237,8 @@ fn main() -> ag_ui_server::Result<()> {
 역참조되고, 모든 것이 그 안에 중첩됩니다.
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext, run};
+use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Researcher;
@@ -304,11 +304,11 @@ agent 안에서 난 *panic*은 잡히지 않습니다. 다른 future에서와 �
 
 ## API
 
-- [`ag_ui_server::Agent`](/ag-ui-rust/api/ag_ui_server/trait.Agent.html)
-- [`ag_ui_server::AgentState`](/ag-ui-rust/api/ag_ui_server/trait.AgentState.html)
-- [`ag_ui_server::RunContext`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html)
-- [`ag_ui_server::run`](/ag-ui-rust/api/ag_ui_server/fn.run.html)과
-  [`Runner`](/ag-ui-rust/api/ag_ui_server/struct.Runner.html)
-- [`ag_ui_server::DynAgent`](/ag-ui-rust/api/ag_ui_server/trait.DynAgent.html)과
-  [`BoxAgent`](/ag-ui-rust/api/ag_ui_server/type.BoxAgent.html)
-- [`ag_ui_core::RunOutcome`](/ag-ui-rust/api/ag_ui_core/enum.RunOutcome.html)
+- [`ag_ui::serve::Agent`](/ag-ui-rust/api/ag_ui/serve/trait.Agent.html)
+- [`ag_ui::serve::AgentState`](/ag-ui-rust/api/ag_ui/serve/trait.AgentState.html)
+- [`ag_ui::serve::RunContext`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html)
+- [`ag_ui::serve::run`](/ag-ui-rust/api/ag_ui/serve/fn.run.html)과
+  [`Runner`](/ag-ui-rust/api/ag_ui/serve/struct.Runner.html)
+- [`ag_ui::serve::DynAgent`](/ag-ui-rust/api/ag_ui/serve/trait.DynAgent.html)과
+  [`BoxAgent`](/ag-ui-rust/api/ag_ui/serve/type.BoxAgent.html)
+- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/enum.RunOutcome.html)

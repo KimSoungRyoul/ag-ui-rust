@@ -8,7 +8,7 @@
 //!
 //! The endpoint's own per-run state gets the same treatment. A
 //! [`StreamTransformer`] is a state machine and
-//! [`AgentEndpoint`](ag_ui_axum::AgentEndpoint) builds a fresh one per request
+//! [`AgentEndpoint`](ag_ui::axum::AgentEndpoint) builds a fresh one per request
 //! for exactly that reason — so [`Numbering`] counts, and a shared instance
 //! would hand one run another run's numbers.
 
@@ -17,10 +17,10 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ag_ui_axum::AgentEndpoint;
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::{Event, Message, RunOutcome, UserContent};
-use ag_ui_server::{Agent, Result, RunContext, StreamTransformer};
+use ag_ui::axum::AgentEndpoint;
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::serve::{Agent, Result, RunContext, StreamTransformer};
+use ag_ui::{Event, Message, RunOutcome, UserContent};
 use common::{serve, serve_endpoint, transport};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};

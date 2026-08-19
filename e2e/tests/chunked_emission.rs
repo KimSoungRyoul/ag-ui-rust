@@ -9,9 +9,9 @@
 
 mod common;
 
-use ag_ui_client::{RemoteAgent, RunParams, Session, Update};
-use ag_ui_core::{AssistantMessage, Event, EventType, Message, MessageId, RunOutcome, ToolCallId};
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::client::{RemoteAgent, RunParams, Session, Update};
+use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::{AssistantMessage, Event, EventType, Message, MessageId, RunOutcome, ToolCallId};
 use common::{serve, transport};
 use futures_util::StreamExt as _;
 
@@ -173,7 +173,7 @@ async fn interleaved_chunk_streams_reassemble_into_separate_messages() {
         Message::Assistant(AssistantMessage {
             id: "call-1-message".into(),
             content: None,
-            tool_calls: Some(vec![ag_ui_core::ToolCall::new(
+            tool_calls: Some(vec![ag_ui::ToolCall::new(
                 "call-1",
                 "search",
                 r#"{"q":"rust"}"#,
@@ -214,7 +214,7 @@ async fn a_chunk_streamed_call_answered_by_the_agent_survives_the_round_trip() {
         Message::Assistant(AssistantMessage {
             id: "call-1-message".into(),
             content: None,
-            tool_calls: Some(vec![ag_ui_core::ToolCall::new(
+            tool_calls: Some(vec![ag_ui::ToolCall::new(
                 "call-1",
                 "get_weather",
                 r#"{"city":"Seoul"}"#,
@@ -262,7 +262,7 @@ async fn the_final_chunk_stream_is_closed_by_the_end_of_the_run() {
         while let Some(update) = run.next().await {
             match update {
                 Update::Message(message) => {
-                    if matches!(message.change, ag_ui_client::MessageChangeKind::Ended) {
+                    if matches!(message.change, ag_ui::client::MessageChangeKind::Ended) {
                         ended_ids.push(message.id.to_string());
                     }
                 }

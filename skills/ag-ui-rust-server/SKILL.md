@@ -1,6 +1,6 @@
 ---
 name: ag-ui-rust-server
-description: "MUST USE when writing Rust against ag-ui-rust to host an agent — the crates ag-ui-core, ag-ui-server, ag-ui-axum, ag-ui-a2ui. UNCONVENTIONAL, and wrong from memory: these crates are NOT on crates.io (the registry names ag-ui-core / ag-ui-server / ag-ui-client belong to an unrelated community SDK), so a dependency line names the git repository. Events are emitted through RAII typestate handles — ctx.assistant_message() then delta() then end() — never as raw start/content/end calls; the emit path is SYNCHRONOUS with no .await, because the handle emits its terminator on Drop; two open handles at once is a borrow-check error, not a runtime one; Agent::run is a native async fn (RPITIT), so #[async_trait] does not apply and Box<dyn Agent> does not exist (use BoxAgent). Covers RunContext accessors, RunOutcome, tool calls the agent answers vs. the client runs, shared state as automatic snapshot/delta, human-in-the-loop interrupts, the ordering verifier and its seven rules, cancellation, and mounting with route_agui. Triggers on: ag-ui-rust, ag_ui_server, ag_ui_axum, ag_ui_core, impl Agent for, RunContext, RunOutcome, route_agui, AG-UI agent in Rust, Rust backend for CopilotKit or AG-UI, A2UI surface from a Rust agent."
+description: "MUST USE when writing Rust against ag-ui-rust to host an agent — the crate ag-ui with its `serve` and `axum` features, plus ag-ui-a2ui. UNCONVENTIONAL, and wrong from memory: this is ONE crate named ag-ui, not ag-ui-core / ag-ui-server / ag-ui-axum — those registry names belong to an unrelated community SDK — and the server lives under ag_ui::serve, the axum binding under ag_ui::axum, both behind features. Events are emitted through RAII typestate handles — ctx.assistant_message() then delta() then end() — never as raw start/content/end calls; the emit path is SYNCHRONOUS with no .await, because the handle emits its terminator on Drop; two open handles at once is a borrow-check error, not a runtime one; Agent::run is a native async fn (RPITIT), so #[async_trait] does not apply and Box<dyn Agent> does not exist (use BoxAgent). Covers RunContext accessors, RunOutcome, tool calls the agent answers vs. the client runs, shared state as automatic snapshot/delta, human-in-the-loop interrupts, the ordering verifier and its seven rules, cancellation, and mounting with route_agui. Triggers on: ag-ui-rust, ag_ui::serve, ag_ui::axum, ag_ui, impl Agent for, RunContext, RunOutcome, route_agui, AG-UI agent in Rust, Rust backend for CopilotKit or AG-UI, A2UI surface from a Rust agent."
 ---
 
 # Serving an AG-UI agent in Rust
@@ -11,22 +11,20 @@ right and the skill is stale — see `ag-ui-rust-update`.
 
 ## Adding the crates
 
-**Not on crates.io.** `cargo add ag-ui-server` installs a different, unrelated project.
-Depend on the repository:
+**One crate, `ag-ui`.** Not `ag-ui-core` / `ag-ui-server` / `ag-ui-client` — those names on
+crates.io are a different, unrelated project. Which half of the protocol you get is a
+feature; `axum` implies `serve`:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
-ag-ui-server = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
-ag-ui-axum = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui = { version = "0.1", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
 
-There are no release tags yet, so pin `rev = "<sha>"` for anything you rely on. Rust
-**1.85+**, edition 2024. No LLM crate is involved anywhere: bring your own model client and
-call it inside `run`.
+Rust **1.85+**, edition 2024. No LLM crate is involved anywhere: bring your own model client
+and call it inside `run`.
 
 ## The whole extension point
 
@@ -35,9 +33,9 @@ and the cancellation flag in one value.
 
 ```rust,no_run
 // src/main.rs
-use ag_ui_axum::RouterExt;
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::axum::RouterExt;
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use axum::Router;
 
 struct Greeter;
@@ -83,10 +81,10 @@ produces. `end()` is worth calling anyway, because `Drop` has nowhere to report 
 swallows it.
 
 ```rust
-use ag_ui_core::{Event, RunAgentInput, TextMessageRole};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, RunAgentInput, TextMessageRole};
+use ag_ui::serve::RunContext;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     // `RunContext::new` is the unit-test harness: a context plus the receiving
     // end of its event stream. Inside an agent this is just `ctx`.
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
@@ -124,7 +122,7 @@ dependency anywhere. `ThreadId`, `RunId`, `MessageId` are newtypes over `String`
 A handle borrows the run context mutably for as long as it lives:
 
 ```rust,compile_fail
-use ag_ui_server::RunContext;
+use ag_ui::serve::RunContext;
 
 fn interleave(ctx: &mut RunContext<()>) {
     let mut first = ctx.assistant_message().unwrap();
@@ -146,11 +144,11 @@ the verifier keys by id — but the handles cannot express it.
 ## Tool calls
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     // Answered by the agent: `result` emits TOOL_CALL_END then TOOL_CALL_RESULT.
@@ -185,8 +183,8 @@ and delta — the publisher diffs against the last snapshot with RFC 6902 and se
 is smaller, with the first publish of a run always a snapshot.
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::RunContext;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Serialize, Deserialize)]
@@ -195,7 +193,7 @@ struct Doc {
     notes: Vec<String>,
 }
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<Doc>::new(RunAgentInput::new("t", "r"))?;
 
     ctx.update_state(|doc| {
@@ -239,9 +237,9 @@ your `AppState`, and an agent that needs values from it should capture them at c
 rather than extracting `State` inside the run.
 
 ```rust
-use ag_ui_axum::{AgentEndpoint, RouterExt};
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, FilterToolCalls, Result, RunContext};
+use ag_ui::axum::{AgentEndpoint, RouterExt};
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, FilterToolCalls, Result, RunContext};
 use axum::Router;
 use std::time::Duration;
 
@@ -297,6 +295,6 @@ there for a hand-written handler.
 - [Serving over HTTP](https://kimsoungryoul.github.io/ag-ui-rust/server/axum/) ·
   [A2UI](https://kimsoungryoul.github.io/ag-ui-rust/a2ui/) ·
   [Feature flags](https://kimsoungryoul.github.io/ag-ui-rust/reference/features/)
-- rustdoc for all five crates:
-  <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_server/index.html>
+- rustdoc for both crates:
+  <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/index.html>
 - The client half is the `ag-ui-rust-client` skill.

@@ -148,7 +148,7 @@ jobs:
           }
           check website/dist/index.html "The Astro build produced no home page."
           check website/dist/api/index.html "The rustdoc landing page at website/public/api/index.html did not survive the copy."
-          for crate in ag_ui_core ag_ui_server ag_ui_client ag_ui_axum ag_ui_a2ui; do
+          for crate in ag_ui ag_ui_a2ui; do
             check "website/dist/api/$crate/index.html" "cargo doc did not document $crate, or the copy into website/dist/api/ dropped it."
           done
           exit $status

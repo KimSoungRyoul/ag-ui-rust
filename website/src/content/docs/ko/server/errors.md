@@ -9,8 +9,8 @@ stream입니다. panic도 아니고, 그냥 뚝 끊기는 본문도 아닙니다
 
 ```rust
 // src/agent.rs
-use ag_ui_core::{Event, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext, run};
+use ag_ui::{Event, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Flaky;
@@ -45,7 +45,7 @@ async fn main() {
 
 ## 배리언트
 
-`ag_ui_server::Error`는 이 crate의 모든 메서드가 반환하는 타입입니다. `Result<T, E = Error>`
+`ag_ui::serve::Error`는 이 crate의 모든 메서드가 반환하는 타입입니다. `Result<T, E = Error>`
 별칭을 통해서 말입니다. 각 배리언트에는 `RUN_ERROR` event에 실리는 안정된 code가 있습니다.
 
 | 배리언트 | code | 언제 나오는가 |
@@ -84,10 +84,10 @@ borrow checker는 겹치는 message 두 개를 막아 줍니다. 그것이 볼 �
 있습니다. 세 홉 떨어진 하류가 아니라 버그가 만들어지는 곳인 server에서 돕니다.
 
 ```rust
-use ag_ui_core::{Event, RunAgentInput};
-use ag_ui_server::{Error, RunContext, Rule};
+use ag_ui::{Event, RunAgentInput};
+use ag_ui::serve::{Error, RunContext, Rule};
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     // 시작된 적 없는 message에 대한 content event.
@@ -146,8 +146,8 @@ transport는 client가 연결을 끊거나 마감 시각이 지나면 token을 �
 `?`가 run을 되감습니다.
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext, run};
+use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Chatty;
@@ -203,8 +203,8 @@ async fn main() {
 cancellation이 그 비용을 멈추려는 대상이기 때문입니다.
 
 ```rust
-use ag_ui_core::{RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext};
+use ag_ui::{RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Error, Result, RunContext};
 
 struct Slow;
 
@@ -227,7 +227,7 @@ async fn call_the_model() -> String {
 }
 
 #[tokio::main]
-async fn main() -> ag_ui_server::Result<()> {
+async fn main() -> ag_ui::serve::Result<()> {
     let (ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let answer = ctx.until_cancelled(call_the_model()).await;
@@ -252,7 +252,7 @@ future가 `&self`를 붙잡습니다. run context의 borrow를 품은 future는 
 
 ## 누가 token을 발동시키는가
 
-HTTP에서는 [`ag-ui-axum`](/ag-ui-rust/ko/server/axum/)이 합니다. 응답 본문이 run을 소유합니다.
+HTTP에서는 [`ag_ui::axum`](/ag-ui-rust/ko/server/axum/)이 합니다. 응답 본문이 run을 소유합니다.
 그래서 client가 사라지면 hyper가 본문을 드롭하고 run도 함께 사라집니다.
 
 본문은 guard도 함께 쥐고 있습니다. 드롭될 때 token을 발동시키는 guard입니다. run이 무사히
@@ -264,12 +264,12 @@ runner를 소비하기 전에 말입니다. 그리고 연결이 끝날 때 발�
 
 ## API
 
-- [`ag_ui_server::Error`](/ag-ui-rust/api/ag_ui_server/enum.Error.html)와
-  [`Result`](/ag-ui-rust/api/ag_ui_server/type.Result.html)
-- [`ag_ui_server::Rule`](/ag-ui-rust/api/ag_ui_server/enum.Rule.html)과
-  [`VerificationError`](/ag-ui-rust/api/ag_ui_server/struct.VerificationError.html)
-- [`ag_ui_server::verify`](/ag-ui-rust/api/ag_ui_server/verify/index.html) — 규칙 하나하나를
+- [`ag_ui::serve::Error`](/ag-ui-rust/api/ag_ui/serve/enum.Error.html)와
+  [`Result`](/ag-ui-rust/api/ag_ui/serve/type.Result.html)
+- [`ag_ui::serve::Rule`](/ag-ui-rust/api/ag_ui/serve/enum.Rule.html)과
+  [`VerificationError`](/ag-ui-rust/api/ag_ui/serve/struct.VerificationError.html)
+- [`ag_ui::serve::verify`](/ag-ui-rust/api/ag_ui/serve/verify/index.html) — 규칙 하나하나를
   담은 상태 기계
-- [`ag_ui_server::CancellationToken`](/ag-ui-rust/api/ag_ui_server/struct.CancellationToken.html)과
-  [`Cancelled`](/ag-ui-rust/api/ag_ui_server/struct.Cancelled.html)
+- [`ag_ui::serve::CancellationToken`](/ag-ui-rust/api/ag_ui/serve/struct.CancellationToken.html)과
+  [`Cancelled`](/ag-ui-rust/api/ag_ui/serve/struct.Cancelled.html)
 - `verify`가 무엇을 치르고 무엇을 없애는지는 [feature flag](/ag-ui-rust/ko/reference/features/)

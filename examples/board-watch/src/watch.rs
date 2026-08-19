@@ -8,13 +8,13 @@
 
 use std::io::{self, BufRead, Write};
 
-use ag_ui_client::interrupts::ResumeBuilder;
-use ag_ui_client::transport::Transport;
-use ag_ui_client::{
+use ag_ui::client::interrupts::ResumeBuilder;
+use ag_ui::client::transport::Transport;
+use ag_ui::client::{
     InterruptExt as _, MessageChangeKind, MessageUpdate, ReasoningChangeKind, RunEnd, RunStream,
     Session, Update,
 };
-use ag_ui_core::{Interrupt, Message, MessageId, ResumeEntry, ToolCallId};
+use ag_ui::{Interrupt, Message, MessageId, ResumeEntry, ToolCallId};
 use futures_util::StreamExt as _;
 use serde_json::json;
 
@@ -53,7 +53,7 @@ pub struct Watch {
     /// arrival order is the only nesting there is, so a view that keeps it is
     /// the one that can show it.
     ///
-    /// [session docs]: https://docs.rs/ag-ui-client/latest/ag_ui_client/session/index.html
+    /// [session docs]: https://docs.rs/ag-ui-client/latest/ag_ui::client/session/index.html
     pub in_order: bool,
     /// Stop reading after this many updates and drop the stream — what a user
     /// hitting Ctrl-C does, and the only cancellation a client actually has.

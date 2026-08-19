@@ -5,8 +5,8 @@ description: All 33 event types in the protocol, the Rust variant that carries e
 
 An AG-UI run is a sequence of events. On the wire each is a JSON object with a
 `type` field holding a SCREAMING_SNAKE_CASE name; in Rust each is a variant of
-[`Event`](/ag-ui-rust/api/ag_ui_core/event/enum.Event.html), and
-[`EventType`](/ag-ui-rust/api/ag_ui_core/event/enum.EventType.html) is that
+[`Event`](/ag-ui-rust/api/ag_ui/event/enum.Event.html), and
+[`EventType`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html) is that
 discriminator on its own.
 
 There are **33** of them. That number is
@@ -73,7 +73,7 @@ hatches, 5 lifecycle and 7 reasoning.
 `type` is the tag and the payload is flat beside it:
 
 ```rust
-use ag_ui_core::{Event, EventType};
+use ag_ui::{Event, EventType};
 
 fn main() {
     // Every event type the protocol defines, in upstream order.
@@ -107,7 +107,7 @@ that predate the change — so they are here, and the SDK carries them. The
 originals were retired: `THINKING_TEXT_MESSAGE_CONTENT` carries no message id,
 so a thinking block could only ever have one message in flight.
 
-The Rust variants and payload structs are marked `#[deprecated]`. `ag-ui-core`'s
+The Rust variants and payload structs are marked `#[deprecated]`. `ag-ui`'s
 own event module carries `#![allow(deprecated)]` — it has to name these types in
 the union, in `event_type()` and in the factories, and warning at itself for
 implementing the spec as written helps nobody. The suppression is local to that
@@ -117,7 +117,7 @@ which is where the decision to keep using it is actually being made.
 `Event::is_deprecated` answers the question at runtime, without a match:
 
 ```rust
-use ag_ui_core::Event;
+use ag_ui::Event;
 
 fn main() {
     let event: Event = serde_json::from_str(r#"{"type":"THINKING_END"}"#).unwrap();
@@ -156,10 +156,10 @@ TEXT_MESSAGE_CHUNK { delta: "lo" }
 TEXT_MESSAGE_CHUNK { messageId: "msg-2", delta: "Bye" }   <- msg-1 just ended
 ```
 
-On the consuming side that bookkeeping is `ag_ui_client::chunks`, which expands
+On the consuming side that bookkeeping is `ag_ui::client::chunks`, which expands
 a run of chunks back into the equivalent start/content/end triple before
 anything else sees them. On the emitting side there is deliberately **no
-handle**. The typestate emitters in `ag-ui-server` exist to make sure what you
+handle**. The typestate emitters in `ag_ui::serve` exist to make sure what you
 open gets closed; a chunk has nothing to close, so wrapping one in an RAII
 handle would only add a way to get it wrong. Emit them with `ctx.emit` — the
 supported path, not a gap waiting for an API.
@@ -191,11 +191,11 @@ events, both `ACTIVITY_*` events, all five deprecated `THINKING_*` events, and
 `TOOL_CALL_RESULT`. An agent that reasons, reports activities, or returns a tool
 result — which is most of them — cannot express its stream in that format.
 
-So `ag-ui-core` declines to encode any of it. The `protobuf` feature exists so a
+So `ag-ui` declines to encode any of it. The `protobuf` feature exists so a
 build can negotiate and name the media type; the formatter's `encode` always
 fails with `Error::UnsupportedTransport`. Silently dropping close to half the
 protocol is worse than refusing. Use SSE, which carries all 33. The
-[`encode::protobuf`](/ag-ui-rust/api/ag_ui_core/encode/protobuf/index.html)
+[`encode::protobuf`](/ag-ui-rust/api/ag_ui/encode/protobuf/index.html)
 module lists the covered set as `COVERED_EVENT_TYPES` and offers `is_covered`,
 so a test can assert that a given stream would have survived the binary
 transport.

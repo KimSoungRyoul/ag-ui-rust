@@ -41,7 +41,7 @@ impl ToolDefinition {
     /// `input_schema`, OpenAI nests it under `function.parameters`, and Gemini
     /// wants `parameters` with a restricted subset of JSON Schema. The struct's
     /// own fields are the provider-neutral form; reach for those, or for
-    /// [`ag_ui_core::Tool`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/tool/struct.Tool.html)
+    /// [`ag_ui::Tool`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/tool/struct.Tool.html)
     /// via `From` under the `ag-ui` feature, when the target is anything else.
     pub fn to_anthropic_value(&self) -> Value {
         json!({

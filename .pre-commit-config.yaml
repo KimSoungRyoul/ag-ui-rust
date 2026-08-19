@@ -30,7 +30,7 @@ default_install_hook_types: [pre-commit, pre-push]
 exclude: |
   (?x)^(
       crates/ag-ui-a2ui/tests/(conformance|spec_v0_9)/
-    | crates/ag-ui-core/tests/snapshots/
+    | crates/ag-ui/tests/snapshots/
     | xtask/baseline/events\.json$
   )
 

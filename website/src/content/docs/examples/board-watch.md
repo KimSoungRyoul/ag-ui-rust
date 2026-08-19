@@ -62,8 +62,8 @@ Remembering that id is the first thing the client does, before anything else loo
 stream:
 
 ```rust
-use ag_ui_client::chunks::normalize_all;
-use ag_ui_core::{Event, EventType, MessageId};
+use ag_ui::client::chunks::normalize_all;
+use ag_ui::{Event, EventType, MessageId};
 
 let events = normalize_all([
     Event::text_message_chunk(Some(MessageId::new("msg-1")), Some("Hel".into())),
@@ -102,8 +102,8 @@ it escapes arrive in different events, so anything that parses a fragment on its
 invalid JSON. What the client hands over is the whole thing, which parses:
 
 ```rust
-use ag_ui_client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
-use ag_ui_core::Event;
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::Event;
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -229,7 +229,7 @@ agent's future exited. The session stays usable — the next run is a run like a
 
 ## Streams the protocol forbids
 
-`ag-ui-server` will not emit a malformed stream, which is what it is for. So the fake
+`ag_ui::serve` will not emit a malformed stream, which is what it is for. So the fake
 backend's `/raw` endpoint frames the bytes by hand with `SseFormatter`, the way a producer
 in another language does, and the client's own verifier is what has to catch it:
 

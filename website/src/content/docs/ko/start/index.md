@@ -22,55 +22,51 @@ Rust **1.85 이상**. workspace가 `rust-version = "1.85"`와 `edition = "2024"`
 설정합니다. 그 edition을 아는 첫 compiler가 1.85입니다.
 
 목록은 이것이 전부입니다. protobuf compiler도 code 생성 단계도 없습니다.
-`ag-ui-core`는 `serde`와 `serde_json`에만 의존합니다. 그 위에 쌓이는 crate는
-runtime이 아니라 `futures` primitive를 더합니다. tokio는 `ag-ui-axum`을 쓸 때만
+`ag-ui`는 `serde`와 `serde_json`에만 의존합니다. 그 위에 쌓이는 crate는
+runtime이 아니라 `futures` primitive를 더합니다. tokio는 `ag_ui::axum`을 쓸 때만
 들어옵니다.
 
-Rust 밖으로 나가는 것은 TLS 하나뿐입니다. `ag-ui-client`의 기본 `http` feature가
+Rust 밖으로 나가는 것은 TLS 하나뿐입니다. `ag_ui::client`의 기본 `http` feature가
 `rustls`를 쓰는 `reqwest`를 끌어옵니다. 그 crypto backend가 C를 compile합니다. 그래서
 client build에는 C toolchain이 필요합니다. agent 쪽에는 그런 것이 없습니다.
 
 ## crate 추가하기
 
-:::caution[crates.io에 없습니다]
-이 crate들은 배포되어 있지 않습니다. `cargo add`는 답이 아닙니다. 이름 셋은 crates.io에
-실제로 있습니다. `ag-ui-core`, `ag-ui-server`, `ag-ui-client`인데, 다른 project의
-것입니다. 검색해 볼 생각이라면 알아 두세요. 대신 git 저장소를 의존성으로 지정합니다.
+:::caution[여기서 말하는 `ag-ui`는 community crate가 아닙니다]
+crates.io의 `ag-ui-core`, `ag-ui-server`, `ag-ui-client` 이름은 이전의 무관한 community
+SDK의 것이고 이 project가 아닙니다. 이 project는 `ag-ui` crate 하나, 그리고
+`ag-ui-a2ui`입니다.
 :::
 
-agent라면 crate 셋과 web server 하나입니다:
+crate는 하나이고, protocol의 어느 쪽을 쓸지는 feature로 정합니다. agent라면
+`axum`입니다. `serve`를 함의합니다. 여기에 web server 하나:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
-ag-ui-server = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
-ag-ui-axum = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui = { version = "0.1", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
 
-client라면 우리 것 둘입니다. text 출력 이상을 하는 순간 `Tool`, `Message`, `Event`
-같은 type 이름을 쓰게 됩니다. `ag-ui-core`가 들어 있는 이유입니다:
+client라면 `http`입니다:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
-ag-ui-client = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui = { version = "0.1", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-`ag-ui-client`의 `http` feature는 기본으로 켜져 있습니다. `reqwest` transport를 함께
-가져오는 것이 이 feature입니다. 끄면 crate가 executor를 가리지 않습니다. 아래에 직접
-만든 transport를 두고 `wasm32-unknown-unknown`으로 build됩니다.
+`Tool`, `Message`, `Event` 같은 protocol type은 어느 쪽이든 crate root에 있습니다.
+text 출력 이상을 하는 순간 바로 쓰게 됩니다.
 
-`rev` 없는 git 의존성은 기본 branch를 따라갑니다. 한번 해 보는 동안은 괜찮습니다.
-기대고 있는 곳에 쓸 모습은 아닙니다. 아직 release tag가 없습니다. 중요해지면
-`rev = "<sha>"`로 commit을 고정하세요.
+`reqwest` transport를 함께 가져오는 것이 `http`입니다. 대신 `client`를 켜면 crate가
+executor를 가리지 않습니다. 아래에 직접 만든 transport를 두고
+`wasm32-unknown-unknown`으로 build됩니다.
 
-어느 crate가 무엇을 하는지, 왜 다섯인지는
+어느 feature가 무엇을 하는지, 그리고 왜 crate 다섯이 아니라 하나인지는
 [crate 구성](/ag-ui-rust/ko/start/crates/)에 있습니다.
 
 ## 첫 agent
@@ -80,9 +76,9 @@ event를 emit하고, run이 어떻게 끝났는지를 반환합니다.
 
 ```rust,no_run
 // src/main.rs
-use ag_ui_axum::RouterExt;
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::axum::RouterExt;
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use axum::Router;
 
 struct Greeter;
@@ -167,14 +163,14 @@ framing을 제대로 다룹니다.
 
 ## port 없이, 같은 run
 
-`ag-ui-axum`은 wrapper입니다. 그 아래에서 `ag_ui_server::run`이 agent를 event
+`ag_ui::axum`은 wrapper입니다. 그 아래에서 `ag_ui::serve::run`이 agent를 event
 `Stream`으로 바꿉니다. 그 event가 누구에게 어떻게 닿는지에는 관여하지 않습니다. 그래서
 agent를 순수한 stream으로 test할 수 있습니다. server도 port도 client도 없이:
 
 ```rust
 // tests/greeter.rs
-use ag_ui_core::{Event, EventStreamFormatter, EventType, RunAgentInput, RunOutcome, SseFormatter};
-use ag_ui_server::{Agent, Result, RunContext, run};
+use ag_ui::{Event, EventStreamFormatter, EventType, RunAgentInput, RunOutcome, SseFormatter};
+use ag_ui::serve::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Greeter;
@@ -234,7 +230,7 @@ message와 state입니다. delta stream을 도로 그 안으로 접어 넣습니
 // src/main.rs
 use std::io::Write;
 
-use ag_ui_client::{MessageChangeKind, RunEnd, Session, Update, transport::HttpTransport};
+use ag_ui::client::{MessageChangeKind, RunEnd, Session, Update, transport::HttpTransport};
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -281,7 +277,7 @@ drop하는 것이 곧 취소입니다. byte를 끌어오는 일이 stream을 pol
 
 - [AG-UI 동작 방식](/ag-ui-rust/ko/start/protocol/) — wire. request body, run
   lifecycle, event 계열, SSE framing.
-- [crate 구성](/ag-ui-rust/ko/start/crates/) — 다섯 crate가 각각 무엇을 위한 것이고
+- [crate 구성](/ag-ui-rust/ko/start/crates/) — crate 둘과 그 feature가 각각 무엇을 위한 것이고
   어떤 일에 어느 것이 필요한지.
 - [Agent trait](/ag-ui-rust/ko/server/agent/) — server 쪽 전부. tool call, shared
   state, human in the loop, error와 cancellation.
@@ -290,4 +286,4 @@ drop하는 것이 곧 취소입니다. byte를 끌어오는 일이 stream을 pol
 - [task-board](/ag-ui-rust/ko/examples/task-board/)와
   [board-watch](/ag-ui-rust/ko/examples/board-watch/) — 실제 port로 서로 대화하는
   agent와 client를 담은 예제 둘.
-- [API 문서](/ag-ui-rust/api/ag_ui_core/index.html) — 모든 crate의 rustdoc.
+- [API 문서](/ag-ui-rust/api/ag_ui/index.html) — 모든 crate의 rustdoc.

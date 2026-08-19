@@ -1,6 +1,6 @@
 ---
 name: ag-ui-rust-client
-description: "MUST USE when writing Rust against ag-ui-rust to consume an agent — the crates ag-ui-client and ag-ui-core (AG-UI protocol client: sessions, the update stream, transports, rendering a run). UNCONVENTIONAL, and wrong from memory: the crates are NOT on crates.io (those registry names belong to an unrelated community SDK), so a dependency line names the git repository. Session::send returns a RunStream that borrows the session mutably — drop it before reading session.messages(); Session<T, S> carries the transport bound on the CONSTRUCTOR, not the type; Update is #[non_exhaustive] but RunEnd is EXHAUSTIVE with exactly three variants (Success, Interrupted, Failed) and wants no `_` arm; Update::Error is NOT terminal and a run can both complain and succeed; an unrecognised event type ends the run rather than being skipped; interrupts must all be answered in ONE request or the resume never terminates; tools travel from the client on every request because AG-UI has no tool discovery. Covers HttpTransport (connect_timeout vs timeout), ReplayTransport for tests, writing a Transport in one method, typed state, and rendering in arrival order. Triggers on: ag-ui-rust client, ag_ui_client, Session::send, RunStream, Update::Message, MessageChangeKind, RunEnd, HttpTransport, ReplayTransport, RemoteAgent, consume an AG-UI agent from Rust, AG-UI TUI or frontend in Rust."
+description: "MUST USE when writing Rust against ag-ui-rust to consume an agent — the crate ag-ui with its `http` or `client` feature (AG-UI protocol client: sessions, the update stream, transports, rendering a run). UNCONVENTIONAL, and wrong from memory: this is ONE crate named ag-ui, not ag-ui-client / ag-ui-core — those registry names belong to an unrelated community SDK — and the client lives under ag_ui::client behind a feature. Session::send returns a RunStream that borrows the session mutably — drop it before reading session.messages(); Session<T, S> carries the transport bound on the CONSTRUCTOR, not the type; Update is #[non_exhaustive] but RunEnd is EXHAUSTIVE with exactly three variants (Success, Interrupted, Failed) and wants no `_` arm; Update::Error is NOT terminal and a run can both complain and succeed; an unrecognised event type ends the run rather than being skipped; interrupts must all be answered in ONE request or the resume never terminates; tools travel from the client on every request because AG-UI has no tool discovery. Covers HttpTransport (connect_timeout vs timeout), ReplayTransport for tests, writing a Transport in one method, typed state, and rendering in arrival order. Triggers on: ag-ui-rust client, ag_ui::client, Session::send, RunStream, Update::Message, MessageChangeKind, RunEnd, HttpTransport, ReplayTransport, RemoteAgent, consume an AG-UI agent from Rust, AG-UI TUI or frontend in Rust."
 ---
 
 # Consuming an AG-UI agent from Rust
@@ -11,18 +11,18 @@ right and the skill is stale — see `ag-ui-rust-update`.
 
 ## Adding the crates
 
-**Not on crates.io.** `cargo add ag-ui-client` installs a different, unrelated project.
+**One crate, `ag-ui`.** Not `ag-ui-client` / `ag-ui-core` — those names on crates.io are a
+different, unrelated project. Which half of the protocol you get is a feature:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui-core = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
-ag-ui-client = { git = "https://github.com/KimSoungRyoul/ag-ui-rust" }
+ag-ui = { version = "0.1", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-`http` is on by default and brings `reqwest`. Turn it off and the crate is executor-agnostic,
+`http` brings `reqwest`. Ask for `client` instead and the crate is executor-agnostic,
 builds for `wasm32-unknown-unknown`, and you bring your own `Transport`.
 
 ## A session
@@ -32,8 +32,8 @@ Below it, `RemoteAgent` hands you events unassembled — the level for a proxy o
 
 ```rust
 // src/main.rs
-use ag_ui_client::{RunEnd, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, TextMessageRole};
+use ag_ui::client::{RunEnd, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, TextMessageRole};
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -69,10 +69,10 @@ async fn main() {
 Against a real agent only the transport changes:
 
 ```rust,no_run
-use ag_ui_client::{Session, transport::HttpTransport};
+use ag_ui::client::{Session, transport::HttpTransport};
 use std::time::Duration;
 
-fn open() -> Result<(), ag_ui_client::Error> {
+fn open() -> Result<(), ag_ui::client::Error> {
     let transport = HttpTransport::builder("http://localhost:3000/agent")
         .header("authorization", "Bearer …")
         // Bounds connection setup only. `timeout` bounds the WHOLE run and will
@@ -108,14 +108,14 @@ One `Update` is one redraw. It is per **event**, not per entity: forty deltas ar
 | `State(S)` | the state, in your type, by value. Snapshot and patch arrive identically |
 | `Reasoning(..)` | reasoning text, kept out of the transcript |
 | `Interrupt(Interrupt)` | the run paused; one update per pending interrupt |
-| `Error(ag_ui_client::Error)` | **not terminal** — print it and keep going |
+| `Error(ag_ui::client::Error)` | **not terminal** — print it and keep going |
 | `Done(RunEnd)` | always the last update of a run, on every path out |
 
 `Update` is `#[non_exhaustive]` (a view model). `RunEnd` is **exhaustive** — write three arms
 and no `_`, because this is the match that decides whether the input goes live again:
 
 ```rust
-use ag_ui_client::RunEnd;
+use ag_ui::client::RunEnd;
 
 fn prompt_again(end: &RunEnd) -> bool {
     match end {
@@ -144,8 +144,8 @@ three quarters of a conversation. What arrived before it is still in `session.me
 ## Answering a pause
 
 ```rust
-use ag_ui_client::interrupts::ResumeBuilder;
-use ag_ui_core::{Interrupt, ResumeStatus};
+use ag_ui::client::interrupts::ResumeBuilder;
+use ag_ui::{Interrupt, ResumeStatus};
 use serde_json::json;
 
 fn main() {
@@ -211,9 +211,9 @@ already handles for you (chunk events, unterminated messages, malformed streams)
 One method, and the returned future must not borrow `self`:
 
 ```rust
-use ag_ui_client::transport::{EventStream, Transport, TransportFuture};
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::{Event, RunAgentInput, TextMessageRole};
+use ag_ui::client::transport::{EventStream, Transport, TransportFuture};
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::{Event, RunAgentInput, TextMessageRole};
 use futures_util::StreamExt;
 
 struct StaticTransport {
@@ -288,5 +288,5 @@ The session stays usable afterwards.
   [Transports](https://kimsoungryoul.github.io/ag-ui-rust/client/transports/)
 - [board-watch](https://kimsoungryoul.github.io/ag-ui-rust/examples/board-watch/) — a terminal
   client for any AG-UI agent, with both renderings
-- rustdoc: <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_client/index.html>
+- rustdoc: <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/client/index.html>
 - The agent half is the `ag-ui-rust-server` skill.

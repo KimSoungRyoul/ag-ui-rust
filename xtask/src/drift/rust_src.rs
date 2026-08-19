@@ -1,7 +1,7 @@
-//! Extracts the event surface from `crates/ag-ui-core/src/event/**/*.rs`.
+//! Extracts the event surface from `crates/ag-ui/src/event/**/*.rs`.
 //!
 //! Deliberately a text scanner, not a compiler: `drift-check` has to keep
-//! working while `ag-ui-core` is mid-refactor and does not build. It reads
+//! working while `ag-ui` is mid-refactor and does not build. It reads
 //! whichever of the two shapes the crate uses (or both at once):
 //!
 //! * a `#[serde(tag = "type")]` enum, where the wire tag is either an explicit

@@ -1,6 +1,6 @@
 ---
 name: ag-ui-rust-update
-description: "Use when the ag-ui-rust SKILLS themselves need refreshing — not the SDK, not the user's project. The skills carry the workspace version they were written against, so they go stale silently when the SDK moves: a name that no longer exists, an API that changed shape, an example that no longer compiles. Triggers on: 'update ag-ui-rust skills', 'refresh skills', 'skills are stale/outdated', 'wrong API name', 'that method does not exist on RunContext', 'no such function in ag_ui_client', 'ag-ui-rust skill seems old', 'reinstall skills', a compile error that contradicts what the skill said."
+description: "Use when the ag-ui-rust SKILLS themselves need refreshing — not the SDK, not the user's project. The skills carry the workspace version they were written against, so they go stale silently when the SDK moves: a name that no longer exists, an API that changed shape, an example that no longer compiles. Triggers on: 'update ag-ui-rust skills', 'refresh skills', 'skills are stale/outdated', 'wrong API name', 'that method does not exist on RunContext', 'no such function in ag_ui::client', 'ag-ui-rust skill seems old', 'reinstall skills', a compile error that contradicts what the skill said."
 ---
 
 # Refreshing the ag-ui-rust skills
@@ -12,7 +12,7 @@ were written against. When the SDK has moved past it, refresh before trusting th
 
 ```sh
 # What the project actually depends on.
-cargo tree -p ag-ui-server --depth 0
+cargo tree -p ag-ui --depth 0
 grep -n 'ag-ui-' Cargo.toml
 ```
 

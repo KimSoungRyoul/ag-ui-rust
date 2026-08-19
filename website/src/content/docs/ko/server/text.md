@@ -7,17 +7,17 @@ assistant message는 wire에서 세 종류의 event입니다. `TEXT_MESSAGE_STAR
 `TEXT_MESSAGE_CONTENT`, 그리고 `TEXT_MESSAGE_END`. 셋 다 같은 message id를 싣습니다.
 
 agent에게 날것의 emit 호출 세 개를 쥐여 준다고 해 봅시다. 조기 반환을 포함한 모든 경로에서
-자기가 연 것을 순서대로 닫으리라 믿어야 합니다. `ag-ui-server`는 대신 RAII handle을 줍니다.
+자기가 연 것을 순서대로 닫으리라 믿어야 합니다. `ag_ui::serve`는 대신 RAII handle을 줍니다.
 
 ## message를 한 번에 보내기
 
 텍스트가 이미 손에 있다면 `say`가 셋을 모두 emit합니다.
 
 ```rust
-use ag_ui_core::{Event, RunAgentInput, TextMessageRole};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, RunAgentInput, TextMessageRole};
+use ag_ui::serve::RunContext;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     // `RunContext::new`는 단위 테스트용 harness입니다. context와 event
     // stream의 수신 쪽을 줍니다. agent 안에서는 이것이 그냥 `ctx`입니다.
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
@@ -48,10 +48,10 @@ protocol은 불투명한 문자열만 요구합니다. 이 crate는 `uuid` 의�
 덧붙이고, `end`는 닫습니다.
 
 ```rust
-use ag_ui_core::{Event, RunAgentInput, TextMessageRole};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, RunAgentInput, TextMessageRole};
+use ag_ui::serve::RunContext;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let mut message = ctx.assistant_message()?;
@@ -87,17 +87,17 @@ model stream이 그대로 얹히는 모양이 이것입니다. provider가 주�
 중간에 `?`로 조기 반환했든, stream은 여전히 온전합니다.
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::{Error, RunContext};
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::{Error, RunContext};
 
-fn write_it(ctx: &mut RunContext<()>) -> ag_ui_server::Result<()> {
+fn write_it(ctx: &mut RunContext<()>) -> ag_ui::serve::Result<()> {
     let mut message = ctx.assistant_message()?;
     message.delta("Looking that up")?;
     // message는 아직 열려 있는데 여기서 반환합니다.
     Err(Error::agent("the weather service is down"))
 }
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
     assert!(write_it(&mut ctx).is_err());
 
@@ -142,7 +142,7 @@ handle은 살아 있는 동안 run context를 가변으로 빌립니다. 그래�
 아닙니다.
 
 ```rust,compile_fail
-use ag_ui_server::RunContext;
+use ag_ui::serve::RunContext;
 
 fn interleave(ctx: &mut RunContext<()>) {
     let mut first = ctx.assistant_message().unwrap();
@@ -154,7 +154,7 @@ fn interleave(ctx: &mut RunContext<()>) {
 ```
 
 저 블록은 `compile_fail`입니다. 언젠가 컴파일되기 시작하면 이 페이지의 빌드가 깨집니다. 같은
-예제가 `crates/ag-ui-server/src/emit/mod.rs`에 `compile_fail,E0499` doctest로 있습니다. 그것이
+예제가 `crates/ag-ui/src/serve/emit/mod.rs`에 `compile_fail,E0499` doctest로 있습니다. 그것이
 이 보장이 아직 살아 있다는 실행 가능한 증거입니다. emitter API를 느슨하게 만들면 그 테스트가
 빨개집니다.
 
@@ -171,8 +171,8 @@ borrow가 금지하는 것은 두 번째 *블록*이지 작업이 아닙니다. 
 닿습니다.
 
 ```rust
-use ag_ui_core::RunAgentInput;
-use ag_ui_server::RunContext;
+use ag_ui::RunAgentInput;
+use ag_ui::serve::RunContext;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Serialize, Deserialize)]
@@ -180,7 +180,7 @@ struct Progress {
     words: u32,
 }
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<Progress>::new(RunAgentInput::new("t", "r"))?;
 
     let mut message = ctx.assistant_message()?;
@@ -220,10 +220,10 @@ REASONING_END            ← end() 또는 Drop 시
 ```
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::RunContext;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     // `say`처럼 한 번에 끝내는 형태.
@@ -254,10 +254,10 @@ model이 일관성을 유지하려면 다음 요청에 서명을 그대로 다�
 crate도 chunk용 handle을 주지 않습니다. 필요하면 `ctx.emit`으로 emit하십시오.
 
 ```rust
-use ag_ui_core::{Event, MessageId, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, MessageId, RunAgentInput};
+use ag_ui::serve::RunContext;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     ctx.emit(Event::text_message_chunk(
@@ -275,10 +275,10 @@ verifier는 chunk가 자기완결적이라는 것을 압니다. 그래서 시작
 
 ## API
 
-- [`RunContext::say`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.say),
-  [`assistant_message`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.assistant_message),
-  [`message_with_id`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.message_with_id)
-- [`ag_ui_server::MessageHandle`](/ag-ui-rust/api/ag_ui_server/struct.MessageHandle.html)
-- [`ag_ui_server::ReasoningHandle`](/ag-ui-rust/api/ag_ui_server/struct.ReasoningHandle.html)
-- [`ag_ui_server::emit`](/ag-ui-rust/api/ag_ui_server/emit/index.html) — typestate 설계를
+- [`RunContext::say`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.say),
+  [`assistant_message`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.assistant_message),
+  [`message_with_id`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.message_with_id)
+- [`ag_ui::serve::MessageHandle`](/ag-ui-rust/api/ag_ui/serve/struct.MessageHandle.html)
+- [`ag_ui::serve::ReasoningHandle`](/ag-ui-rust/api/ag_ui/serve/struct.ReasoningHandle.html)
+- [`ag_ui::serve::emit`](/ag-ui-rust/api/ag_ui/serve/emit/index.html) — typestate 설계를
   설명하는 모듈

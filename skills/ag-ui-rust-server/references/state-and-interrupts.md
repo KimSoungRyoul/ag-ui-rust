@@ -10,8 +10,8 @@ is pending. The connection closes, nothing is held open, and the next request is
 request in the same thread that happens to carry answers.
 
 ```rust
-use ag_ui_core::{Event, Interrupt, ResumeEntry, ResumeStatus, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext, run};
+use ag_ui::{Event, Interrupt, ResumeEntry, ResumeStatus, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
@@ -88,8 +88,8 @@ The paused run is gone — its future was dropped when the stream ended. Only th
 what is still outstanding and report all of it:
 
 ```rust
-use ag_ui_core::{Interrupt, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::{Interrupt, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext};
 
 struct Planner;
 
@@ -120,7 +120,7 @@ validates before emitting, so it becomes a `RUN_ERROR` with the `PROTOCOL` code.
 
 ## Errors
 
-`ag_ui_server::Error` is what every method returns, through `Result<T, E = Error>`. Each
+`ag_ui::serve::Error` is what every method returns, through `Result<T, E = Error>`. Each
 variant has a stable code that lands on `RUN_ERROR`:
 
 | Variant | Code | Raised when |
@@ -143,10 +143,10 @@ On by default, on the server, in release builds too — the `verify` feature com
 zero-sized type. It catches what the borrow checker cannot see, which is `ctx.emit`:
 
 ```rust
-use ag_ui_core::{Event, RunAgentInput};
-use ag_ui_server::{Error, RunContext, Rule};
+use ag_ui::{Event, RunAgentInput};
+use ag_ui::serve::{Error, RunContext, Rule};
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let error = ctx
@@ -166,7 +166,7 @@ mid-message could not have closed it.
 
 ## Cancellation
 
-`ag_ui_server::CancellationToken` — deliberately not `tokio_util`'s, because these crates
+`ag_ui::serve::CancellationToken` — deliberately not `tokio_util`'s, because these crates
 build for wasm. A transport trips it when the client hangs up, and **every emit after
 cancellation fails**, so the next `?` unwinds the run without any cooperation from the agent.
 
@@ -175,8 +175,8 @@ and `until_cancelled(f)` — the one that matters, because an in-flight model re
 cancellation is meant to stop paying for:
 
 ```rust
-use ag_ui_core::{RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext};
+use ag_ui::{RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Error, Result, RunContext};
 
 struct Slow;
 
@@ -198,7 +198,7 @@ async fn call_the_model() -> String {
 }
 
 #[tokio::main]
-async fn main() -> ag_ui_server::Result<()> {
+async fn main() -> ag_ui::serve::Result<()> {
     let (ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
     assert_eq!(
         ctx.until_cancelled(call_the_model()).await.as_deref(),
@@ -208,7 +208,7 @@ async fn main() -> ag_ui_server::Result<()> {
 }
 ```
 
-Over HTTP `ag-ui-axum` trips the token: the response body owns the run, and a guard on the
+Over HTTP `ag_ui::axum` trips the token: the response body owns the run, and a guard on the
 body disarms itself if the run finished. Writing your own transport, take the token from
 `Runner::cancellation_token()` *before* `run` consumes the runner.
 

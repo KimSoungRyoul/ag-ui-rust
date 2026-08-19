@@ -7,11 +7,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-ag-ui-core.workspace = true
-ag-ui-server.workspace = true
-ag-ui-client = { workspace = true, features = ["http"] }
+# Both halves of the protocol in one dependency: these tests exist to run the
+# server against the client, so this is the one crate in the workspace that
+# genuinely wants every feature on at once.
+ag-ui = { workspace = true, features = ["serve", "client", "http", "axum"] }
 ag-ui-a2ui.workspace = true
-ag-ui-axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures-util.workspace = true

@@ -42,8 +42,8 @@
 #![cfg_attr(
     feature = "ag-ui",
     doc = "- [`agui`] (feature `ag-ui`) — the glue for an agent hosted on AG-UI:",
-    doc = "  history entries from [`ag_ui_core::Message`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/message/enum.Message.html), toolkit tool definitions as",
-    doc = "  offerable [`ag_ui_core::Tool`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/tool/struct.Tool.html)s."
+    doc = "  history entries from [`ag_ui::Message`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/message/enum.Message.html), toolkit tool definitions as",
+    doc = "  offerable [`ag_ui::Tool`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/tool/struct.Tool.html)s."
 )]
 //!
 //! # Transport
@@ -100,7 +100,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
-// See `ag_ui_core`'s lib.rs: marks feature-gated items in the rendered docs.
+// See `ag_ui`'s lib.rs: marks feature-gated items in the rendered docs.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 // `readme = "README.md"` in Cargo.toml makes that file the crate's front page

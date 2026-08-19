@@ -19,8 +19,8 @@ AG-UI는 run이 *멈출* 수 있게 해서 이를 표현합니다. agent가 `Suc
 
 ```rust
 // src/agent.rs
-use ag_ui_core::{Event, Interrupt, ResumeEntry, ResumeStatus, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext, run};
+use ag_ui::{Event, Interrupt, ResumeEntry, ResumeStatus, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
@@ -122,7 +122,7 @@ async fn main() {
 답이 예/아니오 이상이라면 `response_schema`를 채워 둘 값어치가 있습니다.
 
 ```rust
-use ag_ui_core::{Interrupt, JsonObject};
+use ag_ui::{Interrupt, JsonObject};
 use serde_json::json;
 
 fn confirm_clear(count: usize) -> Interrupt {
@@ -169,11 +169,11 @@ fn main() {
 도착합니다.
 
 ```rust
-use ag_ui_core::{ResumeEntry, ResumeStatus, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{ResumeEntry, ResumeStatus, RunAgentInput};
+use ag_ui::serve::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let mut input = RunAgentInput::new("t", "r");
     input.resume = Some(vec![
         ResumeEntry::resolved("approve-deploy", json!({"build": 42})),
@@ -213,8 +213,8 @@ fn main() -> ag_ui_server::Result<()> {
 client는 그것들에 한꺼번에 답해야 합니다.
 
 ```rust
-use ag_ui_core::{Interrupt, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::{Interrupt, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext};
 
 const BUDGET: &str = "approve-budget";
 const DATE: &str = "confirm-date";
@@ -252,7 +252,7 @@ emit 전에 outcome을 검사합니다. 그래서 빈 interrupt 목록은 `RUN_F
 code를 단 `RUN_ERROR`가 됩니다. client가 아무것도 할 수 없는 `RUN_FINISHED` 대신 말입니다.
 
 ```rust
-use ag_ui_core::RunOutcome;
+use ag_ui::RunOutcome;
 
 fn main() {
     assert!(RunOutcome::Success.validate().is_ok());
@@ -266,9 +266,9 @@ fn main() {
 
 ## API
 
-- [`ag_ui_core::RunOutcome`](/ag-ui-rust/api/ag_ui_core/enum.RunOutcome.html)
-- [`ag_ui_core::Interrupt`](/ag-ui-rust/api/ag_ui_core/struct.Interrupt.html)
-- [`ag_ui_core::ResumeEntry`](/ag-ui-rust/api/ag_ui_core/struct.ResumeEntry.html)와
-  [`ResumeStatus`](/ag-ui-rust/api/ag_ui_core/enum.ResumeStatus.html)
-- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.resume_for)
+- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/enum.RunOutcome.html)
+- [`ag_ui::Interrupt`](/ag-ui-rust/api/ag_ui/struct.Interrupt.html)
+- [`ag_ui::ResumeEntry`](/ag-ui-rust/api/ag_ui/struct.ResumeEntry.html)와
+  [`ResumeStatus`](/ag-ui-rust/api/ag_ui/enum.ResumeStatus.html)
+- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.resume_for)
 - 이 왕복의 client 쪽 절반: [update stream](/ag-ui-rust/ko/client/updates/)

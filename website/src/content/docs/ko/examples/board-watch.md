@@ -63,8 +63,8 @@ event 다섯, message 하나입니다:
 전입니다:
 
 ```rust
-use ag_ui_client::chunks::normalize_all;
-use ag_ui_core::{Event, EventType, MessageId};
+use ag_ui::client::chunks::normalize_all;
+use ag_ui::{Event, EventType, MessageId};
 
 let events = normalize_all([
     Event::text_message_chunk(Some(MessageId::new("msg-1")), Some("Hel".into())),
@@ -103,8 +103,8 @@ escape하는 `n`이 서로 다른 event로 옵니다. fragment 하나만 따로 
 봅니다. client가 건네는 것은 전체이고, 그것은 parse됩니다:
 
 ```rust
-use ag_ui_client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
-use ag_ui_core::Event;
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::Event;
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -234,7 +234,7 @@ integration test는 agent의 future가 빠져나온 시점에 그 run의 cancell
 
 ## protocol이 금지하는 stream
 
-`ag-ui-server`는 잘못된 stream을 emit하지 않습니다. 그것이 그 crate의 존재 이유입니다.
+`ag_ui::serve`는 잘못된 stream을 emit하지 않습니다. 그것이 그 crate의 존재 이유입니다.
 그래서 가짜 backend의 `/raw` endpoint는 다른 언어로 짠 producer가 그러듯
 `SseFormatter`로 byte를 손수 감쌉니다. 그것을 잡아야 하는 것은 client 자신의
 verifier입니다:

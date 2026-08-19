@@ -4,7 +4,7 @@
 
 	`cargo doc --workspace` writes one directory per crate and no top-level
 	index.html — verified against this workspace: `target/doc/` came back with
-	ag_ui_core/, ag_ui_server/ and friends, plus crates.js and static.files/, and
+	ag_ui/, ag_ui::serve/ and friends, plus crates.js and static.files/, and
 	nothing to open. rustdoc only emits a root index.html when it documents a
 	single crate. Without this file /ag-ui-rust/api/ is a 404 and the sidebar's
 	"API docs (rustdoc)" entry points at nothing.
@@ -21,18 +21,19 @@
 	footnote after the list links them rather than leaving them reachable but
 	unacknowledged: two are the example programs the guide sends people to read,
 	and a search engine will land someone on /api/xtask/ regardless of what this
-	page admits to. It is a footnote and should stay one — the five crates above
+	page admits to. It is a footnote and should stay one — the two crates above
 	are what a reader came here for.
 
-	Do not call those five "published", which an earlier version of this page did
-	in three places. They are this SDK's public API surface, and that is the only
-	distinction this page should draw. The `ag-ui-*` names on crates.io are not
-	ours: `ag-ui-core` there is the stalled community SDK docs/DESIGN.md opens by
-	taking apart — 24 event variants against a spec with 32, no `REASONING_*` at
-	all — so a reader who believes "published" and runs `cargo add ag-ui-core`
-	installs that instead of this, sent there by our own API index. Say nothing
-	about crates.io in either direction; publishing is on hold by a deliberate
-	decision, and a promise about it is not this page's to make.
+	Two, not five: `serve`, `client` and `axum` were crates and are now features
+	of `ag-ui`, so they are modules in that one rustdoc tree rather than trees of
+	their own. Do not add `ag_ui::serve/index.html` links here — that is not a
+	path, and the module pages live under ag_ui/.
+
+	`ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are the stalled
+	community SDK docs/DESIGN.md opens by taking apart — 24 event variants
+	against the 32 the spec had then (33 today), no `REASONING_*` at all. They
+	are not this project, so do not link them and do not name them as install
+	lines; `ag-ui` is the one to reach for.
 -->
 <html lang="en">
 	<head>
@@ -138,35 +139,13 @@
 
 		<ul>
 			<li>
-				<a href="ag_ui_core/index.html">
-					<code>ag-ui-core</code>
-					<p>Core protocol types, events, and wire encoding for the AG-UI protocol.</p>
-				</a>
-			</li>
-			<li>
-				<a href="ag_ui_server/index.html">
-					<code>ag-ui-server</code>
+				<a href="ag_ui/index.html">
+					<code>ag-ui</code>
 					<p>
-						Server-side runtime for hosting AG-UI agents: agent trait, typestate event
-						emitters, state deltas, and protocol verification. Executor-agnostic.
-					</p>
-				</a>
-			</li>
-			<li>
-				<a href="ag_ui_client/index.html">
-					<code>ag-ui-client</code>
-					<p>
-						Client-side AG-UI runtime: consume a remote agent's event stream and
-						materialize messages and state.
-					</p>
-				</a>
-			</li>
-			<li>
-				<a href="ag_ui_axum/index.html">
-					<code>ag-ui-axum</code>
-					<p>
-						Axum binding for AG-UI agents: one router extension mounts the canonical
-						POST + SSE endpoint.
+						Protocol types, events, and wire encoding, plus the runtimes behind
+						features: <code>serve</code> to host an agent, <code>client</code> and
+						<code>http</code> to consume one, <code>axum</code> to mount one on a
+						router.
 					</p>
 				</a>
 			</li>

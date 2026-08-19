@@ -17,12 +17,12 @@ description: event stream을 올바른 형태로 지키는 세 layer. typestate 
 
 ## Layer 1: borrow checker
 
-`ag-ui-server`의 emitter는 typestate handle입니다. `ctx.assistant_message()`는
+`ag_ui::serve`의 emitter는 typestate handle입니다. `ctx.assistant_message()`는
 run context를 mutable로 빌리는 handle을 돌려줍니다. 그래서 겹치는 두 번째 block은
 compile되지 않습니다.
 
 ```rust,compile_fail,E0499
-use ag_ui_server::RunContext;
+use ag_ui::serve::RunContext;
 
 fn interleave(ctx: &mut RunContext<()>) {
     let mut first = ctx.assistant_message().unwrap();
@@ -34,7 +34,7 @@ fn interleave(ctx: &mut RunContext<()>) {
 ```
 
 저 block은 `compile_fail`입니다. 언젠가 compile되기 시작하면 이 페이지가
-빨개집니다. 같은 예제가 `crates/ag-ui-server/src/emit/mod.rs`에도 있습니다.
+빨개집니다. 같은 예제가 `crates/ag-ui/src/serve/emit/mod.rs`에도 있습니다.
 [설계 원칙](/ag-ui-rust/ko/design/commitments/)이 대표 기능으로 내세우는 보증에
 대한, 유일한 실행 가능한 증명이 그것입니다. emitter API를 느슨하게 만들면 그
 doctest는 초록이 됩니다. 그것이 곧 실패입니다.
@@ -66,13 +66,13 @@ agent는 아무도 열지 않은 message에 `TEXT_MESSAGE_CONTENT`를 emit할 �
 
 ### server에서
 
-`ag-ui-server`는 나가는 모든 event에 ordering state machine을 돌립니다. transport가
+`ag_ui::serve`는 나가는 모든 event에 ordering state machine을 돌립니다. transport가
 그것을 보기 전에 돕니다. 규칙을 어기는 emit은 `Err`를 돌려줍니다. 그래서 agent의
 다음 `?`가 run을 풀어냅니다. 실패는 규칙 이름을 담은 `RUN_ERROR`로 보고됩니다.
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::{Error, Rule, RunContext};
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::{Error, Rule, RunContext};
 
 fn main() {
     let (mut ctx, _events) =
@@ -91,7 +91,7 @@ fn main() {
 }
 ```
 
-[`Rule`](/ag-ui-rust/api/ag_ui_server/error/enum.Rule.html)은 이 machine이 검사하는
+[`Rule`](/ag-ui-rust/api/ag_ui/serve/error/enum.Rule.html)은 이 machine이 검사하는
 것의 닫힌 목록입니다.
 
 | Rule | 거부되는 것 |
@@ -108,7 +108,7 @@ fn main() {
 닫았을 리 없습니다.
 
 거부는 하나하나가
-[`VerificationError`](/ag-ui-rust/api/ag_ui_server/error/struct.VerificationError.html)입니다.
+[`VerificationError`](/ag-ui-rust/api/ag_ui/serve/error/struct.VerificationError.html)입니다.
 문제가 된 event type과 규칙, 그리고 detail 문자열을 담습니다. 실제로 열린 message가
 `msg-1`인데 `msg-2`에 content를 emit하면, `Display`는 이렇게 읽힙니다.
 
@@ -133,13 +133,14 @@ id가 자기 자신과 겹칠 수 없다는 것입니다.
 `HashSet` 몇 개, event당 조회 한 번입니다. release build에서도 기본으로 켜져
 있습니다. 사용자에게 닿는 protocol bug 옆에 두면 그 값은 고민할 거리가 아닙니다.
 
-측정해 보고 그 조회를 되찾고 싶다면 `ag-ui-server`의 `verify` feature를 끄십시오.
-state machine 전체가 크기 0인 type으로 바뀝니다. 그 type의 `observe`는 inline된
-`Ok(())`입니다.
+측정해 보고 그 조회를 되찾고 싶다면 `verify` feature를 끄십시오. state machine
+전체가 크기 0인 type으로 바뀝니다. 그 type의 `observe`는 inline된 `Ok(())`입니다.
+`verify`가 `serve`에 함의되지 않고 crate의 default 집합에 있는 이유가 이것입니다.
+다른 feature가 끌어온 집합에서 feature 하나를 빼낼 수는 없습니다.
 
 ```toml
 [dependencies]
-ag-ui-server = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", default-features = false }
+ag-ui = { version = "0.1", default-features = false, features = ["serve", "sse"] }
 ```
 
 그 스위치를 넘어 살아남는 것이 하나 있습니다. 종료 event가 이미 나갔는지는
@@ -148,7 +149,7 @@ verifier뿐 아니라 event sink에서도 추적합니다. 그래서 verificatio
 
 ### client에서
 
-`ag-ui-client`도 검증합니다. 이유는 다릅니다. event가 남의 process에서
+`ag_ui::client`도 검증합니다. 이유는 다릅니다. event가 남의 process에서
 도착합니다. 규칙을 어기는 stream은 혼란스러운 UI가 아니라 분명한 error 하나를 내야
 합니다. TypeScript SDK가 verifier를 두는 자리가 여기입니다. consumer 입장에서는
 옳은 직관입니다.
@@ -167,8 +168,8 @@ verifier뿐 아니라 event sink에서도 추적합니다. 그래서 verificatio
 다 돌린 다음 그것을 호출해 주는 편의 함수입니다.
 
 ```rust
-use ag_ui_client::verify_all;
-use ag_ui_core::{Event, TextMessageRole};
+use ag_ui::client::verify_all;
+use ag_ui::{Event, TextMessageRole};
 
 fn main() {
     // transport가 중간에 끊은 응답입니다. RUN_FINISHED도 RUN_ERROR도 없습니다.
@@ -218,12 +219,12 @@ cargo run -p xtask -- drift-check
 drift-check
   baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@8ec096f94b, captured 2026-08-17)
   upstream  33 event types
-  rust      crates/ag-ui-core/src/event  (9 files, 33 event types, tagged enum `Event`)
+  rust      crates/ag-ui/src/event  (9 files, 33 event types, tagged enum `Event`)
 
 OK  33 event types match the baseline.
 ```
 
-이 검사는 `xtask/baseline/events.json`을 `crates/ag-ui-core/src/event/`와
+이 검사는 `xtask/baseline/events.json`을 `crates/ag-ui/src/event/`와
 비교합니다. baseline은 upstream `sdks/typescript/packages/core/src/events.ts`를
 저장소에 넣어 둔 snapshot입니다. 어느 commit에서 왔는지, upstream 순서 그대로의
 `EventType` 값, 그리고 각 event의 payload field를 optional/required 표시와 함께
@@ -262,7 +263,7 @@ cargo run -p xtask -- drift-check --refresh
 
 이 명령은 baseline을 다시 잡고, upstream commit과 fetch 날짜를 기록합니다.
 `events.json`의 diff가 **곧** protocol 변경입니다. 그 pull request에서 가장 꼼꼼히
-볼 부분이 그것입니다. 그다음 `crates/ag-ui-core/src/event/`를 같은 pull request
+볼 부분이 그것입니다. 그다음 `crates/ag-ui/src/event/`를 같은 pull request
 안에서 맞춥니다. `drift-check`가 다시 깨끗해질 때까지 합니다.
 
 `events.json`은 생성되는 파일입니다. 손으로 고치지 않습니다. 손으로 고치는 것은

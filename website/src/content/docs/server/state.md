@@ -14,8 +14,8 @@ and the events are chosen for you.
 ## Reading and writing it
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::RunContext;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ struct Doc {
     notes: Vec<String>,
 }
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<Doc>::new(RunAgentInput::new("t", "r"))?;
 
     // Mutate and publish in one call.
@@ -77,11 +77,11 @@ one small field of a value dominated by its `notes`.
 a run:
 
 ```rust
-use ag_ui_core::PatchOperation;
-use ag_ui_server::{StateManager, StatePublish};
+use ag_ui::PatchOperation;
+use ag_ui::serve::{StateManager, StatePublish};
 use serde_json::json;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let mut states = StateManager::new();
     let notes = "the document the user is editing, at some length";
 
@@ -126,8 +126,8 @@ present but does not fit `S` is an error, and because the run driver decodes bef
 the context over, it reaches the client as a `RUN_ERROR` rather than as a panic.
 
 ```rust
-use ag_ui_core::RunAgentInput;
-use ag_ui_server::{Error, RunContext};
+use ag_ui::RunAgentInput;
+use ag_ui::serve::{Error, RunContext};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -159,8 +159,8 @@ the state — rather than the context itself. So the state stays reachable for a
 call is open, and a tool can announce itself, do its work, and only then report:
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput};
-use ag_ui_server::RunContext;
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::serve::RunContext;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -169,7 +169,7 @@ struct Board {
     tasks: Vec<String>,
 }
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, mut events) = RunContext::<Board>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("add_task")?;
@@ -225,12 +225,12 @@ see nothing until the run was over.
 
 ## API
 
-- [`RunContext::state`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.state),
-  [`state_mut`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.state_mut),
-  [`publish_state`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.publish_state),
-  [`update_state`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.update_state),
-  [`set_state`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html#method.set_state)
-- [`ag_ui_server::StateManager`](/ag-ui-rust/api/ag_ui_server/struct.StateManager.html) and
-  [`StatePublish`](/ag-ui-rust/api/ag_ui_server/enum.StatePublish.html)
-- [`ag_ui_core::PatchOperation`](/ag-ui-rust/api/ag_ui_core/enum.PatchOperation.html)
+- [`RunContext::state`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.state),
+  [`state_mut`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.state_mut),
+  [`publish_state`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.publish_state),
+  [`update_state`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.update_state),
+  [`set_state`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.set_state)
+- [`ag_ui::serve::StateManager`](/ag-ui-rust/api/ag_ui/serve/struct.StateManager.html) and
+  [`StatePublish`](/ag-ui-rust/api/ag_ui/serve/enum.StatePublish.html)
+- [`ag_ui::PatchOperation`](/ag-ui-rust/api/ag_ui/enum.PatchOperation.html)
 - The client side of the same story: [Sessions](/ag-ui-rust/client/session/)

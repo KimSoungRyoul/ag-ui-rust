@@ -11,9 +11,9 @@ mod common;
 
 use std::time::Duration;
 
-use ag_ui_client::{Error as ClientError, RemoteAgent, RunEnd, RunParams, Session, Update};
-use ag_ui_core::{Event, EventType, Message, RunOutcome, TextMessageRole};
-use ag_ui_server::{Agent, Error, Result, RunContext};
+use ag_ui::client::{Error as ClientError, RemoteAgent, RunEnd, RunParams, Session, Update};
+use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::{Event, EventType, Message, RunOutcome, TextMessageRole};
 use common::{serve, transport};
 use futures_util::StreamExt as _;
 use serde_json::json;

@@ -40,13 +40,13 @@ Two Cargo features draw the line:
 | Feature | Default | What it is |
 | --- | --- | --- |
 | `toolkit` | on | Agent-side authoring: operation builders, catalog negotiation, prompt assembly, stream parsing, the recovery loop. |
-| `ag-ui` | on | Interop with `ag-ui-core`: history entries from AG-UI messages, toolkit tool definitions as offerable tools. Implies `toolkit`. |
+| `ag-ui` | on | Interop with `ag-ui`: history entries from AG-UI messages, toolkit tool definitions as offerable tools. Implies `toolkit`. |
 
-Turn `ag-ui` off and the dependency on `ag-ui-core` goes with it:
+Turn `ag-ui` off and the dependency on `ag-ui` goes with it:
 
 ```toml
 [dependencies.ag-ui-a2ui]
-git = "https://github.com/KimSoungRyoul/ag-ui-rust"
+version = "0.1"
 default-features = false
 features = ["toolkit"]
 ```
@@ -106,8 +106,8 @@ call named `render_a2ui`, whose result is the envelope:
 use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
 use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
 use ag_ui_a2ui::{Component, wrap_as_operations_envelope};
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Error, Result, RunContext};
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Error, Result, RunContext};
 use serde_json::json;
 
 struct Merchant;
@@ -134,13 +134,13 @@ impl Agent for Merchant {
 
 `render_a2ui` is a call the agent answers itself. No client ever offered it, because there is
 nothing for a client to execute — the frontend draws the result rather than running the tool.
-This is why `ag-ui-server` treats `RunAgentInput.tools` as a capability list rather than an
+This is why `ag_ui::serve` treats `RunAgentInput.tools` as a capability list rather than an
 allow-list: emitting a call for a name absent from that list is a well-formed stream, and the
 ordering verifier says nothing about it. What the protocol constrains is ordering, and that is
 what gets checked.
 
 `e2e/tests/a2ui_surface.rs` is the test that keeps this honest: an agent builds a surface with
-the toolkit, ships it as a tool result, a real `ag-ui-client` receives it over a real port, and
+the toolkit, ships it as a tool result, a real `ag_ui::client` receives it over a real port, and
 the operations that come out the other end are asserted to be the ones that went in and to
 still validate against the catalog they were authored for.
 

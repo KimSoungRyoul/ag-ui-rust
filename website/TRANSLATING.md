@@ -29,8 +29,8 @@ Leave these exactly as they are in English:
 
 | Kind | Examples |
 | --- | --- |
-| Identifiers and paths | `RunContext::assistant_message`, `ag_ui_server`, `crates/ag-ui-core/src/event/` |
-| Crate and feature names | `ag-ui-axum`, `verify`, `http`, `toolkit` |
+| Identifiers and paths | `RunContext::assistant_message`, `ag_ui::serve`, `crates/ag-ui/src/event/` |
+| Crate and feature names | `ag_ui::axum`, `verify`, `http`, `toolkit` |
 | Wire values | `TEXT_MESSAGE_START`, `a2ui_operations`, `text/event-stream` |
 | Anything typed into a terminal | `cargo test --doc --workspace --all-features` |
 | Manifest keys and values | `rust-version = "1.85"`, `default-features = false` |

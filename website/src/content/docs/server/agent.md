@@ -3,14 +3,14 @@ title: The Agent trait
 description: Implementing the trait that is this SDK's only boundary, and what the run context hands an implementation.
 ---
 
-`Agent` is the whole extension point of `ag-ui-server`. There is one trait, it has one
+`Agent` is the whole extension point of `ag_ui::serve`. There is one trait, it has one
 associated type and one method, and everything else on these pages is something the run
 context hands that method.
 
 ```rust
-// crates/ag-ui-server/src/agent.rs — the declaration, with the docs stripped.
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{AgentState, Result, RunContext};
+// crates/ag-ui/src/serve/agent.rs — the declaration, with the docs stripped.
+use ag_ui::RunOutcome;
+use ag_ui::serve::{AgentState, Result, RunContext};
 use std::future::Future;
 
 pub trait Agent: Send + Sync {
@@ -26,7 +26,7 @@ pub trait Agent: Send + Sync {
 The trait deliberately says nothing about models, prompts or providers. The .NET SDK builds
 on `Microsoft.Extensions.AI` because .NET has one blessed chat abstraction; Rust does not —
 the ecosystem is split across `async-openai`, `rig-core` and `genai` with no winner — so
-binding to any of them would make this crate useless to most of it. `ag-ui-server` therefore
+binding to any of them would make this crate useless to most of it. `ag_ui::serve` therefore
 depends on no LLM crate at all. Bring your own client, call it inside `run`, and emit what it
 gives you. A framework integration is an `impl Agent for …` in its own crate.
 
@@ -36,8 +36,8 @@ This compiles, runs, and is the whole program:
 
 ```rust
 // src/main.rs
-use ag_ui_core::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext, run};
+use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Greeter;
@@ -97,8 +97,8 @@ The bound is `AgentState`, and you never implement it — a blanket impl covers 
 that qualifies:
 
 ```rust
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use serde::{Deserialize, Serialize};
 
 /// `Serialize + DeserializeOwned + Default + Send` is the whole bound, and
@@ -142,8 +142,8 @@ endpoint, say — `DynAgent` is the boxed form, it is implemented for every `Age
 `BoxAgent<S>` implements `Agent` again so the driver takes it like any other:
 
 ```rust
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, BoxAgent, Result, RunContext};
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, BoxAgent, Result, RunContext};
 
 struct Fixed(&'static str);
 
@@ -176,11 +176,11 @@ with the agent's last statement, and the terminal event would go out unverified.
 value. The reading half needs no `&mut`:
 
 ```rust
-use ag_ui_core::{Message, RunAgentInput, Tool};
-use ag_ui_server::RunContext;
+use ag_ui::{Message, RunAgentInput, Tool};
+use ag_ui::serve::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let mut input = RunAgentInput::new("thread-1", "run-1");
     input.messages = vec![Message::user("msg-1", "what is the weather in Seoul?")];
     input.tools = vec![Tool::new(
@@ -235,8 +235,8 @@ stream, so unlike the message and tool-call handles the guard dereferences to th
 context, and everything nests inside it:
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext, run};
+use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Researcher;
@@ -302,11 +302,11 @@ the `200` has already been sent. Return `Err(Error::agent(…))` for failures yo
 
 ## API
 
-- [`ag_ui_server::Agent`](/ag-ui-rust/api/ag_ui_server/trait.Agent.html)
-- [`ag_ui_server::AgentState`](/ag-ui-rust/api/ag_ui_server/trait.AgentState.html)
-- [`ag_ui_server::RunContext`](/ag-ui-rust/api/ag_ui_server/struct.RunContext.html)
-- [`ag_ui_server::run`](/ag-ui-rust/api/ag_ui_server/fn.run.html) and
-  [`Runner`](/ag-ui-rust/api/ag_ui_server/struct.Runner.html)
-- [`ag_ui_server::DynAgent`](/ag-ui-rust/api/ag_ui_server/trait.DynAgent.html) and
-  [`BoxAgent`](/ag-ui-rust/api/ag_ui_server/type.BoxAgent.html)
-- [`ag_ui_core::RunOutcome`](/ag-ui-rust/api/ag_ui_core/enum.RunOutcome.html)
+- [`ag_ui::serve::Agent`](/ag-ui-rust/api/ag_ui/serve/trait.Agent.html)
+- [`ag_ui::serve::AgentState`](/ag-ui-rust/api/ag_ui/serve/trait.AgentState.html)
+- [`ag_ui::serve::RunContext`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html)
+- [`ag_ui::serve::run`](/ag-ui-rust/api/ag_ui/serve/fn.run.html) and
+  [`Runner`](/ag-ui-rust/api/ag_ui/serve/struct.Runner.html)
+- [`ag_ui::serve::DynAgent`](/ag-ui-rust/api/ag_ui/serve/trait.DynAgent.html) and
+  [`BoxAgent`](/ag-ui-rust/api/ag_ui/serve/type.BoxAgent.html)
+- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/enum.RunOutcome.html)

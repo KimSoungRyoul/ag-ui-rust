@@ -28,8 +28,8 @@ itself:
 
 ```rust
 // src/main.rs
-use ag_ui_client::{RunEnd, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, TextMessageRole};
+use ag_ui::client::{RunEnd, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, TextMessageRole};
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -72,7 +72,7 @@ Against a real agent, only the transport changes:
 
 ```rust,no_run
 // src/main.rs
-use ag_ui_client::{Session, Update, transport::HttpTransport};
+use ag_ui::client::{Session, Update, transport::HttpTransport};
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -109,7 +109,7 @@ made. A URL is what a transport is *made from*, so passing one where a transport
 belongs reads plausible:
 
 ```rust,compile_fail,E0277
-use ag_ui_client::Session;
+use ag_ui::client::Session;
 
 // error[E0277]: the trait bound `str: Transport` is not satisfied
 //   — and the `help:` note lists the types that do implement it.
@@ -129,8 +129,8 @@ transport:
 
 ```rust
 // src/view.rs
-use ag_ui_client::{Session, transport::ReplayTransport};
-use ag_ui_core::Message;
+use ag_ui::client::{Session, transport::ReplayTransport};
+use ag_ui::Message;
 
 /// The agent's last line, for a status bar. No `T: Transport` — this only reads.
 fn last_reply<T, S>(session: &Session<T, S>) -> Option<&str> {
@@ -150,7 +150,7 @@ fn main() {
 ```
 
 Both halves are pinned by tests: a `compile_fail,E0277` doctest on
-`Session::new` for the first, and `crates/ag-ui-client/tests/bounds.rs` — written
+`Session::new` for the first, and `crates/ag-ui/tests/client_bounds.rs` — written
 the way an application writes helpers — for the second. It fails to compile if
 the bound ever migrates back onto the type.
 
@@ -162,8 +162,8 @@ agent may call.
 
 ```rust
 // src/main.rs
-use ag_ui_client::{Session, transport::ReplayTransport};
-use ag_ui_core::{Message, Tool};
+use ag_ui::client::{Session, transport::ReplayTransport};
+use ag_ui::{Message, Tool};
 use serde_json::json;
 
 fn main() {
@@ -217,8 +217,8 @@ nothing else names it.
 
 ```rust
 // src/main.rs
-use ag_ui_client::{Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, PatchOperation};
+use ag_ui::client::{Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, PatchOperation};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
@@ -315,8 +315,8 @@ continues when the client sends the answers back.
 
 ```rust
 // src/main.rs
-use ag_ui_client::{RunEnd, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, Interrupt};
+use ag_ui::client::{RunEnd, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, Interrupt};
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -375,8 +375,8 @@ time:
 
 ```rust
 // src/main.rs
-use ag_ui_client::interrupts::ResumeBuilder;
-use ag_ui_core::{Interrupt, ResumeStatus};
+use ag_ui::client::interrupts::ResumeBuilder;
+use ag_ui::{Interrupt, ResumeStatus};
 use serde_json::json;
 
 fn main() {
@@ -423,5 +423,5 @@ the next run is a run like any other.
   the three ways a run ends.
 - [Rendering a run](/ag-ui-rust/client/rendering/) — why arrival order is the
   only nesting there is, and what a renderer that ignores it gets wrong.
-- [`Session`](/ag-ui-rust/api/ag_ui_client/session/struct.Session.html) in the
+- [`Session`](/ag-ui-rust/api/ag_ui/client/session/struct.Session.html) in the
   API docs.

@@ -8,7 +8,7 @@ run이 끝날 때까지 agent가 하는 모든 일을 서술합니다. 두 번�
 channel도 없고, 협상 단계도 없습니다.
 
 이 page는 wire 이야기이지 이 SDK의 API 이야기가 아닙니다. 여기 나오는 type은
-`ag-ui-core`에 삽니다. 이 crate는 일부러 어휘일 뿐입니다. runtime도 I/O도 async도
+`ag-ui`에 삽니다. 이 crate는 일부러 어휘일 뿐입니다. runtime도 I/O도 async도
 없습니다.
 
 ## request 하나, run 하나
@@ -29,7 +29,7 @@ request body는 `RunAgentInput`입니다. agent가 대화에 대해 알아도 �
 | `resume` | 이전 run이 멈춰 서서 물은 것에 대한 답. 재개할 때만 있습니다. |
 
 ```rust
-use ag_ui_core::RunAgentInput;
+use ag_ui::RunAgentInput;
 
 let body = r#"{
     "threadId": "thread-1",
@@ -68,7 +68,7 @@ agent가 만든 순서 그대로입니다. 각 object는 SCREAMING_SNAKE_CASE �
 놓입니다:
 
 ```rust
-use ag_ui_core::{Event, EventStreamFormatter, SseFormatter, TextMessageRole};
+use ag_ui::{Event, EventStreamFormatter, SseFormatter, TextMessageRole};
 
 let formatter = SseFormatter::new();
 let run = [
@@ -96,7 +96,7 @@ assert_eq!(body.matches("\n\n").count(), 6);
 
 SSE는 상호운용의 기본값입니다. 이 SDK가 온전히 구현하는 유일한 transport이기도 합니다.
 protocol은 binary media type `application/vnd.ag-ui.event+proto`도 정의하고
-`ag-ui-core`가 그것을 협상합니다. 다만 upstream의 `events.proto`는 33개 event type 중
+`ag-ui`가 그것을 협상합니다. 다만 upstream의 `events.proto`는 33개 event type 중
 18개만 다룹니다. 그쪽으로 encode하면 event를 조용히 떨어뜨립니다. 그래서 여기에
 encoder는 없습니다. 자세한 것은 [feature flag](/ag-ui-rust/ko/reference/features/)에
 있습니다.
@@ -176,16 +176,16 @@ chunk는 연속된 것 중 **첫 번째에만** id를 싣습니다. 뒤의 것�
 chunk event 다섯 개가 message 하나일 수 있습니다.
 
 소비자는 다른 무엇이 stream을 보기 전에 chunk를 명시적인 start/content/end 세 짝으로
-되돌립니다. `ag-ui-client`는 그것을 `chunks` 단계에서 합니다. 그 결과 view가 무엇을
+되돌립니다. `ag_ui::client`는 그것을 `chunks` 단계에서 합니다. 그 결과 view가 무엇을
 보는지는 [update stream](/ag-ui-rust/ko/client/updates/)이 보여 줍니다.
 
 ## event 계열
 
-event type은 **33개**입니다. `ag-ui-core`는 그것을 빠짐없는 `Event` enum 하나와
+event type은 **33개**입니다. `ag-ui`는 그것을 빠짐없는 `Event` enum 하나와
 `EventType` 판별자로 표현합니다:
 
 ```rust
-use ag_ui_core::{Event, EventType};
+use ag_ui::{Event, EventType};
 
 let event = Event::text_message_content("msg-1", "Hello");
 
@@ -224,7 +224,7 @@ application state는 양쪽이 함께 비추는 자유 형식 JSON입니다. age
 - `STATE_DELTA`는 RFC 6902 JSON Patch를 싣고, 그것에 적용됩니다.
 
 어느 쪽을 보낼지는 protocol 규칙이 아니라 크기 판단입니다. client는 둘 다 처리해야
-합니다. `ag-ui-server`는 publish할 때마다 정합니다. 첫 번째는 언제나 snapshot입니다.
+합니다. `ag_ui::serve`는 publish할 때마다 정합니다. 첫 번째는 언제나 snapshot입니다.
 뒤의 것은 patch가 그것이 서술하는 state보다 작아지지 않는 한 delta입니다. state가
 작으면 그런 일이 자주 벌어집니다. [shared state](/ag-ui-rust/ko/server/state/)가 그것을
 짚어 나갑니다.
@@ -269,4 +269,4 @@ snapshot을 Rust type과 대조하고, 둘이 갈라지면 build를 실패시킵
 - [event reference](/ag-ui-rust/ko/reference/events/) — 모든 event와 그 field.
 - [crate 구성](/ag-ui-rust/ko/start/crates/) — 이 type이 어디에 살고 그 위에 무엇이
   쌓이는지.
-- [ag_ui_core](/ag-ui-rust/api/ag_ui_core/index.html) — rustdoc.
+- [ag_ui](/ag-ui-rust/api/ag_ui/index.html) — rustdoc.

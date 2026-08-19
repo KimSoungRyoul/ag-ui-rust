@@ -30,8 +30,8 @@ session에는 transport와 thread id가 필요합니다. 나머지는 session이
 
 ```rust
 // src/main.rs
-use ag_ui_client::{RunEnd, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, TextMessageRole};
+use ag_ui::client::{RunEnd, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, TextMessageRole};
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -75,7 +75,7 @@ session을 mutable로 borrow합니다. 그 borrow 덕분에 run이 끝나는 순
 
 ```rust,no_run
 // src/main.rs
-use ag_ui_client::{Session, Update, transport::HttpTransport};
+use ag_ui::client::{Session, Update, transport::HttpTransport};
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -113,7 +113,7 @@ transport를 *만드는 재료*입니다. 그래서 transport 자리에 URL을 �
 code는 그럴듯해 보입니다.
 
 ```rust,compile_fail,E0277
-use ag_ui_client::Session;
+use ag_ui::client::Session;
 
 // error[E0277]: the trait bound `str: Transport` is not satisfied
 //   — 그리고 `help:` note가 이 trait을 구현한 type을 알려 줍니다.
@@ -134,8 +134,8 @@ type을 이름으로 쓰기만 하는 helper도 전부 같은 bound를 되풀이
 
 ```rust
 // src/view.rs
-use ag_ui_client::{Session, transport::ReplayTransport};
-use ag_ui_core::Message;
+use ag_ui::client::{Session, transport::ReplayTransport};
+use ag_ui::Message;
 
 /// status bar에 쓸 agent의 마지막 한 줄.
 /// `T: Transport`는 없습니다. 읽기만 하니까요.
@@ -157,7 +157,7 @@ fn main() {
 
 양쪽 절반 모두 test로 고정되어 있습니다. 첫 번째는 `Session::new`에
 붙은 `compile_fail,E0277` doctest입니다. 두 번째는
-`crates/ag-ui-client/tests/bounds.rs`입니다. application이 helper를
+`crates/ag-ui/tests/client_bounds.rs`입니다. application이 helper를
 쓰듯 작성한 test입니다. bound가 다시 type 쪽으로 옮겨 가면 이 test는
 컴파일에 실패합니다.
 
@@ -169,8 +169,8 @@ fn main() {
 
 ```rust
 // src/main.rs
-use ag_ui_client::{Session, transport::ReplayTransport};
-use ag_ui_core::{Message, Tool};
+use ag_ui::client::{Session, transport::ReplayTransport};
+use ag_ui::{Message, Tool};
 use serde_json::json;
 
 fn main() {
@@ -226,8 +226,8 @@ turbofish는 필요 없습니다. match 갈래에서 state를 typed local에 담
 
 ```rust
 // src/main.rs
-use ag_ui_client::{Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, PatchOperation};
+use ag_ui::client::{Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, PatchOperation};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
@@ -327,8 +327,8 @@ client가 그 답을 돌려보내면 대화가 이어집니다.
 
 ```rust
 // src/main.rs
-use ag_ui_client::{RunEnd, Session, Update, transport::ReplayTransport};
-use ag_ui_core::{Event, Interrupt};
+use ag_ui::client::{RunEnd, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, Interrupt};
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -386,8 +386,8 @@ run이 멈춰 있던 run을 대체하기 때문입니다. agent는 재개 요청
 
 ```rust
 // src/main.rs
-use ag_ui_client::interrupts::ResumeBuilder;
-use ag_ui_core::{Interrupt, ResumeStatus};
+use ag_ui::client::interrupts::ResumeBuilder;
+use ag_ui::{Interrupt, ResumeStatus};
 use serde_json::json;
 
 fn main() {
@@ -438,4 +438,4 @@ run과 다르지 않습니다.
 - [run rendering](/ag-ui-rust/ko/client/rendering/) — 도착 순서가 유일한
   중첩인 이유. 그것을 무시한 renderer가 무엇을 틀리는지.
 - API 문서의
-  [`Session`](/ag-ui-rust/api/ag_ui_client/session/struct.Session.html).
+  [`Session`](/ag-ui-rust/api/ag_ui/client/session/struct.Session.html).

@@ -55,12 +55,12 @@ Every error enum in the workspace is `#[non_exhaustive]`. `Event` and `EventType
 and that asymmetry is deliberate rather than an oversight — the protocol *has* grown twice
 in the last year (`REASONING_*`, `ACTIVITY_*`), so this will be tested.
 
-The failure this SDK exists to correct is silent under-coverage. `ag-ui-core 0.1.0`
-declares 24 variants against a spec with 32 and nobody noticed, because nothing anywhere
-forced the question. `#[non_exhaustive]` institutionalises that: it obliges every consumer
-to write a `_` arm, and a `_` arm is precisely the construct that turns "event 34 arrived"
-into no diagnostic at all. It does not remove the work of handling a new event; it removes
-the notification that there is work.
+The failure this SDK exists to correct is silent under-coverage. `ag-ui-core 0.1.0` declares
+24 variants against the 32 the spec had then — 33 today — and nobody noticed, because nothing
+anywhere forced the question. `#[non_exhaustive]` institutionalises that: it obliges every
+consumer to write a `_` arm, and a `_` arm is precisely the construct that turns "event 34
+arrived" into no diagnostic at all. It does not remove the work of handling a new event; it
+removes the notification that there is work.
 
 So a new protocol event *should* be a compile error for a Rust consumer. That is the whole
 value proposition of a typed SDK over `serde_json::Value`, and it is the story the drift
@@ -75,7 +75,7 @@ The same reasoning inverts for errors, which is why they carry the attribute. No
 an exhaustive match over failure modes, callers route on a handful of variants and fall
 through on the rest, and a new failure mode is not a protocol change.
 
-`ag_ui_client::RunEnd` sits with `Event` rather than with the errors, for the same reason
+`ag_ui::client::RunEnd` sits with `Event` rather than with the errors, for the same reason
 scaled down: a run ends in exactly the three ways the protocol defines, that match is the one
 a front-end most wants checked — it decides whether the input goes live again — and a fourth
 way to end a run *would* be a wire-contract change. `Update` keeps the attribute: it is a view
@@ -88,20 +88,40 @@ three quarters of a conversation.
 
 ## Crate boundaries
 
-Five crates, not seven. The first draft mirrored the .NET assembly split one-for-one, which is
-the wrong instinct: in .NET an assembly is the deployment and versioning unit, so splitting is
-cheap and natural. In Rust, **features are the primary tool** and a crate split should be
-justified by dependency isolation or independent versioning.
+Two crates. The first draft mirrored the .NET assembly split one-for-one, which is the wrong
+instinct: in .NET an assembly is the deployment and versioning unit, so splitting is cheap and
+natural. In Rust, **features are the primary tool** and a crate split should be justified by
+dependency isolation or independent versioning.
 
-Two crates were folded in as a result:
+That rule folded seven crates into five, and then — applied to its own conclusion — five into
+two. The five-crate arrangement failed its own test. Feature gates give exactly the dependency
+isolation a split does: `--no-default-features` compiles no axum, no tokio, no reqwest, and CI
+asserts it per feature rather than per crate. So isolation was never the thing the split was
+buying. Independent versioning would have been, and this workspace does not do it: one
+`workspace.version`, every crate released in lockstep. A split that delivers neither of the two
+things that justify a split is five publishing steps and four extra names to defend, in a
+registry where three of those names were taken while the question was open.
 
-- `ag-ui-encoder` → `ag-ui-core::encode`. SSE framing is a few hundred lines with zero extra
+What is left is one crate per *protocol*:
+
+- **`ag-ui`** — the protocol types at the root, always compiled; `serve`, `client` and `axum`
+  behind features. Each runtime keeps its own `Error` under its own module, so `ag_ui::Error`
+  is a protocol error and `ag_ui::serve::Error` is a hosting error.
+- **`ag-ui-a2ui`** — A2UI is a different protocol, usable over A2A or MCP with no AG-UI
+  anywhere. Its users should not have to depend on a crate named `ag-ui` to reach it, and that
+  is a dependency-isolation argument the feature gate cannot make.
+
+The price is the one thing a split does buy and features cannot: cargo unifies features across
+a dependency graph, so if one crate in a build wants `serve` and another wants `client`, both
+compile. That is a compile-time cost for a mixed graph, not a runtime or correctness one, and
+it is the trade this arrangement accepts.
+
+Two crates were folded in earlier under the same rule, and stay folded:
+
+- `ag-ui-encoder` → `ag_ui::encode`. SSE framing is a few hundred lines with zero extra
   dependencies. Only protobuf is heavy, and an optional dependency already handles that.
 - `ag-ui-a2ui-toolkit` → `ag-ui-a2ui`, `toolkit` feature. It is prompt strings and
   orchestration; nothing to isolate.
-
-What stayed separate, and why: `ag-ui-axum` drags in axum/tokio/tower, `ag-ui-client` is useful
-on its own, `ag-ui-a2ui` is a different protocol that can be used without AG-UI at all.
 
 ## No LLM abstraction
 
@@ -116,7 +136,7 @@ integration is then just an `impl Agent for …` in its own crate.
 ## Executor-agnostic below the web binding
 
 `core`, `server`, and `client` use `futures` primitives — notably `futures::channel::mpsc` for
-the emit path rather than `tokio::sync::mpsc`. tokio appears only in `ag-ui-axum`. This keeps
+the emit path rather than `tokio::sync::mpsc`. tokio appears only in `ag_ui::axum`. This keeps
 wasm targets and non-tokio executors viable, and the CI wasm job enforces it.
 
 ## Synchronous emit, because Rust has no async Drop
@@ -164,7 +184,7 @@ inventing a constraint the protocol does not have.
 
 Neither the TypeScript SDK (which verifies on the client) nor .NET (which does not verify at
 all) checks event ordering on the server. Emitting `TEXT_MESSAGE_CONTENT` without a preceding
-`START` is a bug that currently surfaces as a confused frontend. `ag-ui-server` runs an ordering
+`START` is a bug that currently surfaces as a confused frontend. `ag_ui::serve` runs an ordering
 state machine, on by default, so it surfaces where it was caused.
 
 ## The offered tool list is a capability list, not an allow-list
@@ -185,7 +205,7 @@ render it as an activity, or report it. What the protocol constrains is the *ord
 checks.
 
 An agent that wants the stricter rule can have it in one line, because
-[`RunContext::tool`](../crates/ag-ui-server/src/context.rs) returns `None` for anything
+[`RunContext::tool`](../crates/ag-ui/src/serve/context.rs) returns `None` for anything
 unoffered. `examples/task-board` does exactly that, but only for the tools it genuinely expects
 the client to run.
 

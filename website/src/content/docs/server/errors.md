@@ -9,8 +9,8 @@ wrong — never a panic, and never a body that simply stops.
 
 ```rust
 // src/agent.rs
-use ag_ui_core::{Event, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext, run};
+use ag_ui::{Event, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Flaky;
@@ -45,7 +45,7 @@ needs one `map_err(Error::agent)` and nothing else.
 
 ## The variants
 
-`ag_ui_server::Error` is what every method in the crate returns, through the
+`ag_ui::serve::Error` is what every method in the crate returns, through the
 `Result<T, E = Error>` alias. Each variant has a stable code that lands on the `RUN_ERROR`
 event:
 
@@ -83,10 +83,10 @@ so an ordering state machine watches every event on its way out — on by defaul
 server, where the bug is caused rather than three network hops downstream:
 
 ```rust
-use ag_ui_core::{Event, RunAgentInput};
-use ag_ui_server::{Error, RunContext, Rule};
+use ag_ui::{Event, RunAgentInput};
+use ag_ui::serve::{Error, RunContext, Rule};
 
-fn main() -> ag_ui_server::Result<()> {
+fn main() -> ag_ui::serve::Result<()> {
     let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     // Content for a message that was never started.
@@ -146,8 +146,8 @@ that work without any cooperation from the agent is that **every emit after canc
 fails**, so the next `?` unwinds the run:
 
 ```rust
-use ag_ui_core::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext, run};
+use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Chatty;
@@ -203,8 +203,8 @@ An agent that wants to notice sooner has four ways to ask:
 flight is what cancellation is meant to stop paying for:
 
 ```rust
-use ag_ui_core::{RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext};
+use ag_ui::{RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Error, Result, RunContext};
 
 struct Slow;
 
@@ -227,7 +227,7 @@ async fn call_the_model() -> String {
 }
 
 #[tokio::main]
-async fn main() -> ag_ui_server::Result<()> {
+async fn main() -> ag_ui::serve::Result<()> {
     let (ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let answer = ctx.until_cancelled(call_the_model()).await;
@@ -251,7 +251,7 @@ dragging a borrow of the run context along with it.
 
 ## Who trips the token
 
-Over HTTP, [`ag-ui-axum`](/ag-ui-rust/server/axum/) does it. The response body owns the run,
+Over HTTP, [`ag_ui::axum`](/ag-ui-rust/server/axum/) does it. The response body owns the run,
 so when the client goes away hyper drops the body and the run goes with it; the body also
 holds a guard that trips the token on drop, and disarms itself if the run got to finish. That
 second part is what reaches everything the run touched *outside* itself — a spawned tool
@@ -263,12 +263,12 @@ connection ends.
 
 ## API
 
-- [`ag_ui_server::Error`](/ag-ui-rust/api/ag_ui_server/enum.Error.html) and
-  [`Result`](/ag-ui-rust/api/ag_ui_server/type.Result.html)
-- [`ag_ui_server::Rule`](/ag-ui-rust/api/ag_ui_server/enum.Rule.html) and
-  [`VerificationError`](/ag-ui-rust/api/ag_ui_server/struct.VerificationError.html)
-- [`ag_ui_server::verify`](/ag-ui-rust/api/ag_ui_server/verify/index.html) — the state
+- [`ag_ui::serve::Error`](/ag-ui-rust/api/ag_ui/serve/enum.Error.html) and
+  [`Result`](/ag-ui-rust/api/ag_ui/serve/type.Result.html)
+- [`ag_ui::serve::Rule`](/ag-ui-rust/api/ag_ui/serve/enum.Rule.html) and
+  [`VerificationError`](/ag-ui-rust/api/ag_ui/serve/struct.VerificationError.html)
+- [`ag_ui::serve::verify`](/ag-ui-rust/api/ag_ui/serve/verify/index.html) — the state
   machine, rule by rule
-- [`ag_ui_server::CancellationToken`](/ag-ui-rust/api/ag_ui_server/struct.CancellationToken.html)
-  and [`Cancelled`](/ag-ui-rust/api/ag_ui_server/struct.Cancelled.html)
+- [`ag_ui::serve::CancellationToken`](/ag-ui-rust/api/ag_ui/serve/struct.CancellationToken.html)
+  and [`Cancelled`](/ag-ui-rust/api/ag_ui/serve/struct.Cancelled.html)
 - [Feature flags](/ag-ui-rust/reference/features/) for what `verify` costs and removes

@@ -20,7 +20,7 @@ pub mod llm;
 pub use agent::TaskBoard;
 pub use board::Board;
 
-use ag_ui_axum::RouterExt;
+use ag_ui::axum::RouterExt;
 use axum::Router;
 use axum::routing::get;
 

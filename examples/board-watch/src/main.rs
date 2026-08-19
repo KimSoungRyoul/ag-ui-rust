@@ -15,8 +15,8 @@
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
-use ag_ui_client::transport::HttpTransport;
-use ag_ui_client::{HttpAgent, Session};
+use ag_ui::client::transport::HttpTransport;
+use ag_ui::client::{HttpAgent, Session};
 use board_watch::watch::{Console, Policy, Watch};
 use board_watch::{Board, fake, load_tools, replay_fixture, trace, watch};
 
@@ -254,7 +254,7 @@ async fn run_serve(mut args: impl Iterator<Item = String>) -> ExitCode {
 ///
 /// The agent only ever sees the tools this client sends, and nothing in the
 /// protocol lets it ask for more. See [`board_watch::load_tools`].
-fn read_tools(path: Option<&str>) -> Result<Vec<ag_ui_core::Tool>, String> {
+fn read_tools(path: Option<&str>) -> Result<Vec<ag_ui::Tool>, String> {
     let Some(path) = path else {
         return Ok(Vec::new());
     };

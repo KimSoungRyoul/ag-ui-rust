@@ -8,10 +8,10 @@
 
 mod common;
 
-use ag_ui_client::transport::HttpTransport;
-use ag_ui_client::{RunEnd, Session, Update};
-use ag_ui_core::{AssistantMessage, FunctionCall, Message, RunOutcome, ToolCall, ToolMessage};
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::client::transport::HttpTransport;
+use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::{AssistantMessage, FunctionCall, Message, RunOutcome, ToolCall, ToolMessage};
 use common::{serve, transport};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};

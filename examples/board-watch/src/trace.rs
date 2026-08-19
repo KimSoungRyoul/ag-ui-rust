@@ -1,9 +1,9 @@
 //! The low level: events exactly as the agent sent them.
 //!
-//! [`Session`](ag_ui_client::Session) assembles; this does not. A proxy, a
+//! [`Session`](ag_ui::client::Session) assembles; this does not. A proxy, a
 //! recorder, a bridge to another protocol and a person debugging a stream all
 //! want the events unassembled, and that is what
-//! [`RemoteAgent`](ag_ui_client::RemoteAgent) is for.
+//! [`RemoteAgent`](ag_ui::client::RemoteAgent) is for.
 //!
 //! Including the human-in-the-loop round trip: [`interrupts_of`] reads what a
 //! `RUN_FINISHED` paused on and [`resume_run`] builds the request that answers
@@ -12,8 +12,8 @@
 
 use std::io::{self, Write};
 
-use ag_ui_client::{HttpAgent, InterruptExt as _, RunParams, interrupts_of, resume_run};
-use ag_ui_core::{Event, EventType, ResumeEntry, RunAgentInput, Tool};
+use ag_ui::client::{HttpAgent, InterruptExt as _, RunParams, interrupts_of, resume_run};
+use ag_ui::{Event, EventType, ResumeEntry, RunAgentInput, Tool};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 

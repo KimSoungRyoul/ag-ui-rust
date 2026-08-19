@@ -31,7 +31,7 @@ use rust_src::{RustEvent, RustSurface};
 /// Where the vendored baseline lives, relative to the repo root.
 const BASELINE: &str = "xtask/baseline/events.json";
 /// Where the Rust event types live, relative to the repo root.
-const EVENT_DIR: &str = "crates/ag-ui-core/src/event";
+const EVENT_DIR: &str = "crates/ag-ui/src/event";
 
 /// Exit codes: 0 clean, 1 drift found, 2 the check itself could not run.
 pub const EXIT_OK: u8 = 0;
@@ -143,7 +143,7 @@ fn refresh(baseline_path: &Path) -> Result<u8, String> {
                     println!("    {line}");
                 }
                 println!(
-                    "\n  Review these, update crates/ag-ui-core/src/event to match, then commit \
+                    "\n  Review these, update crates/ag-ui/src/event to match, then commit \
                      the baseline with that change."
                 );
             }
@@ -594,7 +594,7 @@ mod tests {
         RustEvent {
             tag: tag.into(),
             rust_type: Some(format!("{tag}Event")),
-            file: "crates/ag-ui-core/src/event/x.rs".into(),
+            file: "crates/ag-ui/src/event/x.rs".into(),
             fields: fields.map(|fields| {
                 fields
                     .iter()
@@ -613,7 +613,7 @@ mod tests {
         RustSurface {
             events,
             tagged_enum: None,
-            files: vec!["crates/ag-ui-core/src/event/x.rs".into()],
+            files: vec!["crates/ag-ui/src/event/x.rs".into()],
             notes: vec![],
         }
     }

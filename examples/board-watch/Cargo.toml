@@ -7,18 +7,15 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-ag-ui-core.workspace = true
-ag-ui-client = { workspace = true, features = ["http"] }
+# The backend features — `serve` and `axum` — are here only for `serve-fake`
+# and the tests. The client itself needs neither, which is the point: `watch`
+# talks to whatever is on the far end of a URL.
+ag-ui = { workspace = true, features = ["client", "http", "serve", "axum"] }
 ag-ui-a2ui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures-util.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync"] }
-# The backend half — only `serve-fake` and the tests reach for these. The client
-# itself needs none of them, which is the point: `watch` talks to whatever is on
-# the far end of a URL.
-ag-ui-server.workspace = true
-ag-ui-axum.workspace = true
 axum.workspace = true
 
 [dev-dependencies]

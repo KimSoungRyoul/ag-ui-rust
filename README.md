@@ -15,13 +15,25 @@ priority here.
 
 ## Crates
 
-| Crate | What it is |
+Two of them. `ag-ui` is the SDK; which half of the protocol you compile is a feature.
+
+| Crate / feature | What it is |
 | --- | --- |
-| `ag-ui-core` | Protocol types, all event variants, and wire encoding. `serde` + `serde_json` only. |
-| `ag-ui-server` | Host an agent: `Agent` trait, typestate event emitters, automatic state deltas, protocol verification. Executor-agnostic. |
-| `ag-ui-axum` | Mount an agent on an axum router. The only crate that pulls in tokio. |
-| `ag-ui-client` | Consume a remote agent: transport, event application, materialised messages and state. |
-| `ag-ui-a2ui` | [A2UI](https://a2ui.org) protocol types, semantic validator, and agent-side authoring toolkit. |
+| `ag-ui` | Protocol types, all 33 event variants, and wire encoding. `serde` + `serde_json` only. Always compiled. |
+| ↳ `serve` | Host an agent: `Agent` trait, typestate event emitters, automatic state deltas, protocol verification. Executor-agnostic. |
+| ↳ `client` | Consume a remote agent: transport, event application, materialised messages and state. |
+| ↳ `http` | The reqwest transport for `client`. |
+| ↳ `axum` | Mount an agent on an axum router. The only feature that pulls in tokio. |
+| `ag-ui-a2ui` | [A2UI](https://a2ui.org) protocol types, semantic validator, and agent-side authoring toolkit. Its own crate because A2UI is usable with no AG-UI at all. |
+
+```toml
+[dependencies]
+ag-ui = { version = "0.1", features = ["axum"] }   # host an agent
+ag-ui = { version = "0.1", features = ["http"] }   # or consume one
+```
+
+> `ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are an earlier, unrelated
+> community SDK — not this project.
 
 A worked example of all of it together — streamed text, tool calls, shared
 state, an A2UI surface and a human-in-the-loop pause, with an agent and a
@@ -33,9 +45,9 @@ terminal client that talk to each other over a real port — is
 Serving an agent. Implement `Agent`, mount it, and the endpoint speaks AG-UI:
 
 ```rust
-use ag_ui_axum::RouterExt;
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::axum::RouterExt;
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use axum::Router;
 
 struct Greeter;
@@ -59,7 +71,7 @@ let app: Router = Router::new().route_agui("/agent", Greeter);
 Consuming one. `Session` folds the delta stream back into messages and state:
 
 ```rust,no_run
-use ag_ui_client::{Session, Update, transport::HttpTransport};
+use ag_ui::client::{Session, Update, transport::HttpTransport};
 use futures_util::StreamExt;
 
 #[tokio::main]
@@ -86,8 +98,8 @@ stale quickstart is a red build.
 ## Agent skills
 
 `skills/` teaches a coding agent this SDK: the `Agent` trait and its typestate emitters,
-sessions and the update stream, and that these crates are a git dependency rather than the
-similarly-named crates.io ones. Two channels, one source.
+sessions and the update stream, and that this is one crate named `ag-ui` rather than the
+similarly-named community crates on crates.io. Two channels, one source.
 
 Claude Code, as a plugin — namespaced, and `/plugin update` keeps it current:
 
@@ -114,11 +126,13 @@ because .NET has a blessed chat abstraction. Rust does not — the ecosystem is 
 `async-openai`, `rig-core`, and `genai`. So this SDK depends on no LLM crate at all. Bring
 your own client; implement `Agent`.
 
-**Executor-agnostic below the web binding.** `core`, `server`, and `client` use
-`futures` primitives rather than tokio, so wasm targets and non-tokio executors keep working.
-tokio enters at `ag-ui-axum` and nowhere else. CI enforces this two ways: by building those
-crates for `wasm32-unknown-unknown`, and — because tokio itself compiles for wasm — by
-asserting tokio is absent from their dependency graphs.
+**Executor-agnostic below the web binding.** The protocol types and the `serve` and `client`
+runtimes use `futures` primitives rather than tokio, so wasm targets and non-tokio executors
+keep working. tokio enters with the `axum` feature and nowhere else. CI enforces this two
+ways: by building each feature for `wasm32-unknown-unknown`, and — because tokio itself
+compiles for wasm — by asserting tokio is absent from their dependency graphs. Since the
+crates became features that assertion matters more, not less: cargo unifies features across a
+graph, so one careless `dep:tokio` would reach every consumer that never asked for `axum`.
 
 **Protocol misuse should not compile.** Event ordering (`Start` → `Content*` → `End`) is
 enforced by typestate handles that borrow the run context, so interleaving two messages is a
@@ -153,7 +167,7 @@ cargo test --doc --workspace --all-features
 **`cargo nextest` does not run doctests.** It says nothing about them — it does not skip
 them loudly, it never sees them — so a green nextest run is a partial result. A lot of what
 this workspace proves lives in doctests: every crate README, the quickstart above, and the
-`compile_fail` example in `crates/ag-ui-server/src/emit/mod.rs` that is the only executable
+`compile_fail` example in `crates/ag-ui/src/serve/emit/mod.rs` that is the only executable
 proof that two overlapping message handles fail to compile. Weaken the emitter API and
 nextest stays green.
 

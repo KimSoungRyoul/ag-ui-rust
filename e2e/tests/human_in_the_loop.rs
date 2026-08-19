@@ -12,9 +12,9 @@
 
 mod common;
 
-use ag_ui_client::{InterruptExt as _, RunEnd, Session, Update};
-use ag_ui_core::{Interrupt, JsonObject, Message, ResumeStatus, RunOutcome};
-use ag_ui_server::{Agent, Error, Result, RunContext};
+use ag_ui::client::{InterruptExt as _, RunEnd, Session, Update};
+use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::{Interrupt, JsonObject, Message, ResumeStatus, RunOutcome};
 use common::{serve, transport};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
@@ -164,7 +164,7 @@ fn last_reply<T>(session: &Session<T>) -> &str {
 }
 
 /// Runs the first turn and returns the session, paused, with its interrupt.
-async fn pause() -> (Session<ag_ui_client::transport::HttpTransport>, Interrupt) {
+async fn pause() -> (Session<ag_ui::client::transport::HttpTransport>, Interrupt) {
     let url = serve(Deployer).await;
     let mut session = Session::<_>::new(transport(&url), "deploy");
 

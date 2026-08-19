@@ -13,6 +13,22 @@ carries no `RunFinished.outcome`, so a run cannot pause for a human at all.
 The server story is the priority here; the client is written against the same types, and `e2e/` proves
 the two halves against each other over a real port rather than against a mock.
 
+## Crate layout
+
+Two published crates. **`ag-ui`** is the SDK: the protocol types at the crate root, always
+compiled, with `serve` (host an agent), `client` / `http` (consume one) and `axum` behind
+features. Each runtime keeps its own `Error` under its own module — `ag_ui::Error` is a
+protocol error, `ag_ui::serve::Error` is a hosting error. **`ag-ui-a2ui`** stays separate
+because A2UI is a different protocol, usable with no AG-UI at all.
+
+Features rather than crates because in Rust features are how a dependency is kept out of a
+build, and this workspace versions in lockstep so a split bought no independent versioning
+either — `docs/DESIGN.md`, "Crate boundaries", has the reasoning. The one cost is feature
+unification: a graph that wants `serve` in one place and `client` in another compiles both.
+
+`ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are an earlier, unrelated
+community SDK. Do not write them as dependency lines for this project.
+
 ## Links
 
 | What | Where |
@@ -22,7 +38,7 @@ the two halves against each other over a real port rather than against a mock.
 | The community Rust SDK this replaces | <https://github.com/ag-ui-protocol/ag-ui/tree/main/sdks/community/rust> |
 | Why it is not enough, with the numbers | `docs/DESIGN.md` — "Why another Rust AG-UI SDK" |
 | This project's documentation | <https://kimsoungryoul.github.io/ag-ui-rust/> |
-| rustdoc for all five crates | <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui_core/index.html> |
+| rustdoc for both crates | <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/index.html> |
 | A2UI, the surface protocol `ag-ui-a2ui` speaks | <https://a2ui.org> |
 | Agent skills this repo publishes | `skills/`, installed per the README |
 

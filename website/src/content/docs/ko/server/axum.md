@@ -3,10 +3,10 @@ title: HTTP로 serving
 description: axum router에 agent를 얹는 법. 그리고 그렇게 만들어진 endpoint가 주고받는 요청과 응답.
 ---
 
-`ag-ui-server`는 [`Agent`](/ag-ui-rust/ko/server/agent/)를 event stream으로 바꾸고 거기서
+`ag_ui::serve`는 [`Agent`](/ag-ui-rust/ko/server/agent/)를 event stream으로 바꾸고 거기서
 멈춥니다. 일부러 그렇습니다. executor도 웹 프레임워크도 없어야 wasm으로 빌드됩니다.
 
-`ag-ui-axum`이 나머지 절반입니다. POST endpoint, `text/event-stream` 본문, content
+`ag_ui::axum`이 나머지 절반입니다. POST endpoint, `text/event-stream` 본문, content
 negotiation, 그리고 client가 끊었음을 agent에게 알리는 일을 맡습니다. 이 workspace에서 tokio,
 axum, tower에 의존하는 유일한 crate입니다.
 
@@ -14,9 +14,9 @@ axum, tower에 의존하는 유일한 crate입니다.
 
 ```rust,no_run
 // src/main.rs
-use ag_ui_axum::RouterExt;
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::axum::RouterExt;
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use axum::Router;
 use axum::routing::get;
 
@@ -57,9 +57,9 @@ agent를 얹는 일은 `S`에 아무 제약도 더하지 않습니다. axum 자�
 애플리케이션 state에서 값이 필요한 agent라면 만들어질 때 그것을 붙잡아 두어야 합니다.
 
 ```rust
-use ag_ui_axum::RouterExt;
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, Result, RunContext};
+use ag_ui::axum::RouterExt;
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, Result, RunContext};
 use axum::Router;
 use std::sync::Arc;
 
@@ -130,7 +130,7 @@ AG-UI handler 안에서 `State`를 추출한다면 한 줄짜리 마운트가 �
 event 하나는 그 event의 JSON을 담은 SSE 프레임 하나입니다.
 
 ```rust
-use ag_ui_core::{Event, SseFormatter};
+use ag_ui::{Event, SseFormatter};
 
 fn main() {
     let formatter = SseFormatter::new();
@@ -157,7 +157,7 @@ fn main() {
 있으면 `*/*`로 봅니다.
 
 ```rust
-use ag_ui_axum::negotiate;
+use ag_ui::axum::negotiate;
 
 fn main() {
     assert!(negotiate(None).is_ok());
@@ -175,9 +175,9 @@ fn main() {
 `AgentEndpoint`는 agent와 그 run별 설정을 합친 것입니다. `route_agui_with`가 그것을 얹습니다.
 
 ```rust
-use ag_ui_axum::{AgentEndpoint, RouterExt};
-use ag_ui_core::RunOutcome;
-use ag_ui_server::{Agent, FilterToolCalls, Result, RunContext};
+use ag_ui::axum::{AgentEndpoint, RouterExt};
+use ag_ui::RunOutcome;
+use ag_ui::serve::{Agent, FilterToolCalls, Result, RunContext};
 use axum::Router;
 use std::time::Duration;
 
@@ -232,7 +232,7 @@ run의 `CancellationToken`을 발동시키는 guard입니다. run이 무사히 �
 정하는 경로 조각 같은 경우입니다.
 
 ```rust
-use ag_ui_axum::AgUiInput;
+use ag_ui::axum::AgUiInput;
 use axum::Router;
 use axum::extract::Path;
 use axum::routing::post;
@@ -247,16 +247,16 @@ fn main() {
 }
 ```
 
-거절 타입은 `ag_ui_axum::Error`이고 `IntoResponse`를 구현합니다. `AgUiInput`을 받으면 axum이
+거절 타입은 `ag_ui::axum::Error`이고 `IntoResponse`를 구현합니다. `AgUiInput`을 받으면 axum이
 `4xx`를 대신 답해 줍니다. `Result<AgUiInput, Error>`를 받으면 실패를 먼저 들여다볼 수 있습니다.
 
 `SseResponse`가 나머지 절반입니다. run을 시작하기 전에 자기 할 일을 먼저 하는 handler를 위한
 것입니다. `route_agui`가 바로 이것에 기본값을 채워 넣은 것입니다.
 
 ```rust
-use ag_ui_axum::SseResponse;
-use ag_ui_core::{RunAgentInput, RunOutcome};
-use ag_ui_server::{Agent, Result, RunContext, Runner};
+use ag_ui::axum::SseResponse;
+use ag_ui::{RunAgentInput, RunOutcome};
+use ag_ui::serve::{Agent, Result, RunContext, Runner};
 
 struct Greeter;
 
@@ -306,12 +306,12 @@ tower layer는 `Service`를 감쌉니다. 그래서 `Request`와 `Response`를 �
 
 ## API
 
-- [`ag_ui_axum::RouterExt`](/ag-ui-rust/api/ag_ui_axum/trait.RouterExt.html)와
-  [`AgentEndpoint`](/ag-ui-rust/api/ag_ui_axum/struct.AgentEndpoint.html)
-- [`ag_ui_axum::AgUiInput`](/ag-ui-rust/api/ag_ui_axum/struct.AgUiInput.html)
-- [`ag_ui_axum::SseResponse`](/ag-ui-rust/api/ag_ui_axum/struct.SseResponse.html)와
-  [`negotiate`](/ag-ui-rust/api/ag_ui_axum/fn.negotiate.html)
-- [`ag_ui_axum::Error`](/ag-ui-rust/api/ag_ui_axum/enum.Error.html)
+- [`ag_ui::axum::RouterExt`](/ag-ui-rust/api/ag_ui/axum/trait.RouterExt.html)와
+  [`AgentEndpoint`](/ag-ui-rust/api/ag_ui/axum/struct.AgentEndpoint.html)
+- [`ag_ui::axum::AgUiInput`](/ag-ui-rust/api/ag_ui/axum/struct.AgUiInput.html)
+- [`ag_ui::axum::SseResponse`](/ag-ui-rust/api/ag_ui/axum/struct.SseResponse.html)와
+  [`negotiate`](/ag-ui-rust/api/ag_ui/axum/fn.negotiate.html)
+- [`ag_ui::axum::Error`](/ag-ui-rust/api/ag_ui/axum/enum.Error.html)
 - 직접 transport를 만들 때를 위한
-  [`ag_ui_server::Runner`](/ag-ui-rust/api/ag_ui_server/struct.Runner.html)
+  [`ag_ui::serve::Runner`](/ag-ui-rust/api/ag_ui/serve/struct.Runner.html)
 - wire 반대편: [transport](/ag-ui-rust/ko/client/transports/)

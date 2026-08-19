@@ -17,7 +17,7 @@ result, and it does not tell you that it is one.
 That matters here more than in most workspaces, because a large part of what
 this one proves lives in doctests: every crate README, the workspace quickstart,
 every Rust snippet on this documentation site, and — in
-`crates/ag-ui-server/src/emit/mod.rs` — the `compile_fail` example that is the
+`crates/ag-ui/src/serve/emit/mod.rs` — the `compile_fail` example that is the
 only executable proof of the typestate guarantee
 [Design commitments](/ag-ui-rust/design/commitments/) sells as a headline
 feature. Weaken the emitter API and nextest stays green.
@@ -56,8 +56,8 @@ the receiving end of its event stream; after calling your agent's code,
 everything it emitted is already queued, and `drain` takes it:
 
 ```rust
-use ag_ui_core::{Event, RunAgentInput, TextMessageRole};
-use ag_ui_server::{Result, RunContext};
+use ag_ui::{Event, RunAgentInput, TextMessageRole};
+use ag_ui::serve::{Result, RunContext};
 
 fn greet(ctx: &mut RunContext<()>) -> Result<()> {
     let mut message = ctx.assistant_message()?;
@@ -94,7 +94,7 @@ questions.
 
 | Tier | What it proves | Runs |
 | --- | --- | --- |
-| **Deterministic E2E** | The protocol plumbing is correct: full event ordering, state deltas and the human-in-the-loop round trip, driven over real HTTP by `ag-ui-client` against a real axum server. Plus the LLM mapping itself, driven from recorded SSE frames. | Always. The CI gate. |
+| **Deterministic E2E** | The protocol plumbing is correct: full event ordering, state deltas and the human-in-the-loop round trip, driven over real HTTP by `ag_ui::client` against a real axum server. Plus the LLM mapping itself, driven from recorded SSE frames. | Always. The CI gate. |
 | **Live smoke** | A real streaming model is reachable, maps onto AG-UI events correctly, and the SDK genuinely depends on no LLM crate. | `#[ignore]`, only when a key or a local endpoint is configured. Never a CI gate. |
 
 The deterministic tier uses a scripted mock agent and recorded model frames, so
@@ -239,7 +239,7 @@ timer, and any of them can be triggered by hand.
 | `feature matrix` | Fifteen `cargo check --all-targets` runs: every feature alone, and every crate with its defaults off. |
 | `MSRV 1.85` | `cargo check --workspace --all-features --all-targets` on 1.85 — the first compiler that understands edition 2024, so there is no slack in the promise. |
 | `docs` | `cargo doc --workspace --all-features --no-deps` with `RUSTDOCFLAGS: -D warnings`. The public API is the product, so a broken intra-doc link is a defect in the deliverable. |
-| `package manifest` | `cargo package --list` for the five crates that carry no `publish = false` — the SDK crates, as against `xtask`, the e2e suite and the examples — asserting each would package its `README.md` and `LICENSE`. Offline: it builds no archive and uploads nothing. |
+| `package manifest` | `cargo package --list` for the two crates that carry no `publish = false` — `ag-ui` and `ag-ui-a2ui`, as against `xtask`, the e2e suite and the examples — asserting each would package its `README.md` and `LICENSE`. Offline: it builds no archive and uploads nothing. |
 | `protocol drift vs upstream` | `cargo run -p xtask -- drift-check`. Offline and deterministic, which is what qualifies it as a required check. |
 | `upstream freshness (scheduled)` | `drift-check --upstream`, weekly. It needs the network, so it is a timer rather than a gate: a rate limit cannot fail it, only real upstream movement can. |
 

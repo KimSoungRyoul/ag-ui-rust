@@ -20,20 +20,18 @@
 //!
 //! `ag-ui-server`'s typestate handles bracket what they open, which is exactly
 //! what a chunk event is defined not to do — there is no `ctx.text_chunk()`,
-//! and two overlapping [`ToolCallHandle`](ag_ui_server::ToolCallHandle)s are a
+//! and two overlapping [`ToolCallHandle`](ag_ui::serve::ToolCallHandle)s are a
 //! borrow-check error by design. Producing provider-shaped output therefore
 //! means dropping to [`RunContext::emit`], which is the documented escape
 //! hatch. See the report: this is a finding, not a complaint about the design.
 
+use ag_ui::axum::RouterExt;
+use ag_ui::serve::{Agent, CancellationToken, Error, Result, RunContext};
+use ag_ui::{Event, Interrupt, MessageId, ResumeStatus, RunOutcome, TextMessageRole, ToolCallId};
 use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
 use ag_ui_a2ui::message::Component;
 use ag_ui_a2ui::toolkit::envelope::wrap_as_operations_envelope;
 use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
-use ag_ui_axum::RouterExt;
-use ag_ui_core::{
-    Event, Interrupt, MessageId, ResumeStatus, RunOutcome, TextMessageRole, ToolCallId,
-};
-use ag_ui_server::{Agent, CancellationToken, Error, Result, RunContext};
 use axum::Router;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -180,7 +178,7 @@ fn chunked_call(ctx: &mut RunContext<Board>) -> Result<()> {
 /// Two calls in flight at once, their events interleaved by id.
 ///
 /// Legal on the wire and legal for the applier, and *unwritable* with the
-/// typestate handles: two open [`ToolCallHandle`](ag_ui_server::ToolCallHandle)s
+/// typestate handles: two open [`ToolCallHandle`](ag_ui::serve::ToolCallHandle)s
 /// do not compile. Hence the raw emits.
 fn parallel_calls(ctx: &mut RunContext<Board>) -> Result<()> {
     let (first, second) = (ctx.new_tool_call_id(), ctx.new_tool_call_id());
@@ -407,10 +405,10 @@ pub fn router(agent: Awkward) -> Router {
 /// The server's own verifier will not emit a malformed stream — that is what it
 /// is for — so the only way to hand the *client's* verifier something to reject
 /// is to frame the bytes here, the way a producer in another language does.
-/// [`SseFormatter`](ag_ui_core::SseFormatter) is the same encoder the real
+/// [`SseFormatter`](ag_ui::SseFormatter) is the same encoder the real
 /// endpoint uses; only the ordering is wrong.
 async fn raw(axum::extract::Path(scenario): axum::extract::Path<String>) -> Response {
-    use ag_ui_core::SseFormatter;
+    use ag_ui::SseFormatter;
 
     let formatter = SseFormatter::new();
     let mut body = String::new();
