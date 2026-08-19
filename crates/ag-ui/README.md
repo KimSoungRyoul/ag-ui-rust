@@ -1,15 +1,21 @@
 # ag-ui
 
-An independent Rust SDK for the [AG-UI protocol](https://github.com/ag-ui-protocol/ag-ui) —
-hosting an agent and consuming one.
+A Rust SDK for the [AG-UI protocol](https://github.com/ag-ui-protocol/ag-ui) — hosting an
+agent and consuming one.
 
 AG-UI is the protocol between a user-facing application and an agent backend. A run is a
 stream of events: the agent opens messages, streams text and reasoning, calls tools,
 publishes state, and finishes — or pauses for human input.
 
-> **Not an official AG-UI SDK.** This is not affiliated with or endorsed by the AG-UI
-> protocol organisation. It is a separate implementation that tracks the protocol's
-> TypeScript schemas, with a drift check in CI that fails the build when they move.
+> **Goal: to become the official AG-UI Rust SDK.** It is not that today — this is an
+> independent implementation, neither affiliated with nor endorsed by the AG-UI protocol
+> organisation, and adoption is that organisation's call rather than this project's.
+>
+> What it is doing in the meantime is holding itself to what an official SDK would have to
+> be: all 33 event types, both halves of the protocol, and a drift check in CI that fails
+> the build when upstream's event set moves. The
+> [design notes](https://github.com/KimSoungRyoul/ag-ui-rust/blob/main/docs/DESIGN.md) set
+> out the gap it is closing and how each claim is enforced.
 
 ```toml
 [dependencies]

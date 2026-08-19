@@ -1,6 +1,6 @@
 [package]
 name = "ag-ui"
-description = "An independent Rust SDK for the AG-UI protocol: protocol types and wire encoding, a server runtime for hosting an agent, and a client runtime for consuming one. Not affiliated with the AG-UI protocol organisation."
+description = "A Rust SDK for the AG-UI protocol: protocol types and wire encoding, a server runtime for hosting an agent, and a client runtime for consuming one. Working toward becoming the official AG-UI Rust SDK; not affiliated with the AG-UI protocol organisation today."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

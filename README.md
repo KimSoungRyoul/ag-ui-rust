@@ -13,6 +13,14 @@ human at all. Independent Rust takes have appeared since, so this is not the onl
 `docs/DESIGN.md` sets out what this one holds itself to instead. The server story is the
 priority here.
 
+**The goal is to become the official AG-UI Rust SDK.** It is not that today — this project
+is not affiliated with or endorsed by the AG-UI protocol organisation, and adoption is
+that organisation's call rather than this one's. What it can do in the meantime is hold
+itself to what an official SDK would have to be, and make each of those claims something a
+test enforces rather than something a README asserts: all 33 event types, both halves of
+the protocol, ordering verified on the server, and a drift check that fails CI when
+upstream's event set moves.
+
 ## Crates
 
 Two of them. `ag-ui` is the SDK; which half of the protocol you compile is a feature.
