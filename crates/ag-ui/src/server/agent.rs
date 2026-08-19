@@ -14,8 +14,8 @@ use crate::RunOutcome;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::serve::context::RunContext;
-use crate::serve::error::Result;
+use crate::server::context::RunContext;
+use crate::server::error::Result;
 
 /// What a run's shared state must be.
 ///
@@ -36,7 +36,7 @@ impl<T> AgentState for T where T: Serialize + DeserializeOwned + Default + Send 
 ///
 /// ```
 /// use ag_ui::RunOutcome;
-/// use ag_ui::serve::{Agent, Result, RunContext};
+/// use ag_ui::server::{Agent, Result, RunContext};
 ///
 /// struct Echo;
 ///
@@ -115,7 +115,7 @@ impl<A: Agent> DynAgent for A {
 ///
 /// ```
 /// # use ag_ui::RunOutcome;
-/// # use ag_ui::serve::{Agent, BoxAgent, Result, RunContext};
+/// # use ag_ui::server::{Agent, BoxAgent, Result, RunContext};
 /// struct Fixed(&'static str);
 ///
 /// impl Agent for Fixed {

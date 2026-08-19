@@ -5,7 +5,7 @@
 //! use axum::Router;
 //! use axum::routing::get;
 //! # use ag_ui::RunOutcome;
-//! # use ag_ui::serve::{Agent, Result, RunContext};
+//! # use ag_ui::server::{Agent, Result, RunContext};
 //! # struct CartAgent;
 //! # impl Agent for CartAgent {
 //! #     type State = ();
@@ -21,7 +21,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::serve::{Agent, Runner, StreamTransformer, TransformerChain};
+use crate::server::{Agent, Runner, StreamTransformer, TransformerChain};
 use axum::Router;
 use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
@@ -42,11 +42,11 @@ type TransformerFactory = Arc<dyn Fn(&mut TransformerChain) + Send + Sync>;
 ///
 /// ```
 /// use ag_ui::axum::{AgentEndpoint, RouterExt};
-/// use ag_ui::serve::FilterToolCalls;
+/// use ag_ui::server::FilterToolCalls;
 /// use axum::Router;
 /// use std::time::Duration;
 /// # use ag_ui::RunOutcome;
-/// # use ag_ui::serve::{Agent, Result, RunContext};
+/// # use ag_ui::server::{Agent, Result, RunContext};
 /// # struct CartAgent;
 /// # impl Agent for CartAgent {
 /// #     type State = ();
@@ -82,8 +82,8 @@ impl<A> AgentEndpoint<A> {
     ///
     /// # Why a closure and not a transformer
     ///
-    /// A [`StreamTransformer`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/transform/trait.StreamTransformer.html) takes `&mut self` because a useful one is a
-    /// state machine — [`FilterToolCalls`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/transform/struct.FilterToolCalls.html)
+    /// A [`StreamTransformer`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/transform/trait.StreamTransformer.html) takes `&mut self` because a useful one is a
+    /// state machine — [`FilterToolCalls`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/transform/struct.FilterToolCalls.html)
     /// remembers which call ids it dropped. One instance shared across
     /// concurrent runs would leak one run's state into another, so the endpoint
     /// stores the recipe and builds a fresh chain per request.
@@ -102,7 +102,7 @@ impl<A> AgentEndpoint<A> {
 
     /// Echoes the request body back on `RUN_STARTED`.
     ///
-    /// See [`Runner::echo_input`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/run/struct.Runner.html#method.echo_input). Off by default — it is the largest payload
+    /// See [`Runner::echo_input`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/run/struct.Runner.html#method.echo_input). Off by default — it is the largest payload
     /// in the protocol.
     #[must_use]
     pub fn echo_input(mut self, echo: bool) -> Self {

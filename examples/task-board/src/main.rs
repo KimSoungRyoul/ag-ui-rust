@@ -1,4 +1,4 @@
-//! The CLI: `serve` hosts the agent, `chat` talks to it.
+//! The CLI: `server` hosts the agent, `chat` talks to it.
 //!
 //! ```text
 //! task-board serve [--port 8080] [--llm]
@@ -23,7 +23,7 @@ const DEFAULT_URL: &str = "http://127.0.0.1:8080/agent";
 /// The thread `chat` joins unless told otherwise. Reused on purpose: a second
 /// `chat` against the same server continues the same conversation.
 const DEFAULT_THREAD: &str = "workshop";
-/// Where `serve` binds unless told otherwise.
+/// Where `server` binds unless told otherwise.
 const DEFAULT_PORT: u16 = 8080;
 
 #[tokio::main]
@@ -44,7 +44,7 @@ async fn main() -> ExitCode {
     }
 }
 
-/// `serve` — host the agent.
+/// `server` — host the agent.
 async fn serve(args: impl Iterator<Item = String>) -> ExitCode {
     let mut port = DEFAULT_PORT;
     let mut llm = false;

@@ -10,7 +10,7 @@
 mod common;
 
 use ag_ui::client::{Session, Update};
-use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::server::{Agent, Error, Result, RunContext};
 use ag_ui::{Message, RunOutcome};
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::constants::{

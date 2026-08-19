@@ -68,10 +68,10 @@
 //!
 //! It is called `RemoteAgent` and not `Agent` because the other half of this
 //! SDK already owns that word from the other side:
-//! [`crate::serve::Agent`] is the trait you implement to *be* an agent, and an
+//! [`crate::server::Agent`] is the trait you implement to *be* an agent, and an
 //! agent that calls another agent imports both.
 //!
-//! [`crate::serve::Agent`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/agent/trait.Agent.html
+//! [`crate::server::Agent`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/agent/trait.Agent.html
 //!
 //! [`Session`] is the high level: a thread, its accumulated messages, and typed
 //! state. [`session.send(text)`](Session::send) yields [`Update`]s — "this

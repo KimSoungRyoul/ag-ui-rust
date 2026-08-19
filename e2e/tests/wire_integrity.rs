@@ -9,7 +9,7 @@
 mod common;
 
 use ag_ui::client::{Session, Update};
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use ag_ui::{Event, Message, PatchOperation, RunOutcome};
 use common::{serve, transport};
 use futures_util::StreamExt as _;

@@ -17,7 +17,7 @@ result, and it does not tell you that it is one.
 That matters here more than in most workspaces, because a large part of what
 this one proves lives in doctests: every crate README, the workspace quickstart,
 every Rust snippet on this documentation site, and — in
-`crates/ag-ui/src/serve/emit/mod.rs` — the `compile_fail` example that is the
+`crates/ag-ui/src/server/emit/mod.rs` — the `compile_fail` example that is the
 only executable proof of the typestate guarantee
 [Design commitments](/ag-ui-rust/design/commitments/) sells as a headline
 feature. Weaken the emitter API and nextest stays green.
@@ -57,7 +57,7 @@ everything it emitted is already queued, and `drain` takes it:
 
 ```rust
 use ag_ui::{Event, RunAgentInput, TextMessageRole};
-use ag_ui::serve::{Result, RunContext};
+use ag_ui::server::{Result, RunContext};
 
 fn greet(ctx: &mut RunContext<()>) -> Result<()> {
     let mut message = ctx.assistant_message()?;

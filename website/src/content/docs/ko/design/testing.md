@@ -16,7 +16,7 @@ cargo test --doc --workspace --all-features
 
 이 workspace에서는 그것이 특히 중요합니다. 여기서 증명되는 것의 상당 부분이
 doctest에 있기 때문입니다. crate별 README, workspace quickstart, 이 문서 사이트의
-모든 Rust snippet이 그렇습니다. `crates/ag-ui/src/serve/emit/mod.rs`의
+모든 Rust snippet이 그렇습니다. `crates/ag-ui/src/server/emit/mod.rs`의
 `compile_fail` 예제도 그렇습니다. 그것은
 [설계 원칙](/ag-ui-rust/ko/design/commitments/)이 대표 기능으로 내세우는 typestate
 보증의, 유일한 실행 가능한 증명입니다. emitter API를 느슨하게 만들어도 nextest는
@@ -56,7 +56,7 @@ test할 수 있습니다. `RunContext::new`는 context와 그 event stream의 �
 
 ```rust
 use ag_ui::{Event, RunAgentInput, TextMessageRole};
-use ag_ui::serve::{Result, RunContext};
+use ag_ui::server::{Result, RunContext};
 
 fn greet(ctx: &mut RunContext<()>) -> Result<()> {
     let mut message = ctx.assistant_message()?;

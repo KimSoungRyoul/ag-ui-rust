@@ -1,6 +1,6 @@
 //! Serve an [AG-UI] agent from an [axum] router.
 //!
-//! [`ag-ui-server`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/index.html) turns an [`Agent`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/agent/trait.Agent.html) into a
+//! [`ag_ui::server`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/index.html) turns an [`Agent`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/agent/trait.Agent.html) into a
 //! stream of events and stops there, on purpose: it has no executor and no web
 //! framework, so it builds for wasm. This crate is the other half — the POST
 //! endpoint, the `text/event-stream` body, content negotiation, and telling the
@@ -12,7 +12,7 @@
 //! ```
 //! use ag_ui::axum::RouterExt;
 //! use ag_ui::{RunAgentInput, RunOutcome};
-//! use ag_ui::serve::{Agent, Result, RunContext};
+//! use ag_ui::server::{Agent, Result, RunContext};
 //! use axum::Router;
 //! use axum::routing::get;
 //!
@@ -73,7 +73,7 @@
 //! The one case with no good answer is a *panicking* agent. It unwinds through
 //! hyper's connection task and the client sees a truncated stream, because the
 //! `200` has already been sent and there is no status left to change. Return
-//! [`Err`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/error/enum.Error.html#method.agent) instead; reach for
+//! [`Err`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/error/enum.Error.html#method.agent) instead; reach for
 //! `tower_http::catch_panic` only for the panics you did not plan.
 //!
 //! # Cancellation on disconnect
@@ -83,17 +83,17 @@
 //! That much is automatic. What is not automatic is telling everything the run
 //! reached *outside* itself: a spawned tool call, an in-flight model request.
 //! So the body also holds a guard that trips the run's
-//! [`CancellationToken`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/cancel/struct.CancellationToken.html) on drop, and disarms
+//! [`CancellationToken`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/cancel/struct.CancellationToken.html) on drop, and disarms
 //! itself if the run got to finish. An agent sees it through
-//! [`RunContext::is_cancelled`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/context/struct.RunContext.html#method.is_cancelled),
-//! [`until_cancelled`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/context/struct.RunContext.html#method.until_cancelled), or simply by
+//! [`RunContext::is_cancelled`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.is_cancelled),
+//! [`until_cancelled`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.until_cancelled), or simply by
 //! using `?` on its emits — every emit after cancellation fails.
 //!
 //! # Why there is no `AgUiLayer`
 //!
 //! A tower layer wraps a `Service`, so it sees a `Request` and a `Response` —
 //! at that point the events have already been serialized into an SSE body.
-//! Applying a [`StreamTransformer`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/transform/trait.StreamTransformer.html) there
+//! Applying a [`StreamTransformer`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/transform/trait.StreamTransformer.html) there
 //! would mean parsing the frames back into events, transforming, and
 //! re-encoding: slower, lossy at the edges, and it would silently mangle the
 //! body of any *other* route the layer happened to cover.

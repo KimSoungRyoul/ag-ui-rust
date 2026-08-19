@@ -25,7 +25,7 @@ Two of them. `ag-ui` is the SDK; which half of the protocol you compile is a fea
 | Crate / feature | What it is |
 | --- | --- |
 | `ag-ui` | Protocol types, all 33 event variants, and wire encoding. `serde` + `serde_json` only. Always compiled. |
-| ↳ `serve` | Host an agent: `Agent` trait, typestate event emitters, automatic state deltas, protocol verification. Executor-agnostic. |
+| ↳ `server` | Host an agent: `Agent` trait, typestate event emitters, automatic state deltas, protocol verification. Executor-agnostic. |
 | ↳ `client` | Consume a remote agent: transport, event application, materialised messages and state. |
 | ↳ `http` | The reqwest transport for `client`. |
 | ↳ `axum` | Mount an agent on an axum router. The only feature that pulls in tokio. |
@@ -33,8 +33,8 @@ Two of them. `ag-ui` is the SDK; which half of the protocol you compile is a fea
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.1", features = ["axum"] }   # host an agent
-ag-ui = { version = "0.1", features = ["http"] }   # or consume one
+ag-ui = { version = "0.2", features = ["axum"] }   # host an agent
+ag-ui = { version = "0.2", features = ["http"] }   # or consume one
 ```
 
 > `ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are an earlier, unrelated
@@ -52,7 +52,7 @@ Serving an agent. Implement `Agent`, mount it, and the endpoint speaks AG-UI:
 ```rust
 use ag_ui::axum::RouterExt;
 use ag_ui::RunOutcome;
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use axum::Router;
 
 struct Greeter;
@@ -131,7 +131,7 @@ because .NET has a blessed chat abstraction. Rust does not — the ecosystem is 
 `async-openai`, `rig-core`, and `genai`. So this SDK depends on no LLM crate at all. Bring
 your own client; implement `Agent`.
 
-**Executor-agnostic below the web binding.** The protocol types and the `serve` and `client`
+**Executor-agnostic below the web binding.** The protocol types and the `server` and `client`
 runtimes use `futures` primitives rather than tokio, so wasm targets and non-tokio executors
 keep working. tokio enters with the `axum` feature and nowhere else. CI enforces this two
 ways: by building each feature for `wasm32-unknown-unknown`, and — because tokio itself
@@ -172,7 +172,7 @@ cargo test --doc --workspace --all-features
 **`cargo nextest` does not run doctests.** It says nothing about them — it does not skip
 them loudly, it never sees them — so a green nextest run is a partial result. A lot of what
 this workspace proves lives in doctests: every crate README, the quickstart above, and the
-`compile_fail` example in `crates/ag-ui/src/serve/emit/mod.rs` that is the only executable
+`compile_fail` example in `crates/ag-ui/src/server/emit/mod.rs` that is the only executable
 proof that two overlapping message handles fail to compile. Weaken the emitter API and
 nextest stays green.
 

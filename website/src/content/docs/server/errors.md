@@ -10,7 +10,7 @@ wrong — never a panic, and never a body that simply stops.
 ```rust
 // src/agent.rs
 use ag_ui::{Event, RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Error, Result, RunContext, run};
+use ag_ui::server::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Flaky;
@@ -45,7 +45,7 @@ needs one `map_err(Error::agent)` and nothing else.
 
 ## The variants
 
-`ag_ui::serve::Error` is what every method in the crate returns, through the
+`ag_ui::server::Error` is what every method in the crate returns, through the
 `Result<T, E = Error>` alias. Each variant has a stable code that lands on the `RUN_ERROR`
 event:
 
@@ -84,9 +84,9 @@ server, where the bug is caused rather than three network hops downstream:
 
 ```rust
 use ag_ui::{Event, RunAgentInput};
-use ag_ui::serve::{Error, RunContext, Rule};
+use ag_ui::server::{Error, RunContext, Rule};
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     // Content for a message that was never started.
@@ -147,7 +147,7 @@ fails**, so the next `?` unwinds the run:
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Result, RunContext, run};
+use ag_ui::server::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Chatty;
@@ -204,7 +204,7 @@ flight is what cancellation is meant to stop paying for:
 
 ```rust
 use ag_ui::{RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::server::{Agent, Error, Result, RunContext};
 
 struct Slow;
 
@@ -227,7 +227,7 @@ async fn call_the_model() -> String {
 }
 
 #[tokio::main]
-async fn main() -> ag_ui::serve::Result<()> {
+async fn main() -> ag_ui::server::Result<()> {
     let (ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let answer = ctx.until_cancelled(call_the_model()).await;
@@ -263,12 +263,12 @@ connection ends.
 
 ## API
 
-- [`ag_ui::serve::Error`](/ag-ui-rust/api/ag_ui/serve/enum.Error.html) and
-  [`Result`](/ag-ui-rust/api/ag_ui/serve/type.Result.html)
-- [`ag_ui::serve::Rule`](/ag-ui-rust/api/ag_ui/serve/enum.Rule.html) and
-  [`VerificationError`](/ag-ui-rust/api/ag_ui/serve/struct.VerificationError.html)
-- [`ag_ui::serve::verify`](/ag-ui-rust/api/ag_ui/serve/verify/index.html) — the state
+- [`ag_ui::server::Error`](/ag-ui-rust/api/ag_ui/server/enum.Error.html) and
+  [`Result`](/ag-ui-rust/api/ag_ui/server/type.Result.html)
+- [`ag_ui::server::Rule`](/ag-ui-rust/api/ag_ui/server/enum.Rule.html) and
+  [`VerificationError`](/ag-ui-rust/api/ag_ui/server/struct.VerificationError.html)
+- [`ag_ui::server::verify`](/ag-ui-rust/api/ag_ui/server/verify/index.html) — the state
   machine, rule by rule
-- [`ag_ui::serve::CancellationToken`](/ag-ui-rust/api/ag_ui/serve/struct.CancellationToken.html)
-  and [`Cancelled`](/ag-ui-rust/api/ag_ui/serve/struct.Cancelled.html)
+- [`ag_ui::server::CancellationToken`](/ag-ui-rust/api/ag_ui/server/struct.CancellationToken.html)
+  and [`Cancelled`](/ag-ui-rust/api/ag_ui/server/struct.Cancelled.html)
 - [Feature flags](/ag-ui-rust/reference/features/) for what `verify` costs and removes

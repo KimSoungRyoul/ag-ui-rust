@@ -156,17 +156,17 @@ impl From<RunAgentInput> for RunParams {
 /// transport, an in-process agent, or a recorded fixture substitutes without
 /// anything above noticing.
 ///
-/// # Not [`crate::serve::Agent`]
+/// # Not [`crate::server::Agent`]
 ///
 /// The two crates sit on opposite ends of the same wire, and the word "agent"
 /// means the opposite thing at each end, so they do not share a name.
-/// [`crate::serve::Agent`] is a *trait you implement* to be an agent;
+/// [`crate::server::Agent`] is a *trait you implement* to be an agent;
 /// `RemoteAgent` is a *handle you hold* onto someone else's. An agent that calls
 /// another agent — the composition case — needs both in one file, and
 /// `impl Agent for X { … self.upstream: RemoteAgent<_> … }` reads correctly
 /// only because they are spelled differently.
 ///
-/// [`crate::serve::Agent`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/agent/trait.Agent.html
+/// [`crate::server::Agent`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/agent/trait.Agent.html
 #[derive(Clone, Debug, Default)]
 pub struct RemoteAgent<T> {
     transport: T,

@@ -4,7 +4,7 @@
 
 	`cargo doc --workspace` writes one directory per crate and no top-level
 	index.html — verified against this workspace: `target/doc/` came back with
-	ag_ui/, ag_ui::serve/ and friends, plus crates.js and static.files/, and
+	ag_ui/, ag_ui::server/ and friends, plus crates.js and static.files/, and
 	nothing to open. rustdoc only emits a root index.html when it documents a
 	single crate. Without this file /ag-ui-rust/api/ is a 404 and the sidebar's
 	"API docs (rustdoc)" entry points at nothing.
@@ -24,9 +24,9 @@
 	page admits to. It is a footnote and should stay one — the two crates above
 	are what a reader came here for.
 
-	Two, not five: `serve`, `client` and `axum` were crates and are now features
+	Two, not five: `server`, `client` and `axum` were crates and are now features
 	of `ag-ui`, so they are modules in that one rustdoc tree rather than trees of
-	their own. Do not add `ag_ui::serve/index.html` links here — that is not a
+	their own. Do not add `ag_ui::server/index.html` links here — that is not a
 	path, and the module pages live under ag_ui/.
 
 	`ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are the stalled

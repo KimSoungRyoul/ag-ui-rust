@@ -19,8 +19,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # The protocol types and SSE framing, plus the server's ordering verifier for
-# anyone who turns `serve` on. `verify` is listed here rather than implied by
-# `serve` so that `default-features = false` can drop it — a feature cannot be
+# anyone who turns `server` on. `verify` is listed here rather than implied by
+# `server` so that `default-features = false` can drop it — a feature cannot be
 # subtracted from the set another feature pulls in.
 default = ["sse", "verify"]
 
@@ -37,13 +37,13 @@ schemars = ["dep:schemars"]
 utoipa = ["dep:utoipa"]
 
 # ---- serve: host an agent ----
-serve = [
+server = [
     "dep:futures-core",
     "dep:futures-channel",
     "dep:futures-util",
     "dep:json-patch",
 ]
-# Protocol ordering verification for `serve`. On by default; cheap in release,
+# Protocol ordering verification for `server`. On by default; cheap in release,
 # and the whole verifier compiles away without it.
 verify = []
 
@@ -56,7 +56,7 @@ client = ["dep:futures-core", "dep:futures-util", "dep:json-patch"]
 http = ["client", "sse", "dep:reqwest"]
 
 # ---- axum: mount a hosted agent on a router ----
-axum = ["serve", "sse", "dep:axum", "dep:tokio", "dep:futures-util"]
+axum = ["server", "sse", "dep:axum", "dep:tokio", "dep:futures-util"]
 
 [dependencies]
 serde.workspace = true

@@ -3,7 +3,7 @@ title: HTTP로 serving
 description: axum router에 agent를 얹는 법. 그리고 그렇게 만들어진 endpoint가 주고받는 요청과 응답.
 ---
 
-`ag_ui::serve`는 [`Agent`](/ag-ui-rust/ko/server/agent/)를 event stream으로 바꾸고 거기서
+`ag_ui::server`는 [`Agent`](/ag-ui-rust/ko/server/agent/)를 event stream으로 바꾸고 거기서
 멈춥니다. 일부러 그렇습니다. executor도 웹 프레임워크도 없어야 wasm으로 빌드됩니다.
 
 `ag_ui::axum`이 나머지 절반입니다. POST endpoint, `text/event-stream` 본문, content
@@ -16,7 +16,7 @@ axum, tower에 의존하는 유일한 crate입니다.
 // src/main.rs
 use ag_ui::axum::RouterExt;
 use ag_ui::RunOutcome;
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use axum::Router;
 use axum::routing::get;
 
@@ -59,7 +59,7 @@ agent를 얹는 일은 `S`에 아무 제약도 더하지 않습니다. axum 자�
 ```rust
 use ag_ui::axum::RouterExt;
 use ag_ui::RunOutcome;
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use axum::Router;
 use std::sync::Arc;
 
@@ -177,7 +177,7 @@ fn main() {
 ```rust
 use ag_ui::axum::{AgentEndpoint, RouterExt};
 use ag_ui::RunOutcome;
-use ag_ui::serve::{Agent, FilterToolCalls, Result, RunContext};
+use ag_ui::server::{Agent, FilterToolCalls, Result, RunContext};
 use axum::Router;
 use std::time::Duration;
 
@@ -256,7 +256,7 @@ fn main() {
 ```rust
 use ag_ui::axum::SseResponse;
 use ag_ui::{RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Result, RunContext, Runner};
+use ag_ui::server::{Agent, Result, RunContext, Runner};
 
 struct Greeter;
 
@@ -313,5 +313,5 @@ tower layer는 `Service`를 감쌉니다. 그래서 `Request`와 `Response`를 �
   [`negotiate`](/ag-ui-rust/api/ag_ui/axum/fn.negotiate.html)
 - [`ag_ui::axum::Error`](/ag-ui-rust/api/ag_ui/axum/enum.Error.html)
 - 직접 transport를 만들 때를 위한
-  [`ag_ui::serve::Runner`](/ag-ui-rust/api/ag_ui/serve/struct.Runner.html)
+  [`ag_ui::server::Runner`](/ag-ui-rust/api/ag_ui/server/struct.Runner.html)
 - wire 반대편: [transport](/ag-ui-rust/ko/client/transports/)

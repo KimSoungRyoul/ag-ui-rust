@@ -43,7 +43,7 @@ The wasm row is five checks, and the feature set on each is part of what is bein
 # .github/workflows/ci.yml, job `executor-agnostic`
 cargo check -p ag-ui   --target wasm32-unknown-unknown --no-default-features
 cargo check -p ag-ui   --target wasm32-unknown-unknown --all-features
-cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features serve,verify,sse
+cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features server,verify,sse
 cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features client,sse
 cargo check -p ag-ui-a2ui   --target wasm32-unknown-unknown --all-features
 ```
@@ -60,7 +60,7 @@ wasm-clean", not as "verified in a browser".
 
 ## Executor-agnostic below the web binding
 
-`ag-ui`, `ag_ui::serve`, and `ag_ui::client` use `futures` primitives rather than tokio's.
+`ag-ui`, `ag_ui::server`, and `ag_ui::client` use `futures` primitives rather than tokio's.
 The emit path is the clearest case: an emitter handle pushes into a
 `futures_channel::mpsc::UnboundedSender` and the transport layer drains it, where the obvious
 alternative would have been `tokio::sync::mpsc`. tokio enters the workspace at `ag_ui::axum` and
@@ -112,7 +112,7 @@ accommodation; the `fetch`-based implementation is yours to write.
 
 The wasm build does **not** prove the tokio ban, and CI does not pretend it does. tokio's `rt`,
 `sync`, `macros`, `io-util`, and `time` features all compile for `wasm32-unknown-unknown`. The
-CI comment records the experiment: adding `tokio.workspace = true` to `ag_ui::serve`'s
+CI comment records the experiment: adding `tokio.workspace = true` to `ag_ui::server`'s
 `[dependencies]` passed every wasm check above. The build stayed green.
 
 So the guarantee is carried by the dependency graph, and CI asserts on the graph directly:
@@ -120,7 +120,7 @@ So the guarantee is carried by the dependency graph, and CI asserts on the graph
 ```sh
 # .github/workflows/ci.yml, job `executor-agnostic`
 cargo tree -p ag-ui   -e normal --prefix none --no-dedupe --all-features
-cargo tree -p ag-ui -e normal --prefix none --no-dedupe --no-default-features --features serve,verify,sse
+cargo tree -p ag-ui -e normal --prefix none --no-dedupe --no-default-features --features server,verify,sse
 cargo tree -p ag-ui-a2ui   -e normal --prefix none --no-dedupe --all-features
 cargo tree -p ag-ui -e normal --prefix none --no-dedupe --no-default-features --features client,sse
 ```
@@ -131,7 +131,7 @@ pointing at the design decision rather than at the grep.
 Three details in those four lines:
 
 `-e normal` excludes dev-dependencies. Tests may use tokio freely, and they do —
-`ag_ui::serve`'s `[dev-dependencies]` pull it in for `#[tokio::test]`. What the commitment is
+`ag_ui::server`'s `[dev-dependencies]` pull it in for `#[tokio::test]`. What the commitment is
 about is what a *consumer* of the crate gets, and that is the normal graph.
 
 `ag_ui::client` is checked with `--no-default-features`, because with `http` on the assertion
@@ -144,10 +144,10 @@ The script avoids `grep -q`. Closing the pipe early would `SIGPIPE` `cargo tree`
 You can run the same check locally:
 
 ```sh
-cargo tree -p ag-ui --no-default-features --features serve,verify,sse -e normal --prefix none --no-dedupe | grep '^tokio v'
+cargo tree -p ag-ui --no-default-features --features server,verify,sse -e normal --prefix none --no-dedupe | grep '^tokio v'
 ```
 
-On this workspace that prints nothing: `ag_ui::serve`'s normal graph is 26 crates including
+On this workspace that prints nothing: `ag_ui::server`'s normal graph is 26 crates including
 itself, and none of them is tokio. The same command against `ag_ui::client --all-features`
 prints `tokio v1.53.1`, reached through `reqwest`; against `ag_ui::client
 --no-default-features` it prints nothing.

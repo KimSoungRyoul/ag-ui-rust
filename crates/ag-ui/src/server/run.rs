@@ -7,7 +7,7 @@
 //!
 //! ```
 //! # use ag_ui::{Event, RunAgentInput, RunOutcome};
-//! # use ag_ui::serve::{Agent, Result, RunContext, run};
+//! # use ag_ui::server::{Agent, Result, RunContext, run};
 //! # use futures_util::StreamExt;
 //! struct Greeter;
 //!
@@ -43,12 +43,12 @@ use futures_channel::mpsc::{self, UnboundedReceiver};
 use futures_core::Stream;
 use futures_util::StreamExt as _;
 
-use crate::serve::agent::Agent;
-use crate::serve::cancel::CancellationToken;
-use crate::serve::context::{RunContext, decode_state};
-use crate::serve::emit::EventSink;
-use crate::serve::error::{Error, Result};
-use crate::serve::transform::{StreamTransformer, TransformerChain};
+use crate::server::agent::Agent;
+use crate::server::cancel::CancellationToken;
+use crate::server::context::{RunContext, decode_state};
+use crate::server::emit::EventSink;
+use crate::server::error::{Error, Result};
+use crate::server::transform::{StreamTransformer, TransformerChain};
 
 /// Runs `agent` against `input` with no transformers and a fresh cancellation
 /// token.
@@ -63,7 +63,7 @@ pub fn run<A: Agent>(agent: A, input: RunAgentInput) -> impl Stream<Item = Resul
 ///
 /// ```
 /// # use ag_ui::{RunAgentInput, RunOutcome};
-/// # use ag_ui::serve::{Agent, FilterToolCalls, Result, RunContext, Runner};
+/// # use ag_ui::server::{Agent, FilterToolCalls, Result, RunContext, Runner};
 /// # struct MyAgent;
 /// # impl Agent for MyAgent {
 /// #     type State = ();

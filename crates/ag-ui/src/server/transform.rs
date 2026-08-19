@@ -13,7 +13,7 @@
 //! call that was dropped.
 //!
 //! ```
-//! # use ag_ui::serve::{FilterToolCalls, TransformerChain, ToolResultToState};
+//! # use ag_ui::server::{FilterToolCalls, TransformerChain, ToolResultToState};
 //! let chain = TransformerChain::new()
 //!     .with(FilterToolCalls::deny(["internal_debug"]))
 //!     .with(ToolResultToState::snapshot("load_document").replacing());
@@ -129,7 +129,7 @@ enum FilterMode {
 ///
 /// ```
 /// # use ag_ui::Event;
-/// # use ag_ui::serve::{FilterToolCalls, StreamTransformer};
+/// # use ag_ui::server::{FilterToolCalls, StreamTransformer};
 /// let mut filter = FilterToolCalls::deny(["secret_tool"]);
 /// assert!(filter.transform(Event::tool_call_start("c1", "secret_tool")).is_empty());
 /// assert!(filter.transform(Event::tool_call_args("c1", "{}")).is_empty());
@@ -241,7 +241,7 @@ enum StateForm {
 ///
 /// ```
 /// # use ag_ui::Event;
-/// # use ag_ui::serve::{StreamTransformer, ToolResultToState};
+/// # use ag_ui::server::{StreamTransformer, ToolResultToState};
 /// let mut promote = ToolResultToState::snapshot("load_document").replacing();
 /// promote.transform(Event::tool_call_start("c1", "load_document"));
 /// let out = promote.transform(Event::tool_call_result("m1", "c1", r#"{"title":"Notes"}"#));

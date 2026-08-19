@@ -6,7 +6,7 @@
 //! RFC 6901 escapes (`/` and `~`) — an unescaped pointer applies the patch to a
 //! *nested* key instead, which nothing but a round trip catches.
 //!
-//! [`StateManager`](ag_ui::serve::StateManager) only ever emits patches of one
+//! [`StateManager`](ag_ui::server::StateManager) only ever emits patches of one
 //! shape, though: a diff against a snapshot it sent itself, first, in the same
 //! run. The protocol allows far more than that, and a producer in another
 //! language emits it — so [`Patcher`] sends the patches by hand, and
@@ -17,7 +17,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use ag_ui::client::{Error as ClientError, RemoteAgent, RunEnd, RunParams, Session, Update};
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use ag_ui::{Event, EventType, PatchOperation, RunOutcome};
 use common::{serve, transport};
 use futures_util::StreamExt as _;

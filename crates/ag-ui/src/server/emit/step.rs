@@ -4,12 +4,12 @@ use std::ops::{Deref, DerefMut};
 
 use crate::{Event, StepName};
 
-use crate::serve::context::RunContext;
-use crate::serve::error::Result;
+use crate::server::context::RunContext;
+use crate::server::error::Result;
 
 /// One open step.
 ///
-/// Created by [`RunContext::step`](crate::serve::RunContext::step). `STEP_STARTED` has
+/// Created by [`RunContext::step`](crate::server::RunContext::step). `STEP_STARTED` has
 /// already gone out; `Drop` emits `STEP_FINISHED`, including on the early
 /// return that a `?` produces.
 ///
@@ -19,14 +19,14 @@ use crate::serve::error::Result;
 ///
 /// ```
 /// # use ag_ui::RunAgentInput;
-/// # use ag_ui::serve::RunContext;
+/// # use ag_ui::server::RunContext;
 /// # let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 /// {
 ///     let mut step = ctx.step("research")?;
 ///     step.say("looking it up")?;   // through Deref
 /// }                                 // STEP_FINISHED here
 /// assert_eq!(events.drain().len(), 5);
-/// # Ok::<(), ag_ui::serve::Error>(())
+/// # Ok::<(), ag_ui::server::Error>(())
 /// ```
 #[derive(Debug)]
 pub struct StepGuard<'a, S> {

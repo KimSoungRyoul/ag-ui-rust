@@ -21,13 +21,13 @@
 //! `RUN_ERROR` is exempt from [`OpenAtFinish`]: a run that blew up mid-message
 //! could not have closed it.
 //!
-//! [`RunEnded`]: crate::serve::Rule::RunEnded
-//! [`DuplicateRunStarted`]: crate::serve::Rule::DuplicateRunStarted
-//! [`DuplicateStart`]: crate::serve::Rule::DuplicateStart
-//! [`NotOpen`]: crate::serve::Rule::NotOpen
-//! [`UnknownId`]: crate::serve::Rule::UnknownId
-//! [`OutOfOrder`]: crate::serve::Rule::OutOfOrder
-//! [`OpenAtFinish`]: crate::serve::Rule::OpenAtFinish
+//! [`RunEnded`]: crate::server::Rule::RunEnded
+//! [`DuplicateRunStarted`]: crate::server::Rule::DuplicateRunStarted
+//! [`DuplicateStart`]: crate::server::Rule::DuplicateStart
+//! [`NotOpen`]: crate::server::Rule::NotOpen
+//! [`UnknownId`]: crate::server::Rule::UnknownId
+//! [`OutOfOrder`]: crate::server::Rule::OutOfOrder
+//! [`OpenAtFinish`]: crate::server::Rule::OpenAtFinish
 //!
 //! # What it lets through
 //!
@@ -57,7 +57,7 @@ mod enabled {
 
     use crate::{Event, MessageId, StepName, ToolCallId};
 
-    use crate::serve::error::{Rule, VerificationError};
+    use crate::server::error::{Rule, VerificationError};
 
     /// Builds a rejection, appending the open-entity dump in debug builds.
     fn reject(
@@ -365,7 +365,7 @@ mod enabled {
 mod disabled {
     use crate::Event;
 
-    use crate::serve::error::VerificationError;
+    use crate::server::error::VerificationError;
 
     /// The `verify` feature is off: every check compiles away.
     #[derive(Debug, Default)]
@@ -389,7 +389,7 @@ mod tests {
     use super::*;
     use crate::{Event, TextMessageRole};
 
-    use crate::serve::error::Rule;
+    use crate::server::error::Rule;
 
     fn verifier() -> Verifier {
         let mut verifier = Verifier::new();

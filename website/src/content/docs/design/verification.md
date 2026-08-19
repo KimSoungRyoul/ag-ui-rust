@@ -17,12 +17,12 @@ Each catches something the others cannot. This page is all three.
 
 ## Layer 1: the borrow checker
 
-The emitters in `ag_ui::serve` are typestate handles. `ctx.assistant_message()`
+The emitters in `ag_ui::server` are typestate handles. `ctx.assistant_message()`
 returns a handle that borrows the run context mutably, so a second overlapping
 block does not compile:
 
 ```rust,compile_fail,E0499
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 
 fn interleave(ctx: &mut RunContext<()>) {
     let mut first = ctx.assistant_message().unwrap();
@@ -34,7 +34,7 @@ fn interleave(ctx: &mut RunContext<()>) {
 ```
 
 That block is `compile_fail`, so this page goes red if it ever starts compiling.
-The same example lives in `crates/ag-ui/src/serve/emit/mod.rs`, and it is the
+The same example lives in `crates/ag-ui/src/server/emit/mod.rs`, and it is the
 only executable proof of the guarantee that
 [Design commitments](/ag-ui-rust/design/commitments/) sells as a headline
 feature. Weaken the emitter API and that doctest goes green, which is a failure.
@@ -68,14 +68,14 @@ three network hops from where it was caused.
 
 ### On the server
 
-`ag_ui::serve` runs an ordering state machine over every event on its way out,
+`ag_ui::server` runs an ordering state machine over every event on its way out,
 before the transport sees it. An emit that breaks a rule returns `Err`, so the
 agent's next `?` unwinds the run and the failure is reported as a `RUN_ERROR`
 naming the rule:
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::{Error, Rule, RunContext};
+use ag_ui::server::{Error, Rule, RunContext};
 
 fn main() {
     let (mut ctx, _events) =
@@ -94,7 +94,7 @@ fn main() {
 }
 ```
 
-[`Rule`](/ag-ui-rust/api/ag_ui/serve/error/enum.Rule.html) is the closed list of
+[`Rule`](/ag-ui-rust/api/ag_ui/server/error/enum.Rule.html) is the closed list of
 what the machine checks:
 
 | Rule | Rejected |
@@ -111,7 +111,7 @@ what the machine checks:
 not have closed it.
 
 Each rejection is a
-[`VerificationError`](/ag-ui-rust/api/ag_ui/serve/error/struct.VerificationError.html)
+[`VerificationError`](/ag-ui-rust/api/ag_ui/server/error/struct.VerificationError.html)
 carrying the offending event type, the rule, and a detail string. Emit content
 for `msg-2` while `msg-1` is the message actually open, and its `Display` reads:
 
@@ -141,12 +141,12 @@ bug that reaches a user.
 If you have measured it and want the lookups back, turn off the `verify` feature.
 The whole state machine is then replaced by a zero-sized type whose `observe` is
 an inlined `Ok(())`. `verify` is in the crate's default set rather than implied
-by `serve`, which is what makes it droppable — a feature cannot be subtracted
+by `server`, which is what makes it droppable — a feature cannot be subtracted
 from the set another feature pulls in:
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.1", default-features = false, features = ["serve", "sse"] }
+ag-ui = { version = "0.2", default-features = false, features = ["server", "sse"] }
 ```
 
 One thing survives that switch. Whether a terminal event has already gone out is

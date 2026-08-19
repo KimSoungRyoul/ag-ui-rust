@@ -229,7 +229,7 @@ agent's future exited. The session stays usable — the next run is a run like a
 
 ## Streams the protocol forbids
 
-`ag_ui::serve` will not emit a malformed stream, which is what it is for. So the fake
+`ag_ui::server` will not emit a malformed stream, which is what it is for. So the fake
 backend's `/raw` endpoint frames the bytes by hand with `SseFormatter`, the way a producer
 in another language does, and the client's own verifier is what has to catch it:
 

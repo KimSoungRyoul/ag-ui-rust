@@ -39,12 +39,12 @@ SDK의 것이고 이 project가 아닙니다. 이 project는 `ag-ui` crate 하�
 :::
 
 crate는 하나이고, protocol의 어느 쪽을 쓸지는 feature로 정합니다. agent라면
-`axum`입니다. `serve`를 함의합니다. 여기에 web server 하나:
+`axum`입니다. `server`를 함의합니다. 여기에 web server 하나:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.1", features = ["axum"] }
+ag-ui = { version = "0.2", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
@@ -54,7 +54,7 @@ client라면 `http`입니다:
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.1", features = ["http"] }
+ag-ui = { version = "0.2", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -78,7 +78,7 @@ event를 emit하고, run이 어떻게 끝났는지를 반환합니다.
 // src/main.rs
 use ag_ui::axum::RouterExt;
 use ag_ui::RunOutcome;
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use axum::Router;
 
 struct Greeter;
@@ -163,14 +163,14 @@ framing을 제대로 다룹니다.
 
 ## port 없이, 같은 run
 
-`ag_ui::axum`은 wrapper입니다. 그 아래에서 `ag_ui::serve::run`이 agent를 event
+`ag_ui::axum`은 wrapper입니다. 그 아래에서 `ag_ui::server::run`이 agent를 event
 `Stream`으로 바꿉니다. 그 event가 누구에게 어떻게 닿는지에는 관여하지 않습니다. 그래서
 agent를 순수한 stream으로 test할 수 있습니다. server도 port도 client도 없이:
 
 ```rust
 // tests/greeter.rs
 use ag_ui::{Event, EventStreamFormatter, EventType, RunAgentInput, RunOutcome, SseFormatter};
-use ag_ui::serve::{Agent, Result, RunContext, run};
+use ag_ui::server::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Greeter;

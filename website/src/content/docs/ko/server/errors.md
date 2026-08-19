@@ -10,7 +10,7 @@ stream입니다. panic도 아니고, 그냥 뚝 끊기는 본문도 아닙니다
 ```rust
 // src/agent.rs
 use ag_ui::{Event, RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Error, Result, RunContext, run};
+use ag_ui::server::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Flaky;
@@ -45,7 +45,7 @@ async fn main() {
 
 ## 배리언트
 
-`ag_ui::serve::Error`는 이 crate의 모든 메서드가 반환하는 타입입니다. `Result<T, E = Error>`
+`ag_ui::server::Error`는 이 crate의 모든 메서드가 반환하는 타입입니다. `Result<T, E = Error>`
 별칭을 통해서 말입니다. 각 배리언트에는 `RUN_ERROR` event에 실리는 안정된 code가 있습니다.
 
 | 배리언트 | code | 언제 나오는가 |
@@ -85,9 +85,9 @@ borrow checker는 겹치는 message 두 개를 막아 줍니다. 그것이 볼 �
 
 ```rust
 use ag_ui::{Event, RunAgentInput};
-use ag_ui::serve::{Error, RunContext, Rule};
+use ag_ui::server::{Error, RunContext, Rule};
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     // 시작된 적 없는 message에 대한 content event.
@@ -147,7 +147,7 @@ transport는 client가 연결을 끊거나 마감 시각이 지나면 token을 �
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Result, RunContext, run};
+use ag_ui::server::{Agent, Result, RunContext, run};
 use futures_util::StreamExt;
 
 struct Chatty;
@@ -204,7 +204,7 @@ cancellation이 그 비용을 멈추려는 대상이기 때문입니다.
 
 ```rust
 use ag_ui::{RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::server::{Agent, Error, Result, RunContext};
 
 struct Slow;
 
@@ -227,7 +227,7 @@ async fn call_the_model() -> String {
 }
 
 #[tokio::main]
-async fn main() -> ag_ui::serve::Result<()> {
+async fn main() -> ag_ui::server::Result<()> {
     let (ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 
     let answer = ctx.until_cancelled(call_the_model()).await;
@@ -264,12 +264,12 @@ runner를 소비하기 전에 말입니다. 그리고 연결이 끝날 때 발�
 
 ## API
 
-- [`ag_ui::serve::Error`](/ag-ui-rust/api/ag_ui/serve/enum.Error.html)와
-  [`Result`](/ag-ui-rust/api/ag_ui/serve/type.Result.html)
-- [`ag_ui::serve::Rule`](/ag-ui-rust/api/ag_ui/serve/enum.Rule.html)과
-  [`VerificationError`](/ag-ui-rust/api/ag_ui/serve/struct.VerificationError.html)
-- [`ag_ui::serve::verify`](/ag-ui-rust/api/ag_ui/serve/verify/index.html) — 규칙 하나하나를
+- [`ag_ui::server::Error`](/ag-ui-rust/api/ag_ui/server/enum.Error.html)와
+  [`Result`](/ag-ui-rust/api/ag_ui/server/type.Result.html)
+- [`ag_ui::server::Rule`](/ag-ui-rust/api/ag_ui/server/enum.Rule.html)과
+  [`VerificationError`](/ag-ui-rust/api/ag_ui/server/struct.VerificationError.html)
+- [`ag_ui::server::verify`](/ag-ui-rust/api/ag_ui/server/verify/index.html) — 규칙 하나하나를
   담은 상태 기계
-- [`ag_ui::serve::CancellationToken`](/ag-ui-rust/api/ag_ui/serve/struct.CancellationToken.html)과
-  [`Cancelled`](/ag-ui-rust/api/ag_ui/serve/struct.Cancelled.html)
+- [`ag_ui::server::CancellationToken`](/ag-ui-rust/api/ag_ui/server/struct.CancellationToken.html)과
+  [`Cancelled`](/ag-ui-rust/api/ag_ui/server/struct.Cancelled.html)
 - `verify`가 무엇을 치르고 무엇을 없애는지는 [feature flag](/ag-ui-rust/ko/reference/features/)

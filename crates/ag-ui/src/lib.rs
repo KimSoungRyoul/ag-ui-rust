@@ -24,13 +24,13 @@
 //! CI job exists to catch.
 //!
 #![cfg_attr(
-    feature = "serve",
-    doc = "- [`serve`] — host an agent. Implement [`serve::Agent`], hand it to",
-    doc = "  [`serve::run()`], and you have a stream a transport can serialize."
+    feature = "server",
+    doc = "- [`server`] — host an agent. Implement [`server::Agent`], hand it to",
+    doc = "  [`server::run()`], and you have a stream a transport can serialize."
 )]
 #![cfg_attr(
-    not(feature = "serve"),
-    doc = "- `serve` *(off in this build)* — host an agent: the `Agent` trait, and",
+    not(feature = "server"),
+    doc = "- `server` *(off in this build)* — host an agent: the `Agent` trait, and",
     doc = "  `run()` to turn one into a stream a transport can serialize."
 )]
 #![cfg_attr(
@@ -53,7 +53,7 @@
 )]
 //!
 //! Each runtime keeps its own `Error` and `Result` under its own module. A
-//! bare [`Error`] is always a protocol error, `ag_ui::serve::Error` is a
+//! bare [`Error`] is always a protocol error, `ag_ui::server::Error` is a
 //! hosting error, and collapsing them into the root would hide a distinction
 //! that matters at every `?`.
 //!
@@ -102,24 +102,24 @@
 //!   `encode::protobuf` module explains why there is no encoder.
 //! - `schemars` — derives `schemars::JsonSchema` on the public types.
 //! - `utoipa` — derives `utoipa::ToSchema` on the public types.
-//! - `serve` — the server runtime: the agent trait, typestate emitters, state
+//! - `server` — the server runtime: the agent trait, typestate emitters, state
 //!   deltas. Executor-agnostic; no tokio.
-//! - `verify` *(default)* — `serve`'s ordering state machine. Off, the whole
+//! - `verify` *(default)* — `server`'s ordering state machine. Off, the whole
 //!   verifier is a zero-sized type whose checks compile away. Listed in
-//!   `default` rather than implied by `serve` so `default-features = false`
+//!   `default` rather than implied by `server` so `default-features = false`
 //!   can drop it.
 //! - `client` — the client runtime, transport-agnostic.
 //! - `http` — adds the reqwest-backed transport to `client`. What most
 //!   consumers want; leave it off for wasm or a custom transport.
-//! - `axum` — mounts a hosted agent on an axum router. Implies `serve` and
+//! - `axum` — mounts a hosted agent on an axum router. Implies `server` and
 //!   `sse`, and is the one feature that pulls in tokio.
 //!
 //! ```toml
 //! [dependencies]
 //! # host an agent behind axum
-//! ag-ui = { version = "0.1", features = ["axum"] }
+//! ag-ui = { version = "0.2", features = ["axum"] }
 //! # or consume one over HTTP
-//! ag-ui = { version = "0.1", features = ["http"] }
+//! ag-ui = { version = "0.2", features = ["http"] }
 //! ```
 //!
 //! [AG-UI protocol]: https://github.com/ag-ui-protocol/ag-ui
@@ -159,14 +159,14 @@ pub mod encode;
 
 // The runtimes. Each carries its own `Error` and `Result`, which is why they
 // stay behind a module path instead of being flattened into the root the way
-// the protocol types are: `ag_ui::Error` is a protocol error, `ag_ui::serve::Error`
+// the protocol types are: `ag_ui::Error` is a protocol error, `ag_ui::server::Error`
 // is a hosting error, and collapsing them would make the distinction invisible.
 #[cfg(feature = "axum")]
 pub mod axum;
 #[cfg(feature = "client")]
 pub mod client;
-#[cfg(feature = "serve")]
-pub mod serve;
+#[cfg(feature = "server")]
+pub mod server;
 
 /// A JSON object — the Rust spelling of TypeScript's `Record<string, any>`.
 ///

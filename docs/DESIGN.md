@@ -105,15 +105,15 @@ registry where three of those names were taken while the question was open.
 
 What is left is one crate per *protocol*:
 
-- **`ag-ui`** — the protocol types at the root, always compiled; `serve`, `client` and `axum`
+- **`ag-ui`** — the protocol types at the root, always compiled; `server`, `client` and `axum`
   behind features. Each runtime keeps its own `Error` under its own module, so `ag_ui::Error`
-  is a protocol error and `ag_ui::serve::Error` is a hosting error.
+  is a protocol error and `ag_ui::server::Error` is a hosting error.
 - **`ag-ui-a2ui`** — A2UI is a different protocol, usable over A2A or MCP with no AG-UI
   anywhere. Its users should not have to depend on a crate named `ag-ui` to reach it, and that
   is a dependency-isolation argument the feature gate cannot make.
 
 The price is the one thing a split does buy and features cannot: cargo unifies features across
-a dependency graph, so if one crate in a build wants `serve` and another wants `client`, both
+a dependency graph, so if one crate in a build wants `server` and another wants `client`, both
 compile. That is a compile-time cost for a mixed graph, not a runtime or correctness one, and
 it is the trade this arrangement accepts.
 
@@ -185,7 +185,7 @@ inventing a constraint the protocol does not have.
 
 Neither the TypeScript SDK (which verifies on the client) nor .NET (which does not verify at
 all) checks event ordering on the server. Emitting `TEXT_MESSAGE_CONTENT` without a preceding
-`START` is a bug that currently surfaces as a confused frontend. `ag_ui::serve` runs an ordering
+`START` is a bug that currently surfaces as a confused frontend. `ag_ui::server` runs an ordering
 state machine, on by default, so it surfaces where it was caused.
 
 ## The offered tool list is a capability list, not an allow-list
@@ -206,7 +206,7 @@ render it as an activity, or report it. What the protocol constrains is the *ord
 checks.
 
 An agent that wants the stricter rule can have it in one line, because
-[`RunContext::tool`](../crates/ag-ui/src/serve/context.rs) returns `None` for anything
+[`RunContext::tool`](../crates/ag-ui/src/server/context.rs) returns `None` for anything
 unoffered. `examples/task-board` does exactly that, but only for the tools it genuinely expects
 the client to run.
 

@@ -55,7 +55,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::server::{Agent, Error, Result, RunContext};
 use ag_ui::{Message, MessageId, RunOutcome, TextMessageRole, Tool, ToolCallId};
 use futures_util::stream::{Stream, StreamExt as _};
 use serde::Deserialize;
@@ -368,7 +368,7 @@ impl Call {
 ///
 /// # Why text streams and calls do not
 ///
-/// A [`MessageHandle`](ag_ui::serve::MessageHandle) borrows the run context
+/// A [`MessageHandle`](ag_ui::server::MessageHandle) borrows the run context
 /// mutably for as long as it lives, so it cannot be opened lazily inside a loop
 /// that also uses the context. The first phase therefore reads frames with
 /// nothing open, until text actually shows up; the second holds the message
@@ -381,7 +381,7 @@ impl Call {
 /// borrow-check error by design. Accumulating first is the only mapping that
 /// keeps interleaved arguments from being spliced into each other.
 ///
-/// [`ToolCallHandle`]: ag_ui::serve::ToolCallHandle
+/// [`ToolCallHandle`]: ag_ui::server::ToolCallHandle
 async fn stream_turn<S, B, E>(ctx: &mut RunContext<()>, stream: S) -> Result<Turn>
 where
     S: Stream<Item = std::result::Result<B, E>> + Unpin,
@@ -947,7 +947,7 @@ mod tests {
 
     /// A run context and its event stream, for driving the mapping without a
     /// network. `RunContext::new` exists for exactly this.
-    fn context() -> (RunContext<()>, ag_ui::serve::EventReceiver) {
+    fn context() -> (RunContext<()>, ag_ui::server::EventReceiver) {
         RunContext::new(RunAgentInput::new("t1", "r1")).expect("an empty state decodes")
     }
 

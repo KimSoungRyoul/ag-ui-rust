@@ -9,11 +9,11 @@ page에도 같은 정보가 있습니다 —
 [`ag_ui_a2ui`](/ag-ui-rust/api/ag_ui_a2ui/index.html).
 
 이 SDK가 dependency를 build 밖에 두는 수단이 feature입니다. crate를 쪼개서 하는 일을
-feature가 합니다. `ag_ui::serve`, `ag_ui::client`, `ag_ui::axum`은 같은 이름의 feature로
+feature가 합니다. `ag_ui::server`, `ag_ui::client`, `ag_ui::axum`은 같은 이름의 feature로
 gating되는 module입니다.
 
 :::note[여기에 의존하는 방법]
-다섯이 아니라 둘입니다. `ag-ui`가 protocol type과 `serve`·`client`·`axum` runtime을
+다섯이 아니라 둘입니다. `ag-ui`가 protocol type과 `server`·`client`·`axum` runtime을
 feature 뒤에 담고, `ag-ui-a2ui`는 따로 남습니다. A2UI는 AG-UI 없이도 쓰는 별개
 protocol이기 때문입니다. crates.io의 `ag-ui-core`, `ag-ui-server`, `ag-ui-client`
 이름은 이전 community SDK의 것이고 이 project가 아닙니다.
@@ -27,18 +27,18 @@ protocol이기 때문입니다. crates.io의 `ag-ui-core`, `ag-ui-server`, `ag-u
 | `ag-ui` | `protobuf` | off | — | binary transport의 media type과 content negotiation. encoder는 없습니다. |
 | `ag-ui` | `schemars` | off | `schemars` | 공개 type에 붙는 `schemars::JsonSchema` derive. |
 | `ag-ui` | `utoipa` | off | `utoipa` | 공개 type에 붙는 `utoipa::ToSchema` derive. |
-| `ag-ui` | `serve` | off | `futures-*`, `json-patch` | `serve` module. agent를 host합니다. |
-| `ag-ui` | `verify` | on | — | `serve`의 runtime ordering state machine. |
+| `ag-ui` | `server` | off | `futures-*`, `json-patch` | `server` module. agent를 host합니다. |
+| `ag-ui` | `verify` | on | — | `server`의 runtime ordering state machine. |
 | `ag-ui` | `client` | off | `futures-*`, `json-patch` | `client` module. agent를 소비합니다. transport를 가리지 않습니다. |
 | `ag-ui` | `http` | off | `reqwest` | `HttpTransport`와 `HttpAgent`. `client`와 `sse`를 함의합니다. |
-| `ag-ui` | `axum` | off | `axum`, `tokio` | `axum` module. `serve`와 `sse`를 함의합니다. |
+| `ag-ui` | `axum` | off | `axum`, `tokio` | `axum` module. `server`와 `sse`를 함의합니다. |
 | `ag-ui-a2ui` | `toolkit` | on | — | agent 쪽 authoring: operation builder, catalog negotiation, prompt assembly, stream parsing, recovery loop. |
 | `ag-ui-a2ui` | `ag-ui` | on | `ag-ui` | AG-UI type과의 interop. `toolkit`을 함의합니다. |
 
-`verify`가 `serve`에 함의되지 않고 `ag-ui`의 default 집합에 있습니다. 그래야 끌 수 있기
+`verify`가 `server`에 함의되지 않고 `ag-ui`의 default 집합에 있습니다. 그래야 끌 수 있기
 때문입니다. 다른 feature가 끌어온 집합에서 feature 하나를 빼낼 수는 없어서,
 `serve = [..., "verify"]`였다면 붙박이가 됩니다. verifier를 compile에서 없애는 build는
-`default-features = false`에 `features = ["serve", "sse"]`입니다.
+`default-features = false`에 `features = ["server", "sse"]`입니다.
 
 열하나 중 dependency를 더하는 것은 여섯입니다. 나머지는 crate가 이미 compile하는 것에 대한
 code gate입니다.
@@ -79,7 +79,7 @@ protocol의 event type 33개 중 18개를 다룹니다.
 필요 없는 일을 위한 dependency이기 때문입니다. protocol type을 기술해야 하는 JSON Schema나
 OpenAPI 문서를 만들 때 켜십시오.
 
-**`ag_ui::serve/verify`.** 끄면 server 쪽 protocol verification을 잃습니다. verifier는 크기
+**`ag_ui::server/verify`.** 끄면 server 쪽 protocol verification을 잃습니다. verifier는 크기
 0인 type이 되고 검사는 compile 과정에서 사라집니다. 그게 핵심입니다. 이 feature는 release
 build에서도 기본이 on입니다. `HashSet` 조회 몇 번까지 되찾고 싶다고 측정으로 확인했을 때
 쓰라고 있는 것입니다. 꺼도 agent가 emit하는 것은 달라지지 않습니다. 달라지는 것은 보고
@@ -107,7 +107,7 @@ message와 A2UI history entry 사이의 `From` 구현, toolkit tool 정의를 of
 ```toml
 # AG-UI 없는 A2UI.
 [dependencies.ag-ui-a2ui]
-version = "0.1"
+version = "0.2"
 default-features = false
 features = ["toolkit"]
 ```
@@ -123,8 +123,8 @@ cargo check --all-targets -p ag-ui      --no-default-features --features sse
 cargo check --all-targets -p ag-ui      --no-default-features --features protobuf
 cargo check --all-targets -p ag-ui      --no-default-features --features schemars
 cargo check --all-targets -p ag-ui      --no-default-features --features utoipa
-cargo check --all-targets -p ag-ui      --no-default-features --features serve
-cargo check --all-targets -p ag-ui      --no-default-features --features serve,verify,sse
+cargo check --all-targets -p ag-ui      --no-default-features --features server
+cargo check --all-targets -p ag-ui      --no-default-features --features server,verify,sse
 cargo check --all-targets -p ag-ui      --no-default-features --features client
 cargo check --all-targets -p ag-ui      --no-default-features --features http
 cargo check --all-targets -p ag-ui      --no-default-features --features axum

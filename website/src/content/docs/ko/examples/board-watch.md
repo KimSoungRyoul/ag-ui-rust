@@ -234,7 +234,7 @@ integration test는 agent의 future가 빠져나온 시점에 그 run의 cancell
 
 ## protocol이 금지하는 stream
 
-`ag_ui::serve`는 잘못된 stream을 emit하지 않습니다. 그것이 그 crate의 존재 이유입니다.
+`ag_ui::server`는 잘못된 stream을 emit하지 않습니다. 그것이 그 crate의 존재 이유입니다.
 그래서 가짜 backend의 `/raw` endpoint는 다른 언어로 짠 producer가 그러듯
 `SseFormatter`로 byte를 손수 감쌉니다. 그것을 잡아야 하는 것은 client 자신의
 verifier입니다:

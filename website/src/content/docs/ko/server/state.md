@@ -15,7 +15,7 @@ event로 나갈지는 알아서 정해집니다.
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ struct Doc {
     notes: Vec<String>,
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<Doc>::new(RunAgentInput::new("t", "r"))?;
 
     // 한 번의 호출로 바꾸고 내보냅니다.
@@ -77,10 +77,10 @@ fn main() -> ag_ui::serve::Result<()> {
 
 ```rust
 use ag_ui::PatchOperation;
-use ag_ui::serve::{StateManager, StatePublish};
+use ag_ui::server::{StateManager, StatePublish};
 use serde_json::json;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let mut states = StateManager::new();
     let notes = "the document the user is editing, at some length";
 
@@ -127,7 +127,7 @@ agent가 들고 시작하는 상태는 `RunAgentInput.state`를 `S`로 역직렬
 
 ```rust
 use ag_ui::RunAgentInput;
-use ag_ui::serve::{Error, RunContext};
+use ag_ui::server::{Error, RunContext};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -160,7 +160,7 @@ message handle과 tool call handle은 run context 자체를 빌리지 않습니�
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -169,7 +169,7 @@ struct Board {
     tasks: Vec<String>,
 }
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<Board>::new(RunAgentInput::new("t", "r"))?;
 
     let mut call = ctx.tool_call("add_task")?;
@@ -228,12 +228,12 @@ run이 끝날 때까지 아무것도 보지 못합니다.
 
 ## API
 
-- [`RunContext::state`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.state),
-  [`state_mut`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.state_mut),
-  [`publish_state`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.publish_state),
-  [`update_state`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.update_state),
-  [`set_state`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.set_state)
-- [`ag_ui::serve::StateManager`](/ag-ui-rust/api/ag_ui/serve/struct.StateManager.html)와
-  [`StatePublish`](/ag-ui-rust/api/ag_ui/serve/enum.StatePublish.html)
+- [`RunContext::state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.state),
+  [`state_mut`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.state_mut),
+  [`publish_state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.publish_state),
+  [`update_state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.update_state),
+  [`set_state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.set_state)
+- [`ag_ui::server::StateManager`](/ag-ui-rust/api/ag_ui/server/struct.StateManager.html)와
+  [`StatePublish`](/ag-ui-rust/api/ag_ui/server/enum.StatePublish.html)
 - [`ag_ui::PatchOperation`](/ag-ui-rust/api/ag_ui/enum.PatchOperation.html)
 - 같은 이야기의 client 쪽: [session](/ag-ui-rust/ko/client/session/)

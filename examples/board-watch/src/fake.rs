@@ -20,13 +20,13 @@
 //!
 //! `ag-ui-server`'s typestate handles bracket what they open, which is exactly
 //! what a chunk event is defined not to do — there is no `ctx.text_chunk()`,
-//! and two overlapping [`ToolCallHandle`](ag_ui::serve::ToolCallHandle)s are a
+//! and two overlapping [`ToolCallHandle`](ag_ui::server::ToolCallHandle)s are a
 //! borrow-check error by design. Producing provider-shaped output therefore
 //! means dropping to [`RunContext::emit`], which is the documented escape
 //! hatch. See the report: this is a finding, not a complaint about the design.
 
 use ag_ui::axum::RouterExt;
-use ag_ui::serve::{Agent, CancellationToken, Error, Result, RunContext};
+use ag_ui::server::{Agent, CancellationToken, Error, Result, RunContext};
 use ag_ui::{Event, Interrupt, MessageId, ResumeStatus, RunOutcome, TextMessageRole, ToolCallId};
 use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
 use ag_ui_a2ui::message::Component;
@@ -178,7 +178,7 @@ fn chunked_call(ctx: &mut RunContext<Board>) -> Result<()> {
 /// Two calls in flight at once, their events interleaved by id.
 ///
 /// Legal on the wire and legal for the applier, and *unwritable* with the
-/// typestate handles: two open [`ToolCallHandle`](ag_ui::serve::ToolCallHandle)s
+/// typestate handles: two open [`ToolCallHandle`](ag_ui::server::ToolCallHandle)s
 /// do not compile. Hence the raw emits.
 fn parallel_calls(ctx: &mut RunContext<Board>) -> Result<()> {
     let (first, second) = (ctx.new_tool_call_id(), ctx.new_tool_call_id());

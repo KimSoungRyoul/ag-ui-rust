@@ -3,10 +3,10 @@
 //! The typed handles make most of these unreachable — which is the point — so
 //! the violations here go through the raw [`RunContext::emit`] escape hatch.
 
-#![cfg(feature = "serve")]
+#![cfg(feature = "server")]
 #![cfg(feature = "verify")]
 
-use ag_ui::serve::{Agent, Error, EventReceiver, Result, Rule, RunContext, run};
+use ag_ui::server::{Agent, Error, EventReceiver, Result, Rule, RunContext, run};
 use ag_ui::{Event, EventType, Interrupt, RunAgentInput, RunOutcome, TextMessageRole};
 use futures_util::StreamExt as _;
 
@@ -85,7 +85,7 @@ fn parallel_tool_calls_and_overlapping_messages_are_accepted() {
 /// well-formed stream. Driven through the handle rather than `emit`, because
 /// the handle reaching the state is the point.
 ///
-/// [`ToolCallHandle::publish_state`]: ag_ui::serve::ToolCallHandle::publish_state
+/// [`ToolCallHandle::publish_state`]: ag_ui::server::ToolCallHandle::publish_state
 #[test]
 fn a_state_delta_may_land_inside_an_open_tool_call() {
     let (mut ctx, mut events) = RunContext::<serde_json::Value>::new(RunAgentInput::new("t", "r"))

@@ -2,7 +2,7 @@
 //!
 //! Everything here happens *before* `RUN_STARTED`. Once the SSE body is open
 //! the status line is already sent, so failures from then on are `RUN_ERROR`
-//! events inside a `200` stream — that is [`crate::serve`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/serve/index.html)'s job, not this
+//! events inside a `200` stream — that is [`crate::server`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/index.html)'s job, not this
 //! module's. What is left is the handful of ways a request can be refused:
 //! a body that is not AG-UI JSON, and an `Accept` header this build cannot
 //! satisfy.

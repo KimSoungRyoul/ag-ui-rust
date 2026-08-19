@@ -20,7 +20,7 @@ AG-UI는 run이 *멈출* 수 있게 해서 이를 표현합니다. agent가 `Suc
 ```rust
 // src/agent.rs
 use ag_ui::{Event, Interrupt, ResumeEntry, ResumeStatus, RunAgentInput, RunOutcome};
-use ag_ui::serve::{Agent, Error, Result, RunContext, run};
+use ag_ui::server::{Agent, Error, Result, RunContext, run};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
@@ -170,10 +170,10 @@ fn main() {
 
 ```rust
 use ag_ui::{ResumeEntry, ResumeStatus, RunAgentInput};
-use ag_ui::serve::RunContext;
+use ag_ui::server::RunContext;
 use serde_json::json;
 
-fn main() -> ag_ui::serve::Result<()> {
+fn main() -> ag_ui::server::Result<()> {
     let mut input = RunAgentInput::new("t", "r");
     input.resume = Some(vec![
         ResumeEntry::resolved("approve-deploy", json!({"build": 42})),
@@ -214,7 +214,7 @@ client는 그것들에 한꺼번에 답해야 합니다.
 
 ```rust
 use ag_ui::{Interrupt, RunOutcome};
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 
 const BUDGET: &str = "approve-budget";
 const DATE: &str = "confirm-date";
@@ -270,5 +270,5 @@ fn main() {
 - [`ag_ui::Interrupt`](/ag-ui-rust/api/ag_ui/struct.Interrupt.html)
 - [`ag_ui::ResumeEntry`](/ag-ui-rust/api/ag_ui/struct.ResumeEntry.html)와
   [`ResumeStatus`](/ag-ui-rust/api/ag_ui/enum.ResumeStatus.html)
-- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/serve/struct.RunContext.html#method.resume_for)
+- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.resume_for)
 - 이 왕복의 client 쪽 절반: [update stream](/ag-ui-rust/ko/client/updates/)

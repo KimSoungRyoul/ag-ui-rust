@@ -10,14 +10,14 @@ use futures_channel::mpsc;
 use futures_util::future::{Either, select};
 use serde_json::Value;
 
-use crate::serve::agent::AgentState;
-use crate::serve::cancel::{CancellationToken, Cancelled};
-use crate::serve::emit::{
+use crate::server::agent::AgentState;
+use crate::server::cancel::{CancellationToken, Cancelled};
+use crate::server::emit::{
     EventReceiver, EventSink, MessageHandle, ReasoningHandle, StepGuard, ToolCallHandle,
 };
-use crate::serve::error::{Error, Result};
-use crate::serve::state::RunState;
-use crate::serve::transform::TransformerChain;
+use crate::server::error::{Error, Result};
+use crate::server::state::RunState;
+use crate::server::transform::TransformerChain;
 
 /// The request, the state, the event sink and the cancellation flag — one
 /// run's whole world.
@@ -28,7 +28,7 @@ use crate::serve::transform::TransformerChain;
 ///
 /// ```
 /// # use ag_ui::RunAgentInput;
-/// # use ag_ui::serve::RunContext;
+/// # use ag_ui::server::RunContext;
 /// # let (mut ctx, _events) = RunContext::<()>::new(RunAgentInput::new("thread-1", "run-1"))?;
 /// assert_eq!(ctx.thread_id().as_str(), "thread-1");
 /// assert!(ctx.messages().is_empty());
@@ -36,7 +36,7 @@ use crate::serve::transform::TransformerChain;
 /// let mut message = ctx.assistant_message()?;
 /// message.delta("Hello")?;
 /// message.end()?;
-/// # Ok::<(), ag_ui::serve::Error>(())
+/// # Ok::<(), ag_ui::server::Error>(())
 /// ```
 #[derive(Debug)]
 pub struct RunContext<S> {
@@ -50,7 +50,7 @@ pub struct RunContext<S> {
 impl<S: AgentState> RunContext<S> {
     /// Builds a context and the receiving half of its event stream.
     ///
-    /// This is the harness for unit-testing an [`Agent`](crate::serve::Agent) without
+    /// This is the harness for unit-testing an [`Agent`](crate::server::Agent) without
     /// the run driver: call the agent's body, then assert on
     /// [`EventReceiver::drain`]. Nothing emits `RUN_STARTED` here — that is the
     /// driver's job, and skipping it lets a test exercise one method in
@@ -91,7 +91,7 @@ impl<S: AgentState> RunContext<S> {
     ///
     /// The first publish of a run is a `STATE_SNAPSHOT`; later ones are a
     /// `STATE_DELTA` unless the patch would be no smaller than the snapshot.
-    /// See [`StateManager`](crate::serve::StateManager).
+    /// See [`StateManager`](crate::server::StateManager).
     pub fn set_state(&mut self, state: &S) -> Result<()> {
         self.state.replace(&mut self.sink, state)
     }
@@ -100,7 +100,7 @@ impl<S: AgentState> RunContext<S> {
     ///
     /// ```
     /// # use ag_ui::RunAgentInput;
-    /// # use ag_ui::serve::RunContext;
+    /// # use ag_ui::server::RunContext;
     /// # use serde::{Deserialize, Serialize};
     /// #[derive(Default, Serialize, Deserialize)]
     /// struct Draft { revision: u32 }
@@ -108,7 +108,7 @@ impl<S: AgentState> RunContext<S> {
     /// # let (mut ctx, _events) = RunContext::<Draft>::new(RunAgentInput::new("t", "r"))?;
     /// ctx.update_state(|draft| draft.revision += 1)?;
     /// assert_eq!(ctx.state().revision, 1);
-    /// # Ok::<(), ag_ui::serve::Error>(())
+    /// # Ok::<(), ag_ui::server::Error>(())
     /// ```
     pub fn update_state(&mut self, update: impl FnOnce(&mut S)) -> Result<()> {
         update(self.state.get_mut());
@@ -161,13 +161,13 @@ impl<S> RunContext<S> {
     ///
     /// ```
     /// # use ag_ui::{RunAgentInput, Message};
-    /// # use ag_ui::serve::RunContext;
+    /// # use ag_ui::server::RunContext;
     /// let mut input = RunAgentInput::new("thread-1", "run-1");
     /// input.messages = vec![Message::user("msg-1", "add milk")];
     /// let (ctx, _events) = RunContext::<()>::new(input)?;
     ///
     /// assert_eq!(ctx.last_user_text().as_deref(), Some("add milk"));
-    /// # Ok::<(), ag_ui::serve::Error>(())
+    /// # Ok::<(), ag_ui::server::Error>(())
     /// ```
     pub fn last_user_text(&self) -> Option<String> {
         self.input
@@ -251,7 +251,7 @@ impl<S> RunContext<S> {
     ///
     /// ```
     /// # use ag_ui::RunAgentInput;
-    /// # use ag_ui::serve::{Error, RunContext};
+    /// # use ag_ui::server::{Error, RunContext};
     /// # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
     /// # rt.block_on(async {
     /// # let (ctx, _events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;

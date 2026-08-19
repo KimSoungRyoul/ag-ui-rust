@@ -46,7 +46,7 @@ Turn `ag-ui` off and the dependency on `ag-ui` goes with it:
 
 ```toml
 [dependencies.ag-ui-a2ui]
-version = "0.1"
+version = "0.2"
 default-features = false
 features = ["toolkit"]
 ```
@@ -107,7 +107,7 @@ use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
 use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
 use ag_ui_a2ui::{Component, wrap_as_operations_envelope};
 use ag_ui::RunOutcome;
-use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::server::{Agent, Error, Result, RunContext};
 use serde_json::json;
 
 struct Merchant;
@@ -134,7 +134,7 @@ impl Agent for Merchant {
 
 `render_a2ui` is a call the agent answers itself. No client ever offered it, because there is
 nothing for a client to execute — the frontend draws the result rather than running the tool.
-This is why `ag_ui::serve` treats `RunAgentInput.tools` as a capability list rather than an
+This is why `ag_ui::server` treats `RunAgentInput.tools` as a capability list rather than an
 allow-list: emitting a call for a name absent from that list is a well-formed stream, and the
 ordering verifier says nothing about it. What the protocol constrains is ordering, and that is
 what gets checked.

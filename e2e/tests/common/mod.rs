@@ -1,6 +1,6 @@
 //! The one piece of shared setup: an agent on a real port.
 //!
-//! Nothing between the two halves of the SDK is mocked here. `serve` binds a
+//! Nothing between the two halves of the SDK is mocked here. `server` binds a
 //! loopback socket, mounts the agent with the real
 //! [`route_agui`](ag_ui::axum::RouterExt::route_agui), and hands back a URL that
 //! `ag-ui-client`'s own HTTP transport connects to. Everything a test asserts on
@@ -9,7 +9,7 @@
 
 use ag_ui::axum::{AgentEndpoint, RouterExt};
 use ag_ui::client::transport::HttpTransport;
-use ag_ui::serve::Agent;
+use ag_ui::server::Agent;
 use axum::Router;
 use tokio::net::TcpListener;
 

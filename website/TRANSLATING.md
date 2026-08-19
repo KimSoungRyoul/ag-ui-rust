@@ -29,7 +29,7 @@ Leave these exactly as they are in English:
 
 | Kind | Examples |
 | --- | --- |
-| Identifiers and paths | `RunContext::assistant_message`, `ag_ui::serve`, `crates/ag-ui/src/event/` |
+| Identifiers and paths | `RunContext::assistant_message`, `ag_ui::server`, `crates/ag-ui/src/event/` |
 | Crate and feature names | `ag_ui::axum`, `verify`, `http`, `toolkit` |
 | Wire values | `TEXT_MESSAGE_START`, `a2ui_operations`, `text/event-stream` |
 | Anything typed into a terminal | `cargo test --doc --workspace --all-features` |

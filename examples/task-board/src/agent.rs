@@ -19,7 +19,7 @@
 //! STEP_FINISHED board
 //! ```
 
-use ag_ui::serve::{Agent, Error, Result, RunContext};
+use ag_ui::server::{Agent, Error, Result, RunContext};
 use ag_ui::{Interrupt, JsonObject, Message, ResumeStatus, RunOutcome};
 use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
 use ag_ui_a2ui::find_prior_surface_in;
@@ -131,7 +131,7 @@ struct Report {
 ///
 /// # Why every branch works while its call is open
 ///
-/// A [`ToolCallHandle`](ag_ui::serve::ToolCallHandle) reaches the run state, so
+/// A [`ToolCallHandle`](ag_ui::server::ToolCallHandle) reaches the run state, so
 /// each branch announces the call, moves the board under it, and only then
 /// reports the result. That is the order a client sees: the call in flight, the
 /// board changing, the result closing it — which for a slow tool is the reason
@@ -275,7 +275,7 @@ fn apply(
 fn offered<'a>(
     ctx: &'a mut RunContext<Board>,
     name: &str,
-) -> Result<ag_ui::serve::ToolCallHandle<'a, Board>> {
+) -> Result<ag_ui::server::ToolCallHandle<'a, Board>> {
     if ctx.tool(name).is_none() {
         return Err(Error::agent(format!("the client offered no {name} tool")));
     }

@@ -9,11 +9,11 @@ page carries the same information —
 [`ag_ui_a2ui`](/ag-ui-rust/api/ag_ui_a2ui/index.html).
 
 Features are how this SDK keeps a dependency out of a build, which is the job a crate split
-would otherwise do. `ag_ui::serve`, `ag_ui::client` and `ag_ui::axum` are modules gated on the
+would otherwise do. `ag_ui::server`, `ag_ui::client` and `ag_ui::axum` are modules gated on the
 features of the same name.
 
 :::note[How to depend on this]
-Two crates, not five: `ag-ui` carries the protocol types plus the `serve`, `client` and
+Two crates, not five: `ag-ui` carries the protocol types plus the `server`, `client` and
 `axum` runtimes behind features, and `ag-ui-a2ui` stays separate because A2UI is a different
 protocol that can be used with no AG-UI at all. The `ag-ui-core`, `ag-ui-server` and
 `ag-ui-client` names on crates.io belong to the earlier community SDK and are not this
@@ -28,18 +28,18 @@ project.
 | `ag-ui` | `protobuf` | off | — | The binary transport's media type and content negotiation. There is no encoder. |
 | `ag-ui` | `schemars` | off | `schemars` | `schemars::JsonSchema` derives on the public types. |
 | `ag-ui` | `utoipa` | off | `utoipa` | `utoipa::ToSchema` derives on the public types. |
-| `ag-ui` | `serve` | off | `futures-*`, `json-patch` | The `serve` module: hosting an agent. |
-| `ag-ui` | `verify` | on | — | `serve`'s runtime ordering state machine. |
+| `ag-ui` | `server` | off | `futures-*`, `json-patch` | The `server` module: hosting an agent. |
+| `ag-ui` | `verify` | on | — | `server`'s runtime ordering state machine. |
 | `ag-ui` | `client` | off | `futures-*`, `json-patch` | The `client` module: consuming an agent, transport-agnostic. |
 | `ag-ui` | `http` | off | `reqwest` | `HttpTransport` and `HttpAgent`. Implies `client` and `sse`. |
-| `ag-ui` | `axum` | off | `axum`, `tokio` | The `axum` module. Implies `serve` and `sse`. |
+| `ag-ui` | `axum` | off | `axum`, `tokio` | The `axum` module. Implies `server` and `sse`. |
 | `ag-ui-a2ui` | `toolkit` | on | — | Agent-side authoring: op builders, catalog negotiation, prompt assembly, stream parsing, the recovery loop. |
 | `ag-ui-a2ui` | `ag-ui` | on | `ag-ui` | Interop with AG-UI types. Implies `toolkit`. |
 
-`verify` sits in `ag-ui`'s default set rather than being implied by `serve`, and that is what
+`verify` sits in `ag-ui`'s default set rather than being implied by `server`, and that is what
 makes it possible to drop: a feature cannot be subtracted from the set another feature pulls
 in, so `serve = [..., "verify"]` would weld it on. `default-features = false` plus
-`features = ["serve", "sse"]` is the build that compiles the verifier away.
+`features = ["server", "sse"]` is the build that compiles the verifier away.
 
 Six of the eleven add a dependency. The rest are code gates over what the crate already
 compiles.
@@ -80,7 +80,7 @@ negotiate the media type, and so the reason sits next to the code.
 something most consumers do not need. Turn one on when you are generating a JSON Schema or an
 OpenAPI document that has to describe the protocol types.
 
-**`ag_ui::serve/verify`.** You lose server-side protocol verification. The verifier becomes a
+**`ag_ui::server/verify`.** You lose server-side protocol verification. The verifier becomes a
 zero-sized type whose checks compile away, which is the point: it is on by default, in release
 builds too, and the feature is there to get the last handful of `HashSet` lookups back if you
 have measured that you want them. Turning it off does not change what your agent emits — it
@@ -109,7 +109,7 @@ or MCP. It implies `toolkit`, because everything it converts lives there.
 ```toml
 # A2UI without AG-UI.
 [dependencies.ag-ui-a2ui]
-version = "0.1"
+version = "0.2"
 default-features = false
 features = ["toolkit"]
 ```
@@ -125,8 +125,8 @@ cargo check --all-targets -p ag-ui      --no-default-features --features sse
 cargo check --all-targets -p ag-ui      --no-default-features --features protobuf
 cargo check --all-targets -p ag-ui      --no-default-features --features schemars
 cargo check --all-targets -p ag-ui      --no-default-features --features utoipa
-cargo check --all-targets -p ag-ui      --no-default-features --features serve
-cargo check --all-targets -p ag-ui      --no-default-features --features serve,verify,sse
+cargo check --all-targets -p ag-ui      --no-default-features --features server
+cargo check --all-targets -p ag-ui      --no-default-features --features server,verify,sse
 cargo check --all-targets -p ag-ui      --no-default-features --features client
 cargo check --all-targets -p ag-ui      --no-default-features --features http
 cargo check --all-targets -p ag-ui      --no-default-features --features axum
@@ -139,7 +139,7 @@ cargo check --all-targets -p ag-ui-a2ui --all-features
 
 Since the runtimes became features, `--all-targets` carries more weight than it did: the
 integration tests are targets of `ag-ui` itself and are gated with `#![cfg(feature = "…")]`,
-so a test that needs `serve` compiles to an empty crate without it. Without `--all-targets`
+so a test that needs `server` compiles to an empty crate without it. Without `--all-targets`
 nothing would notice a gate that names the wrong feature.
 
 Not a powerset. The job's own comment gives the reason: a powerset would be 2⁴ for `ag-ui`

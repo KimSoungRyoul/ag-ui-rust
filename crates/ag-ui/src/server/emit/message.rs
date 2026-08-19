@@ -2,20 +2,20 @@
 
 use crate::{Event, MessageId, TextMessageRole};
 
-use crate::serve::agent::AgentState;
-use crate::serve::emit::EventSink;
-use crate::serve::error::Result;
-use crate::serve::state::RunState;
+use crate::server::agent::AgentState;
+use crate::server::emit::EventSink;
+use crate::server::error::Result;
+use crate::server::state::RunState;
 
 /// One open text message.
 ///
-/// Created by [`RunContext::assistant_message`](crate::serve::RunContext::assistant_message).
+/// Created by [`RunContext::assistant_message`](crate::server::RunContext::assistant_message).
 /// `TEXT_MESSAGE_START` has already gone out by the time you hold one; `Drop`
 /// emits `TEXT_MESSAGE_END` if [`end`](Self::end) was not called.
 ///
 /// ```
 /// # use ag_ui::RunAgentInput;
-/// # use ag_ui::serve::RunContext;
+/// # use ag_ui::server::RunContext;
 /// # let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 /// let mut message = ctx.assistant_message()?;
 /// for word in ["Hello", ", ", "world"] {
@@ -23,7 +23,7 @@ use crate::serve::state::RunState;
 /// }
 /// message.end()?;
 /// assert_eq!(events.drain().len(), 5);
-/// # Ok::<(), ag_ui::serve::Error>(())
+/// # Ok::<(), ag_ui::server::Error>(())
 /// ```
 #[derive(Debug)]
 pub struct MessageHandle<'a, S> {
@@ -61,7 +61,7 @@ impl<'a, S> MessageHandle<'a, S> {
 
     /// Appends text — `TEXT_MESSAGE_CONTENT`.
     ///
-    /// No `.await`: see the [module docs](crate::serve::emit) for why the emit path is
+    /// No `.await`: see the [module docs](crate::server::emit) for why the emit path is
     /// synchronous.
     pub fn delta(&mut self, text: impl Into<String>) -> Result<()> {
         self.sink
@@ -89,7 +89,7 @@ impl<'a, S> MessageHandle<'a, S> {
 
 /// The run's state, reachable while the message is open — an agent that
 /// narrates what it is doing changes both in the same breath. See
-/// [`ToolCallHandle`](crate::serve::ToolCallHandle), where this matters most.
+/// [`ToolCallHandle`](crate::server::ToolCallHandle), where this matters most.
 impl<S: AgentState> MessageHandle<'_, S> {
     /// The typed state, as of the last publish.
     pub fn state(&self) -> &S {

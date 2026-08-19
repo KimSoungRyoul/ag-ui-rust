@@ -154,7 +154,7 @@ evidence — see [Testing](/ag-ui-rust/design/testing/).
 
 ## Executor-agnostic below the web binding
 
-`ag-ui`, `ag_ui::serve` and `ag_ui::client` use `futures` primitives —
+`ag-ui`, `ag_ui::server` and `ag_ui::client` use `futures` primitives —
 notably `futures::channel::mpsc` for the emit path rather than
 `tokio::sync::mpsc`. tokio appears only in `ag_ui::axum`. This keeps wasm targets
 and non-tokio executors viable.
@@ -162,7 +162,7 @@ and non-tokio executors viable.
 CI enforces it two ways, and the second exists because the first is not enough:
 those crates are built for `wasm32-unknown-unknown`, *and* tokio is asserted
 absent from their dependency graphs. tokio's `rt`, `sync`, `macros`, `io-util`
-and `time` features all compile for wasm, so adding `tokio` to `ag_ui::serve`
+and `time` features all compile for wasm, so adding `tokio` to `ag_ui::server`
 passes every wasm check. That was verified by doing exactly that and watching the
 wasm build stay green. The dependency graph is what carries the guarantee, so
 that is what gets asserted.
@@ -237,10 +237,10 @@ that per feature. Independent versioning would have been the other
 justification, and this workspace does not do it — one `workspace.version`,
 everything released together.
 
-So `ag-ui` is one crate: the protocol types always compiled, with `serve`,
+So `ag-ui` is one crate: the protocol types always compiled, with `server`,
 `client` and `axum` behind features of those names. Each runtime keeps its own
 `Error` under its own module, so `ag_ui::Error` is a protocol error and
-`ag_ui::serve::Error` is a hosting error.
+`ag_ui::server::Error` is a hosting error.
 
 `ag-ui-a2ui` stays separate on the isolation argument a feature cannot make:
 A2UI is a different protocol, drivable over A2A or MCP with no AG-UI anywhere,
@@ -250,7 +250,7 @@ Two earlier folds stand for the same reason they always did — the SSE encoder 
 toolkit is a feature of `ag-ui-a2ui`.
 
 The cost is the one thing a split buys and features cannot: cargo unifies
-features across a dependency graph, so a build that wants `serve` in one place
+features across a dependency graph, so a build that wants `server` in one place
 and `client` in another compiles both. That is compile time in a mixed graph,
 not a runtime or correctness cost.
 [The crates](/ag-ui-rust/start/crates/) is the tour.

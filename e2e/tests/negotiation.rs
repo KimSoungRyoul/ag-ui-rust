@@ -11,7 +11,7 @@ mod common;
 
 use ag_ui::RunOutcome;
 use ag_ui::client::{Error as ClientError, HttpAgent, RunEnd, RunParams, Session, Update};
-use ag_ui::serve::{Agent, Result, RunContext};
+use ag_ui::server::{Agent, Result, RunContext};
 use axum::Router;
 use axum::routing::post;
 use common::{serve, transport};

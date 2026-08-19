@@ -54,7 +54,7 @@ impl CancellationToken {
     /// Use it to race an in-flight model call:
     ///
     /// ```
-    /// # use ag_ui::serve::CancellationToken;
+    /// # use ag_ui::server::CancellationToken;
     /// # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
     /// # rt.block_on(async {
     /// let token = CancellationToken::new();

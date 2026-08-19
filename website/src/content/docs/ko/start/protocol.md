@@ -224,7 +224,7 @@ application state는 양쪽이 함께 비추는 자유 형식 JSON입니다. age
 - `STATE_DELTA`는 RFC 6902 JSON Patch를 싣고, 그것에 적용됩니다.
 
 어느 쪽을 보낼지는 protocol 규칙이 아니라 크기 판단입니다. client는 둘 다 처리해야
-합니다. `ag_ui::serve`는 publish할 때마다 정합니다. 첫 번째는 언제나 snapshot입니다.
+합니다. `ag_ui::server`는 publish할 때마다 정합니다. 첫 번째는 언제나 snapshot입니다.
 뒤의 것은 patch가 그것이 서술하는 state보다 작아지지 않는 한 delta입니다. state가
 작으면 그런 일이 자주 벌어집니다. [shared state](/ag-ui-rust/ko/server/state/)가 그것을
 짚어 나갑니다.
