@@ -6,7 +6,7 @@ A Rust SDK for the AG-UI protocol — hosting an agent and consuming one, in a s
 
 It exists to replace the upstream
 [community Rust SDK](https://github.com/ag-ui-protocol/ag-ui/tree/main/sdks/community/rust):
-that one consumes an agent but cannot host one, declares 24 of the protocol's 33 event types —
+that one consumes an agent but cannot host one, declares 24 of the protocol's 36 event types —
 an unrecognised `type` fails to deserialize and stops the run rather than being skipped — and
 carries no `RunFinished.outcome`, so a run cannot pause for a human at all.
 
