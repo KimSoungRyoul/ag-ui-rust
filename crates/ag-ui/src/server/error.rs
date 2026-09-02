@@ -113,6 +113,10 @@ pub enum Rule {
     /// The event is legal but arrived in the wrong place — a tool result before
     /// its `TOOL_CALL_END`, for instance.
     OutOfOrder,
+    /// A continuation, terminator or re-open carried a `subagentRunId` that
+    /// disagrees with the subagent that opened the entity — or a tool call was
+    /// tagged with one subagent while its parent message belongs to another.
+    OwnerMismatch,
 }
 
 impl Rule {
@@ -126,6 +130,7 @@ impl Rule {
             Self::UnknownId => "unknown-id",
             Self::OpenAtFinish => "open-at-finish",
             Self::OutOfOrder => "out-of-order",
+            Self::OwnerMismatch => "owner-mismatch",
         }
     }
 
@@ -139,6 +144,7 @@ impl Rule {
             Self::UnknownId => "an event may only reference an id it has seen",
             Self::OpenAtFinish => "everything opened must be closed before RUN_FINISHED",
             Self::OutOfOrder => "the event arrived before the event it depends on",
+            Self::OwnerMismatch => "an event names the subagent that opened its entity",
         }
     }
 }

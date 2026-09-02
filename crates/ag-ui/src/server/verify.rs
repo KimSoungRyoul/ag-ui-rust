@@ -12,14 +12,36 @@
 //! | --- | --- |
 //! | [`RunEnded`] | anything after `RUN_FINISHED` / `RUN_ERROR` |
 //! | [`DuplicateRunStarted`] | a second `RUN_STARTED` |
-//! | [`DuplicateStart`] | opening a message, reasoning block, tool call or step whose id is already open |
-//! | [`NotOpen`] | content or a terminator for something that was never opened |
-//! | [`UnknownId`] | `TOOL_CALL_RESULT` for a call id that was never introduced |
+//! | [`DuplicateStart`] | opening a message, reasoning block, tool call, step or subagent whose id is already open — or a subagent id that already finished in this run |
+//! | [`NotOpen`] | content or a terminator for something that was never opened, including `SUBAGENT_FINISHED` / `SUBAGENT_ERROR` for a subagent that is not active |
+//! | [`UnknownId`] | `TOOL_CALL_RESULT` for a call id that was never introduced, or a `parentSubagentRunId` that was never started |
 //! | [`OutOfOrder`] | `TOOL_CALL_RESULT` before the call's `TOOL_CALL_END` |
-//! | [`OpenAtFinish`] | `RUN_FINISHED` while a message, reasoning block, tool call or step is open |
+//! | [`OpenAtFinish`] | `RUN_FINISHED` while a message, reasoning block, tool call, step or subagent is open |
+//! | [`OwnerMismatch`] | a tagged continuation, terminator or re-open whose `subagentRunId` is not the one that opened the entity; a tool call tagged with one subagent whose parent message belongs to another |
 //!
 //! `RUN_ERROR` is exempt from [`OpenAtFinish`]: a run that blew up mid-message
 //! could not have closed it.
+//!
+//! # Subagents
+//!
+//! Every entity is opened *by someone* — a subagent, or the parent agent when
+//! the opener carries no `subagentRunId` — and the verifier remembers who.
+//! A later event that *names* a different owner is rejected; one that names
+//! none is accepted, because attribution is optional on every event and a
+//! bare continuation is what a pre-subagent producer sends. Steps are keyed by
+//! owner as well as name, so a subagent cannot close the parent's step, or a
+//! sibling's, and two agents may run a step of the same name at once. A
+//! `MESSAGES_SNAPSHOT` seeds ownership from the messages it carries, and is
+//! authoritative.
+//!
+//! What is deliberately *not* checked, because the protocol does not require
+//! it: that an attributing `subagentRunId` was announced by `SUBAGENT_STARTED`
+//! (attribution without lifecycle events is a supported mode), that a
+//! subagent's own messages are closed before its `SUBAGENT_FINISHED`, or that
+//! events stop after it — a `parentSubagentRunId` may even name a subagent
+//! that already finished, since a parent legitimately finishes before its
+//! child. What *is* required is that every started subagent is closed before
+//! `RUN_FINISHED`.
 //!
 //! [`RunEnded`]: crate::server::Rule::RunEnded
 //! [`DuplicateRunStarted`]: crate::server::Rule::DuplicateRunStarted
@@ -28,6 +50,7 @@
 //! [`UnknownId`]: crate::server::Rule::UnknownId
 //! [`OutOfOrder`]: crate::server::Rule::OutOfOrder
 //! [`OpenAtFinish`]: crate::server::Rule::OpenAtFinish
+//! [`OwnerMismatch`]: crate::server::Rule::OwnerMismatch
 //!
 //! # What it lets through
 //!
@@ -38,8 +61,8 @@
 //!
 //! # Cost
 //!
-//! A handful of `HashSet`s and one lookup per event. Turning the `verify`
-//! feature off replaces the whole state machine with a zero-sized type whose
+//! A handful of maps and one lookup per event. Turning the `verify` feature
+//! off replaces the whole state machine with a zero-sized type whose
 //! `observe` is an inlined `Ok(())`. In debug builds a rejection additionally
 //! carries a dump of everything still open, which is the expensive part and is
 //! why it is debug-only.
@@ -52,12 +75,15 @@ pub(crate) use disabled::Verifier;
 
 #[cfg(feature = "verify")]
 mod enabled {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::fmt::Write as _;
 
-    use crate::{Event, MessageId, StepName, ToolCallId};
+    use crate::{Event, Message, MessageId, StepName, SubagentRunId, ToolCallId};
 
     use crate::server::error::{Rule, VerificationError};
+
+    /// Who opened an entity: a subagent, or the parent agent when `None`.
+    type Owner = Option<SubagentRunId>;
 
     /// Builds a rejection, appending the open-entity dump in debug builds.
     fn reject(
@@ -73,17 +99,40 @@ mod enabled {
         VerificationError::new(event.event_type(), rule, detail)
     }
 
-    /// Tracks what is open so misordered events can be named precisely.
+    fn describe(owner: &Owner) -> String {
+        match owner {
+            None => "the parent agent".to_owned(),
+            Some(id) => format!("subagent {id:?}"),
+        }
+    }
+
+    /// Tracks what is open, and who opened it, so misordered events can be
+    /// named precisely.
     #[derive(Debug, Default)]
     pub(crate) struct Verifier {
         started: bool,
         ended: bool,
-        messages: HashSet<MessageId>,
-        reasoning: HashSet<MessageId>,
-        reasoning_messages: HashSet<MessageId>,
-        tool_calls: HashSet<ToolCallId>,
-        known_tool_calls: HashSet<ToolCallId>,
-        steps: HashSet<StepName>,
+        messages: HashMap<MessageId, Owner>,
+        reasoning: HashMap<MessageId, Owner>,
+        reasoning_messages: HashMap<MessageId, Owner>,
+        tool_calls: HashMap<ToolCallId, Owner>,
+        /// Every tool call ever introduced — by a start, a chunk or a
+        /// snapshot — and who owns it.
+        known_tool_calls: HashMap<ToolCallId, Owner>,
+        /// Every message ever introduced and who owns it. A tool call belongs
+        /// to the message its `parentMessageId` names, so the owner has to
+        /// outlive the message being open.
+        message_owners: HashMap<MessageId, Owner>,
+        /// Open steps, keyed by owner as well as name: a subagent routinely
+        /// runs the same graph shape as its parent, and neither may close the
+        /// other's step.
+        steps: HashSet<(Owner, StepName)>,
+        active_subagents: HashSet<SubagentRunId>,
+        /// Ids closed in this run. An id names one invocation, so a second
+        /// `SUBAGENT_STARTED` for a closed one is a producer bug — but
+        /// attribution-only producers, which tag events and never announce,
+        /// are not required to have started anything.
+        closed_subagents: HashSet<SubagentRunId>,
     }
 
     impl Verifier {
@@ -117,89 +166,135 @@ mod enabled {
                 Event::RunError(_) => self.ended = true,
 
                 Event::TextMessageStart(payload) => {
-                    self.open(event, Kind::Message, &payload.message_id)?;
+                    self.open(
+                        event,
+                        Kind::Message,
+                        &payload.message_id,
+                        &payload.subagent_run_id,
+                    )?;
                 }
                 Event::TextMessageContent(payload) => {
-                    self.require(event, Kind::Message, &payload.message_id)?;
+                    self.require(
+                        event,
+                        Kind::Message,
+                        &payload.message_id,
+                        &payload.subagent_run_id,
+                    )?;
                 }
                 Event::TextMessageEnd(payload) => {
-                    self.close(event, Kind::Message, &payload.message_id)?;
+                    self.close(
+                        event,
+                        Kind::Message,
+                        &payload.message_id,
+                        &payload.subagent_run_id,
+                    )?;
                 }
                 Event::TextMessageChunk(payload) => {
                     if let Some(id) = &payload.message_id {
-                        // Self-contained: a chunk needs no bracketing events.
+                        // Self-contained: a chunk needs no bracketing events,
+                        // but it still says who the message belongs to.
                         self.messages.remove(id);
+                        self.claim_message(event, id, &payload.subagent_run_id)?;
                     }
                 }
 
                 Event::ReasoningStart(payload) => {
-                    self.open(event, Kind::Reasoning, &payload.message_id)?;
+                    self.open(
+                        event,
+                        Kind::Reasoning,
+                        &payload.message_id,
+                        &payload.subagent_run_id,
+                    )?;
                 }
                 Event::ReasoningEnd(payload) => {
-                    self.close(event, Kind::Reasoning, &payload.message_id)?;
+                    self.close(
+                        event,
+                        Kind::Reasoning,
+                        &payload.message_id,
+                        &payload.subagent_run_id,
+                    )?;
                 }
                 Event::ReasoningMessageStart(payload) => {
-                    self.open(event, Kind::ReasoningMessage, &payload.message_id)?;
+                    self.open(
+                        event,
+                        Kind::ReasoningMessage,
+                        &payload.message_id,
+                        &payload.subagent_run_id,
+                    )?;
                 }
                 Event::ReasoningMessageContent(payload) => {
-                    self.require(event, Kind::ReasoningMessage, &payload.message_id)?;
+                    self.require(
+                        event,
+                        Kind::ReasoningMessage,
+                        &payload.message_id,
+                        &payload.subagent_run_id,
+                    )?;
                 }
                 Event::ReasoningMessageEnd(payload) => {
-                    self.close(event, Kind::ReasoningMessage, &payload.message_id)?;
+                    self.close(
+                        event,
+                        Kind::ReasoningMessage,
+                        &payload.message_id,
+                        &payload.subagent_run_id,
+                    )?;
                 }
                 Event::ReasoningMessageChunk(payload) => {
                     if let Some(id) = &payload.message_id {
                         self.reasoning_messages.remove(id);
+                        self.claim_message(event, id, &payload.subagent_run_id)?;
                     }
                 }
 
                 Event::ToolCallStart(payload) => {
                     let id = &payload.tool_call_id;
-                    if !self.tool_calls.insert(id.clone()) {
+                    let owner = self.resolve_tool_call_owner(
+                        event,
+                        id,
+                        payload.parent_message_id.as_ref(),
+                        &payload.subagent_run_id,
+                    )?;
+                    if self.tool_calls.contains_key(id) {
                         return Err(self.fail(
                             event,
                             Rule::DuplicateStart,
                             format!("tool call {id:?} is already open"),
                         ));
                     }
-                    self.known_tool_calls.insert(id.clone());
+                    self.tool_calls.insert(id.clone(), owner.clone());
+                    self.known_tool_calls.insert(id.clone(), owner);
                 }
                 Event::ToolCallArgs(payload) => {
-                    let id = &payload.tool_call_id;
-                    if !self.tool_calls.contains(id) {
-                        return Err(self.fail(
-                            event,
-                            Rule::NotOpen,
-                            format!("tool call {id:?} is not open"),
-                        ));
-                    }
+                    self.require_tool_call(event, &payload.tool_call_id, &payload.subagent_run_id)?;
                 }
                 Event::ToolCallEnd(payload) => {
-                    let id = &payload.tool_call_id;
-                    if !self.tool_calls.remove(id) {
-                        return Err(self.fail(
-                            event,
-                            Rule::NotOpen,
-                            format!("tool call {id:?} is not open"),
-                        ));
-                    }
+                    self.require_tool_call(event, &payload.tool_call_id, &payload.subagent_run_id)?;
+                    self.tool_calls.remove(&payload.tool_call_id);
                 }
                 Event::ToolCallChunk(payload) => {
                     if let Some(id) = &payload.tool_call_id {
+                        let owner = self.resolve_tool_call_owner(
+                            event,
+                            id,
+                            payload.parent_message_id.as_ref(),
+                            &payload.subagent_run_id,
+                        )?;
                         self.tool_calls.remove(id);
-                        self.known_tool_calls.insert(id.clone());
+                        self.known_tool_calls.insert(id.clone(), owner);
                     }
                 }
+                // A result's attribution is its own — the party that executes
+                // a call can differ from the one that requested it — so the
+                // owner is not checked here, only the call's state.
                 Event::ToolCallResult(payload) => {
                     let id = &payload.tool_call_id;
-                    if !self.known_tool_calls.contains(id) {
+                    if !self.known_tool_calls.contains_key(id) {
                         return Err(self.fail(
                             event,
                             Rule::UnknownId,
                             format!("tool call {id:?} was never started"),
                         ));
                     }
-                    if self.tool_calls.contains(id) {
+                    if self.tool_calls.contains_key(id) {
                         return Err(self.fail(
                             event,
                             Rule::OutOfOrder,
@@ -209,23 +304,84 @@ mod enabled {
                 }
 
                 Event::StepStarted(payload) => {
-                    let name = &payload.step_name;
-                    if !self.steps.insert(name.clone()) {
+                    let key = (payload.subagent_run_id.clone(), payload.step_name.clone());
+                    if self.steps.contains(&key) {
                         return Err(self.fail(
                             event,
                             Rule::DuplicateStart,
-                            format!("step {name:?} is already open"),
+                            format!(
+                                "step {:?} is already open under {}",
+                                payload.step_name,
+                                describe(&payload.subagent_run_id)
+                            ),
                         ));
                     }
+                    self.steps.insert(key);
                 }
                 Event::StepFinished(payload) => {
-                    let name = &payload.step_name;
-                    if !self.steps.remove(name) {
+                    let key = (payload.subagent_run_id.clone(), payload.step_name.clone());
+                    if !self.steps.remove(&key) {
                         return Err(self.fail(
                             event,
                             Rule::NotOpen,
-                            format!("step {name:?} is not open"),
+                            format!(
+                                "step {:?} is not open under {}",
+                                payload.step_name,
+                                describe(&payload.subagent_run_id)
+                            ),
                         ));
+                    }
+                }
+
+                Event::SubagentStarted(payload) => {
+                    let id = &payload.subagent_run_id;
+                    if self.active_subagents.contains(id) {
+                        return Err(self.fail(
+                            event,
+                            Rule::DuplicateStart,
+                            format!("subagent {id:?} is already active"),
+                        ));
+                    }
+                    if self.closed_subagents.contains(id) {
+                        return Err(self.fail(
+                            event,
+                            Rule::DuplicateStart,
+                            format!(
+                                "subagent {id:?} already finished in this run; an id names one invocation"
+                            ),
+                        ));
+                    }
+                    if let Some(parent) = &payload.parent_subagent_run_id {
+                        if !self.active_subagents.contains(parent)
+                            && !self.closed_subagents.contains(parent)
+                        {
+                            return Err(self.fail(
+                                event,
+                                Rule::UnknownId,
+                                format!("parent subagent {parent:?} was never started"),
+                            ));
+                        }
+                    }
+                    self.active_subagents.insert(id.clone());
+                }
+                Event::SubagentFinished(payload) => {
+                    self.close_subagent(event, &payload.subagent_run_id)?;
+                }
+                Event::SubagentError(payload) => {
+                    self.close_subagent(event, &payload.subagent_run_id)?;
+                }
+
+                // Authoritative: the snapshot restates the conversation, so its
+                // owners replace whatever was recorded.
+                Event::MessagesSnapshot(payload) => {
+                    for message in &payload.messages {
+                        let owner = message.subagent_run_id().cloned();
+                        if let Message::Assistant(assistant) = message {
+                            for call in assistant.tool_calls.iter().flatten() {
+                                self.known_tool_calls.insert(call.id.clone(), owner.clone());
+                            }
+                        }
+                        self.message_owners.insert(message.id().clone(), owner);
                     }
                 }
 
@@ -235,36 +391,176 @@ mod enabled {
             Ok(())
         }
 
+        /// Records who `id` belongs to, or rejects a claim that disagrees with
+        /// the recorded owner.
+        ///
+        /// An untagged claim on an owned message is accepted: attribution is
+        /// optional per event, and a bare re-open takes the message back for
+        /// the parent, which is what upstream's verifier does too.
+        fn claim_message(
+            &mut self,
+            event: &Event,
+            id: &MessageId,
+            tag: &Owner,
+        ) -> Result<(), VerificationError> {
+            if let Some(owner) = self.message_owners.get(id) {
+                if tag.is_some() && owner != tag {
+                    return Err(self.fail(
+                        event,
+                        Rule::OwnerMismatch,
+                        format!(
+                            "message {id:?} belongs to {}, not {}",
+                            describe(owner),
+                            describe(tag)
+                        ),
+                    ));
+                }
+            }
+            self.message_owners.insert(id.clone(), tag.clone());
+            Ok(())
+        }
+
+        /// Who a tool call belongs to: the tag when it carries one, otherwise
+        /// the owner of the message that carries the call, otherwise whoever
+        /// introduced the call before, otherwise the parent agent.
+        ///
+        /// A tag that disagrees with the parent message's owner cannot be
+        /// represented faithfully — `ToolCall` carries no attribution of its
+        /// own — and is rejected, as is an asserted owner that disagrees with
+        /// a recorded one.
+        fn resolve_tool_call_owner(
+            &self,
+            event: &Event,
+            id: &ToolCallId,
+            parent_message_id: Option<&MessageId>,
+            tag: &Owner,
+        ) -> Result<Owner, VerificationError> {
+            let inherited = parent_message_id
+                .and_then(|parent| self.message_owners.get(parent).map(|owner| (parent, owner)));
+            if let Some((parent, owner)) = inherited {
+                if tag.is_some() && owner != tag {
+                    return Err(self.fail(
+                        event,
+                        Rule::OwnerMismatch,
+                        format!(
+                            "tool call {id:?} is tagged {} but its parent message {parent:?} belongs to {}; \
+                             a tool call belongs to the message that carries it",
+                            describe(tag),
+                            describe(owner)
+                        ),
+                    ));
+                }
+            }
+            let asserted: Option<Owner> = if tag.is_some() {
+                Some(tag.clone())
+            } else {
+                inherited.map(|(_, owner)| owner.clone())
+            };
+            if let (Some(asserted), Some(known)) = (&asserted, self.known_tool_calls.get(id)) {
+                if asserted != known {
+                    return Err(self.fail(
+                        event,
+                        Rule::OwnerMismatch,
+                        format!(
+                            "tool call {id:?} belongs to {}, not {}",
+                            describe(known),
+                            describe(asserted)
+                        ),
+                    ));
+                }
+            }
+            Ok(asserted
+                .or_else(|| self.known_tool_calls.get(id).cloned())
+                .unwrap_or(None))
+        }
+
+        fn require_tool_call(
+            &self,
+            event: &Event,
+            id: &ToolCallId,
+            tag: &Owner,
+        ) -> Result<(), VerificationError> {
+            match self.tool_calls.get(id) {
+                None => Err(self.fail(
+                    event,
+                    Rule::NotOpen,
+                    format!("tool call {id:?} is not open"),
+                )),
+                Some(owner) if tag.is_some() && owner != tag => Err(self.fail(
+                    event,
+                    Rule::OwnerMismatch,
+                    format!(
+                        "tool call {id:?} belongs to {}, not {}",
+                        describe(owner),
+                        describe(tag)
+                    ),
+                )),
+                Some(_) => Ok(()),
+            }
+        }
+
+        fn close_subagent(
+            &mut self,
+            event: &Event,
+            id: &SubagentRunId,
+        ) -> Result<(), VerificationError> {
+            if !self.active_subagents.remove(id) {
+                return Err(self.fail(
+                    event,
+                    Rule::NotOpen,
+                    format!("subagent {id:?} is not active"),
+                ));
+            }
+            self.closed_subagents.insert(id.clone());
+            Ok(())
+        }
+
         fn open(
             &mut self,
             event: &Event,
             kind: Kind,
             id: &MessageId,
+            tag: &Owner,
         ) -> Result<(), VerificationError> {
-            if !self.set_mut(kind).insert(id.clone()) {
+            if kind.is_message() {
+                self.claim_message(event, id, tag)?;
+            }
+            if self.map(kind).contains_key(id) {
                 return Err(self.fail(
                     event,
                     Rule::DuplicateStart,
                     format!("{} {id:?} is already open", kind.noun()),
                 ));
             }
+            self.map_mut(kind).insert(id.clone(), tag.clone());
             Ok(())
         }
 
         fn require(
-            &mut self,
+            &self,
             event: &Event,
             kind: Kind,
             id: &MessageId,
+            tag: &Owner,
         ) -> Result<(), VerificationError> {
-            if !self.set_mut(kind).contains(id) {
-                return Err(self.fail(
+            match self.map(kind).get(id) {
+                None => Err(self.fail(
                     event,
                     Rule::NotOpen,
                     format!("{} {id:?} is not open", kind.noun()),
-                ));
+                )),
+                Some(owner) if tag.is_some() && owner != tag => Err(self.fail(
+                    event,
+                    Rule::OwnerMismatch,
+                    format!(
+                        "{} {id:?} belongs to {}, not {}",
+                        kind.noun(),
+                        describe(owner),
+                        describe(tag)
+                    ),
+                )),
+                Some(_) => Ok(()),
             }
-            Ok(())
         }
 
         fn close(
@@ -272,18 +568,22 @@ mod enabled {
             event: &Event,
             kind: Kind,
             id: &MessageId,
+            tag: &Owner,
         ) -> Result<(), VerificationError> {
-            if !self.set_mut(kind).remove(id) {
-                return Err(self.fail(
-                    event,
-                    Rule::NotOpen,
-                    format!("{} {id:?} is not open", kind.noun()),
-                ));
-            }
+            self.require(event, kind, id, tag)?;
+            self.map_mut(kind).remove(id);
             Ok(())
         }
 
-        fn set_mut(&mut self, kind: Kind) -> &mut HashSet<MessageId> {
+        fn map(&self, kind: Kind) -> &HashMap<MessageId, Owner> {
+            match kind {
+                Kind::Message => &self.messages,
+                Kind::Reasoning => &self.reasoning,
+                Kind::ReasoningMessage => &self.reasoning_messages,
+            }
+        }
+
+        fn map_mut(&mut self, kind: Kind) -> &mut HashMap<MessageId, Owner> {
             match kind {
                 Kind::Message => &mut self.messages,
                 Kind::Reasoning => &mut self.reasoning,
@@ -297,20 +597,26 @@ mod enabled {
 
         /// The first thing still open at `RUN_FINISHED`, if any.
         fn first_open(&self) -> Option<String> {
-            if let Some(id) = self.messages.iter().next() {
+            if let Some(id) = self.messages.keys().next() {
                 return Some(format!("message {id:?} is still open"));
             }
-            if let Some(id) = self.reasoning_messages.iter().next() {
+            if let Some(id) = self.reasoning_messages.keys().next() {
                 return Some(format!("reasoning message {id:?} is still open"));
             }
-            if let Some(id) = self.reasoning.iter().next() {
+            if let Some(id) = self.reasoning.keys().next() {
                 return Some(format!("reasoning block {id:?} is still open"));
             }
-            if let Some(id) = self.tool_calls.iter().next() {
+            if let Some(id) = self.tool_calls.keys().next() {
                 return Some(format!("tool call {id:?} is still open"));
             }
-            if let Some(name) = self.steps.iter().next() {
-                return Some(format!("step {name:?} is still open"));
+            if let Some((owner, name)) = self.steps.iter().next() {
+                return Some(format!(
+                    "step {name:?} is still open under {}",
+                    describe(owner)
+                ));
+            }
+            if let Some(id) = self.active_subagents.iter().next() {
+                return Some(format!("subagent {id:?} is still active"));
             }
             None
         }
@@ -323,11 +629,21 @@ mod enabled {
                     let _ = write!(out, " {label}={:?}", values);
                 }
             };
-            push("messages", strings(&self.messages));
-            push("reasoning", strings(&self.reasoning));
-            push("reasoning_messages", strings(&self.reasoning_messages));
-            push("tool_calls", strings(&self.tool_calls));
-            push("steps", strings(&self.steps));
+            push("messages", strings(self.messages.keys()));
+            push("reasoning", strings(self.reasoning.keys()));
+            push(
+                "reasoning_messages",
+                strings(self.reasoning_messages.keys()),
+            );
+            push("tool_calls", strings(self.tool_calls.keys()));
+            push(
+                "steps",
+                strings(self.steps.iter().map(|(owner, name)| match owner {
+                    None => name.to_string(),
+                    Some(id) => format!("{id}/{name}"),
+                })),
+            );
+            push("subagents", strings(self.active_subagents.iter()));
             if out.is_empty() {
                 " [nothing open]".to_owned()
             } else {
@@ -336,14 +652,14 @@ mod enabled {
         }
     }
 
-    fn strings<T: ToString>(set: &HashSet<T>) -> Vec<String> {
-        let mut values: Vec<String> = set.iter().map(ToString::to_string).collect();
+    fn strings<T: ToString>(values: impl Iterator<Item = T>) -> Vec<String> {
+        let mut values: Vec<String> = values.map(|value| value.to_string()).collect();
         values.sort();
         values
     }
 
     /// The three id-keyed things a message id can open.
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Kind {
         Message,
         Reasoning,
@@ -357,6 +673,13 @@ mod enabled {
                 Self::Reasoning => "reasoning block",
                 Self::ReasoningMessage => "reasoning message",
             }
+        }
+
+        /// Whether an id of this kind is a message, whose ownership a tool
+        /// call may later inherit. A reasoning *block* shares its id with the
+        /// message inside it and claims nothing of its own.
+        const fn is_message(self) -> bool {
+            matches!(self, Self::Message | Self::ReasoningMessage)
         }
     }
 }
@@ -435,5 +758,22 @@ mod tests {
             "debug dump should name the open message: {}",
             error.detail
         );
+    }
+
+    #[test]
+    fn the_dump_names_open_subagents_and_owned_steps() {
+        let mut verifier = verifier();
+        verifier
+            .observe(&Event::subagent_started("s1", "researcher"))
+            .expect("start");
+        verifier
+            .observe(&Event::step_started("plan").with_subagent_run_id("s1"))
+            .expect("a subagent's step");
+        let error = verifier
+            .observe(&Event::run_finished_success("t", "r"))
+            .expect_err("the step and the subagent are open");
+        assert_eq!(error.rule, Rule::OpenAtFinish);
+        assert!(error.detail.contains("s1/plan"), "{}", error.detail);
+        assert!(error.detail.contains("subagents"), "{}", error.detail);
     }
 }

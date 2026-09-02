@@ -3,7 +3,8 @@
 #![cfg(feature = "server")]
 
 use ag_ui::server::{
-    Agent, FilterToolCalls, Result, RunContext, Runner, StreamTransformer, ToolResultToState,
+    Agent, FilterToolCalls, Result, RunContext, Runner, StreamTransformer, SubagentVisibility,
+    ToolResultToState,
 };
 use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
 use futures_util::StreamExt as _;
@@ -107,4 +108,168 @@ async fn a_custom_transformer_can_stamp_every_event() {
             .all(|event| event.base().timestamp == Some(1_700_000_000_000)),
         "every event, including the ones the driver emits, goes through the chain"
     );
+}
+
+// ---- subagent visibility --------------------------------------------------
+
+/// Says something, delegates to a subagent that says something and calls a
+/// tool, restates history with one attributed message, and says something
+/// more.
+struct Delegating;
+
+impl Agent for Delegating {
+    type State = serde_json::Value;
+
+    async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+        ctx.say("parent first")?;
+        {
+            let mut researcher = ctx.subagent("researcher")?;
+            researcher.say("child")?;
+            let mut call = researcher.tool_call("search")?;
+            call.args("{}")?;
+            call.result("hit")?;
+        }
+        ctx.emit(Event::messages_snapshot(vec![
+            ag_ui::Message::assistant("h1", "history"),
+            ag_ui::Message::Assistant(ag_ui::AssistantMessage {
+                id: "h2".into(),
+                content: Some("theirs".into()),
+                subagent_run_id: Some("s-old".into()),
+                ..Default::default()
+            }),
+        ]))?;
+        ctx.say("parent last")?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+#[tokio::test]
+async fn attributed_is_the_default_and_the_full_surface() {
+    let events = collect(Runner::new(Delegating)).await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::SubagentStarted,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::ToolCallStart,
+            EventType::ToolCallArgs,
+            EventType::ToolCallEnd,
+            EventType::ToolCallResult,
+            EventType::SubagentFinished,
+            EventType::MessagesSnapshot,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::RunFinished,
+        ]
+    );
+    assert!(events[5..12].iter().all(|e| e.subagent_run_id().is_some()));
+}
+
+#[tokio::test]
+async fn inline_visibility_flattens_the_stream_to_the_pre_subagent_shape() {
+    let events = collect(Runner::new(Delegating).transformer(SubagentVisibility::inline())).await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::ToolCallStart,
+            EventType::ToolCallArgs,
+            EventType::ToolCallEnd,
+            EventType::ToolCallResult,
+            EventType::MessagesSnapshot,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::RunFinished,
+        ]
+    );
+    assert!(
+        events.iter().all(|e| e.subagent_run_id().is_none()),
+        "nothing on the wire says subagent"
+    );
+    let Event::MessagesSnapshot(snapshot) = &events[11] else {
+        panic!("wrong variant");
+    };
+    assert_eq!(snapshot.messages.len(), 2);
+    assert!(
+        snapshot
+            .messages
+            .iter()
+            .all(|m| m.subagent_run_id().is_none()),
+        "the history is stripped too"
+    );
+    assert!(
+        !serde_json::to_string(&events).unwrap().contains("subagent"),
+        "not even as a substring"
+    );
+}
+
+#[tokio::test]
+async fn hidden_visibility_keeps_only_the_parents_events() {
+    let events = collect(Runner::new(Delegating).transformer(SubagentVisibility::hidden())).await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::MessagesSnapshot,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::RunFinished,
+        ]
+    );
+    let Event::MessagesSnapshot(snapshot) = &events[4] else {
+        panic!("wrong variant");
+    };
+    assert_eq!(
+        snapshot.messages.len(),
+        1,
+        "the attributed history message went too"
+    );
+}
+
+#[test]
+fn hidden_drops_an_untagged_continuation_of_a_subagents_message() {
+    let mut filter = SubagentVisibility::hidden();
+    assert!(
+        filter
+            .transform(
+                Event::text_message_start("m1", Default::default()).with_subagent_run_id("s1")
+            )
+            .is_empty()
+    );
+    assert!(
+        filter
+            .transform(Event::text_message_content("m1", "hi"))
+            .is_empty(),
+        "legal on the wire, but it belongs to the subagent"
+    );
+    assert!(filter.transform(Event::text_message_end("m1")).is_empty());
+    // A later parent message under the same id is the parent's again.
+    assert_eq!(
+        filter
+            .transform(Event::text_message_start("m1", Default::default()))
+            .len(),
+        1
+    );
+    assert_eq!(filter.mode(), SubagentVisibility::Hidden);
 }

@@ -5,7 +5,8 @@
 //! draft of this crate also carried a builder of `map_content` / `map_result` /
 //! `map_interrupt` closures ported from the .NET SDK, which meant two ways to
 //! do the same thing and a pile of `Box<dyn Fn>`. Those hooks are built-in
-//! transformers now: see [`ToolResultToState`].
+//! transformers now: see [`ToolResultToState`]. So is the compatibility knob
+//! for consumers that predate subagents: [`SubagentVisibility`].
 //!
 //! Transformers run in the order they were added, each seeing what the previous
 //! one produced, before the ordering verifier sees anything. That order is what
@@ -22,7 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{Event, PatchOperation, ToolCallId};
+use crate::{Event, MessageId, PatchOperation, ToolCallId};
 use serde_json::Value;
 
 /// Rewrites events on their way from an agent to the transport.
@@ -329,6 +330,236 @@ impl StreamTransformer for ToolResultToState {
             _ => {}
         }
         vec![event]
+    }
+}
+
+/// What a consumer sees of an agent's subagents.
+///
+/// [`Attributed`](Self::Attributed) — the default, and no transformer at all —
+/// sends the stream as the agent emitted it. The other two exist because a
+/// client older than `@ag-ui/client` 0.0.59 rejects the `SUBAGENT_*` event
+/// *types* while decoding: an unknown field is tolerated, an unknown event
+/// type is not, and there is nothing a client can do about it after the
+/// fact. A producer with such consumers must not send them, and this is how
+/// it does not.
+///
+/// Upstream's integrations default to inline and make the full surface
+/// opt-in. This crate defaults the other way, because a transformer that
+/// rewrites the stream is opt-in here like every other: an agent that wrote
+/// `ctx.subagent(..)` meant it, and silently flattening what it said is the
+/// kind of surprise the design notes argue against. Flip it per endpoint when
+/// your consumers are older:
+///
+/// ```
+/// # use ag_ui::RunOutcome;
+/// # use ag_ui::server::{Agent, Result, RunContext, Runner, SubagentVisibility};
+/// # struct MyAgent;
+/// # impl Agent for MyAgent {
+/// #     type State = ();
+/// #     async fn run(&self, _ctx: &mut RunContext<()>) -> Result<RunOutcome> { Ok(RunOutcome::Success) }
+/// # }
+/// let runner = Runner::new(MyAgent).transformer(SubagentVisibility::inline());
+/// # let _ = runner;
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SubagentVisibility {
+    /// The full surface: the lifecycle events, and `subagentRunId` on
+    /// everything a subagent produced.
+    #[default]
+    Attributed,
+    /// The pre-subagent shape: no lifecycle events and no `subagentRunId`
+    /// anywhere — not on events, not on the messages inside
+    /// `MESSAGES_SNAPSHOT` or the `RUN_STARTED` input echo. A subagent's own
+    /// text arrives as the parent's work.
+    Inline,
+    /// Only the parent's own events. Everything a subagent produced is
+    /// dropped — including the result of a call it requested, even when the
+    /// parent executed it, since a result for a call the consumer never saw
+    /// is a protocol error.
+    Hidden,
+}
+
+impl SubagentVisibility {
+    /// The transformer for this mode. Pointless but harmless for
+    /// [`Attributed`](Self::Attributed), which passes everything through.
+    pub fn filter(self) -> SubagentFilter {
+        SubagentFilter::new(self)
+    }
+
+    /// The transformer for [`Inline`](Self::Inline).
+    pub fn inline() -> SubagentFilter {
+        Self::Inline.filter()
+    }
+
+    /// The transformer for [`Hidden`](Self::Hidden).
+    pub fn hidden() -> SubagentFilter {
+        Self::Hidden.filter()
+    }
+}
+
+/// The transformer behind [`SubagentVisibility`].
+///
+/// [`Inline`](SubagentVisibility::Inline) is stateless.
+/// [`Hidden`](SubagentVisibility::Hidden) remembers which open ids a
+/// subagent owns, so an untagged continuation of a subagent's message — legal
+/// on the wire, since attribution is optional per event — is dropped with the
+/// rest of it rather than leaking into the parent's stream.
+#[derive(Debug)]
+pub struct SubagentFilter {
+    mode: SubagentVisibility,
+    /// Text and reasoning ids a subagent opened and has not closed.
+    hidden_messages: HashSet<MessageId>,
+    /// Tool call ids a subagent opened. Kept past `TOOL_CALL_END`, because the
+    /// result is still to come and goes too.
+    hidden_tool_calls: HashSet<ToolCallId>,
+}
+
+impl SubagentFilter {
+    /// A filter for `mode`.
+    pub fn new(mode: SubagentVisibility) -> Self {
+        Self {
+            mode,
+            hidden_messages: HashSet::new(),
+            hidden_tool_calls: HashSet::new(),
+        }
+    }
+
+    /// The mode this filter applies.
+    pub fn mode(&self) -> SubagentVisibility {
+        self.mode
+    }
+
+    /// Strips the subagent surface from an event, or drops it entirely when
+    /// it *is* the subagent surface.
+    fn inline(mut event: Event) -> Vec<Event> {
+        match &mut event {
+            Event::SubagentStarted(_) | Event::SubagentFinished(_) | Event::SubagentError(_) => {
+                return Vec::new();
+            }
+            Event::MessagesSnapshot(snapshot) => {
+                for message in &mut snapshot.messages {
+                    message.set_subagent_run_id(None);
+                }
+            }
+            Event::RunStarted(started) => {
+                if let Some(input) = &mut started.input {
+                    for message in &mut input.messages {
+                        message.set_subagent_run_id(None);
+                    }
+                }
+            }
+            _ => {
+                event.clear_subagent_run_id();
+            }
+        }
+        vec![event]
+    }
+
+    /// Keeps the parent's events and drops a subagent's, tracking open ids so
+    /// that an untagged continuation is judged by its opener.
+    fn hidden(&mut self, mut event: Event) -> Vec<Event> {
+        let owned = event.subagent_run_id().is_some();
+        let keep = match &event {
+            Event::SubagentStarted(_) | Event::SubagentFinished(_) | Event::SubagentError(_) => {
+                false
+            }
+
+            Event::TextMessageStart(e) => self.open_message(&e.message_id, owned),
+            Event::TextMessageContent(e) => self.message_kept(&e.message_id, owned),
+            Event::TextMessageEnd(e) => self.close_message(&e.message_id, owned),
+            Event::TextMessageChunk(e) => match &e.message_id {
+                Some(id) => self.open_message(id, owned),
+                None => !owned,
+            },
+
+            Event::ReasoningStart(e) => self.open_message(&e.message_id, owned),
+            Event::ReasoningMessageStart(e) => self.open_message(&e.message_id, owned),
+            Event::ReasoningMessageContent(e) => self.message_kept(&e.message_id, owned),
+            Event::ReasoningMessageEnd(e) => self.message_kept(&e.message_id, owned),
+            Event::ReasoningEnd(e) => self.close_message(&e.message_id, owned),
+            Event::ReasoningMessageChunk(e) => match &e.message_id {
+                Some(id) => self.open_message(id, owned),
+                None => !owned,
+            },
+
+            Event::ToolCallStart(e) => self.open_tool_call(&e.tool_call_id, owned),
+            Event::ToolCallChunk(e) => match &e.tool_call_id {
+                Some(id) => self.open_tool_call(id, owned),
+                None => !owned,
+            },
+            Event::ToolCallArgs(e) => self.tool_call_kept(&e.tool_call_id, owned),
+            Event::ToolCallEnd(e) => self.tool_call_kept(&e.tool_call_id, owned),
+            Event::ToolCallResult(e) => {
+                let hidden = self.hidden_tool_calls.remove(&e.tool_call_id);
+                !hidden && !owned
+            }
+
+            _ => !owned,
+        };
+        if !keep {
+            return Vec::new();
+        }
+        match &mut event {
+            Event::MessagesSnapshot(snapshot) => {
+                snapshot
+                    .messages
+                    .retain(|message| message.subagent_run_id().is_none());
+            }
+            Event::RunStarted(started) => {
+                if let Some(input) = &mut started.input {
+                    input
+                        .messages
+                        .retain(|message| message.subagent_run_id().is_none());
+                }
+            }
+            _ => {}
+        }
+        vec![event]
+    }
+
+    fn open_message(&mut self, id: &MessageId, owned: bool) -> bool {
+        if owned {
+            self.hidden_messages.insert(id.clone());
+            false
+        } else {
+            // An untagged opener takes the id for the parent, as the
+            // verifier reads it.
+            self.hidden_messages.remove(id);
+            true
+        }
+    }
+
+    fn message_kept(&self, id: &MessageId, owned: bool) -> bool {
+        !owned && !self.hidden_messages.contains(id)
+    }
+
+    fn close_message(&mut self, id: &MessageId, owned: bool) -> bool {
+        let hidden = self.hidden_messages.remove(id);
+        !owned && !hidden
+    }
+
+    fn open_tool_call(&mut self, id: &ToolCallId, owned: bool) -> bool {
+        if owned {
+            self.hidden_tool_calls.insert(id.clone());
+            false
+        } else {
+            self.hidden_tool_calls.remove(id);
+            true
+        }
+    }
+
+    fn tool_call_kept(&self, id: &ToolCallId, owned: bool) -> bool {
+        !owned && !self.hidden_tool_calls.contains(id)
+    }
+}
+
+impl StreamTransformer for SubagentFilter {
+    fn transform(&mut self, event: Event) -> Vec<Event> {
+        match self.mode {
+            SubagentVisibility::Attributed => vec![event],
+            SubagentVisibility::Inline => Self::inline(event),
+            SubagentVisibility::Hidden => self.hidden(event),
+        }
     }
 }
 

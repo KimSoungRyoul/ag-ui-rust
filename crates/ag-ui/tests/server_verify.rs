@@ -308,3 +308,214 @@ async fn a_run_left_open_by_a_raw_emit_still_terminates() {
         error.message
     );
 }
+
+// ---- subagents ------------------------------------------------------------
+
+/// Emits `events` in order after `RUN_STARTED` and returns the first
+/// rejection, if any.
+fn first_rejection(events: Vec<Event>) -> Option<(usize, Rule)> {
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    for (index, event) in events.into_iter().enumerate() {
+        if let Err(error) = ctx.emit(event) {
+            return Some((index, rule(error)));
+        }
+    }
+    None
+}
+
+#[test]
+fn a_tagged_continuation_must_name_the_opener_but_an_untagged_one_may_not() {
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(
+        Event::text_message_start("m1", TextMessageRole::Assistant).with_subagent_run_id("s1"),
+    )
+    .unwrap();
+
+    let error = ctx
+        .emit(Event::text_message_content("m1", "hi").with_subagent_run_id("s2"))
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+
+    // Attribution is optional per event, so a bare continuation is fine…
+    ctx.emit(Event::text_message_content("m1", "hi")).unwrap();
+    // …and so is one that agrees.
+    ctx.emit(Event::text_message_end("m1").with_subagent_run_id("s1"))
+        .unwrap();
+}
+
+#[test]
+fn a_subagent_cannot_continue_the_parents_message() {
+    assert_eq!(
+        first_rejection(vec![
+            Event::text_message_start("m1", TextMessageRole::Assistant),
+            Event::text_message_content("m1", "hi").with_subagent_run_id("s1"),
+        ]),
+        Some((1, Rule::OwnerMismatch))
+    );
+    assert_eq!(
+        first_rejection(vec![
+            Event::reasoning_message_start("m1").with_subagent_run_id("s1"),
+            Event::reasoning_message_end("m1").with_subagent_run_id("s2"),
+        ]),
+        Some((1, Rule::OwnerMismatch))
+    );
+}
+
+#[test]
+fn a_tool_call_belongs_to_the_message_that_carries_it() {
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(
+        Event::text_message_start("m1", TextMessageRole::Assistant).with_subagent_run_id("s1"),
+    )
+    .unwrap();
+
+    let mut start = ag_ui::ToolCallStartEvent::new("c1", "search");
+    start.parent_message_id = Some("m1".into());
+    let disagreeing = Event::ToolCallStart(start.clone()).with_subagent_run_id("s2");
+    assert_eq!(
+        rule(ctx.emit(disagreeing).unwrap_err()),
+        Rule::OwnerMismatch
+    );
+
+    // Untagged: inherits the message's owner…
+    ctx.emit(Event::ToolCallStart(start)).unwrap();
+    // …so a continuation tagged with anyone else is a mismatch.
+    let error = ctx
+        .emit(Event::tool_call_args("c1", "{}").with_subagent_run_id("s2"))
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+    ctx.emit(Event::tool_call_args("c1", "{}").with_subagent_run_id("s1"))
+        .unwrap();
+    ctx.emit(Event::tool_call_end("c1")).unwrap();
+    // A result's attribution is its own: the parent may execute a subagent's call.
+    ctx.emit(Event::tool_call_result("m2", "c1", "ok")).unwrap();
+}
+
+#[test]
+fn steps_are_scoped_to_the_agent_that_opened_them() {
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(Event::step_started("plan")).unwrap();
+
+    let error = ctx
+        .emit(Event::step_finished("plan").with_subagent_run_id("s1"))
+        .unwrap_err();
+    assert_eq!(
+        rule(error),
+        Rule::NotOpen,
+        "a subagent cannot close the parent's step"
+    );
+
+    // The same name under another owner is a different step.
+    ctx.emit(Event::step_started("plan").with_subagent_run_id("s1"))
+        .unwrap();
+    ctx.emit(Event::step_finished("plan").with_subagent_run_id("s1"))
+        .unwrap();
+    ctx.emit(Event::step_finished("plan")).unwrap();
+}
+
+#[test]
+fn subagent_lifecycle_ids_name_one_invocation_each() {
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(Event::subagent_started("s1", "researcher"))
+        .unwrap();
+
+    let again = ctx
+        .emit(Event::subagent_started("s1", "researcher"))
+        .unwrap_err();
+    assert_eq!(rule(again), Rule::DuplicateStart);
+
+    let unknown = ctx
+        .emit(Event::subagent_finished_success("s2"))
+        .unwrap_err();
+    assert_eq!(rule(unknown), Rule::NotOpen);
+
+    ctx.emit(Event::subagent_finished_success("s1")).unwrap();
+    let reused = ctx
+        .emit(Event::subagent_started("s1", "researcher"))
+        .unwrap_err();
+    assert_eq!(rule(reused), Rule::DuplicateStart, "closed ids stay closed");
+
+    let orphan = ctx
+        .emit(Event::SubagentStarted(
+            ag_ui::SubagentStartedEvent::new("s3", "child").with_parent_subagent("s9"),
+        ))
+        .unwrap_err();
+    assert_eq!(
+        rule(orphan),
+        Rule::UnknownId,
+        "a parent must have been started"
+    );
+
+    // A parent that already finished is a legal parent.
+    ctx.emit(Event::SubagentStarted(
+        ag_ui::SubagentStartedEvent::new("s3", "child").with_parent_subagent("s1"),
+    ))
+    .unwrap();
+    // Attribution without an announcement is a supported mode.
+    ctx.emit(Event::custom("ping", serde_json::json!(1)).with_subagent_run_id("never-announced"))
+        .unwrap();
+    ctx.emit(Event::subagent_error("s3", "boom")).unwrap();
+    ctx.emit(Event::run_finished_success("t", "r")).unwrap();
+}
+
+#[test]
+fn finishing_with_a_subagent_active_is_rejected_but_erroring_is_not() {
+    assert_eq!(
+        first_rejection(vec![
+            Event::subagent_started("s1", "researcher"),
+            Event::run_finished_success("t", "r"),
+        ]),
+        Some((1, Rule::OpenAtFinish))
+    );
+    assert_eq!(
+        first_rejection(vec![
+            Event::subagent_started("s1", "researcher"),
+            Event::run_error("boom"),
+        ]),
+        None
+    );
+}
+
+#[test]
+fn a_messages_snapshot_seeds_ownership() {
+    use ag_ui::{AssistantMessage, Message, ToolCall};
+
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(Event::messages_snapshot(vec![Message::Assistant(
+        AssistantMessage {
+            id: "m1".into(),
+            content: Some("Searching.".into()),
+            tool_calls: Some(vec![ToolCall::new("c1", "search", "{}")]),
+            subagent_run_id: Some("s1".into()),
+            ..Default::default()
+        },
+    )]))
+    .unwrap();
+
+    // Re-opening under another subagent conflicts with the snapshot…
+    let error = ctx
+        .emit(
+            Event::text_message_start("m1", TextMessageRole::Assistant).with_subagent_run_id("s2"),
+        )
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+    // …and so does tagging its tool call with one.
+    let error = ctx
+        .emit(Event::tool_call_start("c1", "search").with_subagent_run_id("s2"))
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+
+    // The call is known from the snapshot, so its result is answerable.
+    ctx.emit(Event::tool_call_result("m2", "c1", "ok")).unwrap();
+    // An untagged re-open takes the message back for the parent.
+    ctx.emit(Event::text_message_start("m1", TextMessageRole::Assistant))
+        .unwrap();
+    ctx.emit(Event::text_message_end("m1")).unwrap();
+    ctx.emit(Event::run_finished_success("t", "r")).unwrap();
+}

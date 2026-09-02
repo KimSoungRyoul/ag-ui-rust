@@ -87,13 +87,37 @@
 //! splice two calls' arguments into each other — or emit the interleaving
 //! yourself. The verifier keys everything by id, so it accepts the interleaved
 //! stream; what it will not let you do is close a call you never opened.
+//!
+//! # Subagents
+//!
+//! [`SubagentHandle`] is a scope in the sense [`StepGuard`] is: it dereferences
+//! to the run context, and everything opened through it — messages, tool
+//! calls, reasoning, steps, nested subagents — comes out carrying its
+//! `subagentRunId`. The attribution lives in the event sink rather than in
+//! the handles, which is why a [`MessageHandle`] opened inside a subagent
+//! needs no idea that it was: the sink tags every attributable event that
+//! arrives untagged while a scope is open, and leaves an event the agent
+//! tagged explicitly alone.
+//!
+//! That last clause is the concurrent case. Subagents that stream at once are
+//! the parallel-tool-call situation again: two open handles is a borrow-check
+//! error by design, so build each subagent's events with
+//! [`Event::with_subagent_run_id`] and [`emit`](crate::server::RunContext::emit)
+//! them interleaved, bracketed by [`Event::subagent_started`] and
+//! [`Event::subagent_finished_success`]. The verifier keys every entity by id
+//! and remembers who opened it, so the interleaving is accepted; what it will
+//! not let you do is continue one subagent's message under another's tag.
+//! Attribute every chunk when several subagents stream at once — a chunk
+//! that names neither a message nor a subagent can only be resolved when one
+//! stream is open.
 
 mod message;
 mod reasoning;
 mod step;
+mod subagent;
 mod tool;
 
-use crate::Event;
+use crate::{Event, SubagentRunId};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_core::Stream;
 use futures_util::StreamExt as _;
@@ -106,6 +130,7 @@ use crate::server::verify::Verifier;
 pub use message::MessageHandle;
 pub use reasoning::ReasoningHandle;
 pub use step::StepGuard;
+pub use subagent::SubagentHandle;
 pub use tool::ToolCallHandle;
 
 /// The write end of a run's event stream: transformers, then verification,
@@ -123,6 +148,9 @@ pub(crate) struct EventSink {
     /// verifier so that turning the `verify` feature off cannot make the driver
     /// emit a second `RUN_FINISHED`.
     terminated: bool,
+    /// The subagent scope in force: every attributable event emitted untagged
+    /// while it is set goes out carrying it. See [`SubagentHandle`].
+    attribution: Option<SubagentRunId>,
 }
 
 impl std::fmt::Debug for EventSink {
@@ -130,6 +158,7 @@ impl std::fmt::Debug for EventSink {
         f.debug_struct("EventSink")
             .field("transformers", &self.chain.len())
             .field("cancelled", &self.cancel.is_cancelled())
+            .field("attribution", &self.attribution)
             .finish()
     }
 }
@@ -146,6 +175,7 @@ impl EventSink {
             verifier: Verifier::new(),
             cancel,
             terminated: false,
+            attribution: None,
         }
     }
 
@@ -162,7 +192,16 @@ impl EventSink {
 
     /// Emits one event even after cancellation — used by the run driver for
     /// `RUN_FINISHED` and `RUN_ERROR`, which must go out regardless.
-    pub(crate) fn emit_forced(&mut self, event: Event) -> Result<()> {
+    pub(crate) fn emit_forced(&mut self, mut event: Event) -> Result<()> {
+        // Attribution is applied before the transformers, so a transformer
+        // sees the same tagged stream a consumer would. An event the agent
+        // tagged itself keeps its tag: that is how a hand-interleaved
+        // concurrent stream is written.
+        if let Some(id) = &self.attribution {
+            if event.event_type().is_attributable() && event.subagent_run_id().is_none() {
+                event.set_subagent_run_id(id.clone());
+            }
+        }
         if self.chain.is_empty() {
             return self.send(event);
         }
@@ -170,6 +209,20 @@ impl EventSink {
             self.send(event)?;
         }
         Ok(())
+    }
+
+    /// The subagent scope in force, if any.
+    pub(crate) fn attribution(&self) -> Option<&SubagentRunId> {
+        self.attribution.as_ref()
+    }
+
+    /// Replaces the subagent scope and returns the previous one, so a nested
+    /// scope can restore it on close.
+    pub(crate) fn set_attribution(
+        &mut self,
+        attribution: Option<SubagentRunId>,
+    ) -> Option<SubagentRunId> {
+        std::mem::replace(&mut self.attribution, attribution)
     }
 
     fn send(&mut self, event: Event) -> Result<()> {
