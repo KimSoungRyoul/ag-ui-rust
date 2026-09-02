@@ -961,12 +961,17 @@ impl Applier {
     // ---- activities -----------------------------------------------------
 
     fn activity_snapshot(&mut self, event: &ActivitySnapshotEvent) -> Changed {
+        let is_new = !self.by_id.contains_key(&event.message_id);
         let index = self.activity_index(&event.message_id, &event.activity_type);
         if let Some(Message::Activity(activity)) = self.messages.get_mut(index) {
             activity.activity_type = event.activity_type.clone();
-            // A snapshot restates the activity, attribution included: one
-            // that carries none takes the activity back for the parent.
-            activity.subagent_run_id = event.subagent_run_id.clone();
+            // A replacing snapshot re-mints the activity, attribution
+            // included: one that carries none takes the activity back for
+            // the parent. A merge leaves the message where it was, and the
+            // verifier holds a following delta to that owner.
+            if is_new || event.replace {
+                activity.subagent_run_id = event.subagent_run_id.clone();
+            }
             if event.replace {
                 activity.content = event.content.clone();
             } else {

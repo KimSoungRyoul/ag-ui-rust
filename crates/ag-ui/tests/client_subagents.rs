@@ -437,3 +437,44 @@ async fn a_session_reports_the_lifecycle_and_the_messages_carry_their_owner() {
     );
     assert_eq!(session.messages()[2].subagent_run_id(), None);
 }
+
+/// An activity snapshot with `replace` set — the factory leaves it false.
+fn activity(id: &str, content: ag_ui::JsonObject, replace: bool) -> Event {
+    let mut event = ag_ui::ActivitySnapshotEvent::new(id, "progress", content);
+    event.replace = replace;
+    Event::ActivitySnapshot(event)
+}
+
+#[test]
+fn a_merging_activity_snapshot_keeps_the_activitys_owner() {
+    use ag_ui::JsonObject;
+
+    let mut applier = Applier::new();
+    applier
+        .apply(&Event::run_started("t", "r"))
+        .expect("applies");
+    applier
+        .apply(&activity("a1", JsonObject::new(), true).with_subagent_run_id("s1"))
+        .expect("applies");
+
+    let owner = |applier: &Applier| {
+        applier
+            .message(&"a1".into())
+            .and_then(|message| message.subagent_run_id())
+            .map(|id| id.as_str().to_owned())
+    };
+    assert_eq!(owner(&applier).as_deref(), Some("s1"));
+
+    // `replace: false` merges content into the message where it is; only a
+    // replacing snapshot re-mints it, attribution included.
+    let mut step = JsonObject::new();
+    step.insert("step".to_owned(), serde_json::json!(2));
+    applier
+        .apply(&activity("a1", step, false))
+        .expect("applies");
+    assert_eq!(owner(&applier).as_deref(), Some("s1"));
+    applier
+        .apply(&activity("a1", JsonObject::new(), true))
+        .expect("applies");
+    assert_eq!(owner(&applier), None);
+}

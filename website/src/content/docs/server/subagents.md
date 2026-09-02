@@ -312,7 +312,8 @@ passes. What it rejects is a continuation, terminator or re-open that *names* a 
 subagent than the one that opened the entity — `Rule::OwnerMismatch`, the eighth rule, and
 the only one subagents added on the server. A continuation that names nobody is accepted:
 attribution is optional per event, and a bare continuation is what a pre-subagent producer
-sends. Steps are keyed by owner as well as name, so a subagent cannot close the parent's
+sends — and it does not hand the entity to the parent either; the first writer stays the
+owner, as upstream records it. Steps are keyed by owner as well as name, so a subagent cannot close the parent's
 step, and two agents may run a step of the same name at once.
 
 Attribute every chunk when several subagents stream at once. A `*_CHUNK` event that names

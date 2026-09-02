@@ -216,7 +216,11 @@ tags, exactly as interleaved parallel tool calls already are.
 The verifier learned the same fact from the other side: every entity is opened by someone,
 and a later event that names a different owner is `Rule::OwnerMismatch`, the eighth rule.
 One that names nobody is accepted, because attribution is optional per event and a bare
-continuation is what a pre-subagent producer sends.
+continuation is what a pre-subagent producer sends — and it does not hand the entity to the
+parent either: the first writer stays the owner, which is what upstream records and what
+keeps the verifier and the applier telling the same story about who owns a message. The
+same owner tracking covers activities, the entity a `REASONING_ENCRYPTED_VALUE` names, the
+history the `RUN_STARTED` echo replays, and the tool message a `TOOL_CALL_RESULT` mints.
 
 ## Visibility defaults to attributed
 

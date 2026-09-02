@@ -513,9 +513,211 @@ fn a_messages_snapshot_seeds_ownership() {
 
     // The call is known from the snapshot, so its result is answerable.
     ctx.emit(Event::tool_call_result("m2", "c1", "ok")).unwrap();
-    // An untagged re-open takes the message back for the parent.
+    // An untagged re-open is accepted, and the message keeps its owner.
     ctx.emit(Event::text_message_start("m1", TextMessageRole::Assistant))
         .unwrap();
     ctx.emit(Event::text_message_end("m1")).unwrap();
     ctx.emit(Event::run_finished_success("t", "r")).unwrap();
+}
+
+// ---- review round 1: owner semantics mirrored from upstream ---------------
+
+#[test]
+fn the_first_writer_owns_a_message_and_an_untagged_reopen_keeps_it() {
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(
+        Event::text_message_start("m1", TextMessageRole::Assistant).with_subagent_run_id("s1"),
+    )
+    .unwrap();
+    ctx.emit(Event::text_message_end("m1").with_subagent_run_id("s1"))
+        .unwrap();
+
+    // An untagged re-open is accepted, and does not hand m1 to the parent…
+    ctx.emit(Event::text_message_start("m1", TextMessageRole::Assistant))
+        .unwrap();
+    // …so s1 may still continue it, and s2 still may not.
+    ctx.emit(Event::text_message_content("m1", "more").with_subagent_run_id("s1"))
+        .unwrap();
+    let error = ctx
+        .emit(Event::text_message_content("m1", "mine").with_subagent_run_id("s2"))
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+    ctx.emit(Event::text_message_end("m1")).unwrap();
+
+    // A tool call carried by m1 is s1's, as it was before the re-open.
+    let mut start = ag_ui::ToolCallStartEvent::new("c1", "search");
+    start.parent_message_id = Some("m1".into());
+    ctx.emit(Event::ToolCallStart(start).with_subagent_run_id("s1"))
+        .unwrap();
+}
+
+#[test]
+fn the_run_started_echo_seeds_ownership_without_overwriting_it() {
+    use ag_ui::{AssistantMessage, Message, RunAgentInput, ToolCall};
+
+    let mut input = RunAgentInput::new("t", "r");
+    input.messages = vec![Message::Assistant(AssistantMessage {
+        id: "h1".into(),
+        content: Some("earlier".into()),
+        tool_calls: Some(vec![ToolCall::new("hc1", "search", "{}")]),
+        subagent_run_id: Some("s1".into()),
+        ..Default::default()
+    })];
+    let mut started = ag_ui::RunStartedEvent::new("t", "r");
+    started.input = Some(Box::new(input));
+
+    // Replayed history: s2 may not re-open s1's message or continue its call.
+    let (mut ctx, _events) = context();
+    ctx.emit(started.clone().into()).unwrap();
+    let error = ctx
+        .emit(
+            Event::text_message_start("h1", TextMessageRole::Assistant).with_subagent_run_id("s2"),
+        )
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+    let error = ctx
+        .emit(Event::tool_call_start("hc1", "search").with_subagent_run_id("s2"))
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+
+    // The echo is history, not a rewrite: a snapshot that restates h1 as the
+    // parent's is authoritative over it, and the parent may then re-open h1.
+    let (mut ctx, _events) = context();
+    ctx.emit(started.into()).unwrap();
+    ctx.emit(Event::messages_snapshot(vec![Message::assistant(
+        "h1", "restated",
+    )]))
+    .unwrap();
+    ctx.emit(Event::text_message_start("h1", TextMessageRole::Assistant))
+        .unwrap();
+    ctx.emit(Event::text_message_end("h1")).unwrap();
+    ctx.emit(Event::run_finished_success("t", "r")).unwrap();
+}
+
+#[test]
+fn a_tool_result_mints_its_message_under_its_own_attribution() {
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(Event::tool_call_start("c1", "search")).unwrap();
+    ctx.emit(Event::tool_call_end("c1")).unwrap();
+    ctx.emit(Event::tool_call_result("m2", "c1", "ok")).unwrap();
+
+    // m2 is the parent's now, so a subagent may not re-open it.
+    let error = ctx
+        .emit(
+            Event::text_message_start("m2", TextMessageRole::Assistant).with_subagent_run_id("s1"),
+        )
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+}
+
+#[test]
+fn a_reasoning_block_and_its_message_share_an_owner() {
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(Event::reasoning_start("r1").with_subagent_run_id("s1"))
+        .unwrap();
+    let error = ctx
+        .emit(Event::reasoning_message_start("r1").with_subagent_run_id("s2"))
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+
+    // Untagged inside the block is fine, and the block's close must agree.
+    ctx.emit(Event::reasoning_message_start("r1")).unwrap();
+    ctx.emit(Event::reasoning_message_end("r1")).unwrap();
+    let error = ctx
+        .emit(Event::reasoning_end("r1").with_subagent_run_id("s2"))
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+    ctx.emit(Event::reasoning_end("r1").with_subagent_run_id("s1"))
+        .unwrap();
+}
+
+#[test]
+fn an_encrypted_value_must_name_the_owner_of_what_it_attaches_to() {
+    use ag_ui::ReasoningEncryptedValueSubtype;
+
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(Event::tool_call_start("c1", "search").with_subagent_run_id("s1"))
+        .unwrap();
+    ctx.emit(Event::tool_call_end("c1").with_subagent_run_id("s1"))
+        .unwrap();
+    ctx.emit(Event::reasoning_message_start("r1").with_subagent_run_id("s1"))
+        .unwrap();
+    ctx.emit(Event::reasoning_message_end("r1").with_subagent_run_id("s1"))
+        .unwrap();
+
+    // The subtype picks the map: a tool call's owner, then a message's.
+    let error = ctx
+        .emit(
+            Event::reasoning_encrypted_value(ReasoningEncryptedValueSubtype::ToolCall, "c1", "x")
+                .with_subagent_run_id("s2"),
+        )
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+    let error = ctx
+        .emit(
+            Event::reasoning_encrypted_value(ReasoningEncryptedValueSubtype::Message, "r1", "x")
+                .with_subagent_run_id("s2"),
+        )
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+    ctx.emit(
+        Event::reasoning_encrypted_value(ReasoningEncryptedValueSubtype::Message, "r1", "x")
+            .with_subagent_run_id("s1"),
+    )
+    .unwrap();
+    // An untagged one agrees with anyone, and an unknown entity has no owner.
+    ctx.emit(Event::reasoning_encrypted_value(
+        ReasoningEncryptedValueSubtype::ToolCall,
+        "c1",
+        "x",
+    ))
+    .unwrap();
+    ctx.emit(
+        Event::reasoning_encrypted_value(ReasoningEncryptedValueSubtype::Message, "never", "x")
+            .with_subagent_run_id("s2"),
+    )
+    .unwrap();
+}
+
+/// An activity snapshot with `replace` set — the factory leaves it false.
+fn activity(id: &str, content: ag_ui::JsonObject, replace: bool) -> Event {
+    let mut event = ag_ui::ActivitySnapshotEvent::new(id, "progress", content);
+    event.replace = replace;
+    Event::ActivitySnapshot(event)
+}
+
+#[test]
+fn an_activity_is_owned_by_its_snapshot_and_only_a_replacing_one_reowns_it() {
+    use ag_ui::{JsonObject, PatchOperation};
+
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::run_started("t", "r")).unwrap();
+    ctx.emit(activity("a1", JsonObject::new(), true).with_subagent_run_id("s1"))
+        .unwrap();
+
+    // A delta under another subagent is rejected; untagged and s1's pass.
+    let patch = vec![PatchOperation::add("/step", 1)];
+    let error = ctx
+        .emit(Event::activity_delta("a1", "progress", patch.clone()).with_subagent_run_id("s2"))
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+    ctx.emit(Event::activity_delta("a1", "progress", patch.clone()))
+        .unwrap();
+
+    // A merge under the parent does not re-own the activity…
+    ctx.emit(activity("a1", JsonObject::new(), false)).unwrap();
+    let error = ctx
+        .emit(Event::activity_delta("a1", "progress", patch.clone()).with_subagent_run_id("s2"))
+        .unwrap_err();
+    assert_eq!(rule(error), Rule::OwnerMismatch);
+
+    // …a replacing snapshot does.
+    ctx.emit(activity("a1", JsonObject::new(), true).with_subagent_run_id("s2"))
+        .unwrap();
+    ctx.emit(Event::activity_delta("a1", "progress", patch).with_subagent_run_id("s2"))
+        .unwrap();
 }

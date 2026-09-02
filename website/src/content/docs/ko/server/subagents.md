@@ -310,7 +310,8 @@ verifier는 모든 entity를 id로 색인하고 누가 열었는지 기억합니
 terminator, 재열기입니다. `Rule::OwnerMismatch`, 여덟 번째 규칙이고, subagent가 server에
 더한 유일한 규칙입니다. 아무도 지목하지 않는 continuation은 받아들입니다. attribution은
 event마다 optional이고, 맨 continuation은 subagent 이전의 producer가 보내는 것이기
-때문입니다. step은 이름과 함께 owner로도 색인됩니다. 그래서 subagent는 부모의 step을 닫을 수
+때문입니다. 그렇다고 entity를 부모에게 넘기지도 않습니다. 처음 쓴 쪽이 owner로 남습니다.
+upstream이 기록하는 방식 그대로입니다. step은 이름과 함께 owner로도 색인됩니다. 그래서 subagent는 부모의 step을 닫을 수
 없고, 두 agent가 같은 이름의 step을 동시에 돌릴 수 있습니다.
 
 subagent 여럿이 동시에 stream할 때는 chunk마다 tag를 다십시오. message도 subagent도

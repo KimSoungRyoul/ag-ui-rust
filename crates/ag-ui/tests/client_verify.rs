@@ -617,10 +617,210 @@ fn a_messages_snapshot_seeds_ownership() {
     verify_all(&[
         Event::run_started("t", "r"),
         snapshot,
-        // An untagged re-open takes the message back for the parent.
+        // An untagged re-open is accepted, and the message keeps its owner.
         Event::text_message_start("m1", TextMessageRole::Assistant),
         Event::text_message_end("m1"),
         Event::run_finished_success("t", "r"),
     ])
     .expect("an untagged re-open is accepted");
+}
+
+// ---- review round 1: owner semantics mirrored from upstream ---------------
+
+#[test]
+fn the_first_writer_owns_a_message_and_an_untagged_reopen_keeps_it() {
+    let mut start = ag_ui::ToolCallStartEvent::new("c1", "search");
+    start.parent_message_id = Some("m1".into());
+
+    // An untagged re-open is accepted and does not hand m1 to the parent: s1
+    // may still continue it, its tool call is still s1's…
+    verify_all(&[
+        Event::run_started("t", "r"),
+        tagged(
+            Event::text_message_start("m1", TextMessageRole::Assistant),
+            "s1",
+        ),
+        tagged(Event::text_message_end("m1"), "s1"),
+        Event::text_message_start("m1", TextMessageRole::Assistant),
+        tagged(Event::text_message_content("m1", "more"), "s1"),
+        Event::text_message_end("m1"),
+        tagged(Event::ToolCallStart(start), "s1"),
+        tagged(Event::tool_call_end("c1"), "s1"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("the first writer stays the owner");
+
+    // …and s2 still may not.
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        tagged(
+            Event::text_message_start("m1", TextMessageRole::Assistant),
+            "s1",
+        ),
+        tagged(Event::text_message_end("m1"), "s1"),
+        Event::text_message_start("m1", TextMessageRole::Assistant),
+        tagged(Event::text_message_content("m1", "mine"), "s2"),
+    ]);
+    assert!(said.contains("was opened by subagent \"s1\""), "{said}");
+}
+
+#[test]
+fn the_run_started_echo_seeds_ownership_without_overwriting_it() {
+    use ag_ui::{AssistantMessage, Message, RunAgentInput, ToolCall};
+
+    let mut input = RunAgentInput::new("t", "r");
+    input.messages = vec![Message::Assistant(AssistantMessage {
+        id: "h1".into(),
+        content: Some("earlier".into()),
+        tool_calls: Some(vec![ToolCall::new("hc1", "search", "{}")]),
+        subagent_run_id: Some("s1".into()),
+        ..Default::default()
+    })];
+    let mut started = ag_ui::RunStartedEvent::new("t", "r");
+    started.input = Some(Box::new(input));
+    let started = Event::RunStarted(started);
+
+    let said = complaint(&[
+        started.clone(),
+        tagged(
+            Event::text_message_start("h1", TextMessageRole::Assistant),
+            "s2",
+        ),
+    ]);
+    assert!(said.contains("belongs to subagent \"s1\""), "{said}");
+
+    let said = complaint(&[
+        started.clone(),
+        tagged(Event::tool_call_start("hc1", "search"), "s2"),
+    ]);
+    assert!(
+        said.contains("the call belongs to subagent \"s1\""),
+        "{said}"
+    );
+
+    // A snapshot is authoritative over the echo's seed.
+    verify_all(&[
+        started,
+        Event::messages_snapshot(vec![Message::assistant("h1", "restated")]),
+        tagged(
+            Event::text_message_start("h1", TextMessageRole::Assistant),
+            "s2",
+        ),
+        tagged(Event::text_message_end("h1"), "s2"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect_err("the snapshot gave h1 to the parent, so s2 may not re-open it");
+}
+
+#[test]
+fn a_tool_result_mints_its_message_under_its_own_attribution() {
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::tool_call_start("c1", "search"),
+        Event::tool_call_end("c1"),
+        Event::tool_call_result("m2", "c1", "ok"),
+        tagged(
+            Event::text_message_start("m2", TextMessageRole::Assistant),
+            "s1",
+        ),
+    ]);
+    assert!(said.contains("belongs to the parent agent"), "{said}");
+}
+
+#[test]
+fn a_reasoning_block_and_its_message_share_an_owner() {
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        tagged(Event::reasoning_start("r1"), "s1"),
+        tagged(Event::reasoning_message_start("r1"), "s2"),
+    ]);
+    assert!(said.contains("belongs to subagent \"s1\""), "{said}");
+
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        tagged(Event::reasoning_start("r1"), "s1"),
+        Event::reasoning_message_start("r1"),
+        Event::reasoning_message_end("r1"),
+        tagged(Event::reasoning_end("r1"), "s2"),
+    ]);
+    assert!(said.contains("was opened by subagent \"s1\""), "{said}");
+}
+
+#[test]
+fn an_encrypted_value_must_name_the_owner_of_what_it_attaches_to() {
+    use ag_ui::ReasoningEncryptedValueSubtype;
+
+    let opened = [
+        Event::run_started("t", "r"),
+        tagged(Event::tool_call_start("c1", "search"), "s1"),
+        tagged(Event::tool_call_end("c1"), "s1"),
+        tagged(Event::reasoning_message_start("r1"), "s1"),
+        tagged(Event::reasoning_message_end("r1"), "s1"),
+    ];
+
+    let mut events = opened.to_vec();
+    events.push(tagged(
+        Event::reasoning_encrypted_value(ReasoningEncryptedValueSubtype::ToolCall, "c1", "x"),
+        "s2",
+    ));
+    let said = complaint(&events);
+    assert!(said.contains("tool call \"c1\""), "{said}");
+
+    let mut events = opened.to_vec();
+    events.push(tagged(
+        Event::reasoning_encrypted_value(ReasoningEncryptedValueSubtype::Message, "r1", "x"),
+        "s2",
+    ));
+    let said = complaint(&events);
+    assert!(said.contains("message \"r1\""), "{said}");
+
+    let mut events = opened.to_vec();
+    events.extend([
+        tagged(
+            Event::reasoning_encrypted_value(ReasoningEncryptedValueSubtype::Message, "r1", "x"),
+            "s1",
+        ),
+        Event::reasoning_encrypted_value(ReasoningEncryptedValueSubtype::ToolCall, "c1", "x"),
+        Event::run_finished_success("t", "r"),
+    ]);
+    verify_all(&events).expect("the owner and an absent tag both pass");
+}
+
+/// An activity snapshot with `replace` set — the factory leaves it false.
+fn activity(id: &str, content: ag_ui::JsonObject, replace: bool) -> Event {
+    let mut event = ag_ui::ActivitySnapshotEvent::new(id, "progress", content);
+    event.replace = replace;
+    Event::ActivitySnapshot(event)
+}
+
+#[test]
+fn an_activity_is_owned_by_its_snapshot_and_only_a_replacing_one_reowns_it() {
+    use ag_ui::{JsonObject, PatchOperation};
+
+    let patch = || vec![PatchOperation::add("/step", 1)];
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        tagged(activity("a1", JsonObject::new(), true), "s1"),
+        tagged(Event::activity_delta("a1", "progress", patch()), "s2"),
+    ]);
+    assert!(said.contains("activity \"a1\""), "{said}");
+
+    // A merge under the parent does not re-own it; a replacement does.
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        tagged(activity("a1", JsonObject::new(), true), "s1"),
+        activity("a1", JsonObject::new(), false),
+        tagged(Event::activity_delta("a1", "progress", patch()), "s2"),
+    ]);
+    assert!(said.contains("was opened by subagent \"s1\""), "{said}");
+
+    verify_all(&[
+        Event::run_started("t", "r"),
+        tagged(activity("a1", JsonObject::new(), true), "s1"),
+        Event::activity_delta("a1", "progress", patch()),
+        tagged(activity("a1", JsonObject::new(), true), "s2"),
+        tagged(Event::activity_delta("a1", "progress", patch()), "s2"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("a replacing snapshot re-owns the activity");
 }

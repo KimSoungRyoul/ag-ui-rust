@@ -39,9 +39,12 @@
 //!    the type system cannot express, checked by
 //!    [`RunOutcome::validate`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/outcome/enum.RunOutcome.html#method.validate).
 //! 9. A continuation, terminator or re-open that *names* a subagent must name
-//!    the one that opened the entity. One that names none is accepted:
-//!    attribution is optional per event, and a bare continuation is what a
-//!    pre-subagent producer sends.
+//!    the one that opened the entity — a message, a reasoning block or the
+//!    message inside it, a tool call, an activity, or whatever a
+//!    `REASONING_ENCRYPTED_VALUE` attaches to. One that names none is
+//!    accepted: attribution is optional per event, and a bare continuation is
+//!    what a pre-subagent producer sends. It does not hand the entity to the
+//!    parent either: the first writer stays the owner.
 //! 10. A tool call belongs to the message its `parentMessageId` names, so a
 //!     `TOOL_CALL_START` tagged with one subagent while that message belongs
 //!     to another is rejected; an untagged one inherits the message's owner.
@@ -63,7 +66,10 @@
 //! `subagentRunId` have been announced: attribution without lifecycle events
 //! is a supported mode. Events outside these families (state, activity, raw,
 //! custom) are unordered and never close anything. A `MESSAGES_SNAPSHOT`
-//! seeds ownership from the messages it carries, and is authoritative.
+//! seeds ownership from the messages it carries and is authoritative; the
+//! `RUN_STARTED` input echo seeds it too, for ids not yet recorded; and a
+//! `TOOL_CALL_RESULT` mints the tool message it names under its own
+//! attribution.
 
 // The THINKING_* events are deprecated but a verifier still has to recognise
 // them.
@@ -71,7 +77,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{Event, EventType, Message, MessageId, StepName, SubagentRunId, ToolCallId};
+use crate::{
+    Event, EventType, Message, MessageId, ReasoningEncryptedValueSubtype, StepName, SubagentRunId,
+    ToolCallId,
+};
 
 use crate::client::error::{Error, Result};
 
@@ -101,11 +110,15 @@ pub struct Verifier {
     reasoning: Vec<(MessageId, Owner)>,
     /// Open steps, keyed by owner as well as name.
     steps: Vec<(Owner, StepName)>,
-    /// Every message ever introduced and who owns it — a tool call inherits
-    /// the owner of the message that carries it, which may have closed.
+    /// Every message — text or reasoning — ever introduced and who owns it:
+    /// the first writer. A tool call inherits the owner of the message that
+    /// carries it, which may have closed.
     message_owners: HashMap<MessageId, Owner>,
     /// Every tool call ever introduced and who owns it.
     tool_call_owners: HashMap<ToolCallId, Owner>,
+    /// Every activity ever introduced and who owns it: opened by a snapshot,
+    /// continued by deltas against the same id.
+    activity_owners: HashMap<MessageId, Owner>,
     subagents: Vec<SubagentRunId>,
     /// Ids closed in this run: an id names one invocation.
     closed_subagents: HashSet<SubagentRunId>,
@@ -149,23 +162,28 @@ impl Verifier {
         }
 
         match event {
-            Event::RunStarted(_) => {
+            Event::RunStarted(e) => {
                 if self.started {
                     return Err(Error::protocol("RUN_STARTED arrived twice in one stream"));
                 }
                 self.started = true;
+                // The input echo replays history the applier applies, so it
+                // seeds ownership like a snapshot does — for ids not yet
+                // recorded, since it is history rather than a rewrite.
+                if let Some(input) = &e.input {
+                    self.seed_owners(&input.messages, false);
+                }
             }
 
             Event::TextMessageStart(e) => {
-                self.claim_message(kind, &e.message_id, &e.subagent_run_id)?;
+                let owner = self.claim_message(kind, &e.message_id, &e.subagent_run_id)?;
                 self.not_already_open(
                     self.text.iter().map(|(id, _)| id),
                     &e.message_id,
                     "message",
                     kind,
                 )?;
-                self.text
-                    .push((e.message_id.clone(), e.subagent_run_id.clone()));
+                self.text.push((e.message_id.clone(), owner));
             }
             Event::TextMessageContent(e) => {
                 self.expect_text(&e.message_id, &e.subagent_run_id, kind)?;
@@ -210,18 +228,41 @@ impl Verifier {
                         e.tool_call_id.as_str()
                     )));
                 }
+                // A result mints the tool message it names, under its own
+                // attribution — so the newest mint wins, and a re-open of
+                // that message by someone else has an owner to disagree with.
+                self.message_owners
+                    .insert(e.message_id.clone(), e.subagent_run_id.clone());
             }
 
-            Event::ReasoningMessageStart(e) => {
+            // The block and the message inside it share an id and claim the
+            // same owner: `REASONING_START` under one subagent and
+            // `REASONING_MESSAGE_START` under another is a contradiction. The
+            // block's bracketing is not otherwise tracked (rule 4 is about the
+            // message), only its ownership.
+            Event::ReasoningStart(e) => {
                 self.claim_message(kind, &e.message_id, &e.subagent_run_id)?;
+            }
+            Event::ReasoningEnd(e) => {
+                if let Some(owner) = self.message_owners.get(&e.message_id) {
+                    Self::expect_owner(
+                        kind,
+                        "reasoning message",
+                        e.message_id.as_str(),
+                        owner,
+                        &e.subagent_run_id,
+                    )?;
+                }
+            }
+            Event::ReasoningMessageStart(e) => {
+                let owner = self.claim_message(kind, &e.message_id, &e.subagent_run_id)?;
                 self.not_already_open(
                     self.reasoning.iter().map(|(id, _)| id),
                     &e.message_id,
                     "reasoning message",
                     kind,
                 )?;
-                self.reasoning
-                    .push((e.message_id.clone(), e.subagent_run_id.clone()));
+                self.reasoning.push((e.message_id.clone(), owner));
             }
             Event::ReasoningMessageContent(e) => {
                 self.expect_reasoning(&e.message_id, &e.subagent_run_id, kind)?;
@@ -229,6 +270,47 @@ impl Verifier {
             Event::ReasoningMessageEnd(e) => {
                 self.expect_reasoning(&e.message_id, &e.subagent_run_id, kind)?;
                 self.reasoning.retain(|(open, _)| open != &e.message_id);
+            }
+            // Continues an entity by id, and `subtype` says which kind — a
+            // tool call's owner lives in a different map from a message's.
+            Event::ReasoningEncryptedValue(e) => {
+                let (what, owner) = match e.subtype {
+                    ReasoningEncryptedValueSubtype::ToolCall => (
+                        "tool call",
+                        self.tool_call_owners
+                            .get(&ToolCallId::new(e.entity_id.clone())),
+                    ),
+                    ReasoningEncryptedValueSubtype::Message => (
+                        "message",
+                        self.message_owners
+                            .get(&MessageId::new(e.entity_id.clone())),
+                    ),
+                };
+                if let Some(owner) = owner {
+                    Self::expect_owner(kind, what, &e.entity_id, owner, &e.subagent_run_id)?;
+                }
+            }
+
+            // An activity is opened by a snapshot and continued by deltas
+            // against the same id. Only a *replacing* snapshot re-mints it and
+            // so re-owns it; with `replace: false` the applier leaves the
+            // existing message where it was, and so does the recorded owner.
+            Event::ActivitySnapshot(e) => {
+                if e.replace || !self.activity_owners.contains_key(&e.message_id) {
+                    self.activity_owners
+                        .insert(e.message_id.clone(), e.subagent_run_id.clone());
+                }
+            }
+            Event::ActivityDelta(e) => {
+                if let Some(owner) = self.activity_owners.get(&e.message_id) {
+                    Self::expect_owner(
+                        kind,
+                        "activity",
+                        e.message_id.as_str(),
+                        owner,
+                        &e.subagent_run_id,
+                    )?;
+                }
             }
 
             Event::StepStarted(e) => {
@@ -289,17 +371,7 @@ impl Verifier {
 
             // Authoritative: the snapshot restates the conversation, so its
             // owners replace whatever was recorded.
-            Event::MessagesSnapshot(e) => {
-                for message in &e.messages {
-                    let owner = message.subagent_run_id().cloned();
-                    if let Message::Assistant(assistant) = message {
-                        for call in assistant.tool_calls.iter().flatten() {
-                            self.tool_call_owners.insert(call.id.clone(), owner.clone());
-                        }
-                    }
-                    self.message_owners.insert(message.id().clone(), owner);
-                }
-            }
+            Event::MessagesSnapshot(e) => self.seed_owners(&e.messages, true),
 
             Event::RunFinished(e) => {
                 // Recorded before the checks: the run is over whether or not it
@@ -346,11 +418,13 @@ impl Verifier {
 
     // ---- rules ----------------------------------------------------------
 
-    /// Records who a message belongs to, or rejects a claim that disagrees
-    /// with the recorded owner. An untagged claim on an owned message is
-    /// accepted and takes the message back for the parent, as upstream's
-    /// verifier does.
-    fn claim_message(&mut self, kind: EventType, id: &MessageId, tag: &Owner) -> Result<()> {
+    /// Records who a message belongs to — the first writer — or rejects a
+    /// claim that disagrees with the recorded owner, and returns the owner in
+    /// force. An untagged claim on an owned message is accepted and does
+    /// *not* hand the message to the parent: an absent tag agrees with any
+    /// owner, and the applier keeps the message where it was. Upstream's
+    /// verifier records the first writer for the same reason.
+    fn claim_message(&mut self, kind: EventType, id: &MessageId, tag: &Owner) -> Result<Owner> {
         if let Some(owner) = self.message_owners.get(id) {
             if tag.is_some() && owner != tag {
                 return Err(Error::protocol(format!(
@@ -360,9 +434,34 @@ impl Verifier {
                     describe(owner)
                 )));
             }
+            return Ok(owner.clone());
         }
         self.message_owners.insert(id.clone(), tag.clone());
-        Ok(())
+        Ok(tag.clone())
+    }
+
+    /// Records the owners of replayed messages, and of the tool calls they
+    /// carry: authoritatively for a `MESSAGES_SNAPSHOT`, which restates the
+    /// conversation, and for ids not yet recorded when the `RUN_STARTED` echo
+    /// replays history.
+    fn seed_owners(&mut self, messages: &[Message], authoritative: bool) {
+        for message in messages {
+            let owner = message.subagent_run_id().cloned();
+            let bucket = match message {
+                Message::Activity(_) => &mut self.activity_owners,
+                _ => &mut self.message_owners,
+            };
+            if authoritative || !bucket.contains_key(message.id()) {
+                bucket.insert(message.id().clone(), owner.clone());
+            }
+            if let Message::Assistant(assistant) = message {
+                for call in assistant.tool_calls.iter().flatten() {
+                    if authoritative || !self.tool_call_owners.contains_key(&call.id) {
+                        self.tool_call_owners.insert(call.id.clone(), owner.clone());
+                    }
+                }
+            }
+        }
     }
 
     /// Who a tool call belongs to: its tag, else the owner of the message that

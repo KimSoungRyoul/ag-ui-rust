@@ -510,3 +510,29 @@ fn nothing_new_is_emitted_when_absent() {
     let message = serde_json::to_string(&Message::user("m", "hi")).unwrap();
     assert!(!message.contains("subagentRunId") && !message.contains("metadata"));
 }
+
+#[test]
+fn a_null_interrupt_id_list_is_rejected() {
+    // Upstream's schema is `z.array(z.string()).optional()`, and its verifier
+    // names `outcome.interruptIds: null` explicitly.
+    let error = serde_json::from_str::<Event>(
+        r#"{"type":"SUBAGENT_FINISHED","subagentRunId":"sub-1","outcome":{"type":"suspended","interruptIds":null}}"#,
+    )
+    .expect_err("null is not an absent list");
+    assert!(error.to_string().contains("null"), "{error}");
+
+    // Absent and empty both still parse.
+    for body in [
+        r#"{"type":"suspended"}"#,
+        r#"{"type":"suspended","interruptIds":[]}"#,
+    ] {
+        let event: Event = serde_json::from_str(&format!(
+            r#"{{"type":"SUBAGENT_FINISHED","subagentRunId":"sub-1","outcome":{body}}}"#
+        ))
+        .expect("parses");
+        let Event::SubagentFinished(finished) = event else {
+            unreachable!()
+        };
+        assert!(finished.outcome.expect("an outcome").is_suspended());
+    }
+}

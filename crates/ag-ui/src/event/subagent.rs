@@ -181,8 +181,13 @@ pub enum SubagentOutcome {
         /// The run-level interrupts this subagent directly owns; each such
         /// [`Interrupt`](crate::outcome::Interrupt) carries `subagent_run_id`
         /// back. May be empty or absent: an ancestor suspended because a
-        /// *descendant* interrupted owns no interrupt itself.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// *descendant* interrupted owns no interrupt itself. Absent or a
+        /// list, never `null`, like every other field on this surface.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::serde_util::reject_null"
+        )]
         interrupt_ids: Option<Vec<String>>,
     },
 }

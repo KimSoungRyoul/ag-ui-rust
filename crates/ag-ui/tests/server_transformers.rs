@@ -264,10 +264,17 @@ fn hidden_drops_an_untagged_continuation_of_a_subagents_message() {
         "legal on the wire, but it belongs to the subagent"
     );
     assert!(filter.transform(Event::text_message_end("m1")).is_empty());
-    // A later parent message under the same id is the parent's again.
-    assert_eq!(
+    // The first writer owns the id for the run, as the verifier reads it: an
+    // untagged re-open of m1 is still the subagent's, and a fresh id is the
+    // parent's.
+    assert!(
         filter
             .transform(Event::text_message_start("m1", Default::default()))
+            .is_empty()
+    );
+    assert_eq!(
+        filter
+            .transform(Event::text_message_start("m2", Default::default()))
             .len(),
         1
     );
@@ -368,4 +375,84 @@ async fn inline_and_hidden_strip_the_attribution_from_interrupts_too() {
             assert!(!json.contains("subagentRunId"), "{mode:?}: {json}");
         }
     }
+}
+
+/// Hand-built streams the sink would have tagged: the filter judges an
+/// untagged event by who owns the id it continues, as the verifier does.
+#[test]
+fn hidden_drops_untagged_continuations_of_a_subagents_entities() {
+    use ag_ui::server::StreamTransformer as _;
+    use ag_ui::{AssistantMessage, Message, ToolCall, ToolMessage};
+
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let mut filter = SubagentVisibility::hidden();
+    let mut kept = |event: Event| !filter.transform(event).is_empty();
+
+    // A chunk stream: the first chunk names the id and the owner, the rest
+    // name neither.
+    assert!(!kept(tagged(
+        Event::text_message_chunk(Some("m1".into()), Some("Hel".into())),
+        "s1"
+    )));
+    assert!(!kept(Event::text_message_chunk(None, Some("lo".into()))));
+    assert!(!kept(Event::text_message_chunk(
+        Some("m1".into()),
+        Some("!".into())
+    )));
+    // The parent's own chunk stream is untouched.
+    assert!(kept(Event::text_message_chunk(
+        Some("m2".into()),
+        Some("mine".into())
+    )));
+    assert!(kept(Event::text_message_chunk(None, Some(" too".into()))));
+
+    // A call carried by a subagent's message is the subagent's, tag or no tag
+    // — and so is its end and its result.
+    assert!(!kept(tagged(
+        Event::text_message_start("m3", ag_ui::TextMessageRole::Assistant),
+        "s1"
+    )));
+    let mut start = ag_ui::ToolCallStartEvent::new("c1", "search");
+    start.parent_message_id = Some("m3".into());
+    assert!(!kept(Event::ToolCallStart(start)));
+    assert!(!kept(Event::tool_call_args("c1", "{}")));
+    assert!(!kept(tagged(Event::tool_call_end("c1"), "s1")));
+    assert!(!kept(Event::tool_call_result("m4", "c1", "hit")));
+    // An untagged re-open after the close is still the subagent's.
+    assert!(!kept(tagged(Event::text_message_end("m3"), "s1")));
+    assert!(!kept(Event::text_message_start(
+        "m3",
+        ag_ui::TextMessageRole::Assistant
+    )));
+    assert!(!kept(Event::text_message_end("m3")));
+
+    // A snapshot restates the conversation: the subagent's messages go, and
+    // so does the tool message answering a call inside one of them.
+    let mut filter = SubagentVisibility::hidden();
+    let out = filter.transform(Event::messages_snapshot(vec![
+        Message::assistant("h1", "mine"),
+        Message::Assistant(AssistantMessage {
+            id: "h2".into(),
+            tool_calls: Some(vec![ToolCall::new("hc1", "search", "{}")]),
+            subagent_run_id: Some("s1".into()),
+            ..Default::default()
+        }),
+        Message::Tool(ToolMessage {
+            id: "h3".into(),
+            content: "hit".into(),
+            tool_call_id: "hc1".into(),
+            ..Default::default()
+        }),
+    ]));
+    let Some(Event::MessagesSnapshot(snapshot)) = out.first() else {
+        panic!("the snapshot is kept: {out:?}");
+    };
+    let ids: Vec<&str> = snapshot.messages.iter().map(|m| m.id().as_str()).collect();
+    assert_eq!(ids, ["h1"]);
+    // And the ids it named stay hidden afterwards.
+    assert!(
+        filter
+            .transform(Event::tool_call_result("h4", "hc1", "again"))
+            .is_empty()
+    );
 }
