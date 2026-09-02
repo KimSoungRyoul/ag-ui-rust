@@ -26,8 +26,8 @@
 //! is omitted from the JSON entirely, in every official SDK, and this crate
 //! rejects `"metadata": null` at parse time rather than reading it as absent.
 //! Unlike some older optional fields, metadata has no legacy producers to
-//! tolerate — see [`crate::serde_util`] for the rule. An empty object is valid
-//! and means the same as omitting it.
+//! tolerate — the crate-private `serde_util::reject_null` is the rule. An
+//! empty object is valid and means the same as omitting it.
 //!
 //! The [`AGUI_METADATA_KEY`] (`"ag-ui"`) is reserved for the protocol's own
 //! use. Every other key is yours. Nothing rejects a write to it at runtime —
