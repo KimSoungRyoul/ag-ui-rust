@@ -327,6 +327,12 @@ impl<T, S> Session<T, S> {
         self.applier.subagents()
     }
 
+    /// One subagent invocation by id — what a view does with the
+    /// [`Message::subagent_run_id`] on a message it is about to draw.
+    pub fn subagent(&self, run_id: &crate::SubagentRunId) -> Option<&Subagent> {
+        self.applier.subagent(run_id)
+    }
+
     /// The applier underneath, for a view that wants the raw materialised
     /// state.
     pub fn applier(&self) -> &Applier {
@@ -598,6 +604,18 @@ impl<T, S> std::fmt::Debug for RunStream<'_, T, S> {
             .field("pending", &self.ready.len())
             .field("done", &self.done)
             .finish_non_exhaustive()
+    }
+}
+
+impl<T, S> RunStream<'_, T, S> {
+    /// The session as it stands mid-run, for a view that needs more than the
+    /// update in hand — the subagent a message's owner id names, the state
+    /// so far, the messages before this one.
+    ///
+    /// Read-only: the stream holds the mutable borrow until it is dropped,
+    /// which is what makes every update consistent with what this returns.
+    pub fn session(&self) -> &Session<T, S> {
+        self.session
     }
 }
 

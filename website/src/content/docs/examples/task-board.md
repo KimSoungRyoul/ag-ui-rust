@@ -20,6 +20,7 @@ appears in it exactly once.
 | A2UI | the board as a surface, in an `a2ui_operations` tool-result envelope |
 | Human in the loop | `clear` pauses the run and waits for a yes |
 | Steps | the whole turn is bracketed by `STEP_STARTED` / `STEP_FINISHED` |
+| Subagents | `research` delegates to two in turn, and everything each emits is attributed to it |
 
 ## Running it
 
@@ -192,6 +193,56 @@ call at all, which is what the test asserts —
 
 [Human in the loop](/ag-ui-rust/server/interrupts/) has the mechanics.
 
+## Delegating to subagents
+
+`research` is the one command that delegates. Inside the same `board` step the supervisor
+opens two subagents in turn — `scope`, then `risks` — and each streams a sentence and adds
+a task through the same `add_task` tool the other commands use:
+
+```text
+you> research onboarding
+  ~ delegating "onboarding" to two subagents
+  ⟂ scope started
+  scope> Scoping "onboarding": one deliverable, one owner.
+  · [scope] add_task({"title":"scope onboarding"})
+  [state] 1 open · 0 done
+    → {"id":1,"title":"scope onboarding"}
+  ⟂ scope done
+  ⟂ risks started
+  risks> One risk for "onboarding": nobody owns the follow-up.
+  · [risks] add_task({"title":"name a follow-up owner for onboarding"})
+  [state] 2 open · 0 done
+    → {"id":2,"title":"name a follow-up owner for onboarding"}
+  ⟂ risks done
+  agent> Research on "onboarding" added #1 scope onboarding, #2 name a follow-up owner for onboarding. 2 open · 0 done
+```
+
+`⟂` is a subagent starting or finishing, and `scope>` and `· [scope]` are its sentence and
+its tool call. The agent tags none of this itself: `ctx.subagent("scope")` returns a handle
+that dereferences to the run context, and everything emitted through it — the sentence, the
+call, the board it publishes — goes out with that invocation's `subagentRunId`, bracketed
+by `SUBAGENT_STARTED` and `SUBAGENT_FINISHED`. On the wire, the first delegate is:
+
+```text
+SUBAGENT_STARTED    {"subagentRunId":"r1-sub-1","name":"scope"}
+TEXT_MESSAGE_START  {"messageId":"r1-msg-2","role":"assistant","subagentRunId":"r1-sub-1"}
+TOOL_CALL_START     {"toolCallId":"r1-call-1","toolCallName":"add_task","subagentRunId":"r1-sub-1"}
+STATE_SNAPSHOT      {"snapshot":{…},"subagentRunId":"r1-sub-1"}
+TOOL_CALL_RESULT    {"messageId":"r1-msg-3","toolCallId":"r1-call-1","content":"…","role":"tool","subagentRunId":"r1-sub-1"}
+SUBAGENT_FINISHED   {"subagentRunId":"r1-sub-1","result":{"added":1},"outcome":{"type":"success"}}
+```
+
+The client reads it back as `Update::Subagent` for the `⟂` lines and, for everything else,
+`Message::subagent_run_id()` resolved to a name through `session.subagent(id)` — mid-run,
+through `RunStream::session()`. The supervisor's own reply comes after both delegates,
+untagged, which is why it prints as `agent>`.
+
+A client written before subagents existed rejects an event type it does not know. An
+endpoint can flatten or drop the subagent surface for such a client —
+`SubagentVisibility::inline()` and `SubagentVisibility::hidden()` are transformers — but
+this example ships the full one. [Subagents](/ag-ui-rust/server/subagents/) has the
+mechanics.
+
 ## Where the board lives
 
 **On the client.** The agent stores nothing between runs: it reads the board out of
@@ -236,18 +287,18 @@ depends on no model client, so an example that needed one would be arguing again
 | File | What is in it |
 | --- | --- |
 | `src/board.rs` | `Board` and `Task`, the four tool schemas, the A2UI surface. Knows nothing about AG-UI events. |
-| `src/agent.rs` | the `impl Agent` and the command parser |
+| `src/agent.rs` | the `impl Agent`, the command parser, and the `research` delegation |
 | `src/chat.rs` | the terminal client, generic over its input and output |
 | `src/llm.rs` | the optional `--llm` phrasing |
 | `src/main.rs` | the CLI, argument parsing by hand |
-| `tests/flows.rs` | all three flows, against a server on a real port |
+| `tests/flows.rs` | every flow above, against a server on a real port |
 
 `src/board.rs` is the one to read first. Keeping the domain free of the protocol — the
 state is a plain `serde` struct, the tools are `Tool` definitions, the surface is a
 component tree — is what makes `src/agent.rs` short enough to read in one sitting.
 
-The last test in `tests/flows.rs` drops below `Session` to `HttpAgent` and pins the exact
-event sequence a run puts on the wire:
+The wire-level tests in `tests/flows.rs` drop below `Session` to `HttpAgent` and pin the
+exact event sequence a run puts on the wire, attribution included:
 
 ```sh
 cargo test -p task-board

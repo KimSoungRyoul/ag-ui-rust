@@ -12,7 +12,8 @@ use std::io::{self, BufRead, Write};
 
 use ag_ui::client::transport::Transport;
 use ag_ui::client::{
-    MessageChangeKind, MessageUpdate, ReasoningChangeKind, RunEnd, RunStream, Session, Update,
+    MessageChangeKind, MessageUpdate, ReasoningChangeKind, RunEnd, RunStream, Session,
+    SubagentChangeKind, SubagentStatus, SubagentUpdate, Update,
 };
 use ag_ui::{Interrupt, Message};
 use ag_ui_a2ui::binding::Scope;
@@ -150,7 +151,26 @@ async fn drive<T: Transport>(
 
     while let Some(update) = run.next().await {
         match update {
-            Update::Message(message) => open_line = print_message(output, &message, open_line)?,
+            Update::Message(message) => {
+                // A message carries the id of the subagent that produced it,
+                // and the run's registry turns that into a name. Mid-run the
+                // registry is read through the stream, which holds the
+                // session until it is dropped.
+                let speaker = message
+                    .message
+                    .subagent_run_id()
+                    .and_then(|id| run.session().subagent(id))
+                    .map(|subagent| subagent.name.clone());
+                open_line = print_message(output, &message, open_line, speaker.as_deref())?;
+            }
+
+            // One line per lifecycle change. The messages a subagent
+            // produces come out under its own name, between these.
+            Update::Subagent(subagent) => {
+                if let Some(said) = lifecycle(&subagent) {
+                    writeln!(output, "  ⟂ {} {said}", subagent.subagent.name)?;
+                }
+            }
 
             // Only the finished thought is printed: a reasoning block is
             // commentary, and streaming it interleaved with the reply is noise
@@ -182,15 +202,37 @@ async fn drive<T: Transport>(
     Ok(pending)
 }
 
+/// What one subagent lifecycle change prints as, if anything.
+fn lifecycle(update: &SubagentUpdate) -> Option<String> {
+    Some(match &update.change {
+        SubagentChangeKind::Started => "started".to_owned(),
+        // The same invocation, announced again by the run that resumed it.
+        SubagentChangeKind::Resumed => "resumed".to_owned(),
+        SubagentChangeKind::Finished => "done".to_owned(),
+        SubagentChangeKind::Suspended => "waiting on a human".to_owned(),
+        SubagentChangeKind::Failed => match &update.subagent.status {
+            SubagentStatus::Failed { message, .. } => format!("failed: {message}"),
+            _ => "failed".to_owned(),
+        },
+        _ => return None,
+    })
+}
+
 /// Prints one message change, and reports whether it left the line open.
+///
+/// `speaker` is the subagent the message belongs to, when it belongs to one:
+/// its text is printed under that name instead of `agent>`, and its tool calls
+/// are prefixed with it, so a reader can tell the delegate's work from the
+/// supervisor's.
 fn print_message(
     output: &mut impl Write,
     update: &MessageUpdate,
     open_line: bool,
+    speaker: Option<&str>,
 ) -> io::Result<bool> {
     match &update.change {
         MessageChangeKind::Started => {
-            write!(output, "  agent> ")?;
+            write!(output, "  {}> ", speaker.unwrap_or("agent"))?;
             output.flush()?;
             Ok(true)
         }
@@ -207,7 +249,10 @@ fn print_message(
         }
 
         MessageChangeKind::ToolCallStarted { name, .. } => {
-            write!(output, "  · {name}(")?;
+            match speaker {
+                Some(speaker) => write!(output, "  · [{speaker}] {name}(")?,
+                None => write!(output, "  · {name}(")?,
+            }
             Ok(true)
         }
         MessageChangeKind::ToolCallArgs { delta, .. } => {

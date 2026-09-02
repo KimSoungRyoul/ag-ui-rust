@@ -20,6 +20,7 @@ description: 끝까지 만들어 본 agent 예제를 읽어 나갑니다. stream
 | A2UI | surface로 표현한 board. `a2ui_operations` tool 결과 봉투에 담깁니다 |
 | human in the loop | `clear`가 run을 멈추고 승낙을 기다립니다 |
 | step | turn 전체가 `STEP_STARTED` / `STEP_FINISHED`로 감싸집니다 |
+| subagent | `research`가 둘에게 차례로 위임하고, 각각이 내보내는 모든 것이 그 subagent에 귀속됩니다 |
 
 ## 실행하기
 
@@ -193,6 +194,56 @@ test가 단언하는 것이 그것입니다. `tests/flows.rs`의
 
 [human in the loop](/ag-ui-rust/ko/server/interrupts/)에 그 작동 방식이 있습니다.
 
+## subagent에게 위임하기
+
+`research`는 유일하게 위임하는 명령입니다. 같은 `board` step 안에서 supervisor가
+subagent 둘을 차례로 엽니다. `scope`, 그다음 `risks`입니다. 각각 한 문장을 streaming하고,
+다른 명령이 쓰는 것과 같은 `add_task` tool로 task를 하나 더합니다:
+
+```text
+you> research onboarding
+  ~ delegating "onboarding" to two subagents
+  ⟂ scope started
+  scope> Scoping "onboarding": one deliverable, one owner.
+  · [scope] add_task({"title":"scope onboarding"})
+  [state] 1 open · 0 done
+    → {"id":1,"title":"scope onboarding"}
+  ⟂ scope done
+  ⟂ risks started
+  risks> One risk for "onboarding": nobody owns the follow-up.
+  · [risks] add_task({"title":"name a follow-up owner for onboarding"})
+  [state] 2 open · 0 done
+    → {"id":2,"title":"name a follow-up owner for onboarding"}
+  ⟂ risks done
+  agent> Research on "onboarding" added #1 scope onboarding, #2 name a follow-up owner for onboarding. 2 open · 0 done
+```
+
+`⟂`는 subagent가 시작하거나 끝나는 것이고, `scope>`와 `· [scope]`는 그 subagent의 문장과
+tool call입니다. agent가 직접 tag를 붙이는 곳은 없습니다. `ctx.subagent("scope")`가
+돌려주는 handle은 run context로 deref되고, 그것을 통해 내보낸 모든 것 — 문장, call,
+publish한 board — 이 그 invocation의 `subagentRunId`를 달고 `SUBAGENT_STARTED`와
+`SUBAGENT_FINISHED` 사이에 나갑니다. wire 위에서 첫 delegate는 이렇습니다:
+
+```text
+SUBAGENT_STARTED    {"subagentRunId":"r1-sub-1","name":"scope"}
+TEXT_MESSAGE_START  {"messageId":"r1-msg-2","role":"assistant","subagentRunId":"r1-sub-1"}
+TOOL_CALL_START     {"toolCallId":"r1-call-1","toolCallName":"add_task","subagentRunId":"r1-sub-1"}
+STATE_SNAPSHOT      {"snapshot":{…},"subagentRunId":"r1-sub-1"}
+TOOL_CALL_RESULT    {"messageId":"r1-msg-3","toolCallId":"r1-call-1","content":"…","role":"tool","subagentRunId":"r1-sub-1"}
+SUBAGENT_FINISHED   {"subagentRunId":"r1-sub-1","result":{"added":1},"outcome":{"type":"success"}}
+```
+
+client는 `⟂` 줄을 `Update::Subagent`로 읽고, 나머지는 `Message::subagent_run_id()`를
+`session.subagent(id)`로 이름으로 바꿔 읽습니다. run 도중에는 `RunStream::session()`을
+통해서입니다. supervisor 자신의 답변은 두 delegate 뒤에 tag 없이 오고, 그래서 `agent>`로
+찍힙니다.
+
+subagent가 생기기 전에 쓰인 client는 모르는 event type을 거부합니다. 그런 client를 위해
+endpoint가 subagent 표면을 평평하게 펴거나 떨어뜨릴 수 있습니다.
+`SubagentVisibility::inline()`과 `SubagentVisibility::hidden()`이 그 transformer입니다.
+이 예제는 전체 표면을 그대로 내보냅니다. [subagent](/ag-ui-rust/ko/server/subagents/)에
+그 작동 방식이 있습니다.
+
 ## board는 어디에 사는가
 
 **client에.** agent는 run과 run 사이에 아무것도 저장하지 않습니다.
@@ -237,18 +288,18 @@ dependency tree에 LLM crate는 없습니다. `src/llm.rs`는 `reqwest`와 `serd
 | 파일 | 무엇이 들어 있는가 |
 | --- | --- |
 | `src/board.rs` | `Board`와 `Task`, tool schema 넷, A2UI surface. AG-UI event는 전혀 모릅니다. |
-| `src/agent.rs` | `impl Agent`와 명령 parser |
+| `src/agent.rs` | `impl Agent`와 명령 parser, 그리고 `research`의 위임 |
 | `src/chat.rs` | terminal client. 입력과 출력에 대해 generic합니다 |
 | `src/llm.rs` | 선택인 `--llm` 문장 다듬기 |
 | `src/main.rs` | CLI. 인자 parsing은 손으로 |
-| `tests/flows.rs` | 실제 port 위의 server를 상대로 한 세 흐름 전부 |
+| `tests/flows.rs` | 실제 port 위의 server를 상대로 한 위의 모든 흐름 |
 
 먼저 읽을 것은 `src/board.rs`입니다. 도메인을 protocol에서 떼어 놓았습니다. state는
 평범한 `serde` struct, tool은 `Tool` 정의, surface는 component tree입니다. 그 덕분에
 `src/agent.rs`가 한자리에서 읽을 만큼 짧습니다.
 
-`tests/flows.rs`의 마지막 test는 `Session` 아래 `HttpAgent`까지 내려갑니다. 한 run이
-wire에 올리는 정확한 event 순서를 못 박습니다:
+`tests/flows.rs`의 wire 수준 test들은 `Session` 아래 `HttpAgent`까지 내려갑니다. 한 run이
+wire에 올리는 정확한 event 순서를, 귀속까지 포함해 못 박습니다:
 
 ```sh
 cargo test -p task-board

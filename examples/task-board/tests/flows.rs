@@ -1,4 +1,4 @@
-//! The three flows the README shows, run against a real server.
+//! The flows the README shows, run against a real server.
 //!
 //! Nothing here is mocked: the agent is mounted with `route_agui` on a loopback
 //! port, and the client is `ag-ui-client`'s own HTTP transport. The terminal
@@ -7,8 +7,8 @@
 //! `README.md` are assertions rather than illustrations.
 
 use ag_ui::client::transport::HttpTransport;
-use ag_ui::client::{HttpAgent, RunEnd, RunParams, Session, Update};
-use ag_ui::{Event, EventType, Message};
+use ag_ui::client::{HttpAgent, RunEnd, RunParams, Session, SubagentStatus, Update};
+use ag_ui::{Event, EventType, Message, SubagentRunId};
 use ag_ui_a2ui::message::AgentPayload;
 use ag_ui_a2ui::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
 use futures_util::StreamExt as _;
@@ -381,6 +381,152 @@ async fn state_publishes_pick_the_smaller_of_a_snapshot_and_a_patch() {
     assert_eq!(
         board.tasks[1].label(),
         "#2 book the large meeting room for thursday"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn research_delegates_to_two_subagents_and_the_client_files_their_work_under_them() {
+    let url = serve().await;
+    let mut session = session(&url, "research");
+
+    let printed = transcript(&mut session, "research onboarding\n").await;
+
+    // Each delegate's lifecycle brackets its own sentence, its own tool call
+    // and the board it moved — printed under its name, not the agent's.
+    assert!(
+        printed.contains(concat!(
+            "  ⟂ scope started\n",
+            "  scope> Scoping \"onboarding\": one deliverable, one owner.\n",
+            "  · [scope] add_task({\"title\":\"scope onboarding\"})\n",
+            "  [state] 1 open · 0 done\n",
+            "    → {\"id\":1,\"title\":\"scope onboarding\"}\n",
+            "  ⟂ scope done\n",
+            "  ⟂ risks started\n",
+            "  risks> One risk for \"onboarding\": nobody owns the follow-up.\n",
+        )),
+        "{printed}"
+    );
+    // The supervisor's own reply follows both, and prints as the agent.
+    assert!(
+        printed.contains(concat!(
+            "  ⟂ risks done\n",
+            "  agent> Research on \"onboarding\" added #1 scope onboarding, ",
+            "#2 name a follow-up owner for onboarding. 2 open · 0 done\n",
+        )),
+        "{printed}"
+    );
+
+    // The registry the names came from: two invocations, each finished with
+    // the payload the agent handed `finish_with`.
+    let subagents = session.subagents();
+    let names: Vec<&str> = subagents.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["scope", "risks"]);
+    assert_eq!(
+        subagents[0].status,
+        SubagentStatus::Finished {
+            result: Some(serde_json::json!({"added": 1}))
+        }
+    );
+
+    // Every message a delegate produced carries its id — the sentence, the
+    // message holding the call, and the tool result — and the rest carry none.
+    let owned_by = |id: &SubagentRunId| {
+        session
+            .messages()
+            .iter()
+            .filter(|message| message.subagent_run_id() == Some(id))
+            .count()
+    };
+    assert_eq!(owned_by(&subagents[0].run_id), 3);
+    assert_eq!(owned_by(&subagents[1].run_id), 3);
+    let untagged = session
+        .messages()
+        .iter()
+        .filter(|message| message.subagent_run_id().is_none())
+        .count();
+    // The user's line, the reply, and the surface's call and result.
+    assert_eq!(untagged, 4, "{:?}", session.messages());
+
+    // And the board moved twice, once inside each delegate.
+    let board = session.state().expect("a board");
+    assert_eq!(board.tasks.len(), 2);
+    assert_eq!(board.tasks[1].label(), "#2 name a follow-up owner for onboarding");
+}
+
+/// The wire shape of a delegation: each subagent's events are bracketed by
+/// its lifecycle and carry its id, and nothing outside the brackets does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagents_events_are_bracketed_and_attributed_on_the_wire() {
+    let url = serve().await;
+    let agent = HttpAgent::http(&url).expect("a valid endpoint URL");
+    let params = RunParams::new("wire", "r1")
+        .user("m1", "research onboarding")
+        .tools(board::tools());
+
+    let events: Vec<Event> = agent
+        .run(params)
+        .map(|event| event.expect("the stream should not break"))
+        .collect()
+        .await;
+
+    // Two invocations in turn, ids minted by the run, each closed with its
+    // payload.
+    let lifecycle: Vec<(EventType, &str)> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::SubagentStarted(started) => Some((
+                EventType::SubagentStarted,
+                started.subagent_run_id.as_str(),
+            )),
+            Event::SubagentFinished(finished) => Some((
+                EventType::SubagentFinished,
+                finished.subagent_run_id.as_str(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        lifecycle,
+        [
+            (EventType::SubagentStarted, "r1-sub-1"),
+            (EventType::SubagentFinished, "r1-sub-1"),
+            (EventType::SubagentStarted, "r1-sub-2"),
+            (EventType::SubagentFinished, "r1-sub-2"),
+        ]
+    );
+
+    // Between a start and its finish every event carries that id — the text,
+    // the tool call, and the STATE_SNAPSHOT the call published — and outside
+    // the brackets nothing does. The agent tagged none of them: the sink did.
+    let mut owner: Option<&SubagentRunId> = None;
+    let mut tagged = 0;
+    for event in &events {
+        match event {
+            Event::SubagentStarted(started) => owner = Some(&started.subagent_run_id),
+            Event::SubagentFinished(_) => owner = None,
+            _ => {
+                assert_eq!(event.subagent_run_id(), owner, "{event:?}");
+                tagged += usize::from(owner.is_some());
+            }
+        }
+    }
+    assert!(tagged > 0, "{events:?}");
+    assert!(
+        events.iter().any(|event| event.event_type() == EventType::StateSnapshot
+            && event.subagent_run_id().map(SubagentRunId::as_str) == Some("r1-sub-1")),
+        "the board moved inside the scope's brackets:\n{events:?}"
+    );
+
+    let Some(Event::SubagentFinished(finished)) = events
+        .iter()
+        .find(|event| matches!(event, Event::SubagentFinished(_)))
+    else {
+        unreachable!("asserted above");
+    };
+    assert_eq!(finished.result, Some(serde_json::json!({"added": 1})));
+    assert!(
+        finished.outcome.as_ref().is_some_and(|outcome| !outcome.is_suspended()),
+        "{finished:?}"
     );
 }
 
