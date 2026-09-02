@@ -309,9 +309,10 @@ impl<S> RunContext<S> {
 
     /// A fresh subagent invocation id, unique within the run.
     ///
-    /// Derived like the others. A resuming run that continues a *suspended*
-    /// subagent should reuse the suspended id instead — see
-    /// [`subagent_with`](Self::subagent_with).
+    /// Derived like the others, from the run id and a counter — so, like
+    /// message ids, it is unique across runs only while run ids are. A
+    /// resuming run that continues a *suspended* subagent should reuse the
+    /// suspended id instead — see [`subagent_with`](Self::subagent_with).
     pub fn new_subagent_run_id(&mut self) -> SubagentRunId {
         self.next_subagent += 1;
         SubagentRunId::new(format!("{}-sub-{}", self.id_prefix(), self.next_subagent))

@@ -938,6 +938,8 @@ impl Applier {
             Some(index) => {
                 if let Some(Message::Tool(tool)) = self.messages.get_mut(index) {
                     tool.content = content;
+                    // The newest mint wins, as both verifiers record it.
+                    tool.subagent_run_id = owner;
                 }
                 index
             }

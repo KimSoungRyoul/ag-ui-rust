@@ -23,7 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{Event, MessageId, PatchOperation, ToolCallId};
+use crate::{Event, MessageId, PatchOperation, SubagentRunId, ToolCallId};
 use serde_json::Value;
 
 /// Rewrites events on their way from an agent to the transport.
@@ -373,10 +373,12 @@ pub enum SubagentVisibility {
     /// interrupts a paused run reports. A subagent's own text arrives as the
     /// parent's work.
     ///
-    /// What that shape cannot express is rejected rather than smuggled: a
-    /// subagent step sharing a name with the parent's open step is two steps
-    /// when attributed and one duplicate once flattened, and the verifier,
-    /// which checks what actually goes out, ends the run.
+    /// A subagent's steps are dropped rather than flattened. A step brackets
+    /// its own agent's graph, and as the parent's it would either collide
+    /// with an open step of the same name — the common shape: a parent
+    /// `tools` step wrapping the delegation and the child's own `tools`
+    /// inside it — or misdescribe the parent's graph. The lifecycle events
+    /// were the child's structure; so are its steps.
     Inline,
     /// Only the parent's own events. Everything a subagent produced is
     /// dropped — including the result of a call it requested, even when the
@@ -415,24 +417,38 @@ impl SubagentVisibility {
 /// The transformer behind [`SubagentVisibility`].
 ///
 /// [`Inline`](SubagentVisibility::Inline) is stateless.
-/// [`Hidden`](SubagentVisibility::Hidden) remembers which ids a subagent
-/// owns — for the rest of the run, not only while they are open — so an
-/// untagged continuation, re-open or result for a subagent's entity is
-/// dropped with the rest of it rather than leaking into the parent's stream.
-/// That is the owner-aware verifier's reading too: the first writer owns the
-/// id, and an absent tag agrees with any owner.
+/// [`Hidden`](SubagentVisibility::Hidden) remembers what each subagent owns
+/// — messages, tool calls, activities — for the rest of the run, not only
+/// while they are open, so an untagged continuation, re-open, patch or
+/// result for a subagent's entity is dropped with the rest of it rather than
+/// leaking into the parent's stream. That is the owner-aware verifier's
+/// reading too: the first writer owns the id, and an absent tag agrees with
+/// any owner. A chunk that names no id is routed the way the consuming
+/// normalizer routes it — to the parent's open stream when there is one,
+/// otherwise the only open stream — so the filter keeps the normalizer's
+/// model of one open stream per owner.
 #[derive(Debug)]
 pub struct SubagentFilter {
     mode: SubagentVisibility,
-    /// Text and reasoning message ids a subagent owns.
-    hidden_messages: HashSet<MessageId>,
+    /// Text and reasoning message ids a subagent owns, and which.
+    hidden_messages: HashMap<MessageId, SubagentRunId>,
     /// Tool call ids a subagent owns — or that sit in a message it owns.
-    hidden_tool_calls: HashSet<ToolCallId>,
-    /// The id the last chunk of each family carried, so a chunk that carries
-    /// none is judged by the stream it continues.
-    last_text_chunk: Option<MessageId>,
-    last_reasoning_chunk: Option<MessageId>,
-    last_tool_chunk: Option<ToolCallId>,
+    hidden_tool_calls: HashMap<ToolCallId, SubagentRunId>,
+    /// Every activity seen, and whether a subagent owns it.
+    activities: HashMap<MessageId, bool>,
+    /// The parent's open stream: one per owner, replaced by the next it
+    /// opens, closed by its terminator or by an untagged result.
+    parent_stream: Option<(Family, String)>,
+    /// Each subagent's open stream, on the same terms.
+    hidden_streams: HashMap<SubagentRunId, (Family, String)>,
+}
+
+/// The families a `*_CHUNK` event may continue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Family {
+    Text,
+    Reasoning,
+    Tool,
 }
 
 impl SubagentFilter {
@@ -440,11 +456,11 @@ impl SubagentFilter {
     pub fn new(mode: SubagentVisibility) -> Self {
         Self {
             mode,
-            hidden_messages: HashSet::new(),
-            hidden_tool_calls: HashSet::new(),
-            last_text_chunk: None,
-            last_reasoning_chunk: None,
-            last_tool_chunk: None,
+            hidden_messages: HashMap::new(),
+            hidden_tool_calls: HashMap::new(),
+            activities: HashMap::new(),
+            parent_stream: None,
+            hidden_streams: HashMap::new(),
         }
     }
 
@@ -454,8 +470,13 @@ impl SubagentFilter {
     }
 
     /// Strips the subagent surface from an event, or drops it entirely when
-    /// it *is* the subagent surface.
+    /// it *is* the subagent surface — the lifecycle, and a subagent's steps.
     fn inline(mut event: Event) -> Vec<Event> {
+        let subagents_step = matches!(event, Event::StepStarted(_) | Event::StepFinished(_))
+            && event.subagent_run_id().is_some();
+        if subagents_step {
+            return Vec::new();
+        }
         match &mut event {
             Event::SubagentStarted(_) | Event::SubagentFinished(_) | Event::SubagentError(_) => {
                 return Vec::new();
@@ -492,68 +513,112 @@ impl SubagentFilter {
         }
     }
 
-    /// Keeps the parent's events and drops a subagent's, remembering the ids
-    /// a subagent owns so that an untagged event is judged by its opener.
+    /// Keeps the parent's events and drops a subagent's, remembering what
+    /// each subagent owns so that an untagged event is judged by its opener.
     fn hidden(&mut self, mut event: Event) -> Vec<Event> {
-        let owned = event.subagent_run_id().is_some();
+        let tag = event.subagent_run_id().cloned();
+        let owned = tag.is_some();
         let keep = match &event {
             Event::SubagentStarted(_) | Event::SubagentFinished(_) | Event::SubagentError(_) => {
                 false
             }
 
-            Event::TextMessageStart(e) => self.claim_message(&e.message_id, owned),
+            Event::TextMessageStart(e) => self.open_message(Family::Text, &e.message_id, &tag),
             Event::TextMessageContent(e) => self.message_kept(&e.message_id, owned),
-            Event::TextMessageEnd(e) => self.message_kept(&e.message_id, owned),
+            Event::TextMessageEnd(e) => {
+                self.close_stream(Family::Text, e.message_id.as_str());
+                self.message_kept(&e.message_id, owned)
+            }
             Event::TextMessageChunk(e) => match &e.message_id {
-                Some(id) => {
-                    self.last_text_chunk = Some(id.clone());
-                    self.claim_message(id, owned)
-                }
-                None => !owned && !self.last_hidden(self.last_text_chunk.as_ref()),
+                Some(id) => self.open_message(Family::Text, id, &tag),
+                None => self.continues_parent(Family::Text, owned),
             },
 
-            Event::ReasoningStart(e) => self.claim_message(&e.message_id, owned),
-            Event::ReasoningMessageStart(e) => self.claim_message(&e.message_id, owned),
+            Event::ReasoningStart(e) => self.open_message(Family::Reasoning, &e.message_id, &tag),
+            Event::ReasoningMessageStart(e) => {
+                self.open_message(Family::Reasoning, &e.message_id, &tag)
+            }
             Event::ReasoningMessageContent(e) => self.message_kept(&e.message_id, owned),
-            Event::ReasoningMessageEnd(e) => self.message_kept(&e.message_id, owned),
-            Event::ReasoningEnd(e) => self.message_kept(&e.message_id, owned),
+            Event::ReasoningMessageEnd(e) => {
+                self.close_stream(Family::Reasoning, e.message_id.as_str());
+                self.message_kept(&e.message_id, owned)
+            }
+            Event::ReasoningEnd(e) => {
+                self.close_stream(Family::Reasoning, e.message_id.as_str());
+                self.message_kept(&e.message_id, owned)
+            }
             Event::ReasoningMessageChunk(e) => match &e.message_id {
-                Some(id) => {
-                    self.last_reasoning_chunk = Some(id.clone());
-                    self.claim_message(id, owned)
-                }
-                None => !owned && !self.last_hidden(self.last_reasoning_chunk.as_ref()),
+                Some(id) => self.open_message(Family::Reasoning, id, &tag),
+                None => self.continues_parent(Family::Reasoning, owned),
             },
 
             // A call belongs to the message that carries it, so an untagged
             // call inside a subagent's message is the subagent's.
             Event::ToolCallStart(e) => {
-                let hidden = owned || self.in_hidden_message(e.parent_message_id.as_ref());
-                self.claim_tool_call(&e.tool_call_id, hidden)
+                self.open_tool_call(&e.tool_call_id, e.parent_message_id.as_ref(), &tag)
             }
             Event::ToolCallChunk(e) => match &e.tool_call_id {
-                Some(id) => {
-                    self.last_tool_chunk = Some(id.clone());
-                    let hidden = owned || self.in_hidden_message(e.parent_message_id.as_ref());
-                    self.claim_tool_call(id, hidden)
-                }
-                None => {
-                    !owned
-                        && !self
-                            .last_tool_chunk
-                            .as_ref()
-                            .is_some_and(|id| self.hidden_tool_calls.contains(id))
-                }
+                Some(id) => self.open_tool_call(id, e.parent_message_id.as_ref(), &tag),
+                None => self.continues_parent(Family::Tool, owned),
             },
             Event::ToolCallArgs(e) => self.tool_call_kept(&e.tool_call_id, owned),
-            Event::ToolCallEnd(e) => self.tool_call_kept(&e.tool_call_id, owned),
+            Event::ToolCallEnd(e) => {
+                self.close_stream(Family::Tool, e.tool_call_id.as_str());
+                self.tool_call_kept(&e.tool_call_id, owned)
+            }
             // A result goes where its call went, whoever executed it: one for
             // a call the consumer never saw is a protocol error, and one for
-            // a call it did see is owed.
-            Event::ToolCallResult(e) => !self.hidden_tool_calls.contains(&e.tool_call_id),
+            // a call it did see is owed. It ends the call's stream and, as the
+            // normalizer reads it, whatever else its executor had open.
+            Event::ToolCallResult(e) => {
+                self.close_stream(Family::Tool, e.tool_call_id.as_str());
+                match &tag {
+                    None => self.parent_stream = None,
+                    Some(executor) => {
+                        self.hidden_streams.remove(executor);
+                    }
+                }
+                !self.hidden_tool_calls.contains_key(&e.tool_call_id)
+            }
+
+            // An activity is owned by the snapshot that minted it, and only a
+            // replacing snapshot re-mints it — the verifiers' rule. A merge
+            // into a visible activity is kept whoever wrote it, as a result
+            // for a visible call is: the entity is the consumer's to keep
+            // whole.
+            Event::ActivitySnapshot(e) => {
+                let existing = self.activities.get(&e.message_id).copied();
+                let hidden = match existing {
+                    Some(hidden) if !e.replace => hidden,
+                    _ => owned,
+                };
+                self.activities.insert(e.message_id.clone(), hidden);
+                !hidden
+            }
+            Event::ActivityDelta(e) => !self.activity_hidden(&e.message_id),
+
+            // An opaque blob for an entity the consumer never saw goes with
+            // the entity, as `FilterToolCalls` drops one for a dropped call.
+            Event::ReasoningEncryptedValue(e) => {
+                !owned
+                    && match e.subtype {
+                        crate::ReasoningEncryptedValueSubtype::ToolCall => !self
+                            .hidden_tool_calls
+                            .contains_key(&ToolCallId::new(e.entity_id.clone())),
+                        crate::ReasoningEncryptedValueSubtype::Message => !self
+                            .hidden_messages
+                            .contains_key(&MessageId::new(e.entity_id.clone())),
+                    }
+            }
 
             // The thread's state, whoever published it.
             Event::StateSnapshot(_) | Event::StateDelta(_) => true,
+
+            Event::RunFinished(_) | Event::RunError(_) => {
+                self.parent_stream = None;
+                self.hidden_streams.clear();
+                true
+            }
 
             _ => !owned,
         };
@@ -562,11 +627,10 @@ impl SubagentFilter {
         }
         match &mut event {
             // Authoritative: the snapshot restates the conversation, so what
-            // is hidden is restated with it.
+            // it carries is re-read — and what it does not carry is left as
+            // the run established it, as the verifiers leave it.
             Event::MessagesSnapshot(snapshot) => {
-                self.hidden_messages.clear();
-                self.hidden_tool_calls.clear();
-                self.seed_hidden(&snapshot.messages);
+                self.seed_hidden(&snapshot.messages, true);
                 let hidden_calls = &self.hidden_tool_calls;
                 snapshot
                     .messages
@@ -576,14 +640,18 @@ impl SubagentFilter {
             // what the run has already shown.
             Event::RunStarted(started) => {
                 if let Some(input) = &mut started.input {
-                    self.seed_hidden(&input.messages);
+                    self.seed_hidden(&input.messages, false);
                     let hidden_calls = &self.hidden_tool_calls;
                     input
                         .messages
                         .retain_mut(|message| Self::show_message(message, hidden_calls));
                 }
             }
-            Event::StateSnapshot(_) | Event::StateDelta(_) | Event::ToolCallResult(_) => {
+            Event::StateSnapshot(_)
+            | Event::StateDelta(_)
+            | Event::ToolCallResult(_)
+            | Event::ActivitySnapshot(_)
+            | Event::ActivityDelta(_) => {
                 event.clear_subagent_run_id();
             }
             Event::RunFinished(finished) => Self::strip_interrupt_tags(finished),
@@ -592,58 +660,142 @@ impl SubagentFilter {
         vec![event]
     }
 
-    /// Records a subagent's message id, or reports whether an untagged
-    /// opener is the parent's: the first writer owns the id, so an untagged
-    /// re-open of a subagent's message is still the subagent's.
-    fn claim_message(&mut self, id: &MessageId, owned: bool) -> bool {
-        if owned {
-            self.hidden_messages.insert(id.clone());
-            return false;
+    /// Opens a message stream under whoever owns the id — the tag, else the
+    /// recorded owner, else the parent — and reports whether the consumer
+    /// sees it. The first writer owns the id, so an untagged re-open of a
+    /// subagent's message is still the subagent's.
+    fn open_message(
+        &mut self,
+        family: Family,
+        id: &MessageId,
+        tag: &Option<SubagentRunId>,
+    ) -> bool {
+        let owner = tag
+            .clone()
+            .or_else(|| self.hidden_messages.get(id).cloned());
+        match owner {
+            Some(owner) => {
+                self.hidden_messages.insert(id.clone(), owner.clone());
+                self.hidden_streams
+                    .insert(owner, (family, id.as_str().to_owned()));
+                false
+            }
+            None => {
+                self.parent_stream = Some((family, id.as_str().to_owned()));
+                true
+            }
         }
-        !self.hidden_messages.contains(id)
     }
 
     fn message_kept(&self, id: &MessageId, owned: bool) -> bool {
-        !owned && !self.hidden_messages.contains(id)
+        !owned && !self.hidden_messages.contains_key(id)
     }
 
-    fn claim_tool_call(&mut self, id: &ToolCallId, hidden: bool) -> bool {
-        if hidden {
-            self.hidden_tool_calls.insert(id.clone());
-            return false;
+    /// The same for a tool call, which may also inherit the owner of the
+    /// message that carries it.
+    fn open_tool_call(
+        &mut self,
+        id: &ToolCallId,
+        parent_message_id: Option<&MessageId>,
+        tag: &Option<SubagentRunId>,
+    ) -> bool {
+        let owner = tag
+            .clone()
+            .or_else(|| {
+                parent_message_id.and_then(|parent| self.hidden_messages.get(parent).cloned())
+            })
+            .or_else(|| self.hidden_tool_calls.get(id).cloned());
+        match owner {
+            Some(owner) => {
+                self.hidden_tool_calls.insert(id.clone(), owner.clone());
+                self.hidden_streams
+                    .insert(owner, (Family::Tool, id.as_str().to_owned()));
+                false
+            }
+            None => {
+                self.parent_stream = Some((Family::Tool, id.as_str().to_owned()));
+                true
+            }
         }
-        !self.hidden_tool_calls.contains(id)
     }
 
     fn tool_call_kept(&self, id: &ToolCallId, owned: bool) -> bool {
-        !owned && !self.hidden_tool_calls.contains(id)
+        !owned && !self.hidden_tool_calls.contains_key(id)
     }
 
-    fn in_hidden_message(&self, parent: Option<&MessageId>) -> bool {
-        parent.is_some_and(|id| self.hidden_messages.contains(id))
+    fn activity_hidden(&self, id: &MessageId) -> bool {
+        self.activities.get(id).copied().unwrap_or(false)
     }
 
-    fn last_hidden(&self, last: Option<&MessageId>) -> bool {
-        last.is_some_and(|id| self.hidden_messages.contains(id))
+    /// A chunk naming no id continues the parent's open stream when there
+    /// is one — the consuming normalizer's rule — and otherwise the only
+    /// open stream, which is a subagent's if any is.
+    fn continues_parent(&self, family: Family, owned: bool) -> bool {
+        if owned {
+            return false;
+        }
+        if matches!(&self.parent_stream, Some((open, _)) if *open == family) {
+            return true;
+        }
+        !self
+            .hidden_streams
+            .values()
+            .any(|(open, _)| *open == family)
     }
 
-    /// Remembers the subagent-owned messages a replay carries, and the tool
-    /// calls inside them. A tool message goes where its call went, so one
+    fn close_stream(&mut self, family: Family, id: &str) {
+        self.hidden_streams
+            .retain(|_, (open, open_id)| !(*open == family && open_id == id));
+        if matches!(&self.parent_stream, Some((open, open_id)) if *open == family && open_id == id)
+        {
+            self.parent_stream = None;
+        }
+    }
+
+    /// Re-reads what a replay says about ownership. Authoritatively — a
+    /// `MESSAGES_SNAPSHOT` — an untagged message takes its id back for the
+    /// parent; as history — the `RUN_STARTED` echo — only the subagents'
+    /// messages are added. A tool message goes where its call went, so one
     /// answering a visible call is not hidden however it is tagged.
-    fn seed_hidden(&mut self, messages: &[crate::Message]) {
+    fn seed_hidden(&mut self, messages: &[crate::Message], authoritative: bool) {
         for message in messages {
-            let hidden = match message {
-                crate::Message::Tool(tool) => self.hidden_tool_calls.contains(&tool.tool_call_id),
-                _ => message.subagent_run_id().is_some(),
-            };
-            if !hidden {
+            let id = message.id().clone();
+            if let crate::Message::Activity(_) = message {
+                if authoritative || !self.activities.contains_key(&id) {
+                    self.activities
+                        .insert(id, message.subagent_run_id().is_some());
+                }
                 continue;
             }
-            self.hidden_messages.insert(message.id().clone());
-            if let crate::Message::Assistant(assistant) = message {
-                for call in assistant.tool_calls.iter().flatten() {
-                    self.hidden_tool_calls.insert(call.id.clone());
+            let owner = match message {
+                crate::Message::Tool(tool) => {
+                    self.hidden_tool_calls.get(&tool.tool_call_id).cloned()
                 }
+                _ => message.subagent_run_id().cloned(),
+            };
+            let calls: Vec<ToolCallId> = match message {
+                crate::Message::Assistant(assistant) => assistant
+                    .tool_calls
+                    .iter()
+                    .flatten()
+                    .map(|call| call.id.clone())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            match owner {
+                Some(owner) => {
+                    for call in calls {
+                        self.hidden_tool_calls.insert(call, owner.clone());
+                    }
+                    self.hidden_messages.insert(id, owner);
+                }
+                None if authoritative => {
+                    self.hidden_messages.remove(&id);
+                    for call in &calls {
+                        self.hidden_tool_calls.remove(call);
+                    }
+                }
+                None => {}
             }
         }
     }
@@ -651,10 +803,13 @@ impl SubagentFilter {
     /// Whether a replayed message reaches the consumer, stripping the tag
     /// from the one kind that may carry one there: a tool message answering
     /// a call the consumer saw is the parent's, whoever executed it.
-    fn show_message(message: &mut crate::Message, hidden_calls: &HashSet<ToolCallId>) -> bool {
+    fn show_message(
+        message: &mut crate::Message,
+        hidden_calls: &HashMap<ToolCallId, SubagentRunId>,
+    ) -> bool {
         match message {
             crate::Message::Tool(tool) => {
-                if hidden_calls.contains(&tool.tool_call_id) {
+                if hidden_calls.contains_key(&tool.tool_call_id) {
                     return false;
                 }
                 tool.subagent_run_id = None;

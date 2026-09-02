@@ -765,7 +765,8 @@ fn a_subagents_tool_result_closes_only_its_own_stream() {
 }
 
 #[test]
-fn a_tagged_chunk_naming_anothers_open_stream_is_a_verifier_complaint_not_a_crossed_message() {
+fn a_tagged_chunk_naming_another_owners_open_stream_is_a_verifier_complaint_not_a_crossed_message()
+{
     let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
     // s2 continues m1, which s1 opened by chunk and never closed.
     let events = normalize_all([

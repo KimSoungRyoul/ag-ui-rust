@@ -438,7 +438,7 @@ async fn a_session_reports_the_lifecycle_and_the_messages_carry_their_owner() {
     assert_eq!(session.messages()[2].subagent_run_id(), None);
 }
 
-/// An activity snapshot with `replace` set — the factory leaves it false.
+/// An activity snapshot with `replace` chosen — the factory's default is true.
 fn activity(id: &str, content: ag_ui::JsonObject, replace: bool) -> Event {
     let mut event = ag_ui::ActivitySnapshotEvent::new(id, "progress", content);
     event.replace = replace;
@@ -477,4 +477,40 @@ fn a_merging_activity_snapshot_keeps_the_activitys_owner() {
         .apply(&activity("a1", JsonObject::new(), true))
         .expect("applies");
     assert_eq!(owner(&applier), None);
+}
+
+/// A result that re-mints an existing tool message takes its attribution
+/// with it, as both verifiers record the newest mint.
+#[test]
+fn a_second_result_for_the_same_message_re_mints_its_attribution() {
+    let mut applier = Applier::new();
+    applier
+        .apply(&Event::run_started("t", "r"))
+        .expect("applies");
+    applier
+        .apply(&Event::tool_call_start("c1", "search"))
+        .expect("applies");
+    applier.apply(&Event::tool_call_end("c1")).expect("applies");
+    applier
+        .apply(&Event::tool_call_result("m1", "c1", "theirs").with_subagent_run_id("s1"))
+        .expect("applies");
+    let owner = |applier: &Applier| {
+        applier
+            .message(&"m1".into())
+            .and_then(|message| message.subagent_run_id())
+            .map(|id| id.as_str().to_owned())
+    };
+    assert_eq!(owner(&applier).as_deref(), Some("s1"));
+
+    applier
+        .apply(&Event::tool_call_result("m1", "c1", "mine"))
+        .expect("applies");
+    assert_eq!(owner(&applier), None);
+    assert_eq!(
+        applier.message(&"m1".into()).map(|m| match m {
+            ag_ui::Message::Tool(tool) => tool.content.clone(),
+            _ => unreachable!(),
+        }),
+        Some("mine".to_owned())
+    );
 }

@@ -683,7 +683,7 @@ fn an_encrypted_value_must_name_the_owner_of_what_it_attaches_to() {
     .unwrap();
 }
 
-/// An activity snapshot with `replace` set — the factory leaves it false.
+/// An activity snapshot with `replace` chosen — the factory's default is true.
 fn activity(id: &str, content: ag_ui::JsonObject, replace: bool) -> Event {
     let mut event = ag_ui::ActivitySnapshotEvent::new(id, "progress", content);
     event.replace = replace;

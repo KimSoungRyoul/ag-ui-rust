@@ -315,8 +315,9 @@ upstream이 기록하는 방식 그대로입니다. step은 이름과 함께 own
 없고, 두 agent가 같은 이름의 step을 동시에 돌릴 수 있습니다.
 
 subagent 여럿이 동시에 stream할 때는 chunk마다 tag를 다십시오. message도 subagent도
-지목하지 않는 `*_CHUNK` event는 소비하는 쪽에서 stream이 하나만 열려 있을 때에만 풀 수
-있습니다.
+지목하지 않는 `*_CHUNK` event는 부모의 열린 stream이 있으면 그것을, 없으면 유일하게 열린
+stream을 잇습니다. subagent 여럿의 stream이 열려 있고 부모의 것은 닫혀 있으면 기댈 곳이
+없어서 소비하는 쪽이 거부합니다.
 
 ## 오래된 client에게 보이는 것
 
@@ -330,7 +331,7 @@ type은 application code가 돌기도 전에 decode 단계에서 실패합니다
 | mode | wire에서 |
 | --- | --- |
 | `Attributed` | **기본값이고, transformer가 아예 없는 상태.** lifecycle event, 그리고 subagent가 만든 모든 것에 붙은 `subagentRunId`. |
-| `Inline` | subagent 이전의 모양. lifecycle event도 없고 `subagentRunId`도 어디에도 없습니다. event에도, `MESSAGES_SNAPSHOT`이나 `RUN_STARTED`의 input echo 안 message에도, 멈춘 run이 보고하는 interrupt에도 없습니다. subagent의 text가 부모의 일로 도착합니다. 이 모양이 표현할 수 없는 것은 거부됩니다. 부모의 열린 step과 같은 이름의 subagent step은 평평해지면 중복이고, verifier가 run을 끝냅니다. |
+| `Inline` | subagent 이전의 모양. lifecycle event도 없고 `subagentRunId`도 어디에도 없습니다. event에도, `MESSAGES_SNAPSHOT`이나 `RUN_STARTED`의 input echo 안 message에도, 멈춘 run이 보고하는 interrupt에도 없습니다. subagent의 text가 부모의 일로 도착합니다. subagent의 step은 lifecycle event처럼 버립니다. step은 자기 agent의 graph를 감싸는 것이라, 평평해지면 같은 이름의 부모의 열린 step과 충돌하기 때문입니다. |
 | `Hidden` | 부모 자신의 event만. subagent가 만든 것은 전부 버립니다. subagent가 요청한 call의 result도, 부모가 실행했더라도 버립니다. consumer가 본 적 없는 call의 result는 protocol error이기 때문입니다. 반대도 성립합니다. 부모의 call에 답하는 result는 누가 실행했든 tag를 지운 채 남깁니다. 또 하나의 예외는 run의 공유 state입니다. subagent가 publish한 `STATE_*` event는 tag를 지운 채 그대로 내보냅니다. 그것을 놓친 client는 다음 request에 낡은 state를 되돌려 보내기 때문입니다. |
 
 둘 다 평범한 [transformer](/ag-ui-rust/ko/server/axum/)입니다. chain의 나머지와 함께

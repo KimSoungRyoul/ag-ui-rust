@@ -604,28 +604,182 @@ impl Agent for SameStep {
     }
 }
 
-/// The flattened shape cannot express it: with the tags gone the two steps
-/// collide, and the verifier — which checks what actually goes out — ends
-/// the run. Pinned so the limitation is a documented one rather than a
-/// surprise.
+/// The flattened shape cannot express it — with the tags gone the two
+/// steps would collide — so Inline drops a subagent's steps, as it drops the
+/// lifecycle events, and the run finishes. Hidden drops them with the rest.
 #[tokio::test]
-async fn inline_cannot_express_a_nested_step_of_the_same_name() {
+async fn inline_drops_a_subagents_steps_rather_than_colliding_them() {
     let attributed = collect(Runner::new(SameStep)).await;
     assert_eq!(
-        attributed.last().map(Event::event_type),
-        Some(EventType::RunFinished)
+        attributed
+            .iter()
+            .filter(|e| e.event_type() == EventType::StepStarted)
+            .count(),
+        2
     );
 
+    for filter in [SubagentVisibility::inline(), SubagentVisibility::hidden()] {
+        let mode = filter.mode();
+        let events = collect(Runner::new(SameStep).transformer(filter)).await;
+        let steps: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Event::StepStarted(_) | Event::StepFinished(_)))
+            .map(|e| (e.event_type(), e.subagent_run_id().is_some()))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                (EventType::StepStarted, false),
+                (EventType::StepFinished, false)
+            ],
+            "{mode:?}: {events:?}"
+        );
+        assert_eq!(
+            events.last().map(Event::event_type),
+            Some(EventType::RunFinished),
+            "{mode:?}: {events:?}"
+        );
+    }
+    // Inline still carries the nested say, as the parent's.
     let inline = collect(Runner::new(SameStep).transformer(SubagentVisibility::inline())).await;
-    let Some(Event::RunError(error)) = inline.last() else {
-        panic!("the flattened stream must be rejected: {inline:?}");
-    };
-    assert!(error.message.contains("board"), "{}", error.message);
-
-    // Hidden drops the subagent's step with the rest of it.
-    let hidden = collect(Runner::new(SameStep).transformer(SubagentVisibility::hidden())).await;
     assert_eq!(
-        hidden.last().map(Event::event_type),
-        Some(EventType::RunFinished)
+        inline
+            .iter()
+            .filter(|e| e.event_type() == EventType::TextMessageEnd)
+            .count(),
+        2
     );
+}
+
+/// The filter's reading of an untagged, id-less chunk is the consuming
+/// normalizer's: the parent's open stream when there is one, otherwise the
+/// only open stream — which is a subagent's if any is.
+#[test]
+fn hidden_routes_an_untagged_idless_chunk_like_the_normalizer() {
+    use ag_ui::server::StreamTransformer as _;
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let chunk = |id: Option<&str>, delta: &str| {
+        Event::text_message_chunk(id.map(ag_ui::MessageId::new), Some(delta.to_owned()))
+    };
+    let mut filter = SubagentVisibility::hidden();
+    let mut kept = |event: Event| !filter.transform(event).is_empty();
+
+    // The parent opened m1 by chunk; a subagent's chunk in between does not
+    // take the parent's continuation away from it.
+    assert!(kept(chunk(Some("m1"), "a")));
+    assert!(!kept(tagged(chunk(Some("m2"), "x"), "s1")));
+    assert!(kept(chunk(None, "b")));
+
+    // An explicit start opens the parent's stream too.
+    assert!(kept(Event::text_message_start("m3", Default::default())));
+    assert!(kept(chunk(None, "c")));
+    assert!(kept(Event::text_message_end("m3")));
+
+    // With the parent's stream closed, the only open one is the subagent's.
+    assert!(!kept(tagged(chunk(Some("m4"), "y"), "s1")));
+    assert!(!kept(chunk(None, "d")));
+
+    // The subagent's stream closed, nothing is open: the chunk passes and
+    // the consumer, not the filter, is the one to complain.
+    assert!(!kept(tagged(Event::text_message_end("m4"), "s1")));
+    assert!(kept(chunk(None, "e")));
+}
+
+/// An activity is owned by the snapshot that minted it, and only a replacing
+/// snapshot re-mints it — the verifiers' rule, applied to what the consumer
+/// gets to see.
+#[test]
+fn hidden_tracks_activities_by_their_owner() {
+    use ag_ui::server::StreamTransformer as _;
+    use ag_ui::{JsonObject, PatchOperation};
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let snapshot = |id: &str, replace: bool| {
+        let mut event = ag_ui::ActivitySnapshotEvent::new(id, "progress", JsonObject::new());
+        event.replace = replace;
+        Event::ActivitySnapshot(event)
+    };
+    let delta =
+        |id: &str| Event::activity_delta(id, "progress", vec![PatchOperation::add("/s", 1)]);
+    let mut filter = SubagentVisibility::hidden();
+
+    // A subagent's activity, and the parent's untagged patch of it, which
+    // the consumer could not apply to something it never saw.
+    assert!(
+        filter
+            .transform(tagged(snapshot("a1", true), "s1"))
+            .is_empty()
+    );
+    assert!(filter.transform(delta("a1")).is_empty());
+    assert!(
+        filter.transform(snapshot("a1", false)).is_empty(),
+        "a merge keeps the owner"
+    );
+
+    // A replacing snapshot from the parent re-mints it for the consumer.
+    assert_eq!(filter.transform(snapshot("a1", true)).len(), 1);
+    assert_eq!(filter.transform(delta("a1")).len(), 1);
+
+    // A subagent merging into the parent's activity: the entity is visible,
+    // so the change reaches the consumer, untagged.
+    let out = filter.transform(tagged(snapshot("a1", false), "s1"));
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].subagent_run_id(), None);
+}
+
+/// An opaque blob for an entity the consumer never saw goes with the entity.
+#[test]
+fn hidden_drops_an_encrypted_value_for_a_hidden_entity() {
+    use ag_ui::ReasoningEncryptedValueSubtype;
+    use ag_ui::server::StreamTransformer as _;
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let mut filter = SubagentVisibility::hidden();
+    let mut kept = |event: Event| !filter.transform(event).is_empty();
+
+    assert!(!kept(tagged(Event::tool_call_start("c1", "search"), "s1")));
+    assert!(!kept(tagged(Event::reasoning_message_start("r1"), "s1")));
+    assert!(kept(Event::tool_call_start("c2", "search")));
+
+    let blob = |subtype, id: &str| Event::reasoning_encrypted_value(subtype, id, "opaque");
+    assert!(!kept(blob(ReasoningEncryptedValueSubtype::ToolCall, "c1")));
+    assert!(!kept(blob(ReasoningEncryptedValueSubtype::Message, "r1")));
+    assert!(kept(blob(ReasoningEncryptedValueSubtype::ToolCall, "c2")));
+    assert!(!kept(tagged(
+        blob(ReasoningEncryptedValueSubtype::ToolCall, "c2"),
+        "s1"
+    )));
+}
+
+/// A snapshot restates what it carries and leaves the rest as the run
+/// established it — the verifiers' reading of an authoritative seed.
+#[test]
+fn hidden_keeps_what_a_snapshot_did_not_restate() {
+    use ag_ui::Message;
+    use ag_ui::server::StreamTransformer as _;
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let mut filter = SubagentVisibility::hidden();
+    let mut kept = |event: Event| !filter.transform(event).is_empty();
+
+    assert!(!kept(tagged(
+        Event::text_message_start("m1", Default::default()),
+        "s1"
+    )));
+    assert!(!kept(tagged(Event::text_message_end("m1"), "s1")));
+
+    // A snapshot that does not mention m1 does not hand it to the parent…
+    assert!(kept(Event::messages_snapshot(vec![Message::user(
+        "u1", "hi"
+    )])));
+    assert!(!kept(Event::text_message_start("m1", Default::default())));
+    assert!(!kept(tagged(
+        Event::text_message_content("m1", "more"),
+        "s1"
+    )));
+    assert!(!kept(tagged(Event::text_message_end("m1"), "s1")));
+
+    // …one that restates it as the parent's does.
+    assert!(kept(Event::messages_snapshot(vec![Message::assistant(
+        "m1", "mine now"
+    )])));
+    assert!(kept(Event::text_message_start("m1", Default::default())));
+    assert!(kept(Event::text_message_end("m1")));
 }
