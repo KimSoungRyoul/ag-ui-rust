@@ -1,0 +1,111 @@
+name: Publish
+
+# Publishing a GitHub release uploads the crates to crates.io. The release is
+# what a human decides; this file is what carries it out, so the two steps a
+# person used to do by hand — `cargo publish` twice, in the right order — stop
+# being a thing anyone can get wrong at 2am.
+#
+# The registry has no undo. A published version can be yanked but never
+# replaced, so everything that can be checked is checked before the upload,
+# and an upload that has already happened is skipped rather than retried into
+# an error.
+on:
+  release:
+    types: [published]
+  # For a rehearsal, or to finish a release whose upload failed halfway. The
+  # default is a dry run: the box has to be unticked to reach crates.io.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Package and verify without uploading"
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # A release can be cut by hand from any commit, so the tag it names is
+      # checked here as well as in the release workflow. This is the last
+      # place the number can still be wrong for free.
+      - name: the version to publish
+        id: version
+        run: |
+          set -euo pipefail
+          declared=$(cargo metadata --format-version 1 --no-deps \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "ag-ui"))')
+          echo "version=$declared" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tagged="${GITHUB_REF_NAME#v}"
+            echo "tag $tagged, workspace $declared"
+            if [ "$tagged" != "$declared" ]; then
+              echo "::error title=Version mismatch::the release tag says $tagged and Cargo.toml says $declared"
+              exit 1
+            fi
+          else
+            echo "no tag (manual run); publishing whatever the checkout declares: $declared"
+          fi
+
+      # The release workflow already ran these on the tag. They run again here
+      # because this job is the irreversible one, and because a release made by
+      # hand from an unverified commit reaches this job without having passed
+      # that one.
+      - run: cargo test --workspace --all-features
+      - run: cargo test --doc --workspace --all-features
+
+      # `ag-ui-a2ui` depends on `ag-ui` by version, so `ag-ui` goes first and
+      # the second upload waits for the index to catch up — which `cargo
+      # publish` does on its own since 1.66.
+      #
+      # A version already on crates.io is skipped, not retried: re-running this
+      # workflow after a half-finished release must finish it rather than fail
+      # on the half that worked.
+      - name: publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "::notice title=Dry run::packaging and verifying, uploading nothing"
+          elif [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error title=No token::CARGO_REGISTRY_TOKEN is not set on this repository"
+            exit 1
+          fi
+
+          on_crates_io() {
+            curl -sS -m 30 -H "user-agent: ag-ui-rust publish workflow" \
+              "https://crates.io/api/v1/crates/$1/$2" \
+              | python3 -c 'import json,sys; sys.exit(0 if "version" in json.load(sys.stdin) else 1)'
+          }
+
+          for crate in ag-ui ag-ui-a2ui; do
+            if on_crates_io "$crate" "$VERSION"; then
+              echo "::notice title=Already published::$crate $VERSION is on crates.io; skipping"
+              continue
+            fi
+            if [ "${DRY_RUN:-false}" = "true" ]; then
+              # `ag-ui-a2ui` cannot resolve `ag-ui` from the registry until
+              # that version is really there, so its rehearsal is allowed to
+              # fail without failing the run.
+              cargo publish --dry-run -p "$crate" || {
+                echo "::notice title=Dry run::$crate could not be verified in isolation; it resolves once ag-ui $VERSION is published"
+              }
+            else
+              cargo publish -p "$crate"
+              echo "published $crate $VERSION"
+            fi
+          done
