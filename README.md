@@ -103,8 +103,9 @@ stale quickstart is a red build.
 ## Agent skills
 
 `skills/` teaches a coding agent this SDK: the `Agent` trait and its typestate emitters,
-sessions and the update stream, and that this is one crate named `ag-ui` rather than the
-similarly-named community crates on crates.io. Two channels, one source.
+sessions and the update stream, that this is one crate named `ag-ui` rather than the
+similarly-named community crates on crates.io — and, for running the live tests and the
+example against a real model, how Qwen Cloud is configured. Two channels, one source.
 
 Claude Code, as a plugin — namespaced, and `/plugin update` keeps it current:
 

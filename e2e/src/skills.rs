@@ -50,6 +50,8 @@ skill_page!(
     "ag-ui-rust-client/references/rendering.md"
 );
 
-// `ag-ui-rust-update` carries no Rust, only shell. It is listed so the set of
-// skills and the set of compiled pages stay visibly the same size.
+// `ag-ui-rust-update` and `ag-ui-rust-qwen` carry no Rust, only shell. They
+// are listed so the set of skills and the set of compiled pages stay visibly
+// the same size.
 skill_page!(update, "ag-ui-rust-update/SKILL.md");
+skill_page!(qwen, "ag-ui-rust-qwen/SKILL.md");
