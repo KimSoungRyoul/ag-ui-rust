@@ -21,7 +21,7 @@
 //! ```text
 //! export QWEN_API_KEY=…
 //! export QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-//! export QWEN_MODEL=qwen-plus        # the default when unset
+//! export QWEN_MODEL=qwen3.8-flash    # qwen-plus when unset; `$QWEN_BASE_URL/models` lists what yours serves
 //! cargo test -p ag-ui-e2e --test live_llm -- --ignored --test-threads=1 --nocapture
 //! ```
 //!

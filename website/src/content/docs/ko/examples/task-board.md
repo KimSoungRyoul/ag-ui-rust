@@ -280,9 +280,13 @@ Qwen Cloud 구독이 있다면, 그 OpenAI 호환 모드는 이름으로 인식�
 ```sh
 export QWEN_API_KEY=…
 export QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-export QWEN_MODEL=qwen-plus            # 비워 두면 이것이 기본값
+export QWEN_MODEL=qwen3.8-flash        # 비워 두면 qwen-plus
 cargo run -p task-board -- serve --llm
 ```
+
+model은 그 endpoint가 제공하는 것이어야 합니다. `curl -H "Authorization: Bearer $QWEN_API_KEY"
+$QWEN_BASE_URL/models`가 목록을 돌려주고, token-plan endpoint는 `qwen-plus` 대신
+`qwen3.8-flash`와 그 형제들을 제공합니다.
 
 model은 답변 문장만 다시 씁니다. 그 밖에는 아무것도 건드리지 않습니다. id와 개수와
 state 전이는 결정적으로 남습니다. model이 실패해도 run이 실패하지는 않습니다. 미리 짜 둔

@@ -279,9 +279,13 @@ Or with a Qwen Cloud subscription, whose OpenAI-compatible mode is recognised by
 ```sh
 export QWEN_API_KEY=…
 export QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-export QWEN_MODEL=qwen-plus            # the default when unset
+export QWEN_MODEL=qwen3.8-flash        # qwen-plus when unset
 cargo run -p task-board -- serve --llm
 ```
+
+The model has to be one your endpoint serves — `curl -H "Authorization: Bearer $QWEN_API_KEY"
+$QWEN_BASE_URL/models` lists them, and a token-plan endpoint serves `qwen3.8-flash` and its
+siblings rather than `qwen-plus`.
 
 The model rewrites the reply sentence and nothing else — ids, counts and state transitions
 stay deterministic, and a model that fails does not fail the run: the scripted sentence
