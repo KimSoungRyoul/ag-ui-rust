@@ -481,6 +481,11 @@ impl Applier {
             Event::StepStarted(_) | Event::StepFinished(_) | Event::Raw(_) | Event::Custom(_) => {
                 Ok(Changed::Nothing)
             }
+
+            // Placeholder: subagent tracking lands with the client layer.
+            Event::SubagentStarted(_) | Event::SubagentFinished(_) | Event::SubagentError(_) => {
+                Ok(Changed::Nothing)
+            }
         }
     }
 
@@ -854,6 +859,7 @@ impl Applier {
                 id: id.clone(),
                 activity_type: activity_type.to_owned(),
                 content: JsonObject::new(),
+                ..Default::default()
             })),
         }
     }

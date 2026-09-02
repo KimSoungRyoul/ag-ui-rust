@@ -77,6 +77,7 @@ fn conversation() -> Vec<Message> {
             ]),
             name: Some("ada".to_owned()),
             encrypted_value: Some("opaque".to_owned()),
+            ..Default::default()
         }),
         Message::Assistant(AssistantMessage {
             id: "m-4".into(),
@@ -88,6 +89,7 @@ fn conversation() -> Vec<Message> {
                 "get_weather",
                 r#"{"city":"Seoul"}"#,
             )]),
+            ..Default::default()
         }),
         Message::Tool(ToolMessage {
             id: "m-5".into(),
@@ -95,6 +97,7 @@ fn conversation() -> Vec<Message> {
             tool_call_id: "call-1".into(),
             error: Some("partial".to_owned()),
             encrypted_value: None,
+            ..Default::default()
         }),
         Message::Activity(ActivityMessage {
             id: "m-6".into(),
@@ -103,6 +106,7 @@ fn conversation() -> Vec<Message> {
                 .as_object()
                 .expect("an object")
                 .clone(),
+            ..Default::default()
         }),
     ]
 }
@@ -218,6 +222,7 @@ async fn an_activity_is_published_and_then_patched_in_place() {
                 .as_object()
                 .expect("an object")
                 .clone(),
+            ..Default::default()
         }))
     );
 }

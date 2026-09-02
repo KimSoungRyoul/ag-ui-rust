@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::event::BaseEvent;
-use crate::ids::{MessageId, ToolCallId};
+use crate::ids::{MessageId, SubagentRunId, ToolCallId};
 
 /// Opens a tool call. Arguments follow as `TOOL_CALL_ARGS` deltas.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -25,6 +25,17 @@ pub struct ToolCallStartEvent {
     /// Framework adapter) must not abort a run on their first tool call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_message_id: Option<MessageId>,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`]. A tool
+    /// call belongs to the message `parent_message_id` names, so a tag that
+    /// disagrees with that message's owner is a protocol error; an untagged
+    /// call inherits the message's owner.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ToolCallStartEvent {
@@ -35,6 +46,7 @@ impl ToolCallStartEvent {
             tool_call_id: tool_call_id.into(),
             tool_call_name: tool_call_name.into(),
             parent_message_id: None,
+            subagent_run_id: None,
         }
     }
 }
@@ -55,6 +67,14 @@ pub struct ToolCallArgsEvent {
     pub tool_call_id: ToolCallId,
     /// The argument-JSON fragment.
     pub delta: String,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ToolCallArgsEvent {
@@ -64,6 +84,7 @@ impl ToolCallArgsEvent {
             base: BaseEvent::default(),
             tool_call_id: tool_call_id.into(),
             delta: delta.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -79,6 +100,14 @@ pub struct ToolCallEndEvent {
     pub base: BaseEvent,
     /// The call being closed.
     pub tool_call_id: ToolCallId,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ToolCallEndEvent {
@@ -87,6 +116,7 @@ impl ToolCallEndEvent {
         Self {
             base: BaseEvent::default(),
             tool_call_id: tool_call_id.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -113,6 +143,14 @@ pub struct ToolCallChunkEvent {
     /// The argument-JSON fragment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta: Option<String>,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ToolCallChunkEvent {
@@ -128,6 +166,7 @@ impl ToolCallChunkEvent {
             tool_call_name,
             parent_message_id: None,
             delta,
+            subagent_run_id: None,
         }
     }
 }
@@ -150,6 +189,17 @@ pub struct ToolCallResultEvent {
     /// Always `"tool"` when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<ToolResultRole>,
+    /// The subagent that *executed* the call; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`]. Attributed
+    /// independently of the call it answers, on purpose: a frontend-executed
+    /// tool, or a supervisor running a call on a subagent's behalf, produces
+    /// a result whose owner is not the caller.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ToolCallResultEvent {
@@ -165,6 +215,7 @@ impl ToolCallResultEvent {
             tool_call_id: tool_call_id.into(),
             content: content.into(),
             role: None,
+            subagent_run_id: None,
         }
     }
 }

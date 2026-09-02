@@ -183,3 +183,40 @@ fn run_agent_input() {
         ..RunAgentInput::new("thread-1", "run-1")
     });
 }
+
+#[test]
+fn subagent_run() {
+    assert_json_snapshot!(vec![
+        Event::SubagentStarted(
+            SubagentStartedEvent::new("sub-1", "researcher")
+                .with_description("Finds sources for the brief")
+                .with_parent_tool_call("call-1", Some("msg-1".into())),
+        ),
+        Event::text_message_start("msg-2", TextMessageRole::Assistant)
+            .with_subagent_run_id("sub-1"),
+        Event::text_message_content("msg-2", "Three sources found.")
+            .with_subagent_run_id("sub-1")
+            .with_metadata(
+                json!({ "finishReason": "stop" })
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            ),
+        Event::text_message_end("msg-2").with_subagent_run_id("sub-1"),
+        Event::SubagentStarted(
+            SubagentStartedEvent::new("sub-2", "reviewer").with_parent_subagent("sub-1"),
+        ),
+        Event::subagent_finished_suspended("sub-2", vec!["int-1".to_owned()]),
+        Event::SubagentFinished(
+            SubagentFinishedEvent::new("sub-1")
+                .with_result(json!({ "sources": 3 }))
+                .with_outcome(SubagentOutcome::Success),
+        ),
+        Event::SubagentError(SubagentErrorEvent::new("sub-3", "rate limited").with_code("429")),
+        Event::run_finished_interrupt(
+            "thread-1",
+            "run-1",
+            vec![Interrupt::new("int-1", "tool_approval").with_subagent_run_id("sub-2")],
+        ),
+    ]);
+}

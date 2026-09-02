@@ -11,6 +11,7 @@ fn every_message() -> Vec<(Message, &'static str)> {
                 content: "Answer in Korean.".into(),
                 name: Some("ops".into()),
                 encrypted_value: None,
+                ..Default::default()
             }),
             "developer",
         ),
@@ -38,6 +39,7 @@ fn every_message() -> Vec<(Message, &'static str)> {
                     .as_object()
                     .unwrap()
                     .clone(),
+                ..Default::default()
             }),
             "activity",
         ),
@@ -46,6 +48,7 @@ fn every_message() -> Vec<(Message, &'static str)> {
                 id: MessageId::new("msg-6"),
                 content: "check the forecast first".into(),
                 encrypted_value: Some("b64-blob".into()),
+                ..Default::default()
             }),
             "reasoning",
         ),

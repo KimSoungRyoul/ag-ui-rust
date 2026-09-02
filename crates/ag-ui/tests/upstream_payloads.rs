@@ -33,39 +33,39 @@ use serde_json::{Value, json};
 const EVENT_PAYLOADS: &[(&str, &str)] = &[
     (
         "TEXT_MESSAGE_START",
-        r#"{"type":"TEXT_MESSAGE_START","messageId":"msg-1","role":"developer","name":"Ada"}"#,
+        r#"{"type":"TEXT_MESSAGE_START","messageId":"msg-1","role":"developer","name":"Ada","subagentRunId":"sub-1"}"#,
     ),
     (
         "TEXT_MESSAGE_CONTENT",
-        r#"{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg-1","delta":"Hello"}"#,
+        r#"{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg-1","delta":"Hello","subagentRunId":"sub-1"}"#,
     ),
     (
         "TEXT_MESSAGE_END",
-        r#"{"type":"TEXT_MESSAGE_END","messageId":"msg-1"}"#,
+        r#"{"type":"TEXT_MESSAGE_END","messageId":"msg-1","subagentRunId":"sub-1"}"#,
     ),
     (
         "TEXT_MESSAGE_CHUNK",
-        r#"{"type":"TEXT_MESSAGE_CHUNK","messageId":"msg-1","role":"user","delta":"Hi","name":"Ada"}"#,
+        r#"{"type":"TEXT_MESSAGE_CHUNK","messageId":"msg-1","role":"user","delta":"Hi","name":"Ada","subagentRunId":"sub-1"}"#,
     ),
     (
         "TOOL_CALL_START",
-        r#"{"type":"TOOL_CALL_START","toolCallId":"call-1","toolCallName":"get_weather","parentMessageId":"msg-1"}"#,
+        r#"{"type":"TOOL_CALL_START","toolCallId":"call-1","toolCallName":"get_weather","parentMessageId":"msg-1","subagentRunId":"sub-1"}"#,
     ),
     (
         "TOOL_CALL_ARGS",
-        r#"{"type":"TOOL_CALL_ARGS","toolCallId":"call-1","delta":"{\"city\":"}"#,
+        r#"{"type":"TOOL_CALL_ARGS","toolCallId":"call-1","delta":"{\"city\":","subagentRunId":"sub-1"}"#,
     ),
     (
         "TOOL_CALL_END",
-        r#"{"type":"TOOL_CALL_END","toolCallId":"call-1"}"#,
+        r#"{"type":"TOOL_CALL_END","toolCallId":"call-1","subagentRunId":"sub-1"}"#,
     ),
     (
         "TOOL_CALL_CHUNK",
-        r#"{"type":"TOOL_CALL_CHUNK","toolCallId":"call-1","toolCallName":"get_weather","parentMessageId":"msg-1","delta":"{}"}"#,
+        r#"{"type":"TOOL_CALL_CHUNK","toolCallId":"call-1","toolCallName":"get_weather","parentMessageId":"msg-1","delta":"{}","subagentRunId":"sub-1"}"#,
     ),
     (
         "TOOL_CALL_RESULT",
-        r#"{"type":"TOOL_CALL_RESULT","messageId":"msg-2","toolCallId":"call-1","content":"18C","role":"tool"}"#,
+        r#"{"type":"TOOL_CALL_RESULT","messageId":"msg-2","toolCallId":"call-1","content":"18C","role":"tool","subagentRunId":"sub-1"}"#,
     ),
     (
         "THINKING_START",
@@ -86,11 +86,11 @@ const EVENT_PAYLOADS: &[(&str, &str)] = &[
     ),
     (
         "STATE_SNAPSHOT",
-        r#"{"type":"STATE_SNAPSHOT","snapshot":{"counter":1,"items":["a"]}}"#,
+        r#"{"type":"STATE_SNAPSHOT","snapshot":{"counter":1,"items":["a"]},"subagentRunId":"sub-1"}"#,
     ),
     (
         "STATE_DELTA",
-        r#"{"type":"STATE_DELTA","delta":[{"op":"replace","path":"/counter","value":2},{"op":"remove","path":"/stale"},{"op":"move","from":"/a","path":"/b"}]}"#,
+        r#"{"type":"STATE_DELTA","delta":[{"op":"replace","path":"/counter","value":2},{"op":"remove","path":"/stale"},{"op":"move","from":"/a","path":"/b"}],"subagentRunId":"sub-1"}"#,
     ),
     (
         "MESSAGES_SNAPSHOT",
@@ -98,19 +98,19 @@ const EVENT_PAYLOADS: &[(&str, &str)] = &[
     ),
     (
         "ACTIVITY_SNAPSHOT",
-        r#"{"type":"ACTIVITY_SNAPSHOT","messageId":"msg-3","activityType":"web_search","content":{"query":"rust","results":3},"replace":false}"#,
+        r#"{"type":"ACTIVITY_SNAPSHOT","messageId":"msg-3","activityType":"web_search","content":{"query":"rust","results":3},"replace":false,"subagentRunId":"sub-1"}"#,
     ),
     (
         "ACTIVITY_DELTA",
-        r#"{"type":"ACTIVITY_DELTA","messageId":"msg-3","activityType":"web_search","patch":[{"op":"add","path":"/results","value":4}]}"#,
+        r#"{"type":"ACTIVITY_DELTA","messageId":"msg-3","activityType":"web_search","patch":[{"op":"add","path":"/results","value":4}],"subagentRunId":"sub-1"}"#,
     ),
     (
         "RAW",
-        r#"{"type":"RAW","event":{"chunk":1,"provider":"openai"},"source":"openai"}"#,
+        r#"{"type":"RAW","event":{"chunk":1,"provider":"openai"},"source":"openai","subagentRunId":"sub-1"}"#,
     ),
     (
         "CUSTOM",
-        r#"{"type":"CUSTOM","name":"confetti","value":{"count":100}}"#,
+        r#"{"type":"CUSTOM","name":"confetti","value":{"count":100},"subagentRunId":"sub-1"}"#,
     ),
     (
         "RUN_STARTED",
@@ -126,83 +126,127 @@ const EVENT_PAYLOADS: &[(&str, &str)] = &[
     ),
     (
         "STEP_STARTED",
-        r#"{"type":"STEP_STARTED","stepName":"plan"}"#,
+        r#"{"type":"STEP_STARTED","stepName":"plan","subagentRunId":"sub-1"}"#,
     ),
     (
         "STEP_FINISHED",
-        r#"{"type":"STEP_FINISHED","stepName":"plan"}"#,
+        r#"{"type":"STEP_FINISHED","stepName":"plan","subagentRunId":"sub-1"}"#,
     ),
     (
         "REASONING_START",
-        r#"{"type":"REASONING_START","messageId":"msg-4"}"#,
+        r#"{"type":"REASONING_START","messageId":"msg-4","subagentRunId":"sub-1"}"#,
     ),
     (
         "REASONING_MESSAGE_START",
-        r#"{"type":"REASONING_MESSAGE_START","messageId":"msg-4","role":"reasoning"}"#,
+        r#"{"type":"REASONING_MESSAGE_START","messageId":"msg-4","role":"reasoning","subagentRunId":"sub-1"}"#,
     ),
     (
         "REASONING_MESSAGE_CONTENT",
-        r#"{"type":"REASONING_MESSAGE_CONTENT","messageId":"msg-4","delta":"weighing"}"#,
+        r#"{"type":"REASONING_MESSAGE_CONTENT","messageId":"msg-4","delta":"weighing","subagentRunId":"sub-1"}"#,
     ),
     (
         "REASONING_MESSAGE_END",
-        r#"{"type":"REASONING_MESSAGE_END","messageId":"msg-4"}"#,
+        r#"{"type":"REASONING_MESSAGE_END","messageId":"msg-4","subagentRunId":"sub-1"}"#,
     ),
     (
         "REASONING_MESSAGE_CHUNK",
-        r#"{"type":"REASONING_MESSAGE_CHUNK","messageId":"msg-4","delta":"weighing"}"#,
+        r#"{"type":"REASONING_MESSAGE_CHUNK","messageId":"msg-4","delta":"weighing","subagentRunId":"sub-1"}"#,
     ),
     (
         "REASONING_END",
-        r#"{"type":"REASONING_END","messageId":"msg-4"}"#,
+        r#"{"type":"REASONING_END","messageId":"msg-4","subagentRunId":"sub-1"}"#,
     ),
     (
         "REASONING_ENCRYPTED_VALUE",
-        r#"{"type":"REASONING_ENCRYPTED_VALUE","subtype":"tool-call","entityId":"call-1","encryptedValue":"b64"}"#,
+        r#"{"type":"REASONING_ENCRYPTED_VALUE","subtype":"tool-call","entityId":"call-1","encryptedValue":"b64","subagentRunId":"sub-1"}"#,
+    ),
+    (
+        "SUBAGENT_STARTED",
+        r#"{"type":"SUBAGENT_STARTED","subagentRunId":"sub-1","name":"researcher","description":"Finds sources","parentSubagentRunId":"sub-0","parentToolCallId":"call-1","parentMessageId":"msg-1"}"#,
+    ),
+    (
+        "SUBAGENT_FINISHED",
+        r#"{"type":"SUBAGENT_FINISHED","subagentRunId":"sub-1","result":{"sources":3},"outcome":{"type":"suspended","interruptIds":["int-1"]}}"#,
+    ),
+    (
+        "SUBAGENT_ERROR",
+        r#"{"type":"SUBAGENT_ERROR","subagentRunId":"sub-1","message":"rate limited","code":"429"}"#,
     ),
 ];
 
-/// Every field each event schema declares, beyond the two [`BaseEvent`] ones,
+/// Every field each event schema declares, beyond the three [`BaseEvent`] ones,
 /// transcribed from `events.ts`. A payload that sets all of them must serialize
 /// to exactly this key set: anything missing is a dropped field, anything extra
 /// is invented.
 const EVENT_FIELDS: &[(&str, &[&str])] = &[
-    ("TEXT_MESSAGE_START", &["messageId", "role", "name"]),
-    ("TEXT_MESSAGE_CONTENT", &["messageId", "delta"]),
-    ("TEXT_MESSAGE_END", &["messageId"]),
+    (
+        "TEXT_MESSAGE_START",
+        &["messageId", "role", "name", "subagentRunId"],
+    ),
+    (
+        "TEXT_MESSAGE_CONTENT",
+        &["messageId", "delta", "subagentRunId"],
+    ),
+    ("TEXT_MESSAGE_END", &["messageId", "subagentRunId"]),
     (
         "TEXT_MESSAGE_CHUNK",
-        &["messageId", "role", "delta", "name"],
+        &["messageId", "role", "delta", "name", "subagentRunId"],
     ),
     (
         "TOOL_CALL_START",
-        &["toolCallId", "toolCallName", "parentMessageId"],
+        &[
+            "toolCallId",
+            "toolCallName",
+            "parentMessageId",
+            "subagentRunId",
+        ],
     ),
-    ("TOOL_CALL_ARGS", &["toolCallId", "delta"]),
-    ("TOOL_CALL_END", &["toolCallId"]),
+    ("TOOL_CALL_ARGS", &["toolCallId", "delta", "subagentRunId"]),
+    ("TOOL_CALL_END", &["toolCallId", "subagentRunId"]),
     (
         "TOOL_CALL_CHUNK",
-        &["toolCallId", "toolCallName", "parentMessageId", "delta"],
+        &[
+            "toolCallId",
+            "toolCallName",
+            "parentMessageId",
+            "delta",
+            "subagentRunId",
+        ],
     ),
     (
         "TOOL_CALL_RESULT",
-        &["messageId", "toolCallId", "content", "role"],
+        &[
+            "messageId",
+            "toolCallId",
+            "content",
+            "role",
+            "subagentRunId",
+        ],
     ),
     ("THINKING_START", &["title"]),
     ("THINKING_END", &[]),
     ("THINKING_TEXT_MESSAGE_START", &[]),
     ("THINKING_TEXT_MESSAGE_CONTENT", &["delta"]),
     ("THINKING_TEXT_MESSAGE_END", &[]),
-    ("STATE_SNAPSHOT", &["snapshot"]),
-    ("STATE_DELTA", &["delta"]),
+    ("STATE_SNAPSHOT", &["snapshot", "subagentRunId"]),
+    ("STATE_DELTA", &["delta", "subagentRunId"]),
     ("MESSAGES_SNAPSHOT", &["messages"]),
     (
         "ACTIVITY_SNAPSHOT",
-        &["messageId", "activityType", "content", "replace"],
+        &[
+            "messageId",
+            "activityType",
+            "content",
+            "replace",
+            "subagentRunId",
+        ],
     ),
-    ("ACTIVITY_DELTA", &["messageId", "activityType", "patch"]),
-    ("RAW", &["event", "source"]),
-    ("CUSTOM", &["name", "value"]),
+    (
+        "ACTIVITY_DELTA",
+        &["messageId", "activityType", "patch", "subagentRunId"],
+    ),
+    ("RAW", &["event", "source", "subagentRunId"]),
+    ("CUSTOM", &["name", "value", "subagentRunId"]),
     (
         "RUN_STARTED",
         &["threadId", "runId", "parentRunId", "input"],
@@ -212,18 +256,40 @@ const EVENT_FIELDS: &[(&str, &[&str])] = &[
         &["threadId", "runId", "result", "outcome", "usage"],
     ),
     ("RUN_ERROR", &["message", "code", "usage"]),
-    ("STEP_STARTED", &["stepName"]),
-    ("STEP_FINISHED", &["stepName"]),
-    ("REASONING_START", &["messageId"]),
-    ("REASONING_MESSAGE_START", &["messageId", "role"]),
-    ("REASONING_MESSAGE_CONTENT", &["messageId", "delta"]),
-    ("REASONING_MESSAGE_END", &["messageId"]),
-    ("REASONING_MESSAGE_CHUNK", &["messageId", "delta"]),
-    ("REASONING_END", &["messageId"]),
+    ("STEP_STARTED", &["stepName", "subagentRunId"]),
+    ("STEP_FINISHED", &["stepName", "subagentRunId"]),
+    ("REASONING_START", &["messageId", "subagentRunId"]),
+    (
+        "REASONING_MESSAGE_START",
+        &["messageId", "role", "subagentRunId"],
+    ),
+    (
+        "REASONING_MESSAGE_CONTENT",
+        &["messageId", "delta", "subagentRunId"],
+    ),
+    ("REASONING_MESSAGE_END", &["messageId", "subagentRunId"]),
+    (
+        "REASONING_MESSAGE_CHUNK",
+        &["messageId", "delta", "subagentRunId"],
+    ),
+    ("REASONING_END", &["messageId", "subagentRunId"]),
     (
         "REASONING_ENCRYPTED_VALUE",
-        &["subtype", "entityId", "encryptedValue"],
+        &["subtype", "entityId", "encryptedValue", "subagentRunId"],
     ),
+    (
+        "SUBAGENT_STARTED",
+        &[
+            "subagentRunId",
+            "name",
+            "description",
+            "parentSubagentRunId",
+            "parentToolCallId",
+            "parentMessageId",
+        ],
+    ),
+    ("SUBAGENT_FINISHED", &["subagentRunId", "result", "outcome"]),
+    ("SUBAGENT_ERROR", &["subagentRunId", "message", "code"]),
 ];
 
 fn keys(value: &Value) -> BTreeSet<&str> {
@@ -262,16 +328,17 @@ fn the_fixture_table_covers_every_event_type() {
 
 #[test]
 fn base_event_fields_are_the_only_shared_ones() {
-    // `timestamp` and `rawEvent` come from BaseEventSchema, and nothing else
-    // does. They attach to every event without appearing in any event's own
-    // field list.
+    // `timestamp`, `rawEvent` and `metadata` come from BaseEventSchema, and
+    // nothing else does. They attach to every event without appearing in any
+    // event's own field list.
     for (tag, payload) in EVENT_PAYLOADS {
         let stamped: Value = {
             let event: Event = serde_json::from_str(payload).unwrap();
             serde_json::to_value(
                 event
                     .with_timestamp(1_700_000_000_000)
-                    .with_raw_event(json!({"upstream": true})),
+                    .with_raw_event(json!({"upstream": true}))
+                    .with_metadata(json!({"traceId": "abc"}).as_object().unwrap().clone()),
             )
             .unwrap()
         };
@@ -281,6 +348,7 @@ fn base_event_fields_are_the_only_shared_ones() {
             "{tag} lost its timestamp, or widened it to a float"
         );
         assert_eq!(stamped["rawEvent"], json!({"upstream": true}), "{tag}");
+        assert_eq!(stamped["metadata"], json!({"traceId": "abc"}), "{tag}");
     }
 }
 
@@ -334,31 +402,31 @@ fn run_started_carries_the_full_input_shape() {
 const MESSAGE_PAYLOADS: &[(&str, &str)] = &[
     (
         "developer",
-        r#"{"role":"developer","id":"m1","content":"internal note","name":"ops","encryptedValue":"z1"}"#,
+        r#"{"role":"developer","id":"m1","content":"internal note","name":"ops","encryptedValue":"z1","subagentRunId":"sub-1","metadata":{"traceId":"abc"}}"#,
     ),
     (
         "system",
-        r#"{"role":"system","id":"m2","content":"be brief","name":"sys","encryptedValue":"z2"}"#,
+        r#"{"role":"system","id":"m2","content":"be brief","name":"sys","encryptedValue":"z2","subagentRunId":"sub-1","metadata":{"traceId":"abc"}}"#,
     ),
     (
         "assistant",
-        r#"{"role":"assistant","id":"m3","content":"on it","name":"bot","encryptedValue":"z3","toolCalls":[{"id":"call-1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Seoul\"}"},"encryptedValue":"z4"}]}"#,
+        r#"{"role":"assistant","id":"m3","content":"on it","name":"bot","encryptedValue":"z3","toolCalls":[{"id":"call-1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Seoul\"}"},"encryptedValue":"z4","metadata":{"k":1}}],"subagentRunId":"sub-1","metadata":{"traceId":"abc"}}"#,
     ),
     (
         "user",
-        r#"{"role":"user","id":"m4","content":"hello","name":"Ada","encryptedValue":"z5"}"#,
+        r#"{"role":"user","id":"m4","content":"hello","name":"Ada","encryptedValue":"z5","subagentRunId":"sub-1","metadata":{"traceId":"abc"}}"#,
     ),
     (
         "tool",
-        r#"{"role":"tool","id":"m5","content":"18C","toolCallId":"call-1","error":"rate limited","encryptedValue":"z6"}"#,
+        r#"{"role":"tool","id":"m5","content":"18C","toolCallId":"call-1","error":"rate limited","encryptedValue":"z6","subagentRunId":"sub-1","metadata":{"traceId":"abc"}}"#,
     ),
     (
         "activity",
-        r#"{"role":"activity","id":"m6","activityType":"web_search","content":{"query":"rust"}}"#,
+        r#"{"role":"activity","id":"m6","activityType":"web_search","content":{"query":"rust"},"subagentRunId":"sub-1","metadata":{"traceId":"abc"}}"#,
     ),
     (
         "reasoning",
-        r#"{"role":"reasoning","id":"m7","content":"weighing options","encryptedValue":"z7"}"#,
+        r#"{"role":"reasoning","id":"m7","content":"weighing options","encryptedValue":"z7","subagentRunId":"sub-1","metadata":{"traceId":"abc"}}"#,
     ),
 ];
 

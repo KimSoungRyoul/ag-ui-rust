@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::JsonObject;
 use crate::event::BaseEvent;
-use crate::ids::MessageId;
+use crate::ids::{MessageId, SubagentRunId};
 use crate::patch::PatchOperation;
 
 /// Publishes the full content of an activity.
@@ -35,6 +35,14 @@ pub struct ActivitySnapshotEvent {
     /// it.
     #[serde(default = "default_replace")]
     pub replace: bool,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 /// The upstream schema defaults `replace` to `true`, so an omitted field means
@@ -51,6 +59,7 @@ impl Default for ActivitySnapshotEvent {
             activity_type: String::new(),
             content: JsonObject::new(),
             replace: default_replace(),
+            subagent_run_id: None,
         }
     }
 }
@@ -68,6 +77,7 @@ impl ActivitySnapshotEvent {
             activity_type: activity_type.into(),
             content,
             replace: true,
+            subagent_run_id: None,
         }
     }
 }
@@ -87,6 +97,14 @@ pub struct ActivityDeltaEvent {
     pub activity_type: String,
     /// RFC 6902 operations, applied in order to the activity content.
     pub patch: Vec<PatchOperation>,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ActivityDeltaEvent {
@@ -101,6 +119,7 @@ impl ActivityDeltaEvent {
             message_id: message_id.into(),
             activity_type: activity_type.into(),
             patch: patch.into(),
+            subagent_run_id: None,
         }
     }
 }

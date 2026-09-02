@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::JsonObject;
-use crate::ids::{MessageId, ToolCallId};
+use crate::ids::{MessageId, SubagentRunId, ToolCallId};
 use crate::tool::ToolCall;
 
 /// Every role the protocol defines.
@@ -274,6 +274,27 @@ pub struct DeveloperMessage {
     /// Opaque provider payload for zero-data-retention modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_value: Option<String>,
+    /// The subagent that produced this message; absent means the parent
+    /// agent. A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
+    /// Extra information, open by key. Absent or an object — a JSON `null`
+    /// is rejected. See [`crate::metadata`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub metadata: Option<JsonObject>,
 }
 
 /// The system prompt.
@@ -292,6 +313,27 @@ pub struct SystemMessage {
     /// Opaque provider payload for zero-data-retention modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_value: Option<String>,
+    /// The subagent that produced this message; absent means the parent
+    /// agent. A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
+    /// Extra information, open by key. Absent or an object — a JSON `null`
+    /// is rejected. See [`crate::metadata`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub metadata: Option<JsonObject>,
 }
 
 /// Model output, optionally requesting tool calls.
@@ -314,6 +356,27 @@ pub struct AssistantMessage {
     /// Tool calls the assistant wants executed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// The subagent that produced this message; absent means the parent
+    /// agent. A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
+    /// Extra information, open by key. Absent or an object — a JSON `null`
+    /// is rejected. See [`crate::metadata`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub metadata: Option<JsonObject>,
 }
 
 /// End-user input, possibly multimodal.
@@ -332,6 +395,27 @@ pub struct UserMessage {
     /// Opaque provider payload for zero-data-retention modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_value: Option<String>,
+    /// The subagent that produced this message; absent means the parent
+    /// agent. A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
+    /// Extra information, open by key. Absent or an object — a JSON `null`
+    /// is rejected. See [`crate::metadata`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub metadata: Option<JsonObject>,
 }
 
 /// The result of a tool call, fed back to the model.
@@ -353,6 +437,29 @@ pub struct ToolMessage {
     /// Opaque provider payload for zero-data-retention modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_value: Option<String>,
+    /// The subagent that *executed* the call; absent means the parent agent.
+    /// Attributed independently of the call it answers — see
+    /// [`ToolCallResultEvent`](crate::event::ToolCallResultEvent). A JSON
+    /// `null` is rejected.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
+    /// Extra information, open by key. Absent or an object — a JSON `null`
+    /// is rejected. See [`crate::metadata`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub metadata: Option<JsonObject>,
 }
 
 /// A structured progress update the client renders as it likes.
@@ -372,6 +479,27 @@ pub struct ActivityMessage {
     )]
     #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub content: JsonObject,
+    /// The subagent that produced this message; absent means the parent
+    /// agent. A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
+    /// Extra information, open by key. Absent or an object — a JSON `null`
+    /// is rejected. See [`crate::metadata`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub metadata: Option<JsonObject>,
 }
 
 /// Model reasoning, shown separately from the reply.
@@ -388,6 +516,27 @@ pub struct ReasoningMessage {
     /// Opaque provider payload for zero-data-retention modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_value: Option<String>,
+    /// The subagent that produced this message; absent means the parent
+    /// agent. A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
+    /// Extra information, open by key. Absent or an object — a JSON `null`
+    /// is rejected. See [`crate::metadata`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub metadata: Option<JsonObject>,
 }
 
 /// A message in a thread, discriminated by its `role`.
@@ -486,6 +635,61 @@ impl Message {
             Self::Tool(_) => Role::Tool,
             Self::Activity(_) => Role::Activity,
             Self::Reasoning(_) => Role::Reasoning,
+        }
+    }
+
+    /// The subagent that produced the message, whatever the role. `None`
+    /// means the parent agent. See [`crate::event::subagent`].
+    pub const fn subagent_run_id(&self) -> Option<&SubagentRunId> {
+        match self {
+            Self::Developer(m) => m.subagent_run_id.as_ref(),
+            Self::System(m) => m.subagent_run_id.as_ref(),
+            Self::Assistant(m) => m.subagent_run_id.as_ref(),
+            Self::User(m) => m.subagent_run_id.as_ref(),
+            Self::Tool(m) => m.subagent_run_id.as_ref(),
+            Self::Activity(m) => m.subagent_run_id.as_ref(),
+            Self::Reasoning(m) => m.subagent_run_id.as_ref(),
+        }
+    }
+
+    /// Sets or clears the subagent the message is attributed to.
+    pub fn set_subagent_run_id(&mut self, subagent_run_id: Option<SubagentRunId>) {
+        match self {
+            Self::Developer(m) => m.subagent_run_id = subagent_run_id,
+            Self::System(m) => m.subagent_run_id = subagent_run_id,
+            Self::Assistant(m) => m.subagent_run_id = subagent_run_id,
+            Self::User(m) => m.subagent_run_id = subagent_run_id,
+            Self::Tool(m) => m.subagent_run_id = subagent_run_id,
+            Self::Activity(m) => m.subagent_run_id = subagent_run_id,
+            Self::Reasoning(m) => m.subagent_run_id = subagent_run_id,
+        }
+    }
+
+    /// The message's metadata, whatever the role. See [`crate::metadata`].
+    pub const fn metadata(&self) -> Option<&JsonObject> {
+        match self {
+            Self::Developer(m) => m.metadata.as_ref(),
+            Self::System(m) => m.metadata.as_ref(),
+            Self::Assistant(m) => m.metadata.as_ref(),
+            Self::User(m) => m.metadata.as_ref(),
+            Self::Tool(m) => m.metadata.as_ref(),
+            Self::Activity(m) => m.metadata.as_ref(),
+            Self::Reasoning(m) => m.metadata.as_ref(),
+        }
+    }
+
+    /// The metadata slot, for a consumer merging an event's metadata into
+    /// the message it builds — see
+    /// [`merge_metadata_into`](crate::metadata::merge_metadata_into).
+    pub fn metadata_mut(&mut self) -> &mut Option<JsonObject> {
+        match self {
+            Self::Developer(m) => &mut m.metadata,
+            Self::System(m) => &mut m.metadata,
+            Self::Assistant(m) => &mut m.metadata,
+            Self::User(m) => &mut m.metadata,
+            Self::Tool(m) => &mut m.metadata,
+            Self::Activity(m) => &mut m.metadata,
+            Self::Reasoning(m) => &mut m.metadata,
         }
     }
 }

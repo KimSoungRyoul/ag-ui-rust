@@ -169,3 +169,13 @@ string_id! {
     /// Names a step inside a run, as carried by `STEP_STARTED` / `STEP_FINISHED`.
     StepName
 }
+
+string_id! {
+    /// Identifies **one invocation** of a subagent.
+    ///
+    /// Running the same subagent twice yields two different values. It is not a
+    /// name and not a stable id for a reusable definition — that is
+    /// `SUBAGENT_STARTED.name` — so key transient UI state by it and persist
+    /// nothing by it. See [`crate::event::subagent`].
+    SubagentRunId
+}

@@ -219,6 +219,7 @@ fn a_messages_snapshot_keeps_activity_the_backend_does_not_track() {
             .as_object()
             .expect("an object")
             .clone(),
+        ..Default::default()
     }));
     applier.push_message(Message::assistant("msg-1", "Checking."));
 
@@ -248,6 +249,7 @@ fn a_messages_snapshot_that_carries_activity_owns_the_activity_set() {
             id: id.into(),
             activity_type: "web_search".into(),
             content: JsonObject::new(),
+            ..Default::default()
         }));
     }
 
@@ -257,6 +259,7 @@ fn a_messages_snapshot_that_carries_activity_owns_the_activity_set() {
                 id: "act-2".into(),
                 activity_type: "web_search".into(),
                 content: JsonObject::new(),
+                ..Default::default()
             },
         )]))
         .expect("applies");

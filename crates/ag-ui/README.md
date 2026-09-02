@@ -7,7 +7,7 @@ AG-UI is the protocol between a user-facing application and an agent backend. A 
 stream of events: the agent opens messages, streams text and reasoning, calls tools,
 publishes state, and finishes — or pauses for human input.
 
-It implements all 33 event types, both halves of the protocol, and a drift check in CI that
+It implements all 36 event types, both halves of the protocol, and a drift check in CI that
 fails the build when upstream's event set moves — held to what an official SDK would have to
 be, because becoming the official AG-UI Rust SDK is the goal. It is not that yet: this crate
 is not affiliated with or endorsed by the AG-UI protocol organisation.
@@ -69,7 +69,7 @@ valid traffic.
 | `client` | no | Consume a remote agent, transport-agnostic. |
 | `http` | no | Adds the reqwest-backed transport to `client`. What most consumers want; leave it off for wasm. |
 | `axum` | no | Mount a hosted agent on an axum router. Implies `server` and `sse`, and is the one feature that pulls in tokio. |
-| `protobuf` | no | The binary transport's media type and a documented stub. `events.proto` covers only 18 of the 33 event types, so there is no encoder. |
+| `protobuf` | no | The binary transport's media type and a documented stub. `events.proto` covers only 21 of the 36 event types, so there is no encoder. |
 | `schemars` | no | Derives `schemars::JsonSchema` on the public types. |
 | `utoipa` | no | Derives `utoipa::ToSchema` on the public types. |
 

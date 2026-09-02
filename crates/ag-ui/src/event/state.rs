@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::event::BaseEvent;
+use crate::ids::SubagentRunId;
 use crate::message::Message;
 use crate::patch::PatchOperation;
 
@@ -19,6 +20,16 @@ pub struct StateSnapshotEvent {
     pub base: BaseEvent,
     /// The complete new state. Free-form JSON, opaque to the protocol.
     pub snapshot: Value,
+    /// The subagent that produced this update; absent means the parent
+    /// agent. A JSON `null` is rejected — see [`crate::event::subagent`].
+    /// Provenance, not ownership: state is run-scoped, and an attributed
+    /// snapshot still replaces the run's one state document.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl StateSnapshotEvent {
@@ -27,6 +38,7 @@ impl StateSnapshotEvent {
         Self {
             base: BaseEvent::default(),
             snapshot: snapshot.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -42,6 +54,15 @@ pub struct StateDeltaEvent {
     pub base: BaseEvent,
     /// RFC 6902 operations, applied in order to the previous state.
     pub delta: Vec<PatchOperation>,
+    /// The subagent that produced this update; absent means the parent
+    /// agent. A JSON `null` is rejected — see [`crate::event::subagent`].
+    /// Provenance, not ownership, as on [`StateSnapshotEvent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl StateDeltaEvent {
@@ -50,6 +71,7 @@ impl StateDeltaEvent {
         Self {
             base: BaseEvent::default(),
             delta: delta.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -58,6 +80,9 @@ impl StateDeltaEvent {
 ///
 /// Used to reconcile after a reconnect, or when an agent rewrites history (for
 /// example after summarizing older turns).
+///
+/// Carries no `subagentRunId` of its own: one snapshot mixes messages from
+/// several producers, so attribution travels per message instead.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
