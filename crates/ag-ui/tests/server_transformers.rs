@@ -294,6 +294,9 @@ impl Agent for Publishing {
             worker.say("moved it")?;
         }
         ctx.say("noted")?;
+        // The parent moves it again, so a consumer that missed the first
+        // publish has a second one to fail on.
+        ctx.set_state(&json!({"done": 2}))?;
         Ok(RunOutcome::Success)
     }
 }
@@ -313,6 +316,9 @@ async fn hidden_visibility_keeps_the_state_a_subagent_published() {
             EventType::TextMessageStart,
             EventType::TextMessageContent,
             EventType::TextMessageEnd,
+            // The parent's own publish: a snapshot, being smaller than the
+            // patch on a state this size.
+            EventType::StateSnapshot,
             EventType::RunFinished,
         ]
     );
@@ -455,4 +461,29 @@ fn hidden_drops_untagged_continuations_of_a_subagents_entities() {
             .transform(Event::tool_call_result("h4", "hc1", "again"))
             .is_empty()
     );
+}
+
+/// The round trip a consumer makes: the subagent's publish and the parent's
+/// later one both apply, in hidden mode as in the others — which is the whole
+/// reason the state is kept.
+#[cfg(feature = "client")]
+#[tokio::test]
+async fn hidden_visibility_state_applies_on_the_client_including_a_later_parent_publish() {
+    use ag_ui::client::Applier;
+
+    for filter in [
+        SubagentVisibility::Attributed.filter(),
+        SubagentVisibility::inline(),
+        SubagentVisibility::hidden(),
+    ] {
+        let mode = filter.mode();
+        let events = collect(Runner::new(Publishing).transformer(filter)).await;
+        let mut applier = Applier::new();
+        for event in &events {
+            applier
+                .apply(event)
+                .unwrap_or_else(|error| panic!("{mode:?}: {event:?} should apply: {error}"));
+        }
+        assert_eq!(applier.state(), &json!({"done": 2}), "{mode:?}");
+    }
 }
