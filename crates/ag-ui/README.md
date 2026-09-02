@@ -15,9 +15,9 @@ is not affiliated with or endorsed by the AG-UI protocol organisation.
 ```toml
 [dependencies]
 # host an agent behind axum
-ag-ui = { version = "0.2", features = ["axum"] }
+ag-ui = { version = "0.3", features = ["axum"] }
 # or consume one over HTTP
-ag-ui = { version = "0.2", features = ["http"] }
+ag-ui = { version = "0.3", features = ["http"] }
 ```
 
 ## What is in the box

@@ -43,8 +43,8 @@ error가 납니다. `_` 갈래가 삼켜 버리지 않습니다.
 
 ## 진실의 원천은 TypeScript Zod schema입니다
 
-protobuf 정의가 아닙니다. upstream `events.proto`의 `Event` message는 33개 event
-type 중 18개만 담는 `oneof`입니다. reasoning도, activity도, thinking도,
+protobuf 정의가 아닙니다. upstream `events.proto`의 `Event` message는 36개 event
+type 중 21개만 담는 `oneof`입니다. reasoning도, activity도, thinking도,
 `tool_call_result`도 없습니다. binary transport는 protocol의 손실 있는
 부분집합입니다. port의 대상이 될 수 없습니다. upstream에는 생성에 쓸 JSON Schema
 export도 없습니다.

@@ -204,7 +204,7 @@ async fn main() {
 protocol의 `Event` enum도 exhaustive합니다. 그 exhaustive함이
 바로잡으려는 실패는 소리 없는 누락입니다. 커뮤니티판 `ag-ui
 0.1.0`은 event variant를 24개만 선언했습니다. 당시 명세에는 32개가
-있었습니다. 지금은 33개입니다. 아무도 알아채지 못했습니다. 모든 소비자
+있었습니다. 지금은 36개입니다. 아무도 알아채지 못했습니다. 모든 소비자
 code에 있던 `_` 갈래가 그 침묵의 모습이기 때문입니다.
 
 type 수준의 결과는 event 하나를 추가하는 일이 이 SDK의 major

@@ -96,8 +96,8 @@ assert_eq!(body.matches("\n\n").count(), 6);
 
 SSE는 상호운용의 기본값입니다. 이 SDK가 온전히 구현하는 유일한 transport이기도 합니다.
 protocol은 binary media type `application/vnd.ag-ui.event+proto`도 정의하고
-`ag-ui`가 그것을 협상합니다. 다만 upstream의 `events.proto`는 33개 event type 중
-18개만 다룹니다. 그쪽으로 encode하면 event를 조용히 떨어뜨립니다. 그래서 여기에
+`ag-ui`가 그것을 협상합니다. 다만 upstream의 `events.proto`는 36개 event type 중
+21개만 다룹니다. 그쪽으로 encode하면 event를 조용히 떨어뜨립니다. 그래서 여기에
 encoder는 없습니다. 자세한 것은 [feature flag](/ag-ui-rust/ko/reference/features/)에
 있습니다.
 
@@ -181,7 +181,7 @@ chunk event 다섯 개가 message 하나일 수 있습니다.
 
 ## event 계열
 
-event type은 **33개**입니다. `ag-ui`는 그것을 빠짐없는 `Event` enum 하나와
+event type은 **36개**입니다. `ag-ui`는 그것을 빠짐없는 `Event` enum 하나와
 `EventType` 판별자로 표현합니다:
 
 ```rust
@@ -191,7 +191,7 @@ let event = Event::text_message_content("msg-1", "Hello");
 
 assert_eq!(event.event_type(), EventType::TextMessageContent);
 assert_eq!(EventType::TextMessageContent.as_str(), "TEXT_MESSAGE_CONTENT");
-assert_eq!(EventType::ALL.len(), 33);
+assert_eq!(EventType::ALL.len(), 36);
 ```
 
 여덟 계열로 묶입니다:

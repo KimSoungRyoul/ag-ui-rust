@@ -193,7 +193,7 @@ that both complained and succeeded.
 
 The protocol's `Event` enum is exhaustive too, and the failure it is exhaustive
 to correct is silent under-coverage: the community `ag-ui-core 0.1.0` declares
-24 event variants against the 32 the spec had then (33 now), and nobody noticed,
+24 event variants against the 32 the spec had then (36 now), and nobody noticed,
 because a `_` arm in every consumer is what silence looks like. The consequence at the type level
 is that adding an event is a major version of this SDK. The consequence at
 runtime is here: an unrecognised `type` on the wire fails to deserialize, and

@@ -9,7 +9,7 @@ no CODEOWNERS entry for it, so nobody has merge authority. As of August 2026 fou
 with zero reviews, including a server crate (#972, +5,916 lines) open since January. The core
 team acknowledged the situation on issue #2256.
 
-The concrete result: `ag-ui-core 0.1.0` declares 24 event variants against a spec with 33 —
+The concrete result: `ag-ui-core 0.1.0` declares 24 event variants against a spec with 33 at the time of writing — 36 today —
 missing nine, the whole `REASONING_*` family and both `ACTIVITY_*` events — and has no
 `RunFinished.outcome` field, which means human-in-the-loop is not expressible at all. An
 unknown `type` does not degrade to "ignore it": the enum is `#[serde(tag = "type")]` with no
@@ -57,9 +57,9 @@ and that asymmetry is deliberate rather than an oversight — the protocol *has*
 in the last year (`REASONING_*`, `ACTIVITY_*`), so this will be tested.
 
 The failure this SDK exists to correct is silent under-coverage. `ag-ui-core 0.1.0` declares
-24 variants against the 32 the spec had then — 33 today — and nobody noticed, because nothing
+24 variants against the 32 the spec had then — 36 today — and nobody noticed, because nothing
 anywhere forced the question. `#[non_exhaustive]` institutionalises that: it obliges every
-consumer to write a `_` arm, and a `_` arm is precisely the construct that turns "event 34
+consumer to write a `_` arm, and a `_` arm is precisely the construct that turns "event 37
 arrived" into no diagnostic at all. It does not remove the work of handling a new event; it
 removes the notification that there is work.
 

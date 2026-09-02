@@ -96,8 +96,8 @@ assert_eq!(body.matches("\n\n").count(), 6);
 
 SSE is the interoperable default and the only transport this SDK fully implements. The
 protocol also defines a binary media type, `application/vnd.ag-ui.event+proto`, and
-`ag-ui` will negotiate it — but upstream's `events.proto` covers 18 of the protocol's
-33 event types, so encoding to it would silently drop events, and there is no encoder
+`ag-ui` will negotiate it — but upstream's `events.proto` covers 21 of the protocol's
+36 event types, so encoding to it would silently drop events, and there is no encoder
 here. [Feature flags](/ag-ui-rust/reference/features/) has the details.
 
 Content negotiation is by `Accept`. A missing or empty header is read as `*/*` and answers
@@ -181,7 +181,7 @@ else looks at them — `ag_ui::client` does that in its `chunks` stage, and
 
 ## The event families
 
-There are **33 event types**, and `ag-ui` models them as one exhaustive `Event` enum
+There are **36 event types**, and `ag-ui` models them as one exhaustive `Event` enum
 plus an `EventType` discriminator:
 
 ```rust
@@ -191,7 +191,7 @@ let event = Event::text_message_content("msg-1", "Hello");
 
 assert_eq!(event.event_type(), EventType::TextMessageContent);
 assert_eq!(EventType::TextMessageContent.as_str(), "TEXT_MESSAGE_CONTENT");
-assert_eq!(EventType::ALL.len(), 33);
+assert_eq!(EventType::ALL.len(), 36);
 ```
 
 They group into eight families:

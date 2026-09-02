@@ -45,7 +45,7 @@ commitments rest on.
 ## The source of truth is the TypeScript Zod schemas
 
 Not the protobuf definitions. The `Event` message in upstream's `events.proto`
-is a `oneof` over 18 of the protocol's 33 event types — no reasoning, no
+is a `oneof` over 21 of the protocol's 36 event types — no reasoning, no
 activity, no thinking, no `tool_call_result`. The binary transport is a lossy
 subset of the protocol, so it cannot serve as the port target. There is also no
 JSON Schema export upstream to generate from.

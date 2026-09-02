@@ -1,6 +1,6 @@
 ---
 title: Event reference
-description: All 33 event types in the protocol, the Rust variant that carries each one, and the families they fall into.
+description: All 36 event types in the protocol, the Rust variant that carries each one, and the families they fall into.
 ---
 
 An AG-UI run is a sequence of events. On the wire each is a JSON object with a
@@ -9,7 +9,7 @@ An AG-UI run is a sequence of events. On the wire each is a JSON object with a
 [`EventType`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html) is that
 discriminator on its own.
 
-There are **33** of them. That number is
+There are **36** of them. That number is
 `EventType::ALL.len()`, and it is also what `cargo run -p xtask -- drift-check`
 compares against the vendored snapshot of the upstream TypeScript schemas on
 every pull request — see [Verification](/ag-ui-rust/design/verification/).
@@ -66,7 +66,7 @@ The order below is `EventType::ALL`'s order, which is upstream's.
 | `REASONING_ENCRYPTED_VALUE` | `ReasoningEncryptedValue` | Reasoning | A provider's opaque reasoning blob, for zero-data-retention modes. `subtype` says whether `entityId` names a `tool-call` or a `message`. |
 
 That is 4 text, 5 tool, 5 deprecated thinking, 3 state, 2 activity, 2 escape
-hatches, 5 lifecycle and 7 reasoning.
+hatches, 5 lifecycle, 7 reasoning and 3 subagent.
 
 ## On the wire
 
@@ -77,7 +77,7 @@ use ag_ui::{Event, EventType};
 
 fn main() {
     // Every event type the protocol defines, in upstream order.
-    assert_eq!(EventType::ALL.len(), 33);
+    assert_eq!(EventType::ALL.len(), 36);
 
     // The discriminator is the wire name, both ways.
     assert_eq!(EventType::TextMessageContent.as_str(), "TEXT_MESSAGE_CONTENT");
@@ -177,7 +177,7 @@ will not let you do is close a call you never opened. See
 ## What the binary transport cannot carry
 
 The protocol also defines a protobuf encoding, and it is a lossy subset. The
-`Event` message in upstream's `events.proto` is a `oneof` over **18** of the 33
+`Event` message in upstream's `events.proto` is a `oneof` over **21** of the 36
 types:
 
 `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`,
@@ -194,12 +194,12 @@ result — which is most of them — cannot express its stream in that format.
 So `ag-ui` declines to encode any of it. The `protobuf` feature exists so a
 build can negotiate and name the media type; the formatter's `encode` always
 fails with `Error::UnsupportedTransport`. Silently dropping close to half the
-protocol is worse than refusing. Use SSE, which carries all 33. The
+protocol is worse than refusing. Use SSE, which carries all 36. The
 [`encode::protobuf`](/ag-ui-rust/api/ag_ui/encode/protobuf/index.html)
 module lists the covered set as `COVERED_EVENT_TYPES` and offers `is_covered`,
 so a test can assert that a given stream would have survived the binary
 transport.
 
 This is also why the port is written against the TypeScript Zod schemas rather
-than the proto definitions: a source of truth that is missing 15 of 33 events
+than the proto definitions: a source of truth that is missing 15 of 36 events
 cannot serve as one.

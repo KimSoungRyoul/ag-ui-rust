@@ -68,7 +68,7 @@ assert!(media_type(Some("application/xml")).is_err());
 
 TypeScript encoder는 다릅니다. 맨 `*/*`를 protobuf로 승격시킵니다. 이유는 여기서 protobuf가
 run을 실어 나를 수 없다는 것입니다. upstream의 `events.proto`에 있는 `Event` oneof는
-protocol의 event type 33개 중 18개를 다룹니다.
+protocol의 event type 36개 중 21개를 다룹니다.
 모든 `REASONING_*` event, `ACTIVITY_*` event 둘, 폐기된 `THINKING_*` event 다섯, 그리고
 `TOOL_CALL_RESULT`에는 binary 표현이 없습니다. 그것들을 쓰는 run을 encoding하면 event를 조용히
 버리게 됩니다. 그래서 `ProtobufFormatter::encode`는 언제나 `Error::UnsupportedTransport`를
@@ -107,7 +107,7 @@ message와 A2UI history entry 사이의 `From` 구현, toolkit tool 정의를 of
 ```toml
 # AG-UI 없는 A2UI.
 [dependencies.ag-ui-a2ui]
-version = "0.2"
+version = "0.3"
 default-features = false
 features = ["toolkit"]
 ```

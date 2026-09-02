@@ -117,9 +117,9 @@
 //! ```toml
 //! [dependencies]
 //! # host an agent behind axum
-//! ag-ui = { version = "0.2", features = ["axum"] }
+//! ag-ui = { version = "0.3", features = ["axum"] }
 //! # or consume one over HTTP
-//! ag-ui = { version = "0.2", features = ["http"] }
+//! ag-ui = { version = "0.3", features = ["http"] }
 //! ```
 //!
 //! [AG-UI protocol]: https://github.com/ag-ui-protocol/ag-ui

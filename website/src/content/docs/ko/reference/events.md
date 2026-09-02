@@ -1,6 +1,6 @@
 ---
 title: event reference
-description: protocol의 33개 event type 전부, 각각을 담는 Rust variant, 그리고 이들이 속한 family.
+description: protocol의 36개 event type 전부, 각각을 담는 Rust variant, 그리고 이들이 속한 family.
 ---
 
 AG-UI run은 event의 나열입니다. wire에서는 각각이 JSON 객체입니다. `type` field에
@@ -9,7 +9,7 @@ SCREAMING_SNAKE_CASE 이름이 들어갑니다. Rust에서는 각각이
 [`EventType`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html)은 그
 discriminator만 따로 뗀 것입니다.
 
-모두 **33개**입니다. 그 숫자는 `EventType::ALL.len()`입니다.
+모두 **36개**입니다. 그 숫자는 `EventType::ALL.len()`입니다.
 `cargo run -p xtask -- drift-check`가 모든 pull request에서 upstream TypeScript
 schema의 snapshot과 맞대어 보는 것도 그 숫자입니다.
 [검증 체계](/ag-ui-rust/ko/design/verification/)를 보십시오.
@@ -65,7 +65,7 @@ payload는 `BaseEvent`의 optional field인 `timestamp`와 `rawEvent`도 같은 
 | `REASONING_ENCRYPTED_VALUE` | `ReasoningEncryptedValue` | Reasoning | provider의 불투명한 reasoning blob. zero-data-retention 모드를 위한 것입니다. `subtype`이 `entityId`가 `tool-call`을 가리키는지 `message`를 가리키는지 말합니다. |
 
 Text 4개, Tool 5개, deprecated된 Thinking 5개, State 3개, Activity 2개, Escape
-hatch 2개, Lifecycle 5개, Reasoning 7개입니다.
+hatch 2개, Lifecycle 5개, Reasoning 7개, Subagent 3개입니다.
 
 ## wire에서
 
@@ -76,7 +76,7 @@ use ag_ui::{Event, EventType};
 
 fn main() {
     // protocol이 정의하는 모든 event type, upstream 순서 그대로.
-    assert_eq!(EventType::ALL.len(), 33);
+    assert_eq!(EventType::ALL.len(), 36);
 
     // discriminator는 양방향 모두 wire 이름입니다.
     assert_eq!(EventType::TextMessageContent.as_str(), "TEXT_MESSAGE_CONTENT");
@@ -173,7 +173,7 @@ chunk를 다른 무엇이 보기 전에 start/content/end 세 짝으로 되펼�
 ## binary transport가 싣지 못하는 것
 
 protocol은 protobuf encoding도 정의합니다. 그것은 손실 있는 부분집합입니다. upstream
-`events.proto`의 `Event` message는 33개 type 중 **18개**만 담는 `oneof`입니다.
+`events.proto`의 `Event` message는 36개 type 중 **21개**만 담는 `oneof`입니다.
 
 `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`,
 `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
@@ -190,11 +190,11 @@ protocol은 protobuf encoding도 정의합니다. 그것은 손실 있는 부분
 그래서 `ag-ui`는 그중 무엇도 encode하지 않습니다. `protobuf` feature는 build가
 media type을 협상하고 그 이름을 댈 수 있도록 존재합니다. formatter의 `encode`는
 언제나 `Error::UnsupportedTransport`로 실패합니다. protocol의 절반 가까이를 조용히
-버리는 것은 거절하는 것보다 나쁩니다. 33개를 모두 싣는 SSE를 쓰십시오.
+버리는 것은 거절하는 것보다 나쁩니다. 36개를 모두 싣는 SSE를 쓰십시오.
 [`encode::protobuf`](/ag-ui-rust/api/ag_ui/encode/protobuf/index.html)
 module은 다뤄지는 집합을 `COVERED_EVENT_TYPES`로 나열하고 `is_covered`를
 제공합니다. 그래서 주어진 stream이 binary transport에서 살아남았을지 test로
 단언할 수 있습니다.
 
-port를 proto 정의가 아니라 TypeScript Zod schema를 보고 쓴 이유도 이것입니다. 33개
+port를 proto 정의가 아니라 TypeScript Zod schema를 보고 쓴 이유도 이것입니다. 36개
 중 15개가 빠진 진실의 원천은 원천 노릇을 할 수 없습니다.

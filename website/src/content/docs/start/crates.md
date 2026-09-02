@@ -9,7 +9,7 @@ everyone, and what it takes to be an agent or to talk to one is a feature.
 
 | Crate / feature | What it is |
 | --- | --- |
-| `ag-ui` | Protocol types, all 33 event variants, and wire encoding. `serde` and `serde_json` only. |
+| `ag-ui` | Protocol types, all 36 event variants, and wire encoding. `serde` and `serde_json` only. |
 | ↳ `server` | Host an agent: the `Agent` trait, typestate event emitters, automatic state deltas, protocol verification. Executor-agnostic. |
 | ↳ `client` | Consume a remote agent: transport, event application, materialised messages and state. |
 | ↳ `http` | The `reqwest` transport for `client`. |
@@ -133,7 +133,7 @@ The full argument, including what it costs, is in `docs/DESIGN.md` and summarise
 | `ag-ui` | `client` | no | Consuming one, transport-agnostic. `futures`, `json-patch`. |
 | `ag-ui` | `http` | no | The `reqwest`-backed transport. Implies `client` and `sse`. |
 | `ag-ui` | `axum` | no | The axum binding. Implies `server` and `sse`; the only feature that pulls tokio. |
-| `ag-ui` | `protobuf` | no | The binary transport's media type and content negotiation. No encoder — `events.proto` covers 18 of 33 event types. |
+| `ag-ui` | `protobuf` | no | The binary transport's media type and content negotiation. No encoder — `events.proto` covers 21 of 36 event types. |
 | `ag-ui` | `schemars` | no | Derives `schemars::JsonSchema` on the public types. |
 | `ag-ui` | `utoipa` | no | Derives `utoipa::ToSchema` on the public types. |
 | `ag-ui-a2ui` | `toolkit` | yes | Agent-side authoring: op builders, prompt assembly, the recovery loop. |

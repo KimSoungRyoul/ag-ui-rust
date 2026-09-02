@@ -69,7 +69,7 @@ assert!(media_type(Some("application/xml")).is_err());
 
 That differs from the TypeScript encoder, which upgrades a bare `*/*` to protobuf. The reason
 is that here protobuf cannot carry a run. Upstream's `events.proto` has an `Event` oneof
-covering 18 of the protocol's 33 event types.
+covering 21 of the protocol's 36 event types.
 Every `REASONING_*` event, both `ACTIVITY_*` events, the five deprecated `THINKING_*` events,
 and `TOOL_CALL_RESULT` have no binary representation at all. Encoding a run that uses them
 would mean silently dropping events, so `ProtobufFormatter::encode` always returns
@@ -109,7 +109,7 @@ or MCP. It implies `toolkit`, because everything it converts lives there.
 ```toml
 # A2UI without AG-UI.
 [dependencies.ag-ui-a2ui]
-version = "0.2"
+version = "0.3"
 default-features = false
 features = ["toolkit"]
 ```
