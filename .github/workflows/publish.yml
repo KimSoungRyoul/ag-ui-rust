@@ -9,11 +9,24 @@ name: Publish
 # replaced, so everything that can be checked is checked before the upload,
 # and an upload that has already happened is skipped rather than retried into
 # an error.
+#
+# # There is no API token here
+#
+# The credential is minted per run by crates.io's Trusted Publishing: GitHub
+# signs a short-lived OIDC token asserting which repository and which workflow
+# file is asking, crates.io trades it for an access token that expires in
+# thirty minutes, and the action revokes that token when the job ends. What
+# makes it work is a Trusted Publisher entry on each crate's settings page
+# naming this repository and this file — `publish.yml`. Nothing is stored on
+# the repository, so nothing can leak from it, and a fork cannot mint a token
+# because the OIDC claim names the upstream repository.
 on:
   release:
     types: [published]
   # For a rehearsal, or to finish a release whose upload failed halfway. The
-  # default is a dry run: the box has to be unticked to reach crates.io.
+  # default is a dry run: the box has to be unticked to reach crates.io. The
+  # authentication happens either way, so a rehearsal also proves the Trusted
+  # Publisher entries are still right.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -27,6 +40,10 @@ env:
 
 permissions:
   contents: read
+  # Lets the job ask GitHub for the signed token crates.io trades for a
+  # publishing one. Without it the auth step fails; with it, and without a
+  # matching Trusted Publisher entry, crates.io refuses the trade.
+  id-token: write
 
 jobs:
   publish:
@@ -65,6 +82,13 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: cargo test --doc --workspace --all-features
 
+      # The token this mints lasts thirty minutes and is revoked in the
+      # action's post step. It is scoped to the crates whose Trusted Publisher
+      # entries name this repository and this workflow file.
+      - name: authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       # `ag-ui-a2ui` depends on `ag-ui` by version, so `ag-ui` goes first and
       # the second upload waits for the index to catch up — which `cargo
       # publish` does on its own since 1.66.
@@ -74,16 +98,13 @@ jobs:
       # on the half that worked.
       - name: publish
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           VERSION: ${{ steps.version.outputs.version }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           if [ "${DRY_RUN:-false}" = "true" ]; then
-            echo "::notice title=Dry run::packaging and verifying, uploading nothing"
-          elif [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
-            echo "::error title=No token::CARGO_REGISTRY_TOKEN is not set on this repository"
-            exit 1
+            echo "::notice title=Dry run::authenticated, packaging and verifying, uploading nothing"
           fi
 
           on_crates_io() {
