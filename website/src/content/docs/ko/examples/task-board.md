@@ -275,6 +275,15 @@ export AG_UI_LLM_MODEL=qwen3:4b
 cargo run -p task-board -- serve --llm
 ```
 
+Qwen Cloud 구독이 있다면, 그 OpenAI 호환 모드는 이름으로 인식됩니다:
+
+```sh
+export QWEN_API_KEY=…
+export QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+export QWEN_MODEL=qwen-plus            # 비워 두면 이것이 기본값
+cargo run -p task-board -- serve --llm
+```
+
 model은 답변 문장만 다시 씁니다. 그 밖에는 아무것도 건드리지 않습니다. id와 개수와
 state 전이는 결정적으로 남습니다. model이 실패해도 run이 실패하지는 않습니다. 미리 짜 둔
 문장이 나가고, 실패는 reasoning으로 보고됩니다.

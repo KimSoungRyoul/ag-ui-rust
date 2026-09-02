@@ -15,6 +15,16 @@
 //! cargo test -p ag-ui-e2e --test live_llm -- --ignored --test-threads=1 --nocapture
 //! ```
 //!
+//! Or with a Qwen Cloud subscription, whose OpenAI-compatible mode is
+//! recognised by name — no `AG_UI_LLM_*` needed:
+//!
+//! ```text
+//! export QWEN_API_KEY=…
+//! export QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+//! export QWEN_MODEL=qwen-plus        # the default when unset
+//! cargo test -p ag-ui-e2e --test live_llm -- --ignored --test-threads=1 --nocapture
+//! ```
+//!
 //! `--nocapture` is worth typing: a run that skips, and the model's actual
 //! reply, are printed rather than asserted, and the harness swallows the output
 //! of a test that passed.
@@ -64,8 +74,9 @@
 //! Both limits were measured, not documented, and neither is reported in a
 //! response header — the numbers come out of `429` bodies. So:
 //!
-//! - The whole file spends **three** requests when everything works: one for the
-//!   text run, two for the tool run (the call, then the answer to its result).
+//! - The whole file spends **four** requests when everything works: one for the
+//!   text run, two for the tool run (the call, then the answer to its result),
+//!   and one for the delegated run.
 //! - Runs are serialized by [`LIVE`] as well as by `--test-threads=1`, because
 //!   two parallel tests trip the per-minute limit immediately.
 //! - Waiting happens only where the provider asked for it, and the whole file
@@ -74,8 +85,9 @@
 use std::time::Duration;
 
 use ag_ui::axum::RouterExt;
-use ag_ui::client::{HttpAgent, RunParams, verify_all};
-use ag_ui::{Event, EventType};
+use ag_ui::client::{Applier, HttpAgent, RunParams, verify_all};
+use ag_ui::server::{Agent, Result, RunContext};
+use ag_ui::{Event, EventType, RunOutcome};
 use ag_ui_e2e::llm::{DEFAULT_BASE_URL, LlmAgent, WEATHER_TOOL};
 use axum::Router;
 use futures_util::StreamExt as _;
@@ -296,6 +308,11 @@ struct Live {
 /// [`LlmAgent`] makes no request until it is run — and because switching
 /// afterwards would mean standing up a second server mid-test.
 async fn live() -> Option<Live> {
+    live_with(|agent| agent).await
+}
+
+/// [`live`], with each model's agent wrapped — in a supervisor, say.
+async fn live_with<A: Agent + 'static>(wrap: impl Fn(LlmAgent) -> A) -> Option<Live> {
     let agent = match LlmAgent::from_env() {
         Ok(agent) => agent,
         Err(error) => {
@@ -330,7 +347,7 @@ async fn live() -> Option<Live> {
         let agent = LlmAgent::from_env()
             .expect("the configuration was read a moment ago")
             .model(model.clone());
-        app = app.route_agui(&path, agent);
+        app = app.route_agui(&path, wrap(agent));
         endpoints.push((model, format!("http://{address}{path}")));
     }
 
@@ -631,4 +648,149 @@ fn summary(events: &[Event]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A supervisor that delegates the whole answer to a child run of the model,
+/// then signs off itself.
+///
+/// The child is the same [`LlmAgent`] run through a subagent handle: the
+/// handle dereferences to the run context, so nothing about the agent knows
+/// it was delegated to, and every event it emits comes out attributed by the
+/// sink.
+struct Delegating(LlmAgent);
+
+impl Agent for Delegating {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        let mut researcher = ctx.subagent("researcher")?;
+        let outcome = self.0.run(&mut researcher).await?;
+        match &outcome {
+            RunOutcome::Success => researcher.finish()?,
+            RunOutcome::Interrupt { interrupts } => {
+                let ids: Vec<String> = interrupts.iter().map(|i| i.id.clone()).collect();
+                researcher.suspend(ids)?;
+                return Ok(outcome);
+            }
+        }
+        ctx.say("Delegated.")?;
+        Ok(outcome)
+    }
+}
+
+/// A real model's stream, delegated: everything it produced arrives inside
+/// `SUBAGENT_STARTED` / `SUBAGENT_FINISHED` and carries the invocation's id,
+/// the supervisor's own sign-off does not, and the client files each where it
+/// belongs.
+#[tokio::test]
+#[ignore = "spends live model quota; run with --ignored"]
+async fn a_delegated_answer_arrives_attributed_to_the_subagent() {
+    let Some(live) = live_with(Delegating).await else {
+        return;
+    };
+    let _serialized = LIVE.lock().await;
+
+    let Some(events) = run(
+        &live,
+        RunParams::new("live-thread", "live-subagent")
+            .user("m1", "Reply with the single word: pong"),
+    )
+    .await
+    else {
+        return;
+    };
+
+    verify_all(&events).unwrap_or_else(|error| panic!("{error}\n{}", summary(&events)));
+
+    let types = types(&events);
+    let opened = types
+        .iter()
+        .position(|kind| *kind == EventType::SubagentStarted)
+        .unwrap_or_else(|| panic!("no SUBAGENT_STARTED: {types:?}"));
+    let closed = types
+        .iter()
+        .position(|kind| *kind == EventType::SubagentFinished)
+        .unwrap_or_else(|| panic!("no SUBAGENT_FINISHED: {types:?}"));
+    assert!(opened < closed, "{types:?}");
+
+    let Event::SubagentStarted(started) = &events[opened] else {
+        unreachable!("found by type");
+    };
+    let id = &started.subagent_run_id;
+    assert_eq!(started.name, "researcher");
+
+    // The model's own stream, every event of it, is the subagent's — the
+    // sink tagged what the agent never knew it was emitting under a scope.
+    let inside = &events[opened + 1..closed];
+    assert!(!inside.is_empty(), "{types:?}");
+    assert!(
+        inside
+            .iter()
+            .all(|event| event.subagent_run_id() == Some(id)),
+        "an event inside the scope is untagged:\n{}",
+        summary(&events)
+    );
+    assert!(
+        inside
+            .iter()
+            .any(|event| event.event_type() == EventType::TextMessageContent),
+        "the model said nothing inside the scope:\n{}",
+        summary(&events)
+    );
+
+    // The sign-off after the scope is the supervisor's own.
+    let after = &events[closed + 1..];
+    assert!(
+        after
+            .iter()
+            .filter(|event| event.event_type() != EventType::RunFinished)
+            .all(|event| event.subagent_run_id().is_none()),
+        "{}",
+        summary(&events)
+    );
+
+    // And the consuming side files it all: the registry closes the
+    // invocation, the model's text is on a message attributed to it, and the
+    // sign-off is on one that is not.
+    let mut applier = Applier::new();
+    for event in &events {
+        applier
+            .apply(event)
+            .unwrap_or_else(|error| panic!("{error}\n{}", summary(&events)));
+    }
+    let subagent = applier.subagent(id).expect("the invocation is registered");
+    assert!(
+        matches!(
+            subagent.status,
+            ag_ui::client::SubagentStatus::Finished { .. }
+        ),
+        "{:?}",
+        subagent.status
+    );
+    let said: Vec<(Option<&str>, String)> = applier
+        .messages()
+        .iter()
+        .filter_map(|message| match message {
+            ag_ui::Message::Assistant(assistant) => Some((
+                message.subagent_run_id().map(|id| id.as_str()),
+                assistant.content.clone().unwrap_or_default(),
+            )),
+            _ => None,
+        })
+        .collect();
+    let delegated: Vec<&str> = said
+        .iter()
+        .filter(|(owner, _)| *owner == Some(id.as_str()))
+        .map(|(_, text)| text.as_str())
+        .collect();
+    assert!(
+        delegated.iter().any(|text| !text.trim().is_empty()),
+        "no attributed reply: {said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|(owner, text)| owner.is_none() && text == "Delegated."),
+        "the supervisor's sign-off is missing or misattributed: {said:?}"
+    );
+    eprintln!("live delegated reply: {delegated:?} under {}", id.as_str());
 }

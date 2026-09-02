@@ -24,6 +24,15 @@ pub const FALLBACK_API_KEY_ENV: &str = "GEMINI_API_KEY";
 pub const BASE_URL_ENV: &str = "AG_UI_LLM_BASE_URL";
 /// The environment variable holding the model id.
 pub const MODEL_ENV: &str = "AG_UI_LLM_MODEL";
+/// Qwen Cloud's OpenAI-compatible mode, read when [`BASE_URL_ENV`] is unset:
+/// the base URL, its key, and its model, in that order.
+pub const QWEN_BASE_URL_ENV: &str = "QWEN_BASE_URL";
+/// The key that goes with [`QWEN_BASE_URL_ENV`].
+pub const QWEN_API_KEY_ENV: &str = "QWEN_API_KEY";
+/// The model that goes with [`QWEN_BASE_URL_ENV`], when [`MODEL_ENV`] is unset.
+pub const QWEN_MODEL_ENV: &str = "QWEN_MODEL";
+/// The Qwen model used when [`QWEN_MODEL_ENV`] is unset. Pinned, like the default.
+pub const QWEN_DEFAULT_MODEL: &str = "qwen-plus";
 
 /// Where requests go unless [`BASE_URL_ENV`] says otherwise.
 pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
@@ -84,13 +93,43 @@ impl Voice {
     ///
     /// [`MissingApiKey`] when the default endpoint would be used without one.
     pub fn from_env() -> Result<Self, MissingApiKey> {
-        let base_url = var(BASE_URL_ENV).unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
-        let model = var(MODEL_ENV).unwrap_or_else(|| DEFAULT_MODEL.to_owned());
-        let api_key = var(API_KEY_ENV).or_else(|| var(FALLBACK_API_KEY_ENV));
-
-        if api_key.is_none() && base_url.trim_end_matches('/') == DEFAULT_BASE_URL {
-            return Err(MissingApiKey);
-        }
+        // AG_UI_LLM_BASE_URL wins outright; QWEN_BASE_URL picks Qwen Cloud with
+        // its own key and model; the default endpoint needs a key.
+        let generic_key = var(API_KEY_ENV);
+        let (base_url, model, api_key) = match (var(BASE_URL_ENV), var(QWEN_BASE_URL_ENV)) {
+            (Some(base_url), _) => (
+                base_url,
+                var(MODEL_ENV).unwrap_or_else(|| DEFAULT_MODEL.to_owned()),
+                generic_key
+                    .or_else(|| var(FALLBACK_API_KEY_ENV))
+                    .or_else(|| var(QWEN_API_KEY_ENV)),
+            ),
+            (None, Some(base_url)) => {
+                let api_key = generic_key.or_else(|| var(QWEN_API_KEY_ENV));
+                if api_key.is_none() {
+                    return Err(MissingApiKey);
+                }
+                (
+                    base_url,
+                    var(MODEL_ENV)
+                        .or_else(|| var(QWEN_MODEL_ENV))
+                        .unwrap_or_else(|| QWEN_DEFAULT_MODEL.to_owned()),
+                    api_key,
+                )
+            }
+            (None, None) => {
+                let api_key = generic_key.or_else(|| var(FALLBACK_API_KEY_ENV));
+                if api_key.is_none() {
+                    return Err(MissingApiKey);
+                }
+                (
+                    DEFAULT_BASE_URL.to_owned(),
+                    var(MODEL_ENV).unwrap_or_else(|| DEFAULT_MODEL.to_owned()),
+                    api_key,
+                )
+            }
+        };
+        let base_url = base_url.trim_end_matches('/').to_owned();
         Ok(Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))

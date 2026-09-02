@@ -274,6 +274,15 @@ export AG_UI_LLM_MODEL=qwen3:4b
 cargo run -p task-board -- serve --llm
 ```
 
+Or with a Qwen Cloud subscription, whose OpenAI-compatible mode is recognised by name:
+
+```sh
+export QWEN_API_KEY=…
+export QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+export QWEN_MODEL=qwen-plus            # the default when unset
+cargo run -p task-board -- serve --llm
+```
+
 The model rewrites the reply sentence and nothing else — ids, counts and state transitions
 stay deterministic, and a model that fails does not fail the run: the scripted sentence
 goes out and the failure is reported as reasoning.
