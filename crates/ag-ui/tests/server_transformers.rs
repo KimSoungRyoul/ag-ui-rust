@@ -487,3 +487,145 @@ async fn hidden_visibility_state_applies_on_the_client_including_a_later_parent_
         assert_eq!(applier.state(), &json!({"done": 2}), "{mode:?}");
     }
 }
+
+/// Agents as tools, with the result reported from inside the subagent: the
+/// parent's call, answered by the child.
+struct AsTool;
+
+impl Agent for AsTool {
+    type State = serde_json::Value;
+
+    async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+        let mut call = ctx.tool_call("task")?;
+        call.args("{}")?;
+        let (call_id, result_id) = (call.id().clone(), call.result_message_id().clone());
+        call.end()?;
+        {
+            let announce = ag_ui::SubagentStartedEvent::new("s-1", "researcher")
+                .with_parent_tool_call(call_id.clone());
+            let mut researcher = ctx.subagent_with(announce)?;
+            researcher.say("child")?;
+            researcher.emit(Event::tool_call_result(result_id, call_id, "3 sources"))?;
+        }
+        ctx.say("done")?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// The consumer saw the parent's call, so it is owed the answer whoever
+/// wrote it — a call left unanswered in the history is what the next request
+/// would carry back.
+#[tokio::test]
+async fn hidden_keeps_the_answer_to_the_parents_call_whoever_executed_it() {
+    let attributed = collect(Runner::new(AsTool)).await;
+    let result = attributed
+        .iter()
+        .find(|event| event.event_type() == EventType::ToolCallResult)
+        .expect("a result");
+    assert_eq!(
+        result.subagent_run_id().map(|id| id.as_str()),
+        Some("s-1"),
+        "the sink tagged the result with the executor"
+    );
+
+    let hidden = collect(Runner::new(AsTool).transformer(SubagentVisibility::hidden())).await;
+    let types: Vec<_> = hidden.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::ToolCallStart,
+            EventType::ToolCallArgs,
+            EventType::ToolCallEnd,
+            EventType::ToolCallResult,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::RunFinished,
+        ]
+    );
+    assert_eq!(hidden[4].subagent_run_id(), None, "as the parent's");
+
+    // The same in a replay: a tool message answering a visible call stays,
+    // untagged; one answering a hidden call goes with the call.
+    use ag_ui::server::StreamTransformer as _;
+    use ag_ui::{AssistantMessage, Message, ToolCall, ToolMessage};
+    let mut filter = SubagentVisibility::hidden();
+    let out = filter.transform(Event::messages_snapshot(vec![
+        Message::Assistant(AssistantMessage {
+            id: "h1".into(),
+            tool_calls: Some(vec![ToolCall::new("c-parent", "task", "{}")]),
+            ..Default::default()
+        }),
+        Message::Tool(ToolMessage {
+            id: "h2".into(),
+            content: "3 sources".into(),
+            tool_call_id: "c-parent".into(),
+            subagent_run_id: Some("s-1".into()),
+            ..Default::default()
+        }),
+        Message::Assistant(AssistantMessage {
+            id: "h3".into(),
+            tool_calls: Some(vec![ToolCall::new("c-child", "search", "{}")]),
+            subagent_run_id: Some("s-1".into()),
+            ..Default::default()
+        }),
+        Message::Tool(ToolMessage {
+            id: "h4".into(),
+            content: "hit".into(),
+            tool_call_id: "c-child".into(),
+            ..Default::default()
+        }),
+    ]));
+    let Some(Event::MessagesSnapshot(snapshot)) = out.first() else {
+        panic!("the snapshot is kept: {out:?}");
+    };
+    let ids: Vec<&str> = snapshot.messages.iter().map(|m| m.id().as_str()).collect();
+    assert_eq!(ids, ["h1", "h2"]);
+    assert_eq!(snapshot.messages[1].subagent_run_id(), None);
+}
+
+/// A subagent running a step of the same name as the parent's open step —
+/// legal attributed, since steps are keyed by owner.
+struct SameStep;
+
+impl Agent for SameStep {
+    type State = serde_json::Value;
+
+    async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+        let mut outer = ctx.step("board")?;
+        {
+            let mut worker = outer.subagent("worker")?;
+            let mut inner = worker.step("board")?;
+            inner.say("nested")?;
+        }
+        outer.say("done")?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// The flattened shape cannot express it: with the tags gone the two steps
+/// collide, and the verifier — which checks what actually goes out — ends
+/// the run. Pinned so the limitation is a documented one rather than a
+/// surprise.
+#[tokio::test]
+async fn inline_cannot_express_a_nested_step_of_the_same_name() {
+    let attributed = collect(Runner::new(SameStep)).await;
+    assert_eq!(
+        attributed.last().map(Event::event_type),
+        Some(EventType::RunFinished)
+    );
+
+    let inline = collect(Runner::new(SameStep).transformer(SubagentVisibility::inline())).await;
+    let Some(Event::RunError(error)) = inline.last() else {
+        panic!("the flattened stream must be rejected: {inline:?}");
+    };
+    assert!(error.message.contains("board"), "{}", error.message);
+
+    // Hidden drops the subagent's step with the rest of it.
+    let hidden = collect(Runner::new(SameStep).transformer(SubagentVisibility::hidden())).await;
+    assert_eq!(
+        hidden.last().map(Event::event_type),
+        Some(EventType::RunFinished)
+    );
+}

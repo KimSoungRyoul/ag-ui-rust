@@ -110,10 +110,15 @@ pub struct Verifier {
     reasoning: Vec<(MessageId, Owner)>,
     /// Open steps, keyed by owner as well as name.
     steps: Vec<(Owner, StepName)>,
-    /// Every message — text or reasoning — ever introduced and who owns it:
-    /// the first writer. A tool call inherits the owner of the message that
-    /// carries it, which may have closed.
+    /// Every text message ever introduced and who owns it: the first writer.
+    /// A tool call inherits the owner of the message that carries it, which
+    /// may have closed.
     message_owners: HashMap<MessageId, Owner>,
+    /// The same for reasoning — the block and the message inside it share an
+    /// id and an owner. A bucket of its own, as upstream keeps it, so a
+    /// producer that reuses an id across the two kinds is not accused of
+    /// contradicting itself.
+    reasoning_owners: HashMap<MessageId, Owner>,
     /// Every tool call ever introduced and who owns it.
     tool_call_owners: HashMap<ToolCallId, Owner>,
     /// Every activity ever introduced and who owns it: opened by a snapshot,
@@ -176,7 +181,7 @@ impl Verifier {
             }
 
             Event::TextMessageStart(e) => {
-                let owner = self.claim_message(kind, &e.message_id, &e.subagent_run_id)?;
+                let owner = self.claim(kind, &e.message_id, &e.subagent_run_id, false)?;
                 self.not_already_open(
                     self.text.iter().map(|(id, _)| id),
                     &e.message_id,
@@ -241,10 +246,10 @@ impl Verifier {
             // block's bracketing is not otherwise tracked (rule 4 is about the
             // message), only its ownership.
             Event::ReasoningStart(e) => {
-                self.claim_message(kind, &e.message_id, &e.subagent_run_id)?;
+                self.claim(kind, &e.message_id, &e.subagent_run_id, true)?;
             }
             Event::ReasoningEnd(e) => {
-                if let Some(owner) = self.message_owners.get(&e.message_id) {
+                if let Some(owner) = self.reasoning_owners.get(&e.message_id) {
                     Self::expect_owner(
                         kind,
                         "reasoning message",
@@ -255,7 +260,7 @@ impl Verifier {
                 }
             }
             Event::ReasoningMessageStart(e) => {
-                let owner = self.claim_message(kind, &e.message_id, &e.subagent_run_id)?;
+                let owner = self.claim(kind, &e.message_id, &e.subagent_run_id, true)?;
                 self.not_already_open(
                     self.reasoning.iter().map(|(id, _)| id),
                     &e.message_id,
@@ -280,11 +285,17 @@ impl Verifier {
                         self.tool_call_owners
                             .get(&ToolCallId::new(e.entity_id.clone())),
                     ),
-                    ReasoningEncryptedValueSubtype::Message => (
-                        "message",
-                        self.message_owners
-                            .get(&MessageId::new(e.entity_id.clone())),
-                    ),
+                    // "message" spans both kinds; ids are unique per kind, so
+                    // at most one bucket answers.
+                    ReasoningEncryptedValueSubtype::Message => {
+                        let id = MessageId::new(e.entity_id.clone());
+                        (
+                            "message",
+                            self.message_owners
+                                .get(&id)
+                                .or_else(|| self.reasoning_owners.get(&id)),
+                        )
+                    }
                 };
                 if let Some(owner) = owner {
                     Self::expect_owner(kind, what, &e.entity_id, owner, &e.subagent_run_id)?;
@@ -424,11 +435,22 @@ impl Verifier {
     /// *not* hand the message to the parent: an absent tag agrees with any
     /// owner, and the applier keeps the message where it was. Upstream's
     /// verifier records the first writer for the same reason.
-    fn claim_message(&mut self, kind: EventType, id: &MessageId, tag: &Owner) -> Result<Owner> {
-        if let Some(owner) = self.message_owners.get(id) {
+    fn claim(
+        &mut self,
+        kind: EventType,
+        id: &MessageId,
+        tag: &Owner,
+        reasoning: bool,
+    ) -> Result<Owner> {
+        let (what, owners) = if reasoning {
+            ("reasoning message", &mut self.reasoning_owners)
+        } else {
+            ("message", &mut self.message_owners)
+        };
+        if let Some(owner) = owners.get(id) {
             if tag.is_some() && owner != tag {
                 return Err(Error::protocol(format!(
-                    "{kind} for message {:?} names {}, but the message belongs to {}",
+                    "{kind} for {what} {:?} names {}, but the {what} belongs to {}",
                     id.as_str(),
                     describe(tag),
                     describe(owner)
@@ -436,7 +458,7 @@ impl Verifier {
             }
             return Ok(owner.clone());
         }
-        self.message_owners.insert(id.clone(), tag.clone());
+        owners.insert(id.clone(), tag.clone());
         Ok(tag.clone())
     }
 
@@ -449,6 +471,7 @@ impl Verifier {
             let owner = message.subagent_run_id().cloned();
             let bucket = match message {
                 Message::Activity(_) => &mut self.activity_owners,
+                Message::Reasoning(_) => &mut self.reasoning_owners,
                 _ => &mut self.message_owners,
             };
             if authoritative || !bucket.contains_key(message.id()) {

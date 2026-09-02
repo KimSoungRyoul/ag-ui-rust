@@ -313,8 +313,8 @@ subagent than the one that opened the entity — `Rule::OwnerMismatch`, the eigh
 the only one subagents added on the server. A continuation that names nobody is accepted:
 attribution is optional per event, and a bare continuation is what a pre-subagent producer
 sends — and it does not hand the entity to the parent either; the first writer stays the
-owner, as upstream records it. Steps are keyed by owner as well as name, so a subagent cannot close the parent's
-step, and two agents may run a step of the same name at once.
+owner, as upstream records it. Steps are keyed by owner as well as name, so a subagent
+cannot close the parent's step, and two agents may run a step of the same name at once.
 
 Attribute every chunk when several subagents stream at once. A `*_CHUNK` event that names
 neither a message nor a subagent can only be resolved on the consuming side while one
@@ -332,8 +332,8 @@ side and is nothing a producer can fix after the fact. A producer with consumers
 | Mode | On the wire |
 | --- | --- |
 | `Attributed` | **The default, and no transformer at all.** The lifecycle events, and `subagentRunId` on everything a subagent produced. |
-| `Inline` | The pre-subagent shape: no lifecycle events and no `subagentRunId` anywhere — not on events, not on the messages inside `MESSAGES_SNAPSHOT` or the `RUN_STARTED` input echo, not on the interrupts a paused run reports. A subagent's text arrives as the parent's work. |
-| `Hidden` | Only the parent's own events. Everything a subagent produced is dropped, including the result of a call it requested even when the parent executed it — a result for a call the consumer never saw is a protocol error. The exception is the run's shared state: a `STATE_*` event a subagent published is kept, untagged, because a client that missed it would send a stale state back on its next request. |
+| `Inline` | The pre-subagent shape: no lifecycle events and no `subagentRunId` anywhere — not on events, not on the messages inside `MESSAGES_SNAPSHOT` or the `RUN_STARTED` input echo, not on the interrupts a paused run reports. A subagent's text arrives as the parent's work. What the shape cannot express is rejected: a subagent step named like the parent's open step is a duplicate once flattened, and the verifier ends the run. |
+| `Hidden` | Only the parent's own events. Everything a subagent produced is dropped, including the result of a call it requested even when the parent executed it — a result for a call the consumer never saw is a protocol error. The converse holds too: a result answering the parent's call is kept, untagged, whoever executed it. The other exception is the run's shared state: a `STATE_*` event a subagent published is kept, untagged, because a client that missed it would send a stale state back on its next request. |
 
 Both are ordinary [transformers](/ag-ui-rust/server/axum/), so they compose with the
 rest of the chain and are set per endpoint:

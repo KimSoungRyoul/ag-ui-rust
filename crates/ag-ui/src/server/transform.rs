@@ -372,11 +372,19 @@ pub enum SubagentVisibility {
     /// `MESSAGES_SNAPSHOT` or the `RUN_STARTED` input echo, not on the
     /// interrupts a paused run reports. A subagent's own text arrives as the
     /// parent's work.
+    ///
+    /// What that shape cannot express is rejected rather than smuggled: a
+    /// subagent step sharing a name with the parent's open step is two steps
+    /// when attributed and one duplicate once flattened, and the verifier,
+    /// which checks what actually goes out, ends the run.
     Inline,
     /// Only the parent's own events. Everything a subagent produced is
     /// dropped — including the result of a call it requested, even when the
     /// parent executed it, since a result for a call the consumer never saw
-    /// is a protocol error.
+    /// is a protocol error. The converse holds too: a result answering the
+    /// *parent's* call is kept, untagged, whoever executed it — the consumer
+    /// saw the call, and a call left unanswered in the history is what the
+    /// next request would carry back.
     ///
     /// The one thing kept is the run's shared state. A `STATE_SNAPSHOT` or
     /// `STATE_DELTA` a subagent published describes the *thread's* state,
@@ -539,9 +547,10 @@ impl SubagentFilter {
             },
             Event::ToolCallArgs(e) => self.tool_call_kept(&e.tool_call_id, owned),
             Event::ToolCallEnd(e) => self.tool_call_kept(&e.tool_call_id, owned),
-            // A result for a call the consumer never saw is a protocol error,
-            // whoever executed it.
-            Event::ToolCallResult(e) => self.tool_call_kept(&e.tool_call_id, owned),
+            // A result goes where its call went, whoever executed it: one for
+            // a call the consumer never saw is a protocol error, and one for
+            // a call it did see is owed.
+            Event::ToolCallResult(e) => !self.hidden_tool_calls.contains(&e.tool_call_id),
 
             // The thread's state, whoever published it.
             Event::StateSnapshot(_) | Event::StateDelta(_) => true,
@@ -561,7 +570,7 @@ impl SubagentFilter {
                 let hidden_calls = &self.hidden_tool_calls;
                 snapshot
                     .messages
-                    .retain(|message| Self::message_shown(message, hidden_calls));
+                    .retain_mut(|message| Self::show_message(message, hidden_calls));
             }
             // History, not a rewrite: what it carries is remembered alongside
             // what the run has already shown.
@@ -571,10 +580,10 @@ impl SubagentFilter {
                     let hidden_calls = &self.hidden_tool_calls;
                     input
                         .messages
-                        .retain(|message| Self::message_shown(message, hidden_calls));
+                        .retain_mut(|message| Self::show_message(message, hidden_calls));
                 }
             }
-            Event::StateSnapshot(_) | Event::StateDelta(_) => {
+            Event::StateSnapshot(_) | Event::StateDelta(_) | Event::ToolCallResult(_) => {
                 event.clear_subagent_run_id();
             }
             Event::RunFinished(finished) => Self::strip_interrupt_tags(finished),
@@ -619,10 +628,15 @@ impl SubagentFilter {
     }
 
     /// Remembers the subagent-owned messages a replay carries, and the tool
-    /// calls inside them.
+    /// calls inside them. A tool message goes where its call went, so one
+    /// answering a visible call is not hidden however it is tagged.
     fn seed_hidden(&mut self, messages: &[crate::Message]) {
         for message in messages {
-            if message.subagent_run_id().is_none() {
+            let hidden = match message {
+                crate::Message::Tool(tool) => self.hidden_tool_calls.contains(&tool.tool_call_id),
+                _ => message.subagent_run_id().is_some(),
+            };
+            if !hidden {
                 continue;
             }
             self.hidden_messages.insert(message.id().clone());
@@ -634,15 +648,19 @@ impl SubagentFilter {
         }
     }
 
-    /// Whether a replayed message reaches the consumer: the parent's own,
-    /// unless it answers a call the consumer never saw.
-    fn message_shown(message: &crate::Message, hidden_calls: &HashSet<ToolCallId>) -> bool {
-        if message.subagent_run_id().is_some() {
-            return false;
-        }
+    /// Whether a replayed message reaches the consumer, stripping the tag
+    /// from the one kind that may carry one there: a tool message answering
+    /// a call the consumer saw is the parent's, whoever executed it.
+    fn show_message(message: &mut crate::Message, hidden_calls: &HashSet<ToolCallId>) -> bool {
         match message {
-            crate::Message::Tool(tool) => !hidden_calls.contains(&tool.tool_call_id),
-            _ => true,
+            crate::Message::Tool(tool) => {
+                if hidden_calls.contains(&tool.tool_call_id) {
+                    return false;
+                }
+                tool.subagent_run_id = None;
+                true
+            }
+            _ => message.subagent_run_id().is_none(),
         }
     }
 }

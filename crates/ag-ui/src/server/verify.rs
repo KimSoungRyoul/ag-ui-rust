@@ -126,11 +126,15 @@ mod enabled {
         /// Every tool call ever introduced — by a start, a chunk or a
         /// snapshot — and who owns it.
         known_tool_calls: HashMap<ToolCallId, Owner>,
-        /// Every message — text or reasoning — ever introduced and who owns
-        /// it: the first writer. A tool call belongs to the message its
-        /// `parentMessageId` names, so the owner has to outlive the message
-        /// being open.
+        /// Every text message ever introduced and who owns it: the first
+        /// writer. A tool call belongs to the message its `parentMessageId`
+        /// names, so the owner has to outlive the message being open.
         message_owners: HashMap<MessageId, Owner>,
+        /// The same for reasoning — the block and the message inside it share
+        /// an id and an owner. A bucket of its own, as upstream keeps it, so
+        /// a producer that reuses an id across the two kinds is not accused
+        /// of contradicting itself.
+        reasoning_owners: HashMap<MessageId, Owner>,
         /// Every activity ever introduced and who owns it. Opened by a
         /// snapshot, continued by deltas against the same id.
         activity_owners: HashMap<MessageId, Owner>,
@@ -211,7 +215,7 @@ mod enabled {
                         // Self-contained: a chunk needs no bracketing events,
                         // but it still says who the message belongs to.
                         self.messages.remove(id);
-                        self.claim_message(event, id, &payload.subagent_run_id)?;
+                        self.claim(event, Kind::Message, id, &payload.subagent_run_id)?;
                     }
                 }
 
@@ -258,7 +262,7 @@ mod enabled {
                 Event::ReasoningMessageChunk(payload) => {
                     if let Some(id) = &payload.message_id {
                         self.reasoning_messages.remove(id);
-                        self.claim_message(event, id, &payload.subagent_run_id)?;
+                        self.claim(event, Kind::ReasoningMessage, id, &payload.subagent_run_id)?;
                     }
                 }
 
@@ -367,11 +371,17 @@ mod enabled {
                             self.known_tool_calls
                                 .get(&ToolCallId::new(payload.entity_id.clone())),
                         ),
-                        ReasoningEncryptedValueSubtype::Message => (
-                            "message",
-                            self.message_owners
-                                .get(&MessageId::new(payload.entity_id.clone())),
-                        ),
+                        // "message" spans both kinds; ids are unique per kind,
+                        // so at most one bucket answers.
+                        ReasoningEncryptedValueSubtype::Message => {
+                            let id = MessageId::new(payload.entity_id.clone());
+                            (
+                                "message",
+                                self.message_owners
+                                    .get(&id)
+                                    .or_else(|| self.reasoning_owners.get(&id)),
+                            )
+                        }
                     };
                     if let Some(owner) = owner {
                         if tag.is_some() && owner != tag {
@@ -478,6 +488,7 @@ mod enabled {
                 let owner = message.subagent_run_id().cloned();
                 let bucket = match message {
                     Message::Activity(_) => &mut self.activity_owners,
+                    Message::Reasoning(_) => &mut self.reasoning_owners,
                     _ => &mut self.message_owners,
                 };
                 if authoritative || !bucket.contains_key(message.id()) {
@@ -502,28 +513,45 @@ mod enabled {
         /// event, so an absent tag agrees with any owner, and the consumer
         /// keeps the message where it was. Upstream's verifier records the
         /// first writer for the same reason.
-        fn claim_message(
+        fn claim(
             &mut self,
             event: &Event,
+            kind: Kind,
             id: &MessageId,
             tag: &Owner,
         ) -> Result<Owner, VerificationError> {
-            if let Some(owner) = self.message_owners.get(id) {
-                if tag.is_some() && owner != tag {
+            if let Some(owner) = self.owners(kind).get(id).cloned() {
+                if tag.is_some() && &owner != tag {
                     return Err(self.fail(
                         event,
                         Rule::OwnerMismatch,
                         format!(
-                            "message {id:?} belongs to {}, not {}",
-                            describe(owner),
+                            "{} {id:?} belongs to {}, not {}",
+                            kind.owner_noun(),
+                            describe(&owner),
                             describe(tag)
                         ),
                     ));
                 }
-                return Ok(owner.clone());
+                return Ok(owner);
             }
-            self.message_owners.insert(id.clone(), tag.clone());
+            self.owners_mut(kind).insert(id.clone(), tag.clone());
             Ok(tag.clone())
+        }
+
+        /// The owner bucket an id of this kind claims through.
+        fn owners(&self, kind: Kind) -> &HashMap<MessageId, Owner> {
+            match kind {
+                Kind::Message => &self.message_owners,
+                Kind::Reasoning | Kind::ReasoningMessage => &self.reasoning_owners,
+            }
+        }
+
+        fn owners_mut(&mut self, kind: Kind) -> &mut HashMap<MessageId, Owner> {
+            match kind {
+                Kind::Message => &mut self.message_owners,
+                Kind::Reasoning | Kind::ReasoningMessage => &mut self.reasoning_owners,
+            }
         }
 
         /// Who a tool call belongs to: the tag when it carries one, otherwise
@@ -636,7 +664,7 @@ mod enabled {
             id: &MessageId,
             tag: &Owner,
         ) -> Result<(), VerificationError> {
-            let owner = self.claim_message(event, id, tag)?;
+            let owner = self.claim(event, kind, id, tag)?;
             if self.map(kind).contains_key(id) {
                 return Err(self.fail(
                     event,
@@ -784,6 +812,15 @@ mod enabled {
                 Self::Message => "message",
                 Self::Reasoning => "reasoning block",
                 Self::ReasoningMessage => "reasoning message",
+            }
+        }
+
+        /// What an owner complaint calls the entity: the block and the
+        /// message inside it are one owned thing.
+        const fn owner_noun(self) -> &'static str {
+            match self {
+                Self::Message => "message",
+                Self::Reasoning | Self::ReasoningMessage => "reasoning message",
             }
         }
     }
