@@ -783,3 +783,304 @@ fn hidden_keeps_what_a_snapshot_did_not_restate() {
     assert!(kept(Event::text_message_start("m1", Default::default())));
     assert!(kept(Event::text_message_end("m1")));
 }
+
+// ---- review round 3 ---------------------------------------------------------
+
+/// Emits whatever it is given, so a hand-written stream can go through a
+/// real run — and the server's own post-chain verifier.
+struct Replay(Vec<Event>);
+
+impl Agent for Replay {
+    type State = serde_json::Value;
+
+    async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+        for event in &self.0 {
+            ctx.emit(event.clone())?;
+        }
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// What a client makes of a stream: the texts by message id, in order.
+#[cfg(feature = "client")]
+fn assembled(events: Vec<Event>) -> Vec<(String, String)> {
+    use ag_ui::client::{Applier, normalize_all, verify_all};
+    let events = normalize_all(events).expect("normalizes");
+    verify_all(&events).unwrap_or_else(|error| panic!("{error}\n{events:?}"));
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    applier
+        .messages()
+        .iter()
+        .filter_map(|message| match message {
+            ag_ui::Message::Assistant(assistant) => Some((
+                message.id().as_str().to_owned(),
+                assistant.content.clone().unwrap_or_default(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A chunk that names no id is resolved through its attribution on the
+/// consuming side, so Inline gives it the id it would have resolved to
+/// before taking the attribution away — and the consumer assembles the same
+/// messages it would have from the attributed stream.
+#[cfg(feature = "client")]
+#[tokio::test]
+async fn inline_gives_a_bare_chunk_the_id_its_attribution_resolved_to() {
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let chunk = |id: Option<&str>, delta: &str| {
+        Event::text_message_chunk(id.map(ag_ui::MessageId::new), Some(delta.to_owned()))
+    };
+
+    // The parent's continuation, with a subagent's chunk in between.
+    let script = vec![
+        chunk(Some("m0"), "p1"),
+        tagged(chunk(Some("m1"), "a"), "s1"),
+        chunk(None, "p2"),
+        tagged(chunk(None, "b"), "s1"),
+    ];
+    let attributed = assembled(collect(Runner::new(Replay(script.clone()))).await);
+    let inline = assembled(
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::inline())).await,
+    );
+    assert_eq!(
+        attributed,
+        [
+            ("m0".to_owned(), "p1p2".to_owned()),
+            ("m1".to_owned(), "ab".to_owned())
+        ]
+    );
+    assert_eq!(inline, attributed);
+
+    // Two subagents streaming at once, every chunk attributed as the docs ask.
+    let script = vec![
+        tagged(chunk(Some("m1"), "a"), "s1"),
+        tagged(chunk(Some("m2"), "b"), "s2"),
+        tagged(chunk(None, "c"), "s1"),
+        tagged(chunk(None, "d"), "s2"),
+    ];
+    let attributed = assembled(collect(Runner::new(Replay(script.clone()))).await);
+    let inline = assembled(
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::inline())).await,
+    );
+    assert_eq!(
+        attributed,
+        [
+            ("m1".to_owned(), "ac".to_owned()),
+            ("m2".to_owned(), "bd".to_owned())
+        ]
+    );
+    assert_eq!(inline, attributed);
+
+    // A subagent's explicit message in the middle of the parent's chunks.
+    let script = vec![
+        chunk(Some("m0"), "p1"),
+        tagged(Event::text_message_start("m1", Default::default()), "s1"),
+        tagged(Event::text_message_content("m1", "x"), "s1"),
+        tagged(Event::text_message_end("m1"), "s1"),
+        chunk(None, "p2"),
+    ];
+    let attributed = assembled(collect(Runner::new(Replay(script.clone()))).await);
+    let inline = assembled(
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::inline())).await,
+    );
+    assert_eq!(
+        attributed,
+        [
+            ("m0".to_owned(), "p1p2".to_owned()),
+            ("m1".to_owned(), "x".to_owned())
+        ]
+    );
+    assert_eq!(inline, attributed);
+}
+
+/// The same for a tool call streamed by chunks: the filled-in chunk carries
+/// the name the consumer needs to reopen the call.
+#[cfg(feature = "client")]
+#[tokio::test]
+async fn inline_gives_a_bare_tool_chunk_its_call_and_name() {
+    use ag_ui::client::{Applier, normalize_all};
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let text = |id: Option<&str>, delta: &str| {
+        Event::text_message_chunk(id.map(ag_ui::MessageId::new), Some(delta.to_owned()))
+    };
+    let tool = |id: Option<&str>, name: Option<&str>, delta: &str| {
+        Event::tool_call_chunk(
+            id.map(ag_ui::ToolCallId::new),
+            name.map(str::to_owned),
+            Some(delta.to_owned()),
+        )
+    };
+    let script = vec![
+        tagged(tool(Some("c1"), Some("search"), r#"{"q":"#), "s1"),
+        text(Some("m0"), "p1"),
+        tagged(tool(None, None, r#""rust"}"#), "s1"),
+        text(None, "p2"),
+    ];
+    let inline =
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::inline())).await;
+    let events = normalize_all(inline).expect("normalizes");
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    assert_eq!(applier.text_of("m0"), Some("p1p2"));
+    let call = applier
+        .messages()
+        .iter()
+        .find_map(|message| match message {
+            ag_ui::Message::Assistant(assistant) => assistant
+                .tool_calls
+                .iter()
+                .flatten()
+                .find(|call| call.id.as_str() == "c1")
+                .cloned(),
+            _ => None,
+        })
+        .expect("the call assembled");
+    assert_eq!(call.function.name, "search");
+    assert_eq!(call.function.arguments, r#"{"q":"rust"}"#);
+}
+
+/// A result the parent's call got from a subagent goes out untagged, and the
+/// consumer's normalizer then closes the parent's open stream — so the
+/// parent's next bare chunk carries its id and reopens the message.
+#[cfg(feature = "client")]
+#[tokio::test]
+async fn hidden_gives_the_parents_bare_chunk_its_id_after_a_result_it_did_not_execute() {
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let chunk = |id: Option<&str>, delta: &str| {
+        Event::text_message_chunk(id.map(ag_ui::MessageId::new), Some(delta.to_owned()))
+    };
+    let script = vec![
+        Event::tool_call_start("c1", "task"),
+        Event::tool_call_args("c1", "{}"),
+        Event::tool_call_end("c1"),
+        chunk(Some("m0"), "p1"),
+        tagged(Event::tool_call_result("r1", "c1", "done"), "s1"),
+        chunk(None, "p2"),
+    ];
+    let attributed = assembled(collect(Runner::new(Replay(script.clone()))).await);
+    let hidden = assembled(
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::hidden())).await,
+    );
+    // The parent's call sits in a message of its own, then the text.
+    assert_eq!(
+        attributed,
+        [
+            ("c1-message".to_owned(), String::new()),
+            ("m0".to_owned(), "p1p2".to_owned())
+        ]
+    );
+    assert_eq!(hidden, attributed);
+}
+
+/// Text and reasoning ids live in separate buckets, as the verifiers keep
+/// them: a subagent's reasoning under an id does not hide the parent's text
+/// message under the same id.
+#[tokio::test]
+async fn hidden_keeps_text_and_reasoning_ids_apart() {
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let script = vec![
+        tagged(Event::reasoning_start("x"), "s1"),
+        tagged(Event::reasoning_message_start("x"), "s1"),
+        tagged(Event::reasoning_message_content("x", "thinking"), "s1"),
+        tagged(Event::reasoning_message_end("x"), "s1"),
+        tagged(Event::reasoning_end("x"), "s1"),
+        Event::text_message_start("x", Default::default()),
+        Event::text_message_content("x", "hi"),
+        Event::text_message_end("x"),
+    ];
+    let events =
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::hidden())).await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::RunFinished,
+        ],
+        "{events:?}"
+    );
+}
+
+/// An entity the consumer saw opened keeps that visibility until it closes,
+/// whatever a snapshot says about its owner meanwhile — in both directions.
+/// Through a real run, so the server's own post-chain verifier has its say.
+#[tokio::test]
+async fn an_open_entity_keeps_the_visibility_it_was_opened_with() {
+    use ag_ui::{AssistantMessage, Message};
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let restated = |owner: Option<&str>| {
+        Event::messages_snapshot(vec![Message::Assistant(AssistantMessage {
+            id: "m1".into(),
+            content: Some("so far".into()),
+            subagent_run_id: owner.map(Into::into),
+            ..Default::default()
+        })])
+    };
+
+    // The parent opened m1; a snapshot hands it to s1; the parent closes it.
+    let script = vec![
+        Event::text_message_start("m1", Default::default()),
+        restated(Some("s1")),
+        Event::text_message_content("m1", "hi"),
+        Event::text_message_end("m1"),
+    ];
+    let events =
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::hidden())).await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::TextMessageStart,
+            EventType::MessagesSnapshot,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::RunFinished,
+        ],
+        "{events:?}"
+    );
+
+    // s1 opened m1; a snapshot hands it to the parent; s1 closes it. The
+    // consumer never saw it open, so it does not see it close either.
+    let script = vec![
+        tagged(Event::text_message_start("m1", Default::default()), "s1"),
+        restated(None),
+        Event::text_message_content("m1", "hi"),
+        tagged(Event::text_message_end("m1"), "s1"),
+    ];
+    let events =
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::hidden())).await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::MessagesSnapshot,
+            EventType::RunFinished,
+        ],
+        "{events:?}"
+    );
+}
+
+/// A state event minted from a subagent's tool result is the subagent's
+/// work, so it carries the result's attribution.
+#[test]
+fn a_promoted_state_carries_the_results_attribution() {
+    let mut promote = ToolResultToState::snapshot("load");
+    promote.transform(Event::tool_call_start("c1", "load").with_subagent_run_id("s1"));
+    let result = Event::tool_call_result("m1", "c1", r#"{"a":1}"#).with_subagent_run_id("s1");
+    let out = promote.transform(result);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[1].event_type(), EventType::StateSnapshot);
+    assert_eq!(out[1].subagent_run_id().map(|id| id.as_str()), Some("s1"));
+}

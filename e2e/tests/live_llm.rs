@@ -664,17 +664,30 @@ impl Agent for Delegating {
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
         let mut researcher = ctx.subagent("researcher")?;
-        let outcome = self.0.run(&mut researcher).await?;
-        match &outcome {
+        // `?` here would let the handle drop, which reports a success: the
+        // error path names the subagent's failure before the run's.
+        let outcome = match self.0.run(&mut researcher).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                researcher.fail(error.to_string())?;
+                return Err(error);
+            }
+        };
+        match outcome {
             RunOutcome::Success => researcher.finish()?,
             RunOutcome::Interrupt { interrupts } => {
+                // The subagent's questions, filed under it.
+                let interrupts: Vec<_> = interrupts
+                    .into_iter()
+                    .map(|interrupt| interrupt.with_subagent_run_id(researcher.id().clone()))
+                    .collect();
                 let ids: Vec<String> = interrupts.iter().map(|i| i.id.clone()).collect();
                 researcher.suspend(ids)?;
-                return Ok(outcome);
+                return Ok(RunOutcome::interrupt(interrupts));
             }
         }
         ctx.say("Delegated.")?;
-        Ok(outcome)
+        Ok(RunOutcome::Success)
     }
 }
 
