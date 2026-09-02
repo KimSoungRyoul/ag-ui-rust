@@ -1,0 +1,112 @@
+name: Release
+
+# A tag is the only thing that starts this. `workflow_dispatch` is here for a
+# dry run against a branch, and skips the release note.
+#
+# What it does NOT do is upload to crates.io. The registry has no undo — a
+# published version can be yanked but never replaced — so the last step stays a
+# human one, and this job's job is to make that step boring: everything that
+# can be checked before it is checked here, on the exact commit the tag names.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: verify and release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The release note is generated from the log since the previous tag,
+          # so the whole history has to be here.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # The tag has to name the version the workspace actually is. A tag that
+      # disagrees is the one mistake this file exists to catch, because
+      # everything after it — the release note, the crates.io upload someone
+      # then runs by hand — quietly inherits the wrong number.
+      - name: the tag matches the workspace version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          tagged="${GITHUB_REF_NAME#v}"
+          declared=$(cargo metadata --format-version 1 --no-deps \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "ag-ui"))')
+          echo "tag $tagged, workspace $declared"
+          if [ "$tagged" != "$declared" ]; then
+            echo "::error title=Version mismatch::the tag says $tagged and Cargo.toml says $declared"
+            exit 1
+          fi
+
+      # The same gates CI runs, on the tagged commit rather than on whatever
+      # was on main when the branch merged.
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+      - run: cargo test --doc --workspace --all-features
+      - run: cargo run -p xtask -- drift-check
+
+      # Everything `cargo publish` would do except the upload: the packaged
+      # file list, the manifest, and a build of the packaged crate itself.
+      # `ag-ui-a2ui` depends on `ag-ui` by version for the registry, so its own
+      # dry run cannot resolve until `ag-ui` is actually published; the
+      # `--allow-dirty`-free run below is checked with the workspace's path
+      # dependency, which is what `cargo publish` substitutes at package time.
+      - name: cargo publish --dry-run
+        run: |
+          set -euo pipefail
+          cargo publish --dry-run -p ag-ui
+          cargo publish --dry-run -p ag-ui-a2ui || {
+            echo "::notice title=a2ui dry run::ag-ui-a2ui cannot resolve ag-ui until it is on crates.io; publish ag-ui first."
+          }
+
+      # The note lists what changed since the previous tag. The upload
+      # instructions are part of it on purpose: the release exists before the
+      # crates are on crates.io, so the note says so rather than implying they
+      # are.
+      - name: the release note
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          previous=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          {
+            if [ -n "$previous" ]; then
+              echo "## Changes since $previous"
+              echo
+              git log --no-merges --pretty='- %s' "$previous..${GITHUB_REF_NAME}"
+            else
+              echo "## Changes"
+              echo
+              git log --no-merges --pretty='- %s' "${GITHUB_REF_NAME}"
+            fi
+            echo
+            echo "## Publishing"
+            echo
+            echo 'Verified on this commit: clippy, the workspace tests, the doctests, the'
+            echo 'protocol drift check, and `cargo publish --dry-run`. The upload itself is'
+            echo 'manual — the registry has no undo:'
+            echo
+            echo '```sh'
+            echo "git checkout ${GITHUB_REF_NAME}"
+            echo 'cargo publish -p ag-ui'
+            echo 'cargo publish -p ag-ui-a2ui   # once ag-ui is on crates.io'
+            echo '```'
+          } > release-note.md
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file release-note.md \
+            --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
