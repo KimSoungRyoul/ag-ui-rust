@@ -9,11 +9,11 @@ Python, and .NET.
 **The goal is to become the official Rust one.** It is not that yet — this project is not
 affiliated with or endorsed by the AG-UI protocol organisation. What it can do meanwhile is
 hold itself to what an official SDK would have to be, and make each claim something a test
-enforces rather than something a README asserts: **all 33 event types**, **both halves of
+enforces rather than something a README asserts: **all 36 event types**, **both halves of
 the protocol** — hosting an agent and consuming one — **ordering verified on the server**,
 and **a drift check that fails CI** when upstream's event set moves.
 
-The existing `sdks/community/rust` covers 24 of the 33 event types and cannot host an agent
+The existing `sdks/community/rust` covers 24 of the 36 event types and cannot host an agent
 at all, so a `REASONING_*` or `ACTIVITY_*` event ends a run rather than being skipped, and
 without `RunFinished.outcome` a run cannot pause for a human. `docs/DESIGN.md` has the
 numbers and the reasoning.
@@ -24,7 +24,7 @@ Two of them. `ag-ui` is the SDK; which half of the protocol you compile is a fea
 
 | Crate / feature | What it is |
 | --- | --- |
-| `ag-ui` | Protocol types, all 33 event variants, and wire encoding. `serde` + `serde_json` only. Always compiled. |
+| `ag-ui` | Protocol types, all 36 event variants, and wire encoding. `serde` + `serde_json` only. Always compiled. |
 | ↳ `server` | Host an agent: `Agent` trait, typestate event emitters, automatic state deltas, protocol verification. Executor-agnostic. |
 | ↳ `client` | Consume a remote agent: transport, event application, materialised messages and state. |
 | ↳ `http` | The reqwest transport for `client`. |
@@ -33,8 +33,8 @@ Two of them. `ag-ui` is the SDK; which half of the protocol you compile is a fea
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.2", features = ["axum"] }   # host an agent
-ag-ui = { version = "0.2", features = ["http"] }   # or consume one
+ag-ui = { version = "0.3", features = ["axum"] }   # host an agent
+ag-ui = { version = "0.3", features = ["http"] }   # or consume one
 ```
 
 > `ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are an earlier, unrelated
@@ -103,8 +103,9 @@ stale quickstart is a red build.
 ## Agent skills
 
 `skills/` teaches a coding agent this SDK: the `Agent` trait and its typestate emitters,
-sessions and the update stream, and that this is one crate named `ag-ui` rather than the
-similarly-named community crates on crates.io. Two channels, one source.
+sessions and the update stream, that this is one crate named `ag-ui` rather than the
+similarly-named community crates on crates.io — and, for running the live tests and the
+example against a real model, how Qwen Cloud is configured. Two channels, one source.
 
 Claude Code, as a plugin — namespaced, and `/plugin update` keeps it current:
 
@@ -148,6 +149,14 @@ on by default in release builds too, and compiled out via the `verify` feature i
 the last handful of `HashSet` lookups back. Neither the TypeScript SDK (which verifies only
 on the client) nor the .NET one (which does not verify) checks ordering server-side, which is
 where the bug is actually caused.
+
+**A subagent is a scope, and attribution is the sink's job.** `ctx.subagent(name)` announces
+a child agent and returns a handle that dereferences to the run context; everything emitted
+through it — messages, tool calls, nested subagents — comes out carrying that invocation's
+`subagentRunId`, and `SUBAGENT_FINISHED` goes out when the handle drops. The tagging lives in
+the event sink rather than in the emitters, so no emitter needed a second variant. The
+verifier tracks who opened what on both ends, and `SubagentVisibility` flattens or hides the
+surface for consumers older than it.
 
 **IDs are strings.** `ThreadId`, `RunId`, and friends are newtypes over `String`, not `Uuid`.
 The spec says string; real backends such as LangGraph send arbitrary strings.

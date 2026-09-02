@@ -90,9 +90,9 @@ pub fn run(args: Args) -> Result<u8, String> {
     if args.upstream {
         println!();
         match check_upstream(&baseline) {
-            Ok(lines) => {
-                let stale = !lines.is_empty();
-                print!("{}", render_upstream(&baseline, &lines));
+            Ok(freshness) => {
+                let stale = !freshness.changes.is_empty();
+                print!("{}", render_upstream(&baseline, &freshness));
                 if stale {
                     exit = EXIT_DRIFT;
                 }
@@ -149,6 +149,10 @@ fn refresh(baseline_path: &Path) -> Result<u8, String> {
             }
         }
     }
+    let mut notes = String::new();
+    render_notes(&mut notes, &extracted.notes);
+    print!("{notes}");
+
     let unparsed = next.events.iter().filter(|e| e.unparsed.is_some()).count();
     if unparsed > 0 {
         println!(
@@ -159,17 +163,51 @@ fn refresh(baseline_path: &Path) -> Result<u8, String> {
     Ok(EXIT_OK)
 }
 
+/// What a fetch of upstream had to say about the vendored baseline.
+struct Freshness {
+    /// The ways the baseline no longer matches upstream.
+    changes: Vec<String>,
+    /// How the extractor read anything the source did not spell out.
+    notes: Vec<String>,
+}
+
 /// Fetches upstream and returns the ways the baseline no longer matches it.
-fn check_upstream(baseline: &Baseline) -> Result<Vec<String>, String> {
+fn check_upstream(baseline: &Baseline) -> Result<Freshness, String> {
     let fetched = fetch::events_ts()?;
     let extracted = upstream::extract(&fetched.text)?;
     let current = Baseline::from_upstream(&extracted, fetched.source);
-    Ok(diff_baselines(baseline, &current))
+    Ok(Freshness {
+        changes: diff_baselines(baseline, &current),
+        notes: extracted.notes,
+    })
 }
 
 /// Human-readable differences between two snapshots of the upstream surface.
 fn diff_baselines(old: &Baseline, new: &Baseline) -> Vec<String> {
     let mut out = Vec::new();
+    // The envelope first: a field there lands on every event, so it is the
+    // change a reviewer most needs to see before the per-event ones.
+    for field in &new.base_event_fields {
+        match old.base_event_fields.iter().find(|f| f.name == field.name) {
+            None => out.push(format!(
+                "~ BaseEvent.{} was added upstream ({})",
+                field.name,
+                optionality(field.required)
+            )),
+            Some(was) if was.required != field.required => out.push(format!(
+                "~ BaseEvent.{} is now {} upstream (was {})",
+                field.name,
+                optionality(field.required),
+                optionality(was.required)
+            )),
+            Some(_) => {}
+        }
+    }
+    for field in &old.base_event_fields {
+        if !new.base_event_fields.iter().any(|f| f.name == field.name) {
+            out.push(format!("~ BaseEvent.{} was removed upstream", field.name));
+        }
+    }
     for event in &new.event_types {
         if !old.event_types.contains(event) {
             out.push(format!("+ {event} was added upstream"));
@@ -225,6 +263,8 @@ struct Report {
     not_in_union: Vec<RustEvent>,
     not_in_upstream: Vec<RustEvent>,
     field_diffs: Vec<FieldDiff>,
+    /// The envelope both sides flatten into every event, when it disagrees.
+    base_event: Option<BaseEventDiff>,
     warnings: Vec<String>,
 }
 
@@ -234,14 +274,13 @@ impl Report {
             && self.not_in_union.is_empty()
             && self.not_in_upstream.is_empty()
             && self.field_diffs.is_empty()
+            && self.base_event.is_none()
     }
 }
 
-#[derive(Debug)]
-struct FieldDiff {
-    event_type: String,
-    rust_type: String,
-    file: String,
+/// The three ways one payload's fields can disagree with the baseline's.
+#[derive(Debug, Default, PartialEq)]
+struct FieldDelta {
     /// Upstream field with no Rust counterpart.
     missing: Vec<baseline::Field>,
     /// Rust field upstream does not declare.
@@ -250,10 +289,53 @@ struct FieldDiff {
     optionality: Vec<(String, bool, bool)>,
 }
 
-impl FieldDiff {
+impl FieldDelta {
+    fn between(upstream: &[baseline::Field], rust: &[rust_src::RustField]) -> Self {
+        Self {
+            missing: upstream
+                .iter()
+                .filter(|f| !rust.iter().any(|r| r.name == f.name))
+                .cloned()
+                .collect(),
+            extra: rust
+                .iter()
+                .filter(|r| !upstream.iter().any(|f| f.name == r.name))
+                .cloned()
+                .collect(),
+            optionality: upstream
+                .iter()
+                .filter_map(|f| {
+                    let r = rust.iter().find(|r| r.name == f.name)?;
+                    (r.required != f.required).then(|| (f.name.clone(), f.required, r.required))
+                })
+                .collect(),
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.missing.is_empty() && self.extra.is_empty() && self.optionality.is_empty()
     }
+
+    /// How many fields are named in it, for a section heading.
+    fn len(&self) -> usize {
+        self.missing.len() + self.extra.len() + self.optionality.len()
+    }
+}
+
+#[derive(Debug)]
+struct FieldDiff {
+    event_type: String,
+    rust_type: String,
+    file: String,
+    delta: FieldDelta,
+}
+
+/// The `BaseEvent` comparison, which is one struct rather than one per event.
+#[derive(Debug)]
+struct BaseEventDiff {
+    /// Repo-relative file the Rust envelope was read from.
+    file: String,
+    delta: FieldDelta,
 }
 
 fn compare(baseline: &Baseline, rust: &RustSurface) -> Report {
@@ -281,33 +363,37 @@ fn compare(baseline: &Baseline, rust: &RustSurface) -> Report {
             continue;
         };
 
-        let diff = FieldDiff {
-            event_type: event.event_type.clone(),
-            rust_type: found.rust_type.clone().unwrap_or_else(|| "?".to_string()),
-            file: found.file.clone(),
-            missing: event
-                .fields
-                .iter()
-                .filter(|f| !fields.iter().any(|r| r.name == f.name))
-                .cloned()
-                .collect(),
-            extra: fields
-                .iter()
-                .filter(|r| !event.fields.iter().any(|f| f.name == r.name))
-                .cloned()
-                .collect(),
-            optionality: event
-                .fields
-                .iter()
-                .filter_map(|f| {
-                    let r = fields.iter().find(|r| r.name == f.name)?;
-                    (r.required != f.required).then(|| (f.name.clone(), f.required, r.required))
-                })
-                .collect(),
-        };
-        if !diff.is_empty() {
-            report.field_diffs.push(diff);
+        let delta = FieldDelta::between(&event.fields, fields);
+        if !delta.is_empty() {
+            report.field_diffs.push(FieldDiff {
+                event_type: event.event_type.clone(),
+                rust_type: found.rust_type.clone().unwrap_or_else(|| "?".to_string()),
+                file: found.file.clone(),
+                delta,
+            });
         }
+    }
+
+    // `BaseEvent` is in neither the union nor the baseline's event list, so
+    // nothing above would have compared it — and a field there is a field on
+    // every event, which makes it the most expensive thing to miss. That is
+    // not hypothetical: `metadata` arrived on the base schema, and until this
+    // comparison existed the baseline recorded it and no check read it.
+    match &rust.base_event {
+        Some(base) => {
+            let delta = FieldDelta::between(&baseline.base_event_fields, &base.fields);
+            if !delta.is_empty() {
+                report.base_event = Some(BaseEventDiff {
+                    file: base.file.clone(),
+                    delta,
+                });
+            }
+        }
+        None => report.warnings.push(format!(
+            "no `{}` struct was found under {EVENT_DIR}; the fields every event inherits \
+             were not compared",
+            rust_src::BASE_EVENT
+        )),
     }
 
     // A payload type that never made it into the union cannot be sent or
@@ -431,6 +517,22 @@ fn render(baseline: &Baseline, rust: &RustSurface, report: &Report) -> String {
         );
     }
 
+    if let Some(base) = &report.base_event {
+        out.push_str(&format!("\nBASE EVENT FIELDS — {}\n", base.delta.len()));
+        out.push_str(&format!(
+            "  Every event flattens `{}` in, so a field declared there is a field on all\n  \
+             {} of them. It is not a member of the union, so nothing else here reads it.\n\n",
+            rust_src::BASE_EVENT,
+            baseline.event_types.len()
+        ));
+        out.push_str(&format!(
+            "    {}  ->  {}\n",
+            rust_src::BASE_EVENT,
+            base.file
+        ));
+        render_delta(&mut out, &base.delta);
+    }
+
     if !report.field_diffs.is_empty() {
         out.push_str(&format!(
             "\nFIELD MISMATCHES — {}\n",
@@ -445,28 +547,7 @@ fn render(baseline: &Baseline, rust: &RustSurface, report: &Report) -> String {
                 "    {}  ->  {} ({})\n",
                 diff.event_type, diff.rust_type, diff.file
             ));
-            for field in &diff.missing {
-                out.push_str(&format!(
-                    "        missing in Rust    {:<24}upstream: {}\n",
-                    field.name,
-                    optionality(field.required)
-                ));
-            }
-            for field in &diff.extra {
-                out.push_str(&format!(
-                    "        not upstream       {:<24}Rust: {}\n",
-                    field.name,
-                    optionality(field.required)
-                ));
-            }
-            for (name, up, rs) in &diff.optionality {
-                out.push_str(&format!(
-                    "        optionality        {:<24}upstream: {}, Rust: {}\n",
-                    name,
-                    optionality(*up),
-                    optionality(*rs)
-                ));
-            }
+            render_delta(&mut out, &diff.delta);
         }
     }
 
@@ -493,11 +574,15 @@ fn render(baseline: &Baseline, rust: &RustSurface, report: &Report) -> String {
     } else {
         out.push_str(&format!(
             "FAILED  {} missing in Rust, {} not in the union, {} not upstream, \
-             {} with field mismatches.\n",
+             {} with field mismatches{}.\n",
             report.missing_in_rust.len(),
             report.not_in_union.len(),
             report.not_in_upstream.len(),
-            report.field_diffs.len()
+            report.field_diffs.len(),
+            match &report.base_event {
+                Some(base) => format!(", {} on the base event", base.delta.len()),
+                None => String::new(),
+            }
         ));
         out.push_str(
             "        The baseline is the protocol. If the baseline is what changed, re-capture\n\
@@ -507,7 +592,34 @@ fn render(baseline: &Baseline, rust: &RustSurface, report: &Report) -> String {
     out
 }
 
-fn render_upstream(baseline: &Baseline, changes: &[String]) -> String {
+/// The field-by-field lines under a heading, shared by the per-event and the
+/// `BaseEvent` sections so the two read identically.
+fn render_delta(out: &mut String, delta: &FieldDelta) {
+    for field in &delta.missing {
+        out.push_str(&format!(
+            "        missing in Rust    {:<24}upstream: {}\n",
+            field.name,
+            optionality(field.required)
+        ));
+    }
+    for field in &delta.extra {
+        out.push_str(&format!(
+            "        not upstream       {:<24}Rust: {}\n",
+            field.name,
+            optionality(field.required)
+        ));
+    }
+    for (name, up, rs) in &delta.optionality {
+        out.push_str(&format!(
+            "        optionality        {:<24}upstream: {}, Rust: {}\n",
+            name,
+            optionality(*up),
+            optionality(*rs)
+        ));
+    }
+}
+
+fn render_upstream(baseline: &Baseline, freshness: &Freshness) -> String {
     let mut out = String::from("UPSTREAM FRESHNESS CHECK\n");
     out.push_str(&format!(
         "  baseline captured {} from {}@{}\n",
@@ -515,22 +627,39 @@ fn render_upstream(baseline: &Baseline, changes: &[String]) -> String {
         baseline.source.repo,
         short(&baseline.source.commit)
     ));
-    if changes.is_empty() {
+    if freshness.changes.is_empty() {
         out.push_str("\nOK  The vendored baseline still matches upstream.\n");
         return out;
     }
     out.push_str(&format!(
         "\nSTALE  upstream has moved in {} way(s) since the baseline was captured:\n\n",
-        changes.len()
+        freshness.changes.len()
     ));
-    for change in changes {
+    for change in &freshness.changes {
         out.push_str(&format!("    {change}\n"));
     }
+    render_notes(&mut out, &freshness.notes);
     out.push_str(
         "\n  Accept these with `cargo run -p xtask -- drift-check --refresh`, then update\n  \
          the Rust types in the same pull request.\n",
     );
     out
+}
+
+/// Prints how the extractor read what upstream did not spell out.
+///
+/// Only where a human is deciding something: accepting a refresh, or reading a
+/// report that upstream has moved. An optionality taken from a name rather
+/// than from a Zod chain is a judgement, and the person signing off on the
+/// baseline is the one who should see it.
+fn render_notes(out: &mut String, notes: &[String]) {
+    if notes.is_empty() {
+        return;
+    }
+    out.push_str("\n  Read from a name rather than from the schema:\n");
+    for note in notes {
+        out.push_str(&format!("    {note}\n"));
+    }
 }
 
 fn optionality(required: bool) -> &'static str {
@@ -612,6 +741,10 @@ mod tests {
     fn surface(events: Vec<RustEvent>) -> RustSurface {
         RustSurface {
             events,
+            base_event: Some(rust_src::RustBaseEvent {
+                fields: vec![],
+                file: "crates/ag-ui/src/event/mod.rs".into(),
+            }),
             tagged_enum: None,
             files: vec!["crates/ag-ui/src/event/x.rs".into()],
             notes: vec![],
@@ -648,14 +781,18 @@ mod tests {
         assert_eq!(report.field_diffs.len(), 1);
         let diff = &report.field_diffs[0];
         assert_eq!(
-            diff.missing.iter().map(|f| &f.name).collect::<Vec<_>>(),
+            diff.delta
+                .missing
+                .iter()
+                .map(|f| &f.name)
+                .collect::<Vec<_>>(),
             ["source"]
         );
         assert_eq!(
-            diff.extra.iter().map(|f| &f.name).collect::<Vec<_>>(),
+            diff.delta.extra.iter().map(|f| &f.name).collect::<Vec<_>>(),
             ["extra"]
         );
-        assert_eq!(diff.optionality, [("event".to_string(), true, false)]);
+        assert_eq!(diff.delta.optionality, [("event".to_string(), true, false)]);
 
         let text = render(&baseline, &rust, &report);
         assert!(text.contains("MISSING IN RUST — 1"));
@@ -710,6 +847,124 @@ mod tests {
         let report = compare(&baseline, &rust);
         assert!(report.is_clean());
         assert_eq!(report.warnings.len(), 1);
+    }
+
+    /// The gap this closes: `metadata` arrived on `BaseEventSchema`, the
+    /// baseline recorded it, and nothing compared it — so a field on all 36
+    /// event types was missing from the Rust envelope with the check green.
+    #[test]
+    fn a_base_event_field_missing_in_rust_is_drift() {
+        let mut baseline = baseline_of(vec![event("RAW", &[])]);
+        baseline.base_event_fields = vec![
+            Field {
+                name: "timestamp".into(),
+                required: false,
+            },
+            Field {
+                name: "metadata".into(),
+                required: false,
+            },
+        ];
+        let mut rust = surface(vec![rust_event("RAW", Some(&[]))]);
+        rust.base_event = Some(rust_src::RustBaseEvent {
+            fields: vec![rust_src::RustField {
+                name: "timestamp".into(),
+                required: false,
+            }],
+            file: "crates/ag-ui/src/event/mod.rs".into(),
+        });
+
+        let report = compare(&baseline, &rust);
+        assert!(!report.is_clean());
+        let base = report.base_event.as_ref().unwrap();
+        assert_eq!(
+            base.delta
+                .missing
+                .iter()
+                .map(|f| &f.name)
+                .collect::<Vec<_>>(),
+            ["metadata"]
+        );
+
+        let text = render(&baseline, &rust, &report);
+        assert!(text.contains("BASE EVENT FIELDS — 1"), "{text}");
+        assert!(text.contains("missing in Rust    metadata"), "{text}");
+        assert!(text.contains("1 on the base event"), "{text}");
+    }
+
+    #[test]
+    fn a_base_event_optionality_change_is_drift() {
+        let mut baseline = baseline_of(vec![event("RAW", &[])]);
+        baseline.base_event_fields = vec![Field {
+            name: "metadata".into(),
+            required: false,
+        }];
+        let mut rust = surface(vec![rust_event("RAW", Some(&[]))]);
+        rust.base_event = Some(rust_src::RustBaseEvent {
+            fields: vec![rust_src::RustField {
+                name: "metadata".into(),
+                required: true,
+            }],
+            file: "crates/ag-ui/src/event/mod.rs".into(),
+        });
+
+        let report = compare(&baseline, &rust);
+        assert_eq!(
+            report.base_event.as_ref().unwrap().delta.optionality,
+            [("metadata".to_string(), false, true)]
+        );
+    }
+
+    /// An envelope this scanner could not find must not condemn the run: the
+    /// same reasoning as an unreadable payload.
+    #[test]
+    fn a_missing_base_event_struct_warns_instead_of_failing() {
+        let baseline = baseline_of(vec![event("RAW", &[])]);
+        let mut rust = surface(vec![rust_event("RAW", Some(&[]))]);
+        rust.base_event = None;
+
+        let report = compare(&baseline, &rust);
+        assert!(report.is_clean());
+        assert_eq!(report.warnings.len(), 1);
+        assert!(
+            report.warnings[0].contains("BaseEvent"),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn baseline_diff_names_a_base_event_field_that_moved() {
+        let mut old = baseline_of(vec![event("RAW", &[])]);
+        old.base_event_fields = vec![
+            Field {
+                name: "timestamp".into(),
+                required: false,
+            },
+            Field {
+                name: "gone".into(),
+                required: true,
+            },
+        ];
+        let mut new = baseline_of(vec![event("RAW", &[])]);
+        new.base_event_fields = vec![
+            Field {
+                name: "timestamp".into(),
+                required: true,
+            },
+            Field {
+                name: "metadata".into(),
+                required: false,
+            },
+        ];
+        assert_eq!(
+            diff_baselines(&old, &new),
+            [
+                "~ BaseEvent.timestamp is now required upstream (was optional)",
+                "~ BaseEvent.metadata was added upstream (optional)",
+                "~ BaseEvent.gone was removed upstream",
+            ]
+        );
     }
 
     #[test]

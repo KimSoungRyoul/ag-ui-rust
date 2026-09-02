@@ -153,6 +153,41 @@ pub fn strip_comments(s: &str) -> String {
     out
 }
 
+/// Replaces the apostrophe that opens a Rust lifetime with a space.
+///
+/// Rust and TypeScript disagree about `'`. In TypeScript it always quotes a
+/// string, which is what everything above assumes. In Rust it does too — a
+/// char literal — but it *also* introduces a lifetime, and a scanner that
+/// reads `&'static str` as an opening quote then skips everything up to the
+/// next apostrophe in the file, closing braces included. That is not
+/// hypothetical: it swallowed the end of a payload struct, the struct scanned
+/// as declaring no fields at all, and `drift-check` reported four fields as
+/// missing from a struct that has them. A scanner that invents drift is on its
+/// way to being ignored, which is the outcome this crate exists to prevent.
+///
+/// So the Rust scanner blanks lifetimes before reading anything, and the
+/// shared functions keep their one simple rule. Blanking is
+/// length-preserving, so every byte offset stays valid, and char literals
+/// (`'a'`, `'}'`) are left alone because those really are strings and must go
+/// on being skipped. TypeScript never comes through here: it has no lifetimes,
+/// and its single-quoted strings must keep working.
+pub fn blank_lifetimes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find('\'') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let name = read_ident(after, 0);
+        // `'a'` closes; `'\n'` and `'}'` have no identifier at all. Only an
+        // identifier with nothing closing it is a lifetime.
+        let is_lifetime = !name.is_empty() && !after[name.len()..].starts_with('\'');
+        out.push(if is_lifetime { ' ' } else { '\'' });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Reads the identifier starting at byte index `at`, or an empty string.
 pub fn read_ident(s: &str, at: usize) -> &str {
     let rest = &s[at..];
@@ -265,6 +300,50 @@ mod tests {
         assert_eq!(
             find_top_level("z.string().optional()", ".optional("),
             Some(10)
+        );
+    }
+
+    /// The failure this guards: a lifetime opened a string that never closed,
+    /// so a struct's own `}` was skipped and the rest of the file read as one
+    /// item — with no fields.
+    #[test]
+    fn lifetimes_are_blanked_so_they_cannot_open_a_string() {
+        let src = "fn f<'de, D>(d: D) -> &'static str { \"x\" }\nstruct S { a: u8 }\n";
+        let blanked = blank_lifetimes(src);
+        assert_eq!(blanked.len(), src.len(), "offsets must survive");
+        assert!(blanked.contains("fn f< de, D>"), "{blanked}");
+        assert!(blanked.contains("& static str"), "{blanked}");
+
+        let open = blanked.rfind('{').unwrap();
+        assert_eq!(
+            match_delim(&blanked, open).map(|c| &blanked[open..=c]),
+            Some("{ a: u8 }")
+        );
+    }
+
+    /// Blanking must not swallow the comments after a lifetime either, or a
+    /// doc comment's brackets and braces end up scanned as code.
+    #[test]
+    fn a_lifetime_does_not_swallow_the_comments_after_it() {
+        let src = "fn f() -> &'static str { \"x\" }\n/// see [`crate::event`]\nstruct S;\n";
+        let out = strip_comments(&blank_lifetimes(src));
+        assert!(!out.contains("crate::event"), "{out}");
+    }
+
+    #[test]
+    fn char_literals_and_single_quoted_strings_are_left_as_strings() {
+        // Rust: a char literal closes, so it is not a lifetime and the brace
+        // inside it must go on being skipped.
+        let rust = "match c { '}' => 1, 'a' => 2, _ => 0 }";
+        let blanked = blank_lifetimes(rust);
+        assert_eq!(blanked, rust);
+        let open = rust.find('{').unwrap();
+        assert_eq!(match_delim(rust, open), Some(rust.len() - 1));
+        // TypeScript, which never goes through the blanking: a single-quoted
+        // value is one piece, comma and all.
+        assert_eq!(
+            split_top_level("a: 'x,y', b: 1", ','),
+            vec!["a: 'x,y'", "b: 1"]
         );
     }
 

@@ -44,6 +44,9 @@ const CANONICAL_TAGS: &[&str] = &[
     "REASONING_MESSAGE_CHUNK",
     "REASONING_END",
     "REASONING_ENCRYPTED_VALUE",
+    "SUBAGENT_STARTED",
+    "SUBAGENT_FINISHED",
+    "SUBAGENT_ERROR",
 ];
 
 fn activity_content() -> JsonObject {
@@ -104,13 +107,16 @@ fn sample_events() -> Vec<Event> {
             "msg-4",
             "b64-blob",
         ),
+        Event::subagent_started("sub-1", "researcher"),
+        Event::subagent_finished_success("sub-1"),
+        Event::subagent_error("sub-1", "rate limited"),
     ]
 }
 
 #[test]
-fn protocol_defines_thirty_three_event_types() {
-    assert_eq!(EventType::ALL.len(), 33);
-    assert_eq!(CANONICAL_TAGS.len(), 33);
+fn protocol_defines_thirty_six_event_types() {
+    assert_eq!(EventType::ALL.len(), 36);
+    assert_eq!(CANONICAL_TAGS.len(), 36);
 }
 
 #[test]
@@ -163,11 +169,13 @@ fn base_event_fields_round_trip_through_the_flattened_representation() {
         let stamped = event
             .clone()
             .with_timestamp(1_700_000_000_000)
-            .with_raw_event(json!({ "upstream": true }));
+            .with_raw_event(json!({ "upstream": true }))
+            .with_metadata(json!({ "traceId": "abc" }).as_object().unwrap().clone());
 
         let json = serde_json::to_value(&stamped).unwrap();
         assert_eq!(json["timestamp"], json!(1_700_000_000_000_i64));
         assert_eq!(json["rawEvent"], json!({ "upstream": true }));
+        assert_eq!(json["metadata"], json!({ "traceId": "abc" }));
 
         let back: Event = serde_json::from_value(json).unwrap();
         assert_eq!(back, stamped);
@@ -177,6 +185,7 @@ fn base_event_fields_round_trip_through_the_flattened_representation() {
         let bare = serde_json::to_value(&event).unwrap();
         assert!(bare.get("timestamp").is_none());
         assert!(bare.get("rawEvent").is_none());
+        assert!(bare.get("metadata").is_none());
         assert!(event.base().is_empty());
     }
 }

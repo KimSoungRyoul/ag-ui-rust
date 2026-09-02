@@ -137,6 +137,42 @@
 //! }
 //! ```
 //!
+//! # Subagents
+//!
+//! An agent that delegates opens a [`RunContext::subagent`] scope. Everything
+//! emitted through the handle — text, tool calls, reasoning, steps, nested
+//! subagents — comes out attributed to that invocation, bracketed by
+//! `SUBAGENT_STARTED` and `SUBAGENT_FINISHED`, so a client can group the
+//! output by who produced it:
+//!
+//! ```
+//! # use ag_ui::RunOutcome;
+//! # use ag_ui::server::{Agent, Result, RunContext};
+//! # struct Supervisor;
+//! impl Agent for Supervisor {
+//!     type State = ();
+//!
+//!     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+//!         let mut planner = ctx.subagent("planner")?;
+//!         planner.say("Two tasks: scope, then risks.")?;
+//!         {
+//!             let mut estimator = planner.subagent("estimator")?;   // nested
+//!             estimator.say("About a day each.")?;
+//!         }                                                          // SUBAGENT_FINISHED
+//!         planner.finish_with(serde_json::json!({ "tasks": 2 }))?;
+//!
+//!         ctx.say("Plan ready.")?;                                   // the parent's own
+//!         Ok(RunOutcome::Success)
+//!     }
+//! }
+//! ```
+//!
+//! What a consumer sees is a producer-side choice, because a client older than
+//! subagent support fails while decoding the lifecycle events. The default
+//! sends the stream as emitted; [`SubagentVisibility::inline`] flattens it to
+//! the pre-subagent shape and [`SubagentVisibility::hidden`] keeps only the
+//! parent's own events — both are ordinary transformers.
+//!
 //! # Features
 //!
 //! - `verify` *(default)* — the ordering state machine. Off, the whole
@@ -167,8 +203,13 @@ pub mod verify;
 pub use agent::{Agent, AgentState, BoxAgent, DynAgent};
 pub use cancel::{CancellationToken, Cancelled};
 pub use context::RunContext;
-pub use emit::{EventReceiver, MessageHandle, ReasoningHandle, StepGuard, ToolCallHandle};
+pub use emit::{
+    EventReceiver, MessageHandle, ReasoningHandle, StepGuard, SubagentHandle, ToolCallHandle,
+};
 pub use error::{Error, Result, Rule, VerificationError};
 pub use run::{Runner, run};
 pub use state::{StateManager, StatePublish};
-pub use transform::{FilterToolCalls, StreamTransformer, ToolResultToState, TransformerChain};
+pub use transform::{
+    FilterToolCalls, StreamTransformer, SubagentFilter, SubagentVisibility, ToolResultToState,
+    TransformerChain,
+};

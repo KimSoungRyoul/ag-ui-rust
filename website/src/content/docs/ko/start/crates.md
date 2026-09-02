@@ -9,7 +9,7 @@ crate 둘, 그리고 feature 한 묶음입니다. 나뉘는 선은 protocol 하�
 
 | crate / feature | 무엇인가 |
 | --- | --- |
-| `ag-ui` | protocol type, 33개 event variant 전부, 그리고 wire encoding. `serde`와 `serde_json`뿐. |
+| `ag-ui` | protocol type, 36개 event variant 전부, 그리고 wire encoding. `serde`와 `serde_json`뿐. |
 | ↳ `server` | agent를 띄웁니다. `Agent` trait, typestate event emitter, 자동 state delta, protocol verification. executor를 가리지 않습니다. |
 | ↳ `client` | 원격 agent를 소비합니다. transport, event 적용, 실체화된 message와 state. |
 | ↳ `http` | `client`를 위한 `reqwest` transport. |
@@ -135,7 +135,7 @@ orchestration입니다. 이것도 격리할 것이 없습니다.
 | `ag-ui` | `client` | 꺼짐 | agent를 소비합니다. transport를 가리지 않습니다. `futures`, `json-patch`. |
 | `ag-ui` | `http` | 꺼짐 | `reqwest`를 쓰는 transport. `client`와 `sse`를 함의합니다. |
 | `ag-ui` | `axum` | 꺼짐 | axum binding. `server`와 `sse`를 함의하고, tokio를 끌어오는 유일한 feature입니다. |
-| `ag-ui` | `protobuf` | 꺼짐 | binary transport의 media type과 content negotiation. encoder는 없음. `events.proto`가 33개 event type 중 18개만 다룹니다. |
+| `ag-ui` | `protobuf` | 꺼짐 | binary transport의 media type과 content negotiation. encoder는 없음. `events.proto`가 36개 event type 중 21개만 다룹니다. |
 | `ag-ui` | `schemars` | 꺼짐 | 공개 type에 `schemars::JsonSchema`를 derive합니다. |
 | `ag-ui` | `utoipa` | 꺼짐 | 공개 type에 `utoipa::ToSchema`를 derive합니다. |
 | `ag-ui-a2ui` | `toolkit` | 켜짐 | agent 쪽 authoring. op builder, prompt 조립, 복구 loop. |

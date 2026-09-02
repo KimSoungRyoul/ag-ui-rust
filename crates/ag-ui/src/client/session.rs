@@ -85,7 +85,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::client::agent::RemoteAgent;
-use crate::client::apply::{Applier, Changed, MessageChangeKind, ReasoningChangeKind};
+use crate::client::apply::{
+    Applier, Changed, MessageChangeKind, ReasoningChangeKind, Subagent, SubagentChangeKind,
+};
 use crate::client::chunks::ChunkNormalizer;
 use crate::client::error::Error;
 use crate::client::interrupts::InterruptExt;
@@ -113,6 +115,13 @@ pub enum Update<S = Value> {
     State(S),
     /// Reasoning text arrived. Kept separate from the reply.
     Reasoning(ReasoningUpdate),
+    /// A subagent was announced, resumed, finished, suspended or failed.
+    ///
+    /// The lifecycle only: what a subagent *says* arrives as ordinary
+    /// [`Update::Message`]s and [`Update::Reasoning`]s whose messages carry
+    /// its `subagent_run_id`, so a view groups by that and uses this for the
+    /// group's header and status. See [`Session::subagents`].
+    Subagent(SubagentUpdate),
     /// The run paused and needs a human. Answer it with
     /// [`Session::resume`] — one update per pending interrupt.
     Interrupt(Interrupt),
@@ -150,6 +159,19 @@ pub struct ReasoningUpdate {
     pub change: ReasoningChangeKind,
     /// The accumulated reasoning text.
     pub text: String,
+}
+
+/// A subagent that changed, and the subagent as it now stands.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubagentUpdate {
+    /// Index into [`Session::subagents`].
+    pub index: usize,
+    /// The invocation's id — what the messages it produced carry.
+    pub run_id: crate::SubagentRunId,
+    /// What this event did to it.
+    pub change: SubagentChangeKind,
+    /// The whole entry, status included.
+    pub subagent: Subagent,
 }
 
 /// How a run ended.
@@ -297,6 +319,18 @@ impl<T, S> Session<T, S> {
     /// What the agent is waiting for, if the last run paused.
     pub fn interrupts(&self) -> &[Interrupt] {
         &self.interrupts
+    }
+
+    /// The subagent invocations announced so far, across runs — a suspended
+    /// one stays until the run that resumes it announces it again.
+    pub fn subagents(&self) -> &[Subagent] {
+        self.applier.subagents()
+    }
+
+    /// One subagent invocation by id — what a view does with the
+    /// [`Message::subagent_run_id`] on a message it is about to draw.
+    pub fn subagent(&self, run_id: &crate::SubagentRunId) -> Option<&Subagent> {
+        self.applier.subagent(run_id)
     }
 
     /// The applier underneath, for a view that wants the raw materialised
@@ -573,6 +607,18 @@ impl<T, S> std::fmt::Debug for RunStream<'_, T, S> {
     }
 }
 
+impl<T, S> RunStream<'_, T, S> {
+    /// The session as it stands mid-run, for a view that needs more than the
+    /// update in hand — the subagent a message's owner id names, the state
+    /// so far, the messages before this one.
+    ///
+    /// Read-only: the stream holds the mutable borrow until it is dropped,
+    /// which is what makes every update consistent with what this returns.
+    pub fn session(&self) -> &Session<T, S> {
+        self.session
+    }
+}
+
 impl<T, S> RunStream<'_, T, S>
 where
     S: DeserializeOwned + Clone,
@@ -655,6 +701,18 @@ where
                     text,
                 };
                 self.ready.push_back(Update::Reasoning(update));
+            }
+
+            Changed::Subagent(change) => {
+                if let Some(subagent) = self.session.applier.subagents().get(change.index) {
+                    let update = SubagentUpdate {
+                        index: change.index,
+                        run_id: change.run_id,
+                        change: change.kind,
+                        subagent: subagent.clone(),
+                    };
+                    self.ready.push_back(Update::Subagent(update));
+                }
             }
 
             Changed::RunFinished { outcome, result } => {

@@ -104,7 +104,7 @@ fn main() -> ag_ui::server::Result<()> {
 }
 ```
 
-규칙은 일곱 개입니다. `Rule::describe()`가 각각을 한 문장으로 말해 줍니다.
+규칙은 여덟 개입니다. `Rule::describe()`가 각각을 한 문장으로 말해 줍니다.
 
 | 규칙 | 무엇을 금지하는가 |
 | --- | --- |
@@ -114,7 +114,8 @@ fn main() -> ag_ui::server::Result<()> {
 | `NotOpen` | 열린 적 없는 것에 대한 content나 terminator |
 | `UnknownId` | 소개된 적 없는 call id에 대한 tool 결과 |
 | `OutOfOrder` | call의 `TOOL_CALL_END`보다 앞선 tool 결과 |
-| `OpenAtFinish` | 무언가 아직 열려 있는데 나가는 `RUN_FINISHED` |
+| `OpenAtFinish` | 무언가 아직 열려 있는데 나가는 `RUN_FINISHED`. subagent도 포함 |
+| `OwnerMismatch` | entity를 연 subagent가 아닌 다른 subagent의 이름을 대는 continuation, terminator, 재열기 |
 
 `RUN_ERROR`는 `OpenAtFinish`에서 면제됩니다. message 도중에 터져 버린 run이 그것을 닫았을 리
 없기 때문입니다. 그 면제는 다른 일도 합니다. 거부당한 `RUN_FINISHED` 때문에 run에 최종 event가

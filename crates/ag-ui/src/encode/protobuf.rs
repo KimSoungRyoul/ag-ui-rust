@@ -7,14 +7,18 @@
 //! # Why there is no encoder here
 //!
 //! The binary transport is defined by `events.proto` in the upstream
-//! `@ag-ui/proto` package. Its `Event` message is a `oneof` over **18** of the
-//! protocol's **33** event types:
+//! `@ag-ui/proto` package. Its `Event` message is a `oneof` over **21** of the
+//! protocol's **36** event types:
 //!
 //! `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`,
 //! `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
 //! `TOOL_CALL_CHUNK`, `STATE_SNAPSHOT`, `STATE_DELTA`, `MESSAGES_SNAPSHOT`,
 //! `RAW`, `CUSTOM`, `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`,
-//! `STEP_FINISHED`.
+//! `STEP_FINISHED`, `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR`.
+//!
+//! (Upstream's own documentation says 19: the two `*_CHUNK` events have a
+//! `oneof` arm but no `EventType` enum value to select it with, so they cannot
+//! be encoded in practice either.)
 //!
 //! The other 15 have no wire representation at all: every `REASONING_*` event,
 //! both `ACTIVITY_*` events, all five deprecated `THINKING_*` events, and
@@ -32,11 +36,11 @@
 //!
 #![cfg_attr(
     feature = "sse",
-    doc = "Use [`sse`](crate::encode::sse), which carries all 33 event types. Revisit"
+    doc = "Use [`sse`](crate::encode::sse), which carries all 36 event types. Revisit"
 )]
 #![cfg_attr(
     not(feature = "sse"),
-    doc = "Use the `sse` module — enable the `sse` feature — which carries all 33",
+    doc = "Use the `sse` module — enable the `sse` feature — which carries all 36",
     doc = "event types. Revisit"
 )]
 //! this module when upstream `events.proto` covers the full set.
@@ -67,7 +71,7 @@ impl EventStreamFormatter for ProtobufFormatter {
 
     fn encode(&self, _event: &Event) -> Result<Vec<u8>> {
         Err(Error::UnsupportedTransport(
-            "the AG-UI protobuf schema covers only 18 of 33 event types; use SSE",
+            "the AG-UI protobuf schema covers only 21 of 36 event types; use SSE",
         ))
     }
 }
@@ -95,6 +99,9 @@ pub const COVERED_EVENT_TYPES: &[EventType] = &[
     EventType::RunError,
     EventType::StepStarted,
     EventType::StepFinished,
+    EventType::SubagentStarted,
+    EventType::SubagentFinished,
+    EventType::SubagentError,
 ];
 
 /// Whether the binary transport can represent `event_type`.

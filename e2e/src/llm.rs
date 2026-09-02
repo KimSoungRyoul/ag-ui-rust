@@ -74,6 +74,23 @@ pub const BASE_URL_ENV: &str = "AG_UI_LLM_BASE_URL";
 /// The environment variable holding the model id.
 pub const MODEL_ENV: &str = "AG_UI_LLM_MODEL";
 
+/// Read when neither [`BASE_URL_ENV`] nor a key for the default endpoint is
+/// set: Qwen Cloud's OpenAI-compatible mode, for a contributor who has that
+/// subscription rather than a Gemini key. The base URL is the one DashScope
+/// documents for compatible mode, ending in `/compatible-mode/v1`.
+pub const QWEN_BASE_URL_ENV: &str = "QWEN_BASE_URL";
+
+/// The key that goes with [`QWEN_BASE_URL_ENV`].
+pub const QWEN_API_KEY_ENV: &str = "QWEN_API_KEY";
+
+/// The model that goes with [`QWEN_BASE_URL_ENV`], when [`MODEL_ENV`] is
+/// unset.
+pub const QWEN_MODEL_ENV: &str = "QWEN_MODEL";
+
+/// The Qwen model used when [`QWEN_MODEL_ENV`] is unset. Pinned, like the
+/// default: an alias that moves changes behaviour without a code change.
+pub const QWEN_DEFAULT_MODEL: &str = "qwen-plus";
+
 /// Where requests go unless [`BASE_URL_ENV`] says otherwise.
 ///
 /// Gemini's OpenAI-compatible endpoint: the free tier needs no credential we do
@@ -103,8 +120,9 @@ impl fmt::Display for MissingApiKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "neither {API_KEY_ENV} nor {FALLBACK_API_KEY_ENV} is set, and {DEFAULT_BASE_URL} needs a key \
-             (set {BASE_URL_ENV} to a local server such as http://localhost:11434/v1 to run without one)"
+            "no API key: set {API_KEY_ENV} or {FALLBACK_API_KEY_ENV} for {DEFAULT_BASE_URL}, \
+             {QWEN_API_KEY_ENV} with {QWEN_BASE_URL_ENV} for Qwen Cloud, or {BASE_URL_ENV} to a \
+             local server such as http://localhost:11434/v1 to run without one"
         )
     }
 }
@@ -185,13 +203,11 @@ impl LlmAgent {
     /// server the caller runs, so a missing key there is not an error — it is
     /// sent as absent.
     pub fn from_env() -> std::result::Result<Self, MissingApiKey> {
-        let base_url = var(BASE_URL_ENV).unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
-        let model = var(MODEL_ENV).unwrap_or_else(|| DEFAULT_MODEL.to_owned());
-        let api_key = var(API_KEY_ENV).or_else(|| var(FALLBACK_API_KEY_ENV));
-
-        if api_key.is_none() && base_url.trim_end_matches('/') == DEFAULT_BASE_URL {
-            return Err(MissingApiKey);
-        }
+        let Endpoint {
+            base_url,
+            model,
+            api_key,
+        } = Endpoint::from_env()?;
         Ok(Self::new(base_url, model, api_key))
     }
 
@@ -258,6 +274,80 @@ impl LlmAgent {
             body["tools"] = json!(tools);
         }
         body
+    }
+}
+
+/// What the environment says to talk to.
+///
+/// [`BASE_URL_ENV`] wins outright. Failing that, [`QWEN_BASE_URL_ENV`] picks
+/// Qwen Cloud, with its own key and model variables. Failing both, the
+/// default endpoint, which needs a key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Endpoint {
+    /// Where `/chat/completions` is appended.
+    pub base_url: String,
+    /// The model id.
+    pub model: String,
+    /// The bearer token, when the endpoint needs one.
+    pub api_key: Option<String>,
+}
+
+impl Endpoint {
+    /// Reads the endpoint, model and key from the environment.
+    ///
+    /// # Errors
+    ///
+    /// [`MissingApiKey`] when the endpoint chosen is a hosted one and no key
+    /// was set for it. A custom [`BASE_URL_ENV`] is taken to mean a server the
+    /// caller runs, so a missing key there is not an error.
+    pub fn from_env() -> std::result::Result<Self, MissingApiKey> {
+        Self::resolve(var)
+    }
+
+    /// [`from_env`](Self::from_env), reading through `var` — a lookup a test
+    /// can hand a map to, since the process environment is shared.
+    pub fn resolve(
+        var: impl Fn(&str) -> Option<String>,
+    ) -> std::result::Result<Self, MissingApiKey> {
+        let generic_key = var(API_KEY_ENV);
+        let (base_url, model, api_key) = match (var(BASE_URL_ENV), var(QWEN_BASE_URL_ENV)) {
+            (Some(base_url), _) => (
+                base_url,
+                var(MODEL_ENV).unwrap_or_else(|| DEFAULT_MODEL.to_owned()),
+                generic_key
+                    .or_else(|| var(FALLBACK_API_KEY_ENV))
+                    .or_else(|| var(QWEN_API_KEY_ENV)),
+            ),
+            (None, Some(base_url)) => {
+                let api_key = generic_key.or_else(|| var(QWEN_API_KEY_ENV));
+                if api_key.is_none() {
+                    return Err(MissingApiKey);
+                }
+                (
+                    base_url,
+                    var(MODEL_ENV)
+                        .or_else(|| var(QWEN_MODEL_ENV))
+                        .unwrap_or_else(|| QWEN_DEFAULT_MODEL.to_owned()),
+                    api_key,
+                )
+            }
+            (None, None) => {
+                let api_key = generic_key.or_else(|| var(FALLBACK_API_KEY_ENV));
+                if api_key.is_none() {
+                    return Err(MissingApiKey);
+                }
+                (
+                    DEFAULT_BASE_URL.to_owned(),
+                    var(MODEL_ENV).unwrap_or_else(|| DEFAULT_MODEL.to_owned()),
+                    api_key,
+                )
+            }
+        };
+        Ok(Self {
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            model,
+            api_key,
+        })
     }
 }
 
@@ -1484,5 +1574,95 @@ mod tests {
     fn a_trailing_slash_does_not_double_up_the_path() {
         let agent = LlmAgent::new("http://localhost:1234/v1/", "local", None);
         assert_eq!(agent.base_url(), "http://localhost:1234/v1");
+    }
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        move |name| map.get(name).cloned()
+    }
+
+    #[test]
+    fn the_default_endpoint_needs_a_key() {
+        assert_eq!(Endpoint::resolve(env(&[])), Err(MissingApiKey));
+        let endpoint = Endpoint::resolve(env(&[(FALLBACK_API_KEY_ENV, "g")])).expect("a key");
+        assert_eq!(endpoint.base_url, DEFAULT_BASE_URL);
+        assert_eq!(endpoint.model, DEFAULT_MODEL);
+        assert_eq!(endpoint.api_key.as_deref(), Some("g"));
+    }
+
+    #[test]
+    fn qwen_is_picked_by_its_base_url_with_its_own_key_and_model() {
+        let endpoint = Endpoint::resolve(env(&[
+            (
+                QWEN_BASE_URL_ENV,
+                "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/",
+            ),
+            (QWEN_API_KEY_ENV, "q"),
+        ]))
+        .expect("a key");
+        assert_eq!(
+            endpoint.base_url, "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "the trailing slash goes, since /chat/completions is appended"
+        );
+        assert_eq!(endpoint.model, QWEN_DEFAULT_MODEL);
+        assert_eq!(endpoint.api_key.as_deref(), Some("q"));
+
+        let endpoint = Endpoint::resolve(env(&[
+            (
+                QWEN_BASE_URL_ENV,
+                "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            ),
+            (QWEN_API_KEY_ENV, "q"),
+            (QWEN_MODEL_ENV, "qwen-turbo"),
+            // A Gemini key lying around does not make the Qwen endpoint use it.
+            (FALLBACK_API_KEY_ENV, "g"),
+        ]))
+        .expect("a key");
+        assert_eq!(endpoint.model, "qwen-turbo");
+        assert_eq!(endpoint.api_key.as_deref(), Some("q"));
+
+        // Qwen Cloud is hosted: a base URL without its key is an error.
+        assert_eq!(
+            Endpoint::resolve(env(&[(QWEN_BASE_URL_ENV, "https://example.invalid/v1")])),
+            Err(MissingApiKey)
+        );
+    }
+
+    #[test]
+    fn the_generic_variables_win_over_qwen() {
+        let endpoint = Endpoint::resolve(env(&[
+            (BASE_URL_ENV, "http://localhost:11434/v1"),
+            (MODEL_ENV, "qwen3:4b"),
+            (
+                QWEN_BASE_URL_ENV,
+                "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            ),
+            (QWEN_API_KEY_ENV, "q"),
+        ]))
+        .expect("a local server needs no key");
+        assert_eq!(endpoint.base_url, "http://localhost:11434/v1");
+        assert_eq!(endpoint.model, "qwen3:4b");
+        // The Qwen key is still offered, harmlessly, when nothing else is set.
+        assert_eq!(endpoint.api_key.as_deref(), Some("q"));
+
+        let endpoint = Endpoint::resolve(env(&[
+            (API_KEY_ENV, "generic"),
+            (
+                QWEN_BASE_URL_ENV,
+                "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            ),
+            (QWEN_API_KEY_ENV, "q"),
+        ]))
+        .expect("a key");
+        assert_eq!(endpoint.api_key.as_deref(), Some("generic"));
     }
 }

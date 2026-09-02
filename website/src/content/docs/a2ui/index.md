@@ -46,7 +46,7 @@ Turn `ag-ui` off and the dependency on `ag-ui` goes with it:
 
 ```toml
 [dependencies.ag-ui-a2ui]
-version = "0.2"
+version = "0.3"
 default-features = false
 features = ["toolkit"]
 ```

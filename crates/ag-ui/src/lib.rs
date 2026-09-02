@@ -5,7 +5,7 @@
 //! text and reasoning, calls tools, publishes state, and finishes — or pauses
 //! for human input.
 //!
-//! It implements all 33 event types, both halves of the protocol, and a drift
+//! It implements all 36 event types, both halves of the protocol, and a drift
 //! check in CI that fails the build when upstream's event set moves — held to
 //! what an official SDK would have to be, because becoming the official AG-UI
 //! Rust SDK is the goal. It is not that yet: this crate is not affiliated with
@@ -117,9 +117,9 @@
 //! ```toml
 //! [dependencies]
 //! # host an agent behind axum
-//! ag-ui = { version = "0.2", features = ["axum"] }
+//! ag-ui = { version = "0.3", features = ["axum"] }
 //! # or consume one over HTTP
-//! ag-ui = { version = "0.2", features = ["http"] }
+//! ag-ui = { version = "0.3", features = ["http"] }
 //! ```
 //!
 //! [AG-UI protocol]: https://github.com/ag-ui-protocol/ag-ui
@@ -149,10 +149,13 @@ pub mod event;
 pub mod ids;
 pub mod input;
 pub mod message;
+pub mod metadata;
 pub mod outcome;
 pub mod patch;
 pub mod token_usage;
 pub mod tool;
+
+mod serde_util;
 
 #[cfg(any(feature = "sse", feature = "protobuf"))]
 pub mod encode;
@@ -188,7 +191,8 @@ pub use event::{
     ReasoningEndEvent, ReasoningMessageChunkEvent, ReasoningMessageContentEvent,
     ReasoningMessageEndEvent, ReasoningMessageStartEvent, ReasoningRole, ReasoningStartEvent,
     RunErrorEvent, RunFinishedEvent, RunStartedEvent, StateDeltaEvent, StateSnapshotEvent,
-    StepFinishedEvent, StepStartedEvent, TextMessageChunkEvent, TextMessageContentEvent,
+    StepFinishedEvent, StepStartedEvent, SubagentErrorEvent, SubagentFinishedEvent,
+    SubagentOutcome, SubagentStartedEvent, TextMessageChunkEvent, TextMessageContentEvent,
     TextMessageEndEvent, TextMessageRole, TextMessageStartEvent, ToolCallArgsEvent,
     ToolCallChunkEvent, ToolCallEndEvent, ToolCallResultEvent, ToolCallStartEvent, ToolResultRole,
 };
@@ -199,13 +203,14 @@ pub use event::{
     ThinkingEndEvent, ThinkingStartEvent, ThinkingTextMessageContentEvent,
     ThinkingTextMessageEndEvent, ThinkingTextMessageStartEvent,
 };
-pub use ids::{AgentId, MessageId, RunId, StepName, ThreadId, ToolCallId};
+pub use ids::{AgentId, MessageId, RunId, StepName, SubagentRunId, ThreadId, ToolCallId};
 pub use input::RunAgentInput;
 pub use message::{
     ActivityMessage, AssistantMessage, BinaryInputContent, DeveloperMessage, InputContent,
     InputContentSource, MediaInputContent, Message, ReasoningMessage, Role, SystemMessage,
     TextInputContent, ToolMessage, UserContent, UserMessage,
 };
+pub use metadata::{AGUI_METADATA_KEY, merge_metadata};
 pub use outcome::{Interrupt, ResumeEntry, ResumeStatus, RunOutcome};
 pub use patch::{JsonPatch, PatchOperation};
 pub use token_usage::{TokenUsage, aggregate_token_usage};

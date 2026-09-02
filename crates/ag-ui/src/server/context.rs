@@ -3,8 +3,8 @@
 use std::future::Future;
 
 use crate::{
-    Context, Event, Message, MessageId, ResumeEntry, RunAgentInput, RunId, StepName,
-    TextMessageRole, ThreadId, Tool, ToolCallId,
+    Context, Event, Message, MessageId, ResumeEntry, RunAgentInput, RunId, StepName, SubagentRunId,
+    SubagentStartedEvent, TextMessageRole, ThreadId, Tool, ToolCallId,
 };
 use futures_channel::mpsc;
 use futures_util::future::{Either, select};
@@ -13,7 +13,8 @@ use serde_json::Value;
 use crate::server::agent::AgentState;
 use crate::server::cancel::{CancellationToken, Cancelled};
 use crate::server::emit::{
-    EventReceiver, EventSink, MessageHandle, ReasoningHandle, StepGuard, ToolCallHandle,
+    EventReceiver, EventSink, MessageHandle, ReasoningHandle, StepGuard, SubagentHandle,
+    ToolCallHandle,
 };
 use crate::server::error::{Error, Result};
 use crate::server::state::RunState;
@@ -45,6 +46,7 @@ pub struct RunContext<S> {
     sink: EventSink,
     next_message: u64,
     next_tool_call: u64,
+    next_subagent: u64,
 }
 
 impl<S: AgentState> RunContext<S> {
@@ -73,6 +75,7 @@ impl<S: AgentState> RunContext<S> {
             sink,
             next_message: 0,
             next_tool_call: 0,
+            next_subagent: 0,
         }
     }
 
@@ -302,6 +305,81 @@ impl<S> RunContext<S> {
     pub fn new_tool_call_id(&mut self) -> ToolCallId {
         self.next_tool_call += 1;
         ToolCallId::new(format!("{}-call-{}", self.id_prefix(), self.next_tool_call))
+    }
+
+    /// A fresh subagent invocation id, unique within the run.
+    ///
+    /// Derived like the others, from the run id and a counter — so, like
+    /// message ids, it is unique across runs only while run ids are. A
+    /// resuming run that continues a *suspended* subagent should reuse the
+    /// suspended id instead — see [`subagent_with`](Self::subagent_with).
+    pub fn new_subagent_run_id(&mut self) -> SubagentRunId {
+        self.next_subagent += 1;
+        SubagentRunId::new(format!("{}-sub-{}", self.id_prefix(), self.next_subagent))
+    }
+
+    /// The subagent everything emitted right now is attributed to — `None`
+    /// outside any [`subagent`](Self::subagent) scope.
+    pub fn subagent_run_id(&self) -> Option<&SubagentRunId> {
+        self.sink.attribution()
+    }
+
+    /// Replaces the attribution scope and returns the previous one. Only the
+    /// subagent handle calls this, on the way in and on the way out.
+    pub(crate) fn set_attribution(
+        &mut self,
+        attribution: Option<SubagentRunId>,
+    ) -> Option<SubagentRunId> {
+        self.sink.set_attribution(attribution)
+    }
+
+    /// Announces a subagent under a fresh id and scopes everything emitted
+    /// through the returned handle to it — `SUBAGENT_STARTED` now,
+    /// `SUBAGENT_FINISHED` when the handle drops.
+    ///
+    /// `name` is the subagent's reusable type or name, for display; the id is
+    /// this invocation's alone. See [`SubagentHandle`].
+    pub fn subagent(&mut self, name: impl Into<String>) -> Result<SubagentHandle<'_, S>> {
+        let id = self.new_subagent_run_id();
+        self.subagent_with(SubagentStartedEvent::new(id, name))
+    }
+
+    /// The same, from an announcement you built — for a description, an
+    /// explicit id, or the agents-as-tools links.
+    ///
+    /// A `parent_subagent_run_id` left absent is filled from the enclosing
+    /// scope, so nesting needs no help. An explicit id is how a resuming run
+    /// continues a subagent that suspended: announce the id the suspended
+    /// invocation had, and a client transitions its group from waiting back
+    /// to running rather than drawing a second one.
+    ///
+    /// ```
+    /// # use ag_ui::{Event, EventType, RunAgentInput, SubagentStartedEvent};
+    /// # use ag_ui::server::RunContext;
+    /// # let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
+    /// let mut call = ctx.tool_call("task")?;
+    /// call.args(r#"{"brief":"find sources"}"#)?;
+    /// let (call_id, result_id) = (call.id().clone(), call.result_message_id().clone());
+    /// call.end()?;                                   // the client sees the call close…
+    ///
+    /// let announce = SubagentStartedEvent::new("researcher-7", "researcher")
+    ///     .with_parent_tool_call(call_id.clone());
+    /// let mut researcher = ctx.subagent_with(announce)?;
+    /// researcher.say("Three sources found.")?;       // …then the subagent it spawned…
+    /// researcher.finish()?;
+    ///
+    /// ctx.emit(Event::tool_call_result(result_id, call_id, "3 sources"))?;  // …then its result
+    /// let types: Vec<_> = events.drain().iter().map(Event::event_type).collect();
+    /// assert_eq!(types[3], EventType::SubagentStarted);
+    /// assert_eq!(types[7], EventType::SubagentFinished);
+    /// assert_eq!(types[8], EventType::ToolCallResult);
+    /// # Ok::<(), ag_ui::server::Error>(())
+    /// ```
+    pub fn subagent_with(
+        &mut self,
+        started: SubagentStartedEvent,
+    ) -> Result<SubagentHandle<'_, S>> {
+        SubagentHandle::start(self, started)
     }
 
     fn id_prefix(&self) -> &str {

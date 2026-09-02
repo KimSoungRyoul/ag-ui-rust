@@ -1,6 +1,6 @@
 ---
 title: Event reference
-description: All 33 event types in the protocol, the Rust variant that carries each one, and the families they fall into.
+description: All 36 event types in the protocol, the Rust variant that carries each one, and the families they fall into.
 ---
 
 An AG-UI run is a sequence of events. On the wire each is a JSON object with a
@@ -9,7 +9,7 @@ An AG-UI run is a sequence of events. On the wire each is a JSON object with a
 [`EventType`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html) is that
 discriminator on its own.
 
-There are **33** of them. That number is
+There are **36** of them. That number is
 `EventType::ALL.len()`, and it is also what `cargo run -p xtask -- drift-check`
 compares against the vendored snapshot of the upstream TypeScript schemas on
 every pull request — see [Verification](/ag-ui-rust/design/verification/).
@@ -24,8 +24,13 @@ costs.
 Every variant wraps a payload struct named after it — `Event::TextMessageStart`
 carries a `TextMessageStartEvent`, and so on the whole way down. The payload's
 fields are serialized beside `type`, not nested under a key, and every payload
-also carries the optional `timestamp` and `rawEvent` fields of `BaseEvent`,
-flattened into the same object.
+also carries the optional `timestamp`, `rawEvent` and `metadata` fields of
+`BaseEvent`, flattened into the same object. `metadata` is an object open by
+key — token usage, a trace id, whatever an application needs to carry — and it
+is absent or an object, never `null`. A consumer merges each event's metadata
+into the message that event builds, key by key with the last write winning;
+[`ag_ui::metadata`](/ag-ui-rust/api/ag_ui/metadata/index.html) has the rules
+and the one reserved key.
 
 The order below is `EventType::ALL`'s order, which is upstream's.
 
@@ -64,9 +69,25 @@ The order below is `EventType::ALL`'s order, which is upstream's.
 | `REASONING_MESSAGE_CHUNK` | `ReasoningMessageChunk` | Reasoning | Start, content and end folded into one self-contained event. |
 | `REASONING_END` | `ReasoningEnd` | Reasoning | Closes the reasoning block. |
 | `REASONING_ENCRYPTED_VALUE` | `ReasoningEncryptedValue` | Reasoning | A provider's opaque reasoning blob, for zero-data-retention modes. `subtype` says whether `entityId` names a `tool-call` or a `message`. |
+| `SUBAGENT_STARTED` | `SubagentStarted` | Subagent | Announces a subagent invocation under a `subagentRunId`, with a display `name`. Optionally a `description`, the enclosing `parentSubagentRunId`, and the `parentToolCallId` / `parentMessageId` that spawned it. |
+| `SUBAGENT_FINISHED` | `SubagentFinished` | Subagent | Closes the invocation. `outcome` is `success` or `suspended` — the latter naming the `interruptIds` the subagent owns — and absent reads as success. `result` mirrors `RUN_FINISHED.result`. |
+| `SUBAGENT_ERROR` | `SubagentError` | Subagent | The invocation failed: a `message` for a human and an optional machine-readable `code`. |
 
 That is 4 text, 5 tool, 5 deprecated thinking, 3 state, 2 activity, 2 escape
-hatches, 5 lifecycle and 7 reasoning.
+hatches, 5 lifecycle, 7 reasoning and 3 subagent.
+
+### Attribution
+
+Beyond the three lifecycle events, **24** of the 36 types carry an optional
+`subagentRunId` naming the subagent that produced them: the text, tool, state,
+activity, reasoning and step families, plus `RAW` and `CUSTOM`. An event
+without one belongs to the parent agent, so a stream that never sets the field
+is exactly the stream there was before subagents existed. The nine that cannot
+carry it are the run lifecycle (`RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`),
+`MESSAGES_SNAPSHOT` — whose messages carry their own — and the five deprecated
+`THINKING_*` events. `EventType::is_attributable` is that list as a method,
+and `Event::subagent_run_id` reads the tag off any event.
+[Subagents](/ag-ui-rust/server/subagents/) is what to do with it.
 
 ## On the wire
 
@@ -77,7 +98,7 @@ use ag_ui::{Event, EventType};
 
 fn main() {
     // Every event type the protocol defines, in upstream order.
-    assert_eq!(EventType::ALL.len(), 33);
+    assert_eq!(EventType::ALL.len(), 36);
 
     // The discriminator is the wire name, both ways.
     assert_eq!(EventType::TextMessageContent.as_str(), "TEXT_MESSAGE_CONTENT");
@@ -177,14 +198,14 @@ will not let you do is close a call you never opened. See
 ## What the binary transport cannot carry
 
 The protocol also defines a protobuf encoding, and it is a lossy subset. The
-`Event` message in upstream's `events.proto` is a `oneof` over **18** of the 33
+`Event` message in upstream's `events.proto` is a `oneof` over **21** of the 36
 types:
 
 `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`,
 `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
 `TOOL_CALL_CHUNK`, `STATE_SNAPSHOT`, `STATE_DELTA`, `MESSAGES_SNAPSHOT`, `RAW`,
 `CUSTOM`, `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`,
-`STEP_FINISHED`.
+`STEP_FINISHED`, `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR`.
 
 The other 15 have no binary representation at all: all seven `REASONING_*`
 events, both `ACTIVITY_*` events, all five deprecated `THINKING_*` events, and
@@ -194,12 +215,12 @@ result — which is most of them — cannot express its stream in that format.
 So `ag-ui` declines to encode any of it. The `protobuf` feature exists so a
 build can negotiate and name the media type; the formatter's `encode` always
 fails with `Error::UnsupportedTransport`. Silently dropping close to half the
-protocol is worse than refusing. Use SSE, which carries all 33. The
+protocol is worse than refusing. Use SSE, which carries all 36. The
 [`encode::protobuf`](/ag-ui-rust/api/ag_ui/encode/protobuf/index.html)
 module lists the covered set as `COVERED_EVENT_TYPES` and offers `is_covered`,
 so a test can assert that a given stream would have survived the binary
 transport.
 
 This is also why the port is written against the TypeScript Zod schemas rather
-than the proto definitions: a source of truth that is missing 15 of 33 events
+than the proto definitions: a source of truth that is missing 15 of 36 events
 cannot serve as one.

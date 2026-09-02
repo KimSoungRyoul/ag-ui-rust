@@ -9,7 +9,7 @@ no CODEOWNERS entry for it, so nobody has merge authority. As of August 2026 fou
 with zero reviews, including a server crate (#972, +5,916 lines) open since January. The core
 team acknowledged the situation on issue #2256.
 
-The concrete result: `ag-ui-core 0.1.0` declares 24 event variants against a spec with 33 —
+The concrete result: `ag-ui-core 0.1.0` declares 24 event variants against a spec with 33 at the time of writing — 36 today —
 missing nine, the whole `REASONING_*` family and both `ACTIVITY_*` events — and has no
 `RunFinished.outcome` field, which means human-in-the-loop is not expressible at all. An
 unknown `type` does not degrade to "ignore it": the enum is `#[serde(tag = "type")]` with no
@@ -40,7 +40,7 @@ above — and keeping every item on it enforced by something that fails the buil
 ## The source of truth is the TypeScript Zod schemas
 
 Not the protobuf definitions. `sdks/typescript/packages/proto/src/proto/events.proto` has an
-`Event` oneof with 18 arms — no reasoning, no activity, no thinking, no `tool_call_result`.
+`Event` oneof with 21 arms — no reasoning, no activity, no thinking, no `tool_call_result`.
 The binary transport is a lossy subset of the protocol, so it cannot serve as the port target.
 There is also no JSON Schema export upstream (`zod-to-json-schema` and `toJSONSchema` appear
 nowhere in the repo).
@@ -50,6 +50,13 @@ keeps it honest. Detection, not generation: it parses the upstream `EventType` e
 object keys and fails the build when they diverge from the Rust side. Full code generation would
 mean writing and maintaining a Zod-to-Rust compiler, which is not worth it yet.
 
+The check reads the fields of upstream's `BaseEvent` as well as each event's own. It did not
+until 0.3.0: it walked per-event payloads only, so when upstream added `metadata` to the base
+schema every event gained a field and the check stayed green. The gap was found by reading
+the upstream diff by hand, which is precisely the reading the check exists to make
+unnecessary, so it was closed rather than noted — `timestamp`, `rawEvent` and `metadata`
+are now compared like any other field, and `--refresh` records them in the baseline.
+
 ## `Event` is exhaustive on purpose; the errors are not
 
 Every error enum in the workspace is `#[non_exhaustive]`. `Event` and `EventType` are not,
@@ -57,9 +64,9 @@ and that asymmetry is deliberate rather than an oversight — the protocol *has*
 in the last year (`REASONING_*`, `ACTIVITY_*`), so this will be tested.
 
 The failure this SDK exists to correct is silent under-coverage. `ag-ui-core 0.1.0` declares
-24 variants against the 32 the spec had then — 33 today — and nobody noticed, because nothing
+24 variants against the 32 the spec had then — 36 today — and nobody noticed, because nothing
 anywhere forced the question. `#[non_exhaustive]` institutionalises that: it obliges every
-consumer to write a `_` arm, and a `_` arm is precisely the construct that turns "event 34
+consumer to write a `_` arm, and a `_` arm is precisely the construct that turns "event 37
 arrived" into no diagnostic at all. It does not remove the work of handling a new event; it
 removes the notification that there is work.
 
@@ -187,6 +194,46 @@ Neither the TypeScript SDK (which verifies on the client) nor .NET (which does n
 all) checks event ordering on the server. Emitting `TEXT_MESSAGE_CONTENT` without a preceding
 `START` is a bug that currently surfaces as a confused frontend. `ag_ui::server` runs an ordering
 state machine, on by default, so it surfaces where it was caused.
+
+## Subagent attribution is a sink scope
+
+The protocol attributes events to subagents with an optional `subagentRunId` on 24 of the 36
+types. The obvious port is a tag on every handle: a `MessageHandle` that knows which subagent
+it belongs to and writes the field on each event it emits. That doubles every emitter — a
+subagent-aware and a plain variant of each — and still misses `ctx.emit`, which is the path
+every hand-built event takes.
+
+So the attribution lives one layer down, in the event sink. `ctx.subagent(name)` announces
+the subagent and sets a scope on the sink; while it is open, every attributable event that
+arrives untagged is tagged, whichever emitter produced it, and an event the agent tagged
+explicitly is left alone. The handle that represents the scope dereferences to the run
+context, the way a step guard does, so the same messages, tool calls and nested subagents
+open through it with no new API, and `Drop` emits `SUBAGENT_FINISHED` on the early return
+a `?` produces. Two scopes cannot be open at once — a borrow-check error, as everything
+overlapping is here — and the genuinely concurrent case is emitted by hand with explicit
+tags, exactly as interleaved parallel tool calls already are.
+
+The verifier learned the same fact from the other side: every entity is opened by someone,
+and a later event that names a different owner is `Rule::OwnerMismatch`, the eighth rule.
+One that names nobody is accepted, because attribution is optional per event and a bare
+continuation is what a pre-subagent producer sends — and it does not hand the entity to the
+parent either: the first writer stays the owner, which is what upstream records and what
+keeps the verifier and the applier telling the same story about who owns a message. The
+same owner tracking covers activities, the entity a `REASONING_ENCRYPTED_VALUE` names, the
+history the `RUN_STARTED` echo replays, and the tool message a `TOOL_CALL_RESULT` mints.
+
+## Visibility defaults to attributed
+
+Upstream's integrations default to the *inline* shape — no lifecycle events, no
+`subagentRunId` anywhere — and make the full surface opt-in, because a client older than
+subagent support fails while decoding the three new event types. That is a real constraint,
+and `SubagentVisibility::inline()` and `hidden()` exist for it.
+
+This crate defaults the other way. A transformer that rewrites the stream is opt-in here like
+every other transformer: an agent that wrote `ctx.subagent(..)` meant it, and silently
+flattening what it said would make the emitted stream and the wire disagree by default,
+which is the kind of surprise the rest of this document argues against. The producer is the
+one who knows how old its consumers are, so the producer flips it, per endpoint.
 
 ## The offered tool list is a capability list, not an allow-list
 

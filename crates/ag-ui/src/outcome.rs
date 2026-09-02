@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::JsonObject;
 use crate::error::{Error, Result};
-use crate::ids::ToolCallId;
+use crate::ids::{SubagentRunId, ToolCallId};
 
 /// A request for human input that pauses the run.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -50,6 +50,18 @@ pub struct Interrupt {
     )]
     #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
     pub metadata: Option<JsonObject>,
+    /// The subagent whose work raised this interrupt, when it was raised
+    /// inside one — absent for a root-raised interrupt. Attribution lives on
+    /// each interrupt rather than on `RUN_FINISHED` because one run can carry
+    /// interrupts from several subagents; a client uses it to render the
+    /// approval request inside that subagent's group. A JSON `null` is
+    /// rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl Interrupt {
@@ -60,6 +72,13 @@ impl Interrupt {
             reason: reason.into(),
             ..Default::default()
         }
+    }
+
+    /// Attributes the interrupt to the subagent that raised it.
+    #[must_use]
+    pub fn with_subagent_run_id(mut self, subagent_run_id: impl Into<SubagentRunId>) -> Self {
+        self.subagent_run_id = Some(subagent_run_id.into());
+        self
     }
 }
 
@@ -157,6 +176,21 @@ pub struct ResumeEntry {
     /// `{"editedArgs": …}` here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
+    /// Envelope data about the answer — signatures, routing keys — as opposed
+    /// to `payload`, which is the answer the agent asked for and will act on.
+    /// A request field, so nothing merges into it. Absent or an object — a
+    /// JSON `null` is rejected. See [`crate::metadata`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub metadata: Option<JsonObject>,
 }
 
 impl ResumeEntry {
@@ -166,6 +200,7 @@ impl ResumeEntry {
             interrupt_id: interrupt_id.into(),
             status: ResumeStatus::Resolved,
             payload: Some(payload.into()),
+            metadata: None,
         }
     }
 
@@ -175,6 +210,14 @@ impl ResumeEntry {
             interrupt_id: interrupt_id.into(),
             status: ResumeStatus::Cancelled,
             payload: None,
+            metadata: None,
         }
+    }
+
+    /// Attaches envelope metadata to the answer.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: JsonObject) -> Self {
+        self.metadata = Some(metadata);
+        self
     }
 }

@@ -102,10 +102,19 @@ fn main() {
 | `NotOpen` | 열린 적 없는 것에 대한 content나 종료 event |
 | `UnknownId` | 소개된 적 없는 call id에 대한 `TOOL_CALL_RESULT` |
 | `OutOfOrder` | 그 call의 `TOOL_CALL_END`보다 앞선 `TOOL_CALL_RESULT` |
-| `OpenAtFinish` | message, reasoning block, tool call, step이 열린 채로 온 `RUN_FINISHED` |
+| `OpenAtFinish` | message, reasoning block, tool call, step, subagent가 열린 채로 온 `RUN_FINISHED` |
+| `OwnerMismatch` | entity를 연 쪽이 아닌 `subagentRunId`를 단 continuation, terminator, 재열기. 부모 message가 다른 subagent의 것인데 한 subagent로 tag된 tool call |
 
 `RUN_ERROR`는 `OpenAtFinish`에서 면제됩니다. message 도중에 터진 run이 그것을
 닫았을 리 없습니다.
+
+`OwnerMismatch`는 subagent가 더한 유일한 규칙입니다. 모든 entity는 *누군가가* 엽니다.
+subagent이거나, 연 event에 `subagentRunId`가 없다면 부모 agent입니다. 이 machine은
+누구였는지 기억합니다. 나중에 *다른* owner의 이름을 대는 event는 거부합니다. 아무도
+지목하지 않는 event는 받아들입니다. attribution은 모든 event에서 optional이고, 맨
+continuation은 subagent 이전의 producer가 보내는 것이기 때문입니다. step은 이름과 함께
+owner로도 색인됩니다. 그래서 subagent는 부모의 step을 닫을 수 없고, 두 agent가 같은
+이름의 step을 동시에 돌릴 수 있습니다.
 
 거부는 하나하나가
 [`VerificationError`](/ag-ui-rust/api/ag_ui/server/error/struct.VerificationError.html)입니다.
@@ -140,7 +149,7 @@ id가 자기 자신과 겹칠 수 없다는 것입니다.
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.2", default-features = false, features = ["server", "sse"] }
+ag-ui = { version = "0.3", default-features = false, features = ["server", "sse"] }
 ```
 
 그 스위치를 넘어 살아남는 것이 하나 있습니다. 종료 event가 이미 나갔는지는
@@ -154,7 +163,9 @@ verifier뿐 아니라 event sink에서도 추적합니다. 그래서 verificatio
 합니다. TypeScript SDK가 verifier를 두는 자리가 여기입니다. consumer 입장에서는
 옳은 직관입니다.
 
-규칙의 모양은 같습니다. 받는 쪽에서만 말이 되는 세 가지가 더해집니다.
+규칙의 모양은 같습니다. subagent 소유권도 포함해서입니다. client 쪽에서는
+`ag_ui::client::verify`의 규칙 9번부터 13번으로 풀어 적혀 있습니다. 받는 쪽에서만 말이
+되는 세 가지가 더해집니다.
 
 - `RUN_STARTED`가 stream을 열고, 정확히 한 번만 그렇게 합니다. 그 앞에 올 수 있는
   것은 `RAW`와 `CUSTOM`뿐입니다. 둘은 정의상 protocol의 어휘 바깥이고, 그래서
@@ -206,7 +217,7 @@ Rust event type은 upstream Zod schema를 손으로 옮긴 것입니다. compile
 잇는 것이 없습니다. 그래서 upstream이 event를 추가해도 이 SDK는 계속 build되고,
 계속 test를 통과하고, 조용히 protocol을 더는 말하지 못하게 됩니다. 앞선 어느
 커뮤니티 SDK가 그렇게 되었습니다. 당시 32개였던 spec을 상대로 event variant를
-24개만 선언했습니다. 오늘 spec은 33개입니다. 어디에도 그 질문을 강제하는 장치가
+24개만 선언했습니다. 오늘 spec은 36개입니다. 어디에도 그 질문을 강제하는 장치가
 없었습니다.
 
 `xtask drift-check`가 그 연결입니다.
@@ -217,11 +228,11 @@ cargo run -p xtask -- drift-check
 
 ```text
 drift-check
-  baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@8ec096f94b, captured 2026-08-17)
-  upstream  33 event types
-  rust      crates/ag-ui/src/event  (9 files, 33 event types, tagged enum `Event`)
+  baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@bc8477bfd6, captured 2026-09-02)
+  upstream  36 event types
+  rust      crates/ag-ui/src/event  (10 files, 36 event types, tagged enum `Event`)
 
-OK  33 event types match the baseline.
+OK  36 event types match the baseline.
 ```
 
 이 검사는 `xtask/baseline/events.json`을 `crates/ag-ui/src/event/`와
@@ -274,7 +285,7 @@ code에 맞춰 protocol을 고치는 일입니다. 이 검사가 잡으려고 �
 
 - borrow checker는 `ctx.emit`으로 나간 event를 보지 못합니다. 그래서 layer 2가
   있습니다.
-- runtime verifier는 protocol에 34번째 event가 생겼다는 것을 알지 못합니다.
+- runtime verifier는 protocol에 37번째 event가 생겼다는 것을 알지 못합니다.
   그래서 layer 3이 있습니다.
 - drift check는 이름과 field가 그대로인 채 event의 *의미*만 바뀐 것을 말해 주지
   못합니다. 여기 있는 어떤 것도 못 합니다. `--refresh`의 diff를 읽는 일이 그래서

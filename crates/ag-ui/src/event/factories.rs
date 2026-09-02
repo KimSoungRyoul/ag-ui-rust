@@ -31,6 +31,9 @@ use crate::event::reasoning::{
 };
 use crate::event::special::{CustomEvent, RawEvent};
 use crate::event::state::{MessagesSnapshotEvent, StateDeltaEvent, StateSnapshotEvent};
+use crate::event::subagent::{
+    SubagentErrorEvent, SubagentFinishedEvent, SubagentOutcome, SubagentStartedEvent,
+};
 use crate::event::text::{
     TextMessageChunkEvent, TextMessageContentEvent, TextMessageEndEvent, TextMessageRole,
     TextMessageStartEvent,
@@ -39,7 +42,7 @@ use crate::event::tool::{
     ToolCallArgsEvent, ToolCallChunkEvent, ToolCallEndEvent, ToolCallResultEvent,
     ToolCallStartEvent,
 };
-use crate::ids::{MessageId, RunId, StepName, ThreadId, ToolCallId};
+use crate::ids::{MessageId, RunId, StepName, SubagentRunId, ThreadId, ToolCallId};
 use crate::message::Message;
 use crate::outcome::{Interrupt, RunOutcome};
 use crate::patch::PatchOperation;
@@ -262,5 +265,45 @@ impl Event {
         encrypted_value: impl Into<String>,
     ) -> Self {
         ReasoningEncryptedValueEvent::new(subtype, entity_id, encrypted_value).into()
+    }
+
+    /// `SUBAGENT_STARTED` — announces a subagent invocation.
+    pub fn subagent_started(
+        subagent_run_id: impl Into<SubagentRunId>,
+        name: impl Into<String>,
+    ) -> Self {
+        SubagentStartedEvent::new(subagent_run_id, name).into()
+    }
+
+    /// `SUBAGENT_FINISHED` without an outcome — the legacy shape, which
+    /// consumers read as success.
+    pub fn subagent_finished(subagent_run_id: impl Into<SubagentRunId>) -> Self {
+        SubagentFinishedEvent::new(subagent_run_id).into()
+    }
+
+    /// `SUBAGENT_FINISHED` with an explicit success outcome.
+    pub fn subagent_finished_success(subagent_run_id: impl Into<SubagentRunId>) -> Self {
+        SubagentFinishedEvent::new(subagent_run_id)
+            .with_outcome(SubagentOutcome::Success)
+            .into()
+    }
+
+    /// `SUBAGENT_FINISHED` with a suspended outcome — the subagent is waiting
+    /// on the named interrupts.
+    pub fn subagent_finished_suspended(
+        subagent_run_id: impl Into<SubagentRunId>,
+        interrupt_ids: impl Into<Vec<String>>,
+    ) -> Self {
+        SubagentFinishedEvent::new(subagent_run_id)
+            .with_outcome(SubagentOutcome::suspended(interrupt_ids))
+            .into()
+    }
+
+    /// `SUBAGENT_ERROR` — fails a subagent invocation.
+    pub fn subagent_error(
+        subagent_run_id: impl Into<SubagentRunId>,
+        message: impl Into<String>,
+    ) -> Self {
+        SubagentErrorEvent::new(subagent_run_id, message).into()
     }
 }

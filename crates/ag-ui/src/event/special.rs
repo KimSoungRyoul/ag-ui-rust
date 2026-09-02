@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::event::BaseEvent;
+use crate::ids::SubagentRunId;
 
 /// Forwards a provider event verbatim, for debugging and for consumers that
 /// understand the upstream format.
@@ -20,6 +21,14 @@ pub struct RawEvent {
     /// Which system produced it, for example `"openai"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl RawEvent {
@@ -29,6 +38,7 @@ impl RawEvent {
             base: BaseEvent::default(),
             event: event.into(),
             source: None,
+            subagent_run_id: None,
         }
     }
 }
@@ -49,6 +59,14 @@ pub struct CustomEvent {
     pub name: String,
     /// The payload.
     pub value: Value,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl CustomEvent {
@@ -58,6 +76,7 @@ impl CustomEvent {
             base: BaseEvent::default(),
             name: name.into(),
             value: value.into(),
+            subagent_run_id: None,
         }
     }
 }

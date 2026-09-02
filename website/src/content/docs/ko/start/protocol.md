@@ -96,8 +96,8 @@ assert_eq!(body.matches("\n\n").count(), 6);
 
 SSE는 상호운용의 기본값입니다. 이 SDK가 온전히 구현하는 유일한 transport이기도 합니다.
 protocol은 binary media type `application/vnd.ag-ui.event+proto`도 정의하고
-`ag-ui`가 그것을 협상합니다. 다만 upstream의 `events.proto`는 33개 event type 중
-18개만 다룹니다. 그쪽으로 encode하면 event를 조용히 떨어뜨립니다. 그래서 여기에
+`ag-ui`가 그것을 협상합니다. 다만 upstream의 `events.proto`는 36개 event type 중
+21개만 다룹니다. 그쪽으로 encode하면 event를 조용히 떨어뜨립니다. 그래서 여기에
 encoder는 없습니다. 자세한 것은 [feature flag](/ag-ui-rust/ko/reference/features/)에
 있습니다.
 
@@ -181,7 +181,7 @@ chunk event 다섯 개가 message 하나일 수 있습니다.
 
 ## event 계열
 
-event type은 **33개**입니다. `ag-ui`는 그것을 빠짐없는 `Event` enum 하나와
+event type은 **36개**입니다. `ag-ui`는 그것을 빠짐없는 `Event` enum 하나와
 `EventType` 판별자로 표현합니다:
 
 ```rust
@@ -191,10 +191,10 @@ let event = Event::text_message_content("msg-1", "Hello");
 
 assert_eq!(event.event_type(), EventType::TextMessageContent);
 assert_eq!(EventType::TextMessageContent.as_str(), "TEXT_MESSAGE_CONTENT");
-assert_eq!(EventType::ALL.len(), 33);
+assert_eq!(EventType::ALL.len(), 36);
 ```
 
-여덟 계열로 묶입니다:
+아홉 계열로 묶입니다:
 
 | 계열 | event | 무엇을 위한 것인가 |
 | --- | --- | --- |
@@ -206,6 +206,7 @@ assert_eq!(EventType::ALL.len(), 33);
 | activity | `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA` | agent가 지금 *하는 일*. 검색, 읽기, 대기. client가 그릴 수 있는 모양으로. |
 | run과 step | `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`, `STEP_FINISHED` | 위의 lifecycle. |
 | 탈출구 | `RAW`, `CUSTOM` | provider event를 그대로 전달한 것, 그리고 application이 정의한 것. |
+| subagent | `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR` | 자식 agent의 시작과 끝. 그 agent가 만든 것은 담는 그릇이 아니라 event마다 붙는 tag입니다. |
 
 field 단위 판본은 [event reference](/ag-ui-rust/ko/reference/events/)에 있습니다.
 
@@ -234,6 +235,36 @@ application state는 양쪽이 함께 비추는 자유 형식 JSON입니다. age
 자리 잡는 모습을 보여 주는 방법입니다. 뒤집어 말하면 state event는 도착 당시 무엇이
 열려 있었는지와 아무 연관이 없습니다. wire도 그 연관을 싣지 않기 때문입니다.
 
+## subagent는 그릇이 아니라 tag입니다
+
+많은 agent가 일을 맡깁니다. 조사를 넘기는 supervisor, 그 자체가 agent인 tool call.
+frontend에는 그것이 stream 하나로 도착합니다. protocol의 답은 작습니다. 36개 event type 중
+24개에 붙는 optional `subagentRunId`가 각 event를 만든 subagent를 가리킵니다. 그리고
+subagent가 언제 시작하고 끝나고 실패하는지 말하는 lifecycle event 셋이 있습니다. 이 field가
+없는 event는 부모의 것입니다. 그래서 이 field를 한 번도 쓰지 않는 stream은 전과 정확히
+같습니다.
+
+```text
+SUBAGENT_STARTED        subagentRunId=sub-1  name=researcher
+TEXT_MESSAGE_START      messageId=msg-1  subagentRunId=sub-1
+TEXT_MESSAGE_CONTENT    messageId=msg-1  subagentRunId=sub-1  delta="Three sources."
+TEXT_MESSAGE_END        messageId=msg-1  subagentRunId=sub-1
+SUBAGENT_FINISHED       subagentRunId=sub-1  outcome={"type":"success"}
+TEXT_MESSAGE_START      messageId=msg-2                       <- the parent's own
+```
+
+이 id는 정의가 아니라 **호출 한 번**의 이름입니다. 같은 subagent를 두 번 돌리면 id도 둘이고,
+재사용되는 쪽은 `name`입니다. interrupt로 멈춘 subagent는 success 대신 `suspended`
+outcome으로 닫힙니다. 재개하는 run에서 같은 id를 다시 announce할 수 있습니다. 동시에
+stream하는 subagent 둘은 tool call 둘과 똑같이 각자의 tag 아래 뒤섞입니다.
+[subagent](/ag-ui-rust/ko/server/subagents/)가 만드는 쪽이고,
+[update stream](/ag-ui-rust/ko/client/updates/#subagent)이 소비하는 쪽입니다.
+
+모든 event, message, tool call, resume entry는 optional `metadata` 객체도 싣습니다. key로
+열려 있습니다. token 사용량, trace id, application이 대화 옆에 실어야 하는 무엇이든
+됩니다. 없거나 객체이고 `null`은 아닙니다. event가 만드는 message에 merge되고, 마지막
+쓰기가 이깁니다.
+
 ## ordering 규칙은 실제로 무엇인가
 
 protocol의 규칙은 감싸는 짝과 id에 관한 것입니다. 몇 개 안 됩니다:
@@ -247,6 +278,7 @@ protocol의 규칙은 감싸는 짝과 id에 관한 것입니다. 몇 개 안 �
 | `unknown-id` | stream이 소개한 적 없는 id를 참조하는 것. |
 | `open-at-finish` | message나 call이나 step이 열려 있는데 오는 `RUN_FINISHED`. |
 | `out-of-order` | 적법한 event가 부적법한 자리에 오는 것. `TOOL_CALL_END`보다 앞선 tool 결과. |
+| `owner-mismatch` | entity를 연 subagent와 다른 subagent를 지목하는 continuation, terminator, 재열기. |
 
 저 이름이 이 SDK가 보고하는 이름입니다. client뿐 아니라 **server**에서도 검사하고,
 release build에서도 기본으로 켜져 있습니다. 그래서 `START` 없이

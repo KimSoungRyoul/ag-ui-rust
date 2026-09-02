@@ -168,6 +168,7 @@ export default defineConfig({
 							translations: { ko: 'human in the loop' },
 							link: '/server/interrupts/',
 						},
+						{ label: 'Subagents', translations: { ko: 'subagent' }, link: '/server/subagents/' },
 						{
 							label: 'Errors and cancellation',
 							translations: { ko: 'error와 cancellation' },

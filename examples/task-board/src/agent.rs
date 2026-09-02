@@ -18,6 +18,12 @@
 //!   TOOL_CALL_* render_a2ui           the board as an A2UI surface
 //! STEP_FINISHED board
 //! ```
+//!
+//! `research` is the one command that delegates. Inside the step it opens two
+//! subagents in turn, and everything each one emits — its sentence, its
+//! `add_task` call, the state it publishes — goes out tagged with that
+//! invocation's `subagentRunId`, bracketed by `SUBAGENT_STARTED` and
+//! `SUBAGENT_FINISHED`. The supervisor's own reply follows, untagged.
 
 use ag_ui::server::{Agent, Error, Result, RunContext};
 use ag_ui::{Interrupt, JsonObject, Message, ResumeStatus, RunOutcome};
@@ -248,6 +254,37 @@ fn apply(
             }),
         },
 
+        Command::Research(topic) => {
+            let mut added = Vec::new();
+            for (name, finding, title) in briefs(topic) {
+                // A subagent is a scope, like the step around it: the handle
+                // dereferences to the run context, so the sentence, the tool
+                // call and the state publish below are the same code the
+                // other commands run — they merely come out attributed.
+                let mut delegate = ctx.subagent(name)?;
+                stream(&mut delegate, &finding)?;
+
+                let mut call = offered(&mut delegate, board::ADD_TASK)?;
+                call.args_json(&json!({"title": title}))?;
+                let task = call.state_mut().add(&title).clone();
+                call.publish_state()?;
+                call.result_json(&json!({"id": task.id, "title": task.title}))?;
+
+                added.push(format!("#{} {}", task.id, task.title));
+                // `finish_with` is the subagent's `RUN_FINISHED.result`; a
+                // handle that merely drops finishes with no payload.
+                delegate.finish_with(json!({"added": task.id}))?;
+            }
+            Ok(Report {
+                reply: format!(
+                    "Research on \"{topic}\" added {}. {}",
+                    added.join(", "),
+                    ctx.state().summary()
+                ),
+                render: true,
+            })
+        }
+
         // The reply stays a sentence and the surface does the drawing. That
         // split is the whole reason A2UI rides alongside the text.
         Command::List => Ok(Report {
@@ -284,7 +321,27 @@ fn offered<'a>(
 
 /// What the agent says when it does not understand.
 const HELP: &str = "I keep a task board. Try: add draft the agenda, book the room · \
-complete 1 · estimate 2 45 · list · clear";
+complete 1 · estimate 2 45 · research onboarding · list · clear";
+
+/// The two delegates `research` runs, in order: a name, the one sentence
+/// each says, and the task each adds.
+///
+/// Deterministic on purpose, like every other sentence here: the transcript
+/// in `README.md` is asserted to the character.
+fn briefs(topic: &str) -> [(&'static str, String, String); 2] {
+    [
+        (
+            "scope",
+            format!("Scoping \"{topic}\": one deliverable, one owner."),
+            format!("scope {topic}"),
+        ),
+        (
+            "risks",
+            format!("One risk for \"{topic}\": nobody owns the follow-up."),
+            format!("name a follow-up owner for {topic}"),
+        ),
+    ]
+}
 
 /// Pauses the run on the one destructive command.
 fn ask_before_clearing(ctx: &mut RunContext<Board>) -> Result<RunOutcome> {
@@ -371,6 +428,8 @@ pub enum Command {
         /// Minutes.
         minutes: u32,
     },
+    /// `research onboarding` — the one that delegates to subagents.
+    Research(String),
     /// `list`, `board`, `show`.
     List,
     /// `clear`, `reset` — the destructive one.
@@ -407,6 +466,7 @@ impl Command {
                 },
                 None => Self::Help,
             },
+            "research" | "investigate" if !rest.is_empty() => Self::Research(rest.to_owned()),
             "list" | "board" | "show" => Self::List,
             "clear" | "reset" => Self::Clear,
             _ => Self::Help,
@@ -422,6 +482,7 @@ impl Command {
             Self::Add(titles) => format!("adding {} task(s)", titles.len()),
             Self::Complete(needle) => format!("looking for the task matching \"{needle}\""),
             Self::Estimate { task, minutes } => format!("putting {minutes}m on \"{task}\""),
+            Self::Research(topic) => format!("delegating \"{topic}\" to two subagents"),
             Self::List => "reading the board back".to_owned(),
             Self::Clear => match answer {
                 Some(ResumeStatus::Resolved) => "a human approved clearing the board".to_owned(),

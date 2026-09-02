@@ -14,7 +14,12 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
 - `website/src/content/docs/client/session.md` — `Session`, the builder, the constructor-side
   transport bound, typed state, answering a pause, why there is no stop
 - `website/src/content/docs/client/updates.md` — every `Update` variant, the three ways a run
-  ends, why `RunEnd` is exhaustive and `Update` is not, `Success` alongside errors
+  ends, why `RunEnd` is exhaustive and `Update` is not, `Success` alongside errors, the
+  subagent lifecycle and registry
+- `website/src/content/docs/client/rendering.md` — grouping by subagent
+- `crates/ag-ui/src/client/apply.rs` — `Subagent`, `SubagentStatus`, `SubagentChangeKind`
+- `crates/ag-ui/tests/client_subagents.rs` — the registry, attribution on messages, the
+  continuation on resume, pinned
 - `website/src/content/docs/client/transports.md` — the trait, `HttpTransport`'s two timeouts,
   `ReplayTransport`, `SseDecoder`, turning `http` off
 - `website/src/content/docs/client/rendering.md` — arrival order

@@ -321,7 +321,7 @@ bring your own `Transport`.
 
 ```toml
 [dependencies.ag-ui]
-version = "0.2"
+version = "0.3"
 default-features = false
 features = ["client", "sse"]
 ```

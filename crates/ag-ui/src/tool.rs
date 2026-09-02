@@ -91,6 +91,22 @@ pub struct ToolCall {
     /// Opaque provider payload for zero-data-retention reasoning modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_value: Option<String>,
+    /// Extra information, open by key. A tool call is not a message, so it
+    /// carries its own rather than folding into the assistant message that
+    /// owns it: several calls can share one parent, and merging them all into
+    /// it would make the result depend on their relative order. Absent or an
+    /// object — a JSON `null` is rejected. See [`crate::metadata`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub metadata: Option<JsonObject>,
 }
 
 impl ToolCall {
@@ -108,6 +124,7 @@ impl ToolCall {
                 arguments: arguments.into(),
             },
             encrypted_value: None,
+            metadata: None,
         }
     }
 }

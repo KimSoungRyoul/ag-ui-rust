@@ -19,16 +19,23 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
   capability-list semantics, parallel calls
 - `website/src/content/docs/server/state.md` — `update_state` and the snapshot/delta choice
 - `website/src/content/docs/server/axum.md` — `route_agui`, `AgentEndpoint`, the status codes
+- `website/src/content/docs/server/subagents.md` — the subagent scope, attribution by the
+  sink, agents as tools, suspension, concurrency by hand, `SubagentVisibility`
 - `crates/ag-ui/src/server/agent.rs`, `crates/ag-ui/src/server/context.rs`,
-  `crates/ag-ui/src/server/emit/mod.rs`, `crates/ag-ui/src/server/state.rs`
+  `crates/ag-ui/src/server/emit/mod.rs`, `crates/ag-ui/src/server/emit/subagent.rs`,
+  `crates/ag-ui/src/server/state.rs`, `crates/ag-ui/src/server/transform.rs`
+- `crates/ag-ui/tests/server_subagents.rs`, `crates/ag-ui/tests/server_transformers.rs` —
+  what a scope emits and what each visibility mode strips, pinned
 - `crates/ag-ui/src/axum/router.rs`
 
 ## references/state-and-interrupts.md
 
 - `website/src/content/docs/server/interrupts.md` — the round trip, `Interrupt`'s fields,
   the multi-interrupt failure mode
-- `website/src/content/docs/server/errors.md` — the error variants and codes, the seven
+- `website/src/content/docs/server/errors.md` — the error variants and codes, the eight
   verifier rules, cancellation
+- `website/src/content/docs/server/subagents.md` — an interrupt raised inside a subagent,
+  and the continuation on resume
 - `website/src/content/docs/server/state.md`
 - `crates/ag-ui/src/server/verify.rs`, `crates/ag-ui/src/server/error.rs`,
   `crates/ag-ui/src/server/cancel.rs`

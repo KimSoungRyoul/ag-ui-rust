@@ -28,8 +28,9 @@ pub struct Baseline {
     pub note: String,
     pub format: u32,
     pub source: Source,
-    /// Fields every event inherits from `BaseEventSchema`. Recorded for the
-    /// reader's benefit; they are excluded from per-event comparison.
+    /// Fields every event inherits from `BaseEventSchema`. Kept out of the
+    /// per-event field lists, where they would be repeated 36 times, and
+    /// compared once against the Rust `BaseEvent` instead.
     pub base_event_fields: Vec<Field>,
     /// `EventType` values in upstream declaration order.
     pub event_types: Vec<String>,

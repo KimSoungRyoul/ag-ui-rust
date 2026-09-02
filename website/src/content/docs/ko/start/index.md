@@ -44,7 +44,7 @@ crate는 하나이고, protocol의 어느 쪽을 쓸지는 feature로 정합니�
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.2", features = ["axum"] }
+ag-ui = { version = "0.3", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
@@ -54,7 +54,7 @@ client라면 `http`입니다:
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.2", features = ["http"] }
+ag-ui = { version = "0.3", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```

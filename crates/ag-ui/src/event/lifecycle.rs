@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::event::BaseEvent;
-use crate::ids::{RunId, StepName, ThreadId};
+use crate::ids::{RunId, StepName, SubagentRunId, ThreadId};
 use crate::input::RunAgentInput;
 use crate::outcome::RunOutcome;
 use crate::token_usage::TokenUsage;
@@ -160,6 +160,17 @@ pub struct StepStartedEvent {
     pub base: BaseEvent,
     /// The step that is starting.
     pub step_name: StepName,
+    /// The subagent that opened the step; absent means the parent agent. A
+    /// JSON `null` is rejected — see [`crate::event::subagent`]. Steps are
+    /// scoped to the agent that opened them: a subagent cannot close the
+    /// parent's step, or a sibling's, so the same name may be open under two
+    /// owners at once.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl StepStartedEvent {
@@ -168,6 +179,7 @@ impl StepStartedEvent {
         Self {
             base: BaseEvent::default(),
             step_name: step_name.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -183,6 +195,15 @@ pub struct StepFinishedEvent {
     pub base: BaseEvent,
     /// The step that finished.
     pub step_name: StepName,
+    /// The subagent that closes the step; absent means the parent agent. A
+    /// JSON `null` is rejected — see [`crate::event::subagent`]. Must match
+    /// the owner that opened it, as on [`StepStartedEvent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl StepFinishedEvent {
@@ -191,6 +212,7 @@ impl StepFinishedEvent {
         Self {
             base: BaseEvent::default(),
             step_name: step_name.into(),
+            subagent_run_id: None,
         }
     }
 }

@@ -44,7 +44,7 @@ One crate, and which half of the protocol you get is a feature. For an agent, th
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.2", features = ["axum"] }
+ag-ui = { version = "0.3", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
@@ -54,7 +54,7 @@ For a client, `http`:
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.2", features = ["http"] }
+ag-ui = { version = "0.3", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```

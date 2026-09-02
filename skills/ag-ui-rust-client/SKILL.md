@@ -1,12 +1,12 @@
 ---
 name: ag-ui-rust-client
-description: "MUST USE when writing Rust against ag-ui-rust to consume an agent — the crate ag-ui with its `http` or `client` feature (AG-UI protocol client: sessions, the update stream, transports, rendering a run). UNCONVENTIONAL, and wrong from memory: this is ONE crate named ag-ui, not ag-ui-client / ag-ui-core — those registry names belong to an unrelated community SDK — and the client lives under ag_ui::client behind a feature. Session::send returns a RunStream that borrows the session mutably — drop it before reading session.messages(); Session<T, S> carries the transport bound on the CONSTRUCTOR, not the type; Update is #[non_exhaustive] but RunEnd is EXHAUSTIVE with exactly three variants (Success, Interrupted, Failed) and wants no `_` arm; Update::Error is NOT terminal and a run can both complain and succeed; an unrecognised event type ends the run rather than being skipped; interrupts must all be answered in ONE request or the resume never terminates; tools travel from the client on every request because AG-UI has no tool discovery. Covers HttpTransport (connect_timeout vs timeout), ReplayTransport for tests, writing a Transport in one method, typed state, and rendering in arrival order. Triggers on: ag-ui-rust client, ag_ui::client, Session::send, RunStream, Update::Message, MessageChangeKind, RunEnd, HttpTransport, ReplayTransport, RemoteAgent, consume an AG-UI agent from Rust, AG-UI TUI or frontend in Rust."
+description: "MUST USE when writing Rust against ag-ui-rust to consume an agent — the crate ag-ui with its `http` or `client` feature (AG-UI protocol client: sessions, the update stream, transports, rendering a run). UNCONVENTIONAL, and wrong from memory: this is ONE crate named ag-ui, not ag-ui-client / ag-ui-core — those registry names belong to an unrelated community SDK — and the client lives under ag_ui::client behind a feature. Session::send returns a RunStream that borrows the session mutably — drop it before reading session.messages(); Session<T, S> carries the transport bound on the CONSTRUCTOR, not the type; Update is #[non_exhaustive] but RunEnd is EXHAUSTIVE with exactly three variants (Success, Interrupted, Failed) and wants no `_` arm; Update::Error is NOT terminal and a run can both complain and succeed; an unrecognised event type ends the run rather than being skipped; interrupts must all be answered in ONE request or the resume never terminates; tools travel from the client on every request because AG-UI has no tool discovery; Update::Subagent is the lifecycle only and a subagent's messages arrive as ordinary Update::Message with Message::subagent_run_id() set. Covers HttpTransport (connect_timeout vs timeout), ReplayTransport for tests, writing a Transport in one method, typed state, and rendering in arrival order. Triggers on: ag-ui-rust client, ag_ui::client, Session::send, RunStream, Update::Message, Update::Subagent, MessageChangeKind, RunEnd, HttpTransport, ReplayTransport, RemoteAgent, consume an AG-UI agent from Rust, AG-UI TUI or frontend in Rust."
 ---
 
 # Consuming an AG-UI agent from Rust
 
 Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.2.0**. If the API here disagrees with the compiler, the compiler is
+workspace version **0.3.0**. If the API here disagrees with the compiler, the compiler is
 right and the skill is stale — see `ag-ui-rust-update`.
 
 ## Adding the crates
@@ -17,7 +17,7 @@ different, unrelated project. Which half of the protocol you get is a feature:
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.2", features = ["http"] }
+ag-ui = { version = "0.3", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -108,6 +108,7 @@ One `Update` is one redraw. It is per **event**, not per entity: forty deltas ar
 | `State(S)` | the state, in your type, by value. Snapshot and patch arrive identically |
 | `Reasoning(..)` | reasoning text, kept out of the transcript |
 | `Interrupt(Interrupt)` | the run paused; one update per pending interrupt |
+| `Subagent(SubagentUpdate)` | a subagent was announced / resumed / finished / suspended / failed — **lifecycle only** |
 | `Error(ag_ui::client::Error)` | **not terminal** — print it and keep going |
 | `Done(RunEnd)` | always the last update of a run, on every path out |
 
@@ -170,6 +171,66 @@ answering one at a time never terminates. The resumed run gets a new run id.
 
 `resolve_with_edits` writes the `editedArgs` key that agents advertising `approveWithEdits`
 expect.
+
+## Subagents
+
+A delegating agent announces each child with `SUBAGENT_STARTED`, and everything the child
+produces arrives with that invocation's id on the message: `Message::subagent_run_id()`.
+`Update::Subagent` is the lifecycle only — `SubagentChangeKind::{Started, Resumed, Finished,
+Suspended, Failed}` plus the whole `Subagent` entry (`name`, `description`, parent links,
+`SubagentStatus`). Group rows by the id on the message; use the lifecycle for the header.
+
+```rust
+use ag_ui::client::{Session, SubagentChangeKind, Update, transport::ReplayTransport};
+use ag_ui::{Event, TextMessageRole};
+use futures_util::StreamExt;
+
+#[tokio::main]
+async fn main() {
+    let tagged = |event: Event| event.with_subagent_run_id("sub-1");
+    let transport = ReplayTransport::new([
+        Event::run_started("thread-1", "run-1"),
+        Event::subagent_started("sub-1", "researcher"),
+        tagged(Event::text_message_start("msg-1", TextMessageRole::Assistant)),
+        tagged(Event::text_message_content("msg-1", "Three sources.")),
+        tagged(Event::text_message_end("msg-1")),
+        Event::subagent_finished_success("sub-1"),
+        Event::run_finished_success("thread-1", "run-1"),
+    ]);
+
+    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut lines = Vec::new();
+    let mut run = session.send("research this");
+    while let Some(update) = run.next().await {
+        match update {
+            Update::Subagent(s) => lines.push(format!("{} {:?}", s.subagent.name, s.change)),
+            Update::Message(m) => {
+                // The id on the message, resolved to a name mid-run: the stream
+                // lends the session back read-only.
+                let who = m.message.subagent_run_id()
+                    .and_then(|id| run.session().subagent(id))
+                    .map_or("agent", |s| s.name.as_str());
+                lines.push(format!("[{who}] {:?}", m.change));
+            }
+            _ => {}
+        }
+    }
+    drop(run);
+
+    assert_eq!(lines[0], "researcher Started");
+    assert!(lines[1].starts_with("[researcher] Started"));
+    assert_eq!(lines.last().map(String::as_str), Some("researcher Finished"));
+    assert_eq!(session.subagents().len(), 1);
+    assert!(matches!(lines.iter().filter(|l| l.ends_with("Finished")).count(), 1));
+    let _ = SubagentChangeKind::Resumed; // a suspended id announced again, not a duplicate
+}
+```
+
+`session.subagents()` is the registry across runs; `session.subagent(id)` looks one up. A
+subagent that paused stays `SubagentStatus::Suspended` — its interrupt carries the id — until
+the resuming run announces the same id, which arrives as `Resumed`, not as a second row. The
+verifier and the chunk normalizer are already owner-aware, and `message.metadata()` is the
+merge of every event that built the message (last write wins, key by key).
 
 ## Tools travel from the client
 
@@ -279,6 +340,7 @@ The session stays usable afterwards.
 | one `resume` per interrupt | `resume_many` / `ResumeBuilder` — all answers, one request |
 | appending args to "the call in progress" | key by `tool_call_id` |
 | `HttpTransport::builder(..).timeout(..)` for a slow agent | `.connect_timeout(..)` |
+| rendering a subagent's text from `Update::Subagent` | it never carries text; group `Update::Message`s by `message.subagent_run_id()` |
 
 ## Deeper
 

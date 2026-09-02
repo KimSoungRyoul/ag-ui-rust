@@ -3,7 +3,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::event::BaseEvent;
-use crate::ids::MessageId;
+use crate::ids::{MessageId, SubagentRunId};
 
 /// Reads an omitted *or* explicitly null `role` as [`TextMessageRole`]'s
 /// default.
@@ -73,6 +73,14 @@ pub struct TextMessageStartEvent {
     /// Display name for the author.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl TextMessageStartEvent {
@@ -83,6 +91,7 @@ impl TextMessageStartEvent {
             message_id: message_id.into(),
             role,
             name: None,
+            subagent_run_id: None,
         }
     }
 }
@@ -100,6 +109,14 @@ pub struct TextMessageContentEvent {
     pub message_id: MessageId,
     /// The text to append.
     pub delta: String,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl TextMessageContentEvent {
@@ -109,6 +126,7 @@ impl TextMessageContentEvent {
             base: BaseEvent::default(),
             message_id: message_id.into(),
             delta: delta.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -124,6 +142,14 @@ pub struct TextMessageEndEvent {
     pub base: BaseEvent,
     /// The message being closed.
     pub message_id: MessageId,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl TextMessageEndEvent {
@@ -132,6 +158,7 @@ impl TextMessageEndEvent {
         Self {
             base: BaseEvent::default(),
             message_id: message_id.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -160,6 +187,17 @@ pub struct TextMessageChunkEvent {
     /// Display name for the author.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`]. Under
+    /// concurrency a chunk that omits its `message_id` is resolved within the
+    /// sending subagent's own stream, so attribute every chunk when several
+    /// subagents stream at once.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl TextMessageChunkEvent {
@@ -171,6 +209,7 @@ impl TextMessageChunkEvent {
             role: None,
             delta,
             name: None,
+            subagent_run_id: None,
         }
     }
 }

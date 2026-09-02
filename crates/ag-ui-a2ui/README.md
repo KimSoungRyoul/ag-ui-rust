@@ -8,7 +8,7 @@ surface, and a renderer draws it. This crate is the **agent half** of that excha
 
 ```toml
 [dependencies]
-ag-ui-a2ui = "0.2"
+ag-ui-a2ui = "0.3"
 ```
 
 Not on crates.io — these crates are unpublished, and some of the `ag-ui-*` names there

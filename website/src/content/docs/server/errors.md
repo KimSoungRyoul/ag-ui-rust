@@ -103,7 +103,7 @@ fn main() -> ag_ui::server::Result<()> {
 }
 ```
 
-There are seven rules, and `Rule::describe()` states each in one sentence:
+There are eight rules, and `Rule::describe()` states each in one sentence:
 
 | Rule | What it forbids |
 | --- | --- |
@@ -113,7 +113,8 @@ There are seven rules, and `Rule::describe()` states each in one sentence:
 | `NotOpen` | content or a terminator for something that was never opened |
 | `UnknownId` | a tool result for a call id that was never introduced |
 | `OutOfOrder` | a tool result before the call's `TOOL_CALL_END` |
-| `OpenAtFinish` | `RUN_FINISHED` while anything is still open |
+| `OpenAtFinish` | `RUN_FINISHED` while anything is still open — a subagent included |
+| `OwnerMismatch` | a continuation, terminator or re-open naming a subagent other than the one that opened the entity |
 
 `RUN_ERROR` is exempt from `OpenAtFinish` — a run that blew up mid-message could not have
 closed it. That exemption is also what keeps a rejected `RUN_FINISHED` from leaving a run

@@ -315,6 +315,7 @@ session을 읽는 데는 진행 중인 run도, transport bound도 필요 없습�
 | `raw_state()` | 같은 state를 JSON으로. 언제나 최신입니다. |
 | `reasoning()` | 대화 기록과 분리해 둔 reasoning message. |
 | `interrupts()` | 마지막 run이 멈췄다면, agent가 기다리는 것. |
+| `subagents()` | 지금까지 announce된 모든 subagent 호출과 그 status. `subagent(id)`는 하나를 찾습니다. |
 | `thread_id()` | 이 session이 속한 대화. |
 | `applier()` | 그 아래에서 도는 state machine. 조립된 원본 형태를 보려는 view를 위한 것. |
 | `agent()` | 한 계층 아래로 내려가기 위한 `RemoteAgent`. |

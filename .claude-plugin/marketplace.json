@@ -9,7 +9,7 @@
     {
       "name": "ag-ui-rust",
       "source": "./",
-      "description": "Build AG-UI agent backends and agent clients in Rust: the Agent trait and its typestate emitters, sessions and the update stream, and how to refresh the skills when the SDK moves.",
+      "description": "Build AG-UI agent backends and agent clients in Rust: the Agent trait and its typestate emitters, subagent scopes, sessions and the update stream, Qwen Cloud for the live tests, and how to refresh the skills when the SDK moves.",
       "version": "0.1.0",
       "author": {
         "name": "KimSoungRyoul",

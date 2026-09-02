@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::event::BaseEvent;
-use crate::ids::MessageId;
+use crate::ids::{MessageId, SubagentRunId};
 
 /// Opens a reasoning block. Reasoning messages inside it are bracketed by
 /// `REASONING_MESSAGE_START` / `REASONING_MESSAGE_END`, and the block closes
@@ -19,6 +19,14 @@ pub struct ReasoningStartEvent {
     pub base: BaseEvent,
     /// The message this reasoning belongs to.
     pub message_id: MessageId,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ReasoningStartEvent {
@@ -27,6 +35,7 @@ impl ReasoningStartEvent {
         Self {
             base: BaseEvent::default(),
             message_id: message_id.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -56,6 +65,14 @@ pub struct ReasoningMessageStartEvent {
     /// Always [`ReasoningRole::Reasoning`]. Required, unlike the optional role
     /// on `TEXT_MESSAGE_START`.
     pub role: ReasoningRole,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ReasoningMessageStartEvent {
@@ -65,6 +82,7 @@ impl ReasoningMessageStartEvent {
             base: BaseEvent::default(),
             message_id: message_id.into(),
             role: ReasoningRole::Reasoning,
+            subagent_run_id: None,
         }
     }
 }
@@ -82,6 +100,14 @@ pub struct ReasoningMessageContentEvent {
     pub message_id: MessageId,
     /// The text to append.
     pub delta: String,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ReasoningMessageContentEvent {
@@ -91,6 +117,7 @@ impl ReasoningMessageContentEvent {
             base: BaseEvent::default(),
             message_id: message_id.into(),
             delta: delta.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -106,6 +133,14 @@ pub struct ReasoningMessageEndEvent {
     pub base: BaseEvent,
     /// The reasoning message being closed.
     pub message_id: MessageId,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ReasoningMessageEndEvent {
@@ -114,6 +149,7 @@ impl ReasoningMessageEndEvent {
         Self {
             base: BaseEvent::default(),
             message_id: message_id.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -133,6 +169,17 @@ pub struct ReasoningMessageChunkEvent {
     /// The text to append.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta: Option<String>,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`]. Under
+    /// concurrency a chunk that omits its `message_id` is resolved within the
+    /// sending subagent's own stream, so attribute every chunk when several
+    /// subagents stream at once.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ReasoningMessageChunkEvent {
@@ -142,6 +189,7 @@ impl ReasoningMessageChunkEvent {
             base: BaseEvent::default(),
             message_id,
             delta,
+            subagent_run_id: None,
         }
     }
 }
@@ -157,6 +205,14 @@ pub struct ReasoningEndEvent {
     pub base: BaseEvent,
     /// The message whose reasoning block is closing.
     pub message_id: MessageId,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ReasoningEndEvent {
@@ -165,6 +221,7 @@ impl ReasoningEndEvent {
         Self {
             base: BaseEvent::default(),
             message_id: message_id.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -212,6 +269,14 @@ pub struct ReasoningEncryptedValueEvent {
     pub entity_id: String,
     /// The opaque blob.
     pub encrypted_value: String,
+    /// The subagent that produced this event; absent means the parent agent.
+    /// A JSON `null` is rejected — see [`crate::event::subagent`].
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagent_run_id: Option<SubagentRunId>,
 }
 
 impl ReasoningEncryptedValueEvent {
@@ -226,6 +291,7 @@ impl ReasoningEncryptedValueEvent {
             subtype,
             entity_id: entity_id.into(),
             encrypted_value: encrypted_value.into(),
+            subagent_run_id: None,
         }
     }
 }
@@ -236,6 +302,10 @@ impl ReasoningEncryptedValueEvent {
 // structs and tagged-enum variants, and that builder has no such method, so the
 // crate would not compile. The deprecation stays unconditional on the
 // `Event::thinking_*` constructors, which utoipa never sees.
+//
+// None of them carries `subagentRunId`: the family predates subagents and is
+// excluded from the attribution table upstream, so accepting the field here
+// would let TypeScript-shaped payloads through that Python and .NET reject.
 
 /// Opens a thinking block.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

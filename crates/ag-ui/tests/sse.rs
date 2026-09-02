@@ -162,10 +162,11 @@ mod binary {
     }
 
     #[test]
-    fn the_upstream_proto_covers_only_eighteen_of_the_thirty_three_events() {
-        assert_eq!(COVERED_EVENT_TYPES.len(), 18);
-        assert_eq!(EventType::ALL.len(), 33);
+    fn the_upstream_proto_covers_only_twenty_one_of_the_thirty_six_events() {
+        assert_eq!(COVERED_EVENT_TYPES.len(), 21);
+        assert_eq!(EventType::ALL.len(), 36);
         assert!(is_covered(EventType::TextMessageStart));
+        assert!(is_covered(EventType::SubagentStarted));
         // The reason the binary path is a stub.
         assert!(!is_covered(EventType::ToolCallResult));
         assert!(!is_covered(EventType::ReasoningMessageContent));

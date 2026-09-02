@@ -17,6 +17,7 @@ appears once:
 | A2UI | the board as a surface, in an `a2ui_operations` tool-result envelope |
 | Human in the loop | `clear` pauses the run and waits for a yes |
 | Steps | the whole turn is bracketed by `STEP_STARTED` / `STEP_FINISHED` |
+| Subagents | `research` delegates to two in turn, and everything each emits is attributed to it |
 
 ## Running it
 
@@ -38,8 +39,8 @@ Then the client:
 cargo run -p task-board -- chat
 ```
 
-Type `add draft the agenda, book the room`, then `list`, `complete 1`, `clear`.
-`quit` or Ctrl-D ends it. `--port`, `--url` and `--thread` are the flags.
+Type `add draft the agenda, book the room`, then `list`, `complete 1`,
+`research onboarding`, `clear`. `quit` or Ctrl-D ends it. `--port`, `--url` and `--thread` are the flags.
 
 The transcripts below are piped rather than typed, which is also how the tests
 run them:
@@ -138,6 +139,65 @@ you> clear
 The declined run reaches the same code with `ResumeStatus::Cancelled`, so it
 answers no tool call at all — which is the assertion the test makes.
 
+## Delegating to subagents
+
+`research` is the one command that delegates. Inside the same `board` step the
+supervisor opens two subagents in turn — `scope`, then `risks` — and each
+streams a sentence and adds a task through the same `add_task` tool the other
+commands use:
+
+```text
+you> research onboarding
+  ~ delegating "onboarding" to two subagents
+  ⟂ scope started
+  scope> Scoping "onboarding": one deliverable, one owner.
+  · [scope] add_task({"title":"scope onboarding"})
+  [state] 1 open · 0 done
+    → {"id":1,"title":"scope onboarding"}
+  ⟂ scope done
+  ⟂ risks started
+  risks> One risk for "onboarding": nobody owns the follow-up.
+  · [risks] add_task({"title":"name a follow-up owner for onboarding"})
+  [state] 2 open · 0 done
+    → {"id":2,"title":"name a follow-up owner for onboarding"}
+  ⟂ risks done
+  agent> Research on "onboarding" added #1 scope onboarding, #2 name a follow-up owner for onboarding. 2 open · 0 done
+  · render_a2ui({"surfaceId":"task-board"})
+    ┌ a2ui surface
+    │ Workshop board
+    │ 2 open · 0 done
+    │ [ ] #1 scope onboarding
+    │ [ ] #2 name a follow-up owner for onboarding
+    └
+```
+
+`⟂` is a subagent starting or finishing, and `scope>` and `· [scope]` are its
+sentence and its tool call. The agent tags none of this itself:
+`ctx.subagent("scope")` returns a handle that dereferences to the run context,
+and everything emitted through it — the sentence, the call, the board it
+publishes — goes out with that invocation's `subagentRunId`, bracketed by
+`SUBAGENT_STARTED` and `SUBAGENT_FINISHED`. On the wire, the first delegate is:
+
+```text
+SUBAGENT_STARTED    {"subagentRunId":"r1-sub-1","name":"scope"}
+TEXT_MESSAGE_START  {"messageId":"r1-msg-2","role":"assistant","subagentRunId":"r1-sub-1"}
+TOOL_CALL_START     {"toolCallId":"r1-call-1","toolCallName":"add_task","subagentRunId":"r1-sub-1"}
+STATE_SNAPSHOT      {"snapshot":{"tasks":[{"id":1,"title":"scope onboarding","done":false}],"nextId":1},"subagentRunId":"r1-sub-1"}
+TOOL_CALL_RESULT    {"messageId":"r1-msg-3","toolCallId":"r1-call-1","content":"{\"id\":1,…}","role":"tool","subagentRunId":"r1-sub-1"}
+SUBAGENT_FINISHED   {"subagentRunId":"r1-sub-1","result":{"added":1},"outcome":{"type":"success"}}
+```
+
+The client reads it back as `Update::Subagent` for the `⟂` lines and, for
+everything else, `Message::subagent_run_id()` resolved to a name through
+`session.subagent(id)` — mid-run, through `RunStream::session()`. The
+supervisor's own reply comes after both delegates, untagged, which is why it
+prints as `agent>`.
+
+A client written before subagents existed rejects an event type it does not
+know. An endpoint can flatten or drop the subagent surface for such a client —
+`SubagentVisibility::inline()` and `SubagentVisibility::hidden()` are
+transformers — but this example ships the full one.
+
 ## Where the board lives
 
 **On the client.** The agent stores nothing between runs: it reads the board out
@@ -169,6 +229,19 @@ export AG_UI_LLM_MODEL=qwen3:4b
 cargo run -p task-board -- serve --llm
 ```
 
+Or with a Qwen Cloud subscription, whose OpenAI-compatible mode is recognised by name:
+
+```sh
+export QWEN_API_KEY=…
+export QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+export QWEN_MODEL=qwen3.8-flash        # qwen-plus when unset
+cargo run -p task-board -- serve --llm
+```
+
+The model has to be one your endpoint serves — `curl -H "Authorization: Bearer $QWEN_API_KEY"
+$QWEN_BASE_URL/models` lists them, and a token-plan endpoint serves `qwen3.8-flash` and its
+siblings rather than `qwen-plus`.
+
 The model rewrites the reply sentence and nothing else — ids, counts and state
 transitions stay deterministic:
 
@@ -191,16 +264,16 @@ tree — `src/llm.rs` is `reqwest` and two `serde` structs, the same way
 | File | What is in it |
 | --- | --- |
 | `src/board.rs` | `Board` and `Task`, the four tool schemas, the A2UI surface |
-| `src/agent.rs` | the `impl Agent` and the command parser |
+| `src/agent.rs` | the `impl Agent`, the command parser, and the `research` delegation |
 | `src/chat.rs` | the terminal client, generic over its input and output |
 | `src/llm.rs` | the optional `--llm` phrasing |
 | `src/main.rs` | the CLI |
-| `tests/flows.rs` | all three flows, against a server on a real port |
+| `tests/flows.rs` | every flow above, against a server on a real port |
 
 `tests/flows.rs` drives `chat::converse` itself, with a scripted `&[u8]` for a
 keyboard and a `Vec<u8>` for a screen, so the transcripts above are assertions
-rather than illustrations. The last test drops to `HttpAgent` and pins the exact
-event sequence a run puts on the wire.
+rather than illustrations. The wire-level tests drop to `HttpAgent` and pin the
+exact event sequence a run puts on the wire — attribution included.
 
 ```sh
 cargo test -p task-board

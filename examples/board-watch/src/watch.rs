@@ -12,7 +12,7 @@ use ag_ui::client::interrupts::ResumeBuilder;
 use ag_ui::client::transport::Transport;
 use ag_ui::client::{
     InterruptExt as _, MessageChangeKind, MessageUpdate, ReasoningChangeKind, RunEnd, RunStream,
-    Session, Update,
+    Session, SubagentChangeKind, Update,
 };
 use ag_ui::{Interrupt, Message, MessageId, ResumeEntry, ToolCallId};
 use futures_util::StreamExt as _;
@@ -217,6 +217,17 @@ async fn drive<T: Transport>(
                 pending.push(interrupt);
             }
 
+            // A delegate opening or closing. Its messages arrive as ordinary
+            // `Update::Message`s in between, each carrying its id.
+            Update::Subagent(subagent) => {
+                writeln!(
+                    out,
+                    "  child  {} {}",
+                    subagent.subagent.name,
+                    delegated(&subagent.change)
+                )?;
+            }
+
             Update::Error(error) => writeln!(out, "  error  {error}")?,
 
             Update::Done(end) => writeln!(out, "  done   {}", ended(&end))?,
@@ -232,6 +243,22 @@ async fn drive<T: Transport>(
         }
     }
     Ok(pending)
+}
+
+/// What happened to a subagent, in one word.
+///
+/// The `_` arm is not a shrug: [`SubagentChangeKind`] is `#[non_exhaustive]`,
+/// so a kind this client was not written for prints rather than stops the
+/// build.
+fn delegated(change: &SubagentChangeKind) -> &'static str {
+    match change {
+        SubagentChangeKind::Started => "started",
+        SubagentChangeKind::Resumed => "resumed",
+        SubagentChangeKind::Finished => "finished",
+        SubagentChangeKind::Suspended => "suspended",
+        SubagentChangeKind::Failed => "failed",
+        _ => "changed",
+    }
 }
 
 /// How a run ended, in one phrase.

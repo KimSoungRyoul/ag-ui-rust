@@ -28,7 +28,7 @@ default = ["sse", "verify"]
 # Server-Sent Events framing. No extra dependencies.
 sse = []
 # Binary transport: the media type and content negotiation only. There is no
-# encoder — events.proto covers 18 of the protocol's 33 event types, so encoding
+# encoder — events.proto covers 21 of the protocol's 36 event types, so encoding
 # would drop events silently. See `encode::protobuf`. Deliberately pulls in no
 # dependency: it would be a `prost` build for a module that never calls it.
 protobuf = []

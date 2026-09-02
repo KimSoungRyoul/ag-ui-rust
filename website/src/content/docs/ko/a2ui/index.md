@@ -46,7 +46,7 @@ form을 띄우려는 AG-UI agent에게 필요하기 때문입니다. AG-UI가 A2
 
 ```toml
 [dependencies.ag-ui-a2ui]
-version = "0.2"
+version = "0.3"
 default-features = false
 features = ["toolkit"]
 ```

@@ -132,6 +132,7 @@ mod tests {
                     id: "m".into(),
                     activity_type: "web_search".into(),
                     content: activity,
+                    ..Default::default()
                 }),
                 "activity",
                 "",

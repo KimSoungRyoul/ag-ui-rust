@@ -643,3 +643,164 @@ fn a_tool_result_for_an_explicitly_ended_call_adds_no_terminator() {
     );
     verify_all(&events).expect("the normalized stream should verify");
 }
+
+// ---- subagents ------------------------------------------------------------
+
+#[test]
+fn concurrent_subagents_chunk_streams_resolve_within_their_own_stream() {
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        Event::subagent_started("s1", "researcher"),
+        Event::subagent_started("s2", "researcher"),
+        tagged(text_chunk(Some("m1"), Some("A ")), "s1"),
+        tagged(text_chunk(Some("m2"), Some("B ")), "s2"),
+        tagged(text_chunk(None, Some("one")), "s1"),
+        tagged(text_chunk(None, Some("two")), "s2"),
+        Event::subagent_finished_success("s1"),
+        Event::subagent_finished_success("s2"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalizes");
+
+    // Each stream's start and end carry its owner, and neither closed the other.
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type() == EventType::TextMessageStart)
+        .map(|e| e.subagent_run_id().map(|id| id.as_str()))
+        .collect();
+    assert_eq!(starts, [Some("s1"), Some("s2")]);
+    let ends: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type() == EventType::TextMessageEnd)
+        .map(|e| e.subagent_run_id().map(|id| id.as_str()))
+        .collect();
+    assert_eq!(ends.len(), 2);
+    assert!(ends.contains(&Some("s1")) && ends.contains(&Some("s2")));
+    verify_all(&events).expect("the normalized stream should verify");
+
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    assert_eq!(applier.text_of("m1"), Some("A one"));
+    assert_eq!(applier.text_of("m2"), Some("B two"));
+}
+
+#[test]
+fn an_untagged_chunk_continues_the_parents_stream_or_the_only_one() {
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+
+    // The sole open stream belongs to a subagent: an untagged chunk continues it.
+    let events = normalize_all([
+        tagged(text_chunk(Some("m1"), Some("Hel")), "s1"),
+        text_chunk(None, Some("lo")),
+    ])
+    .expect("normalizes");
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    assert_eq!(applier.text_of("m1"), Some("Hello"));
+
+    // The parent's stream wins over a subagent's when both are open.
+    let events = normalize_all([
+        tagged(text_chunk(Some("m1"), Some("theirs ")), "s1"),
+        text_chunk(Some("m2"), Some("mine ")),
+        text_chunk(None, Some("too")),
+    ])
+    .expect("normalizes");
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    assert_eq!(applier.text_of("m2"), Some("mine too"));
+    assert_eq!(applier.text_of("m1"), Some("theirs "));
+}
+
+#[test]
+fn an_untagged_chunk_with_several_subagent_streams_open_is_refused() {
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let error = normalize_all([
+        tagged(text_chunk(Some("m1"), Some("A")), "s1"),
+        tagged(text_chunk(Some("m2"), Some("B")), "s2"),
+        text_chunk(None, Some("?")),
+    ])
+    .expect_err("nothing to resolve the chunk against");
+    assert!(error.to_string().contains("several subagents"), "{error}");
+
+    let error = normalize_all([
+        tagged(text_chunk(Some("m1"), Some("A")), "s1"),
+        tagged(text_chunk(None, Some("?")), "s3"),
+    ])
+    .expect_err("s3 has nothing open");
+    assert!(
+        error.to_string().contains("\"s3\" has no message open"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_subagents_tool_result_closes_only_its_own_stream() {
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        text_chunk(Some("m1"), Some("parent narrating")),
+        tagged(tool_chunk(Some("call-1"), Some("search"), Some("{}")), "s1"),
+        tagged(Event::tool_call_result("m2", "call-1", "hit"), "s1"),
+        text_chunk(None, Some(" still")),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalizes");
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    assert_eq!(
+        applier.text_of("m1"),
+        Some("parent narrating still"),
+        "the subagent's result did not end the parent's message"
+    );
+    verify_all(&events).expect("the normalized stream should verify");
+}
+
+#[test]
+fn a_tagged_chunk_naming_another_owners_open_stream_is_a_verifier_complaint_not_a_crossed_message()
+{
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    // s2 continues m1, which s1 opened by chunk and never closed.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        tagged(text_chunk(Some("m1"), Some("A")), "s1"),
+        tagged(text_chunk(Some("m1"), Some("B")), "s2"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalization does not judge ownership");
+
+    // The normalizer took the tag at its word — a second start for m1 under
+    // s2 — and the verifier is where that is a complaint.
+    let error = verify_all(&events).expect_err("m1 belongs to s1");
+    assert!(error.to_string().contains("m1"), "{error}");
+
+    // An untagged result for a subagent's call closes that call's stream and
+    // the parent's open message — the result is the parent's — but not the
+    // subagent's other stream.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        tagged(tool_chunk(Some("c1"), Some("search"), Some("{}")), "s1"),
+        // One stream per owner: s1's text closes its call.
+        tagged(text_chunk(Some("m1"), Some("child says")), "s1"),
+        text_chunk(Some("m2"), Some("parent says")),
+        Event::tool_call_result("m3", "c1", "hit"),
+        tagged(text_chunk(None, Some(" more")), "s1"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalizes");
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    assert_eq!(applier.text_of("m1"), Some("child says more"));
+    assert_eq!(applier.text_of("m2"), Some("parent says"));
+    verify_all(&events).expect("the normalized stream should verify");
+}
