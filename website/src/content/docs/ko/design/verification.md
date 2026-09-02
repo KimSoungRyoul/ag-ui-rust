@@ -217,11 +217,11 @@ cargo run -p xtask -- drift-check
 
 ```text
 drift-check
-  baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@8ec096f94b, captured 2026-08-17)
-  upstream  33 event types
-  rust      crates/ag-ui/src/event  (9 files, 33 event types, tagged enum `Event`)
+  baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@bc8477bfd6, captured 2026-09-02)
+  upstream  36 event types
+  rust      crates/ag-ui/src/event  (10 files, 36 event types, tagged enum `Event`)
 
-OK  33 event types match the baseline.
+OK  36 event types match the baseline.
 ```
 
 이 검사는 `xtask/baseline/events.json`을 `crates/ag-ui/src/event/`와

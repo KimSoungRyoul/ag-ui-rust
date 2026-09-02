@@ -4,9 +4,9 @@
   "source": {
     "repo": "ag-ui-protocol/ag-ui",
     "path": "sdks/typescript/packages/core/src/events.ts",
-    "commit": "8ec096f94b4e3ca1b6621cbeaa3335c0de6020df",
-    "commit_date": "2026-08-10",
-    "fetched_at": "2026-08-17"
+    "commit": "bc8477bfd6400d265d6cd91827e8da5de41951b7",
+    "commit_date": "2026-08-21",
+    "fetched_at": "2026-09-02"
   },
   "base_event_fields": [
     {
@@ -15,6 +15,10 @@
     },
     {
       "name": "rawEvent",
+      "required": false
+    },
+    {
+      "name": "metadata",
       "required": false
     }
   ],
@@ -51,7 +55,10 @@
     "REASONING_MESSAGE_END",
     "REASONING_MESSAGE_CHUNK",
     "REASONING_END",
-    "REASONING_ENCRYPTED_VALUE"
+    "REASONING_ENCRYPTED_VALUE",
+    "SUBAGENT_STARTED",
+    "SUBAGENT_FINISHED",
+    "SUBAGENT_ERROR"
   ],
   "events": [
     {
@@ -69,6 +76,10 @@
         {
           "name": "name",
           "required": false
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -83,6 +94,10 @@
         {
           "name": "delta",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -93,6 +108,10 @@
         {
           "name": "messageId",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -115,6 +134,10 @@
         {
           "name": "name",
           "required": false
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -133,6 +156,10 @@
         {
           "name": "parentMessageId",
           "required": false
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -147,6 +174,10 @@
         {
           "name": "delta",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -157,6 +188,10 @@
         {
           "name": "toolCallId",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -179,6 +214,10 @@
         {
           "name": "delta",
           "required": false
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -200,6 +239,10 @@
         },
         {
           "name": "role",
+          "required": false
+        },
+        {
+          "name": "subagentRunId",
           "required": false
         }
       ]
@@ -246,6 +289,10 @@
         {
           "name": "snapshot",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -256,6 +303,10 @@
         {
           "name": "delta",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -288,6 +339,10 @@
         {
           "name": "replace",
           "required": false
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -306,6 +361,10 @@
         {
           "name": "patch",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -319,6 +378,10 @@
         },
         {
           "name": "source",
+          "required": false
+        },
+        {
+          "name": "subagentRunId",
           "required": false
         }
       ]
@@ -334,6 +397,10 @@
         {
           "name": "value",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -410,6 +477,10 @@
         {
           "name": "stepName",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -420,6 +491,10 @@
         {
           "name": "stepName",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -430,6 +505,10 @@
         {
           "name": "messageId",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -444,6 +523,10 @@
         {
           "name": "role",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -458,6 +541,10 @@
         {
           "name": "delta",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -468,6 +555,10 @@
         {
           "name": "messageId",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -482,6 +573,10 @@
         {
           "name": "delta",
           "required": false
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -492,6 +587,10 @@
         {
           "name": "messageId",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
         }
       ]
     },
@@ -510,6 +609,76 @@
         {
           "name": "encryptedValue",
           "required": true
+        },
+        {
+          "name": "subagentRunId",
+          "required": false
+        }
+      ]
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "schema": "SubagentStartedEventSchema",
+      "fields": [
+        {
+          "name": "subagentRunId",
+          "required": true
+        },
+        {
+          "name": "name",
+          "required": true
+        },
+        {
+          "name": "description",
+          "required": false
+        },
+        {
+          "name": "parentSubagentRunId",
+          "required": false
+        },
+        {
+          "name": "parentToolCallId",
+          "required": false
+        },
+        {
+          "name": "parentMessageId",
+          "required": false
+        }
+      ]
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "schema": "SubagentFinishedEventSchema",
+      "fields": [
+        {
+          "name": "subagentRunId",
+          "required": true
+        },
+        {
+          "name": "result",
+          "required": false
+        },
+        {
+          "name": "outcome",
+          "required": false
+        }
+      ]
+    },
+    {
+      "type": "SUBAGENT_ERROR",
+      "schema": "SubagentErrorEventSchema",
+      "fields": [
+        {
+          "name": "subagentRunId",
+          "required": true
+        },
+        {
+          "name": "message",
+          "required": true
+        },
+        {
+          "name": "code",
+          "required": false
         }
       ]
     }

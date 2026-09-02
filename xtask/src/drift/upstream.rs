@@ -17,6 +17,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::drift::optionality;
 use crate::drift::text::{
     find_top_level, match_delim, read_ident, screaming_snake_to_pascal, split_top_level,
     strip_comments,
@@ -51,6 +52,10 @@ pub struct Upstream {
     pub base_fields: Vec<Field>,
     /// One entry per `EventType` value, in the same order.
     pub events: Vec<UpstreamEvent>,
+    /// Readings that came from somewhere other than a Zod chain, one line each
+    /// and never repeated. A reviewer accepting a refresh should see how an
+    /// answer was arrived at when the file itself did not spell it out.
+    pub notes: Vec<String>,
 }
 
 /// Reads `events.ts` and returns the event surface it declares.
@@ -67,9 +72,10 @@ pub fn extract(source: &str) -> Result<Upstream, String> {
 
     // `type` is the discriminator, not a payload field, on either side.
     let discriminator = ["type".to_string()];
+    let mut notes = Vec::new();
     let base_fields = parsed
         .get("BaseEventSchema")
-        .map(|s| to_fields(&s.fields, &discriminator))
+        .map(|s| to_fields(&s.fields, &discriminator, &decls, &mut notes))
         .unwrap_or_default();
     let inherited: Vec<String> = discriminator
         .iter()
@@ -97,13 +103,18 @@ pub fn extract(source: &str) -> Result<Upstream, String> {
 
     let events = event_types
         .iter()
-        .map(|event_type| build_event(event_type, &by_event, &parsed, &inherited))
+        .map(|event_type| {
+            build_event(
+                event_type, &by_event, &parsed, &inherited, &decls, &mut notes,
+            )
+        })
         .collect();
 
     Ok(Upstream {
         event_types,
         base_fields,
         events,
+        notes,
     })
 }
 
@@ -112,12 +123,14 @@ fn build_event(
     by_event: &BTreeMap<String, (&str, &ParsedSchema)>,
     parsed: &BTreeMap<&str, ParsedSchema>,
     inherited: &[String],
+    decls: &BTreeMap<String, String>,
+    notes: &mut Vec<String>,
 ) -> UpstreamEvent {
     if let Some((name, schema)) = by_event.get(event_type) {
         return UpstreamEvent {
             event_type: event_type.to_string(),
             schema: Some((*name).to_string()),
-            fields: to_fields(&schema.fields, inherited),
+            fields: to_fields(&schema.fields, inherited, decls, notes),
             unparsed: schema.error.clone(),
         };
     }
@@ -129,7 +142,7 @@ fn build_event(
         Some(schema) => UpstreamEvent {
             event_type: event_type.to_string(),
             schema: Some(guess.clone()),
-            fields: to_fields(&schema.fields, inherited),
+            fields: to_fields(&schema.fields, inherited, decls, notes),
             unparsed: Some(schema.error.clone().unwrap_or_else(|| {
                 format!("{guess} does not declare a recognisable `type` literal")
             })),
@@ -399,15 +412,76 @@ fn event_type_literal(value: &str) -> Option<String> {
 
 /// Turns `(field, value expression)` pairs into fields, dropping the ones every
 /// event inherits and deciding required-ness from the Zod chain.
-fn to_fields(pairs: &[(String, String)], inherited: &[String]) -> Vec<Field> {
+fn to_fields(
+    pairs: &[(String, String)],
+    inherited: &[String],
+    decls: &BTreeMap<String, String>,
+    notes: &mut Vec<String>,
+) -> Vec<Field> {
     pairs
         .iter()
         .filter(|(name, _)| !inherited.iter().any(|i| i == name))
-        .map(|(name, value)| Field {
-            name: name.clone(),
-            required: is_required(value),
+        .map(|(name, value)| {
+            let (required, note) = field_optionality(value, decls);
+            if let Some(note) = note.filter(|n| !notes.contains(n)) {
+                notes.push(note);
+            }
+            Field {
+                name: name.clone(),
+                required,
+            }
         })
         .collect()
+}
+
+/// Whether a field is required, and how that was decided when the Zod chain
+/// could not decide it.
+///
+/// The chain is the reliable signal. A field whose value is nothing but an
+/// identifier has no chain to read — `metadata: OptionalMetadataSchema` — so
+/// the identifier is followed to its declaration when this file makes one, and
+/// otherwise its name is all there is to go on. Upstream's convention is that
+/// such a const says what it is, and reading the name beats the alternative
+/// this replaces: an imported optional schema used to be recorded as required,
+/// which is how `BaseEvent.metadata` would have entered the baseline as a
+/// required field nobody agreed to. The reading is reported as a note, so the
+/// human accepting a refresh can see it was a reading and not a parse.
+fn field_optionality(value: &str, decls: &BTreeMap<String, String>) -> (bool, Option<String>) {
+    let mut expr = value.trim().to_string();
+    let mut followed: Vec<String> = Vec::new();
+    loop {
+        if !is_required(&expr) {
+            return (false, None);
+        }
+        let Some(ident) = bare_ident(&expr) else {
+            return (true, None);
+        };
+        match decls.get(ident) {
+            Some(declared) if !followed.iter().any(|f| f == ident) => {
+                followed.push(ident.to_string());
+                expr = declared.clone();
+            }
+            _ => {
+                let optional = ident.starts_with("Optional");
+                return (
+                    !optional,
+                    Some(format!(
+                        "`{ident}` is not declared in this file, so it was read as {} from \
+                         its name",
+                        optionality(!optional)
+                    )),
+                );
+            }
+        }
+    }
+}
+
+/// The whole value when it is one identifier and nothing else, as in
+/// `metadata: OptionalMetadataSchema`.
+fn bare_ident(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let ident = read_ident(value, 0);
+    (!ident.is_empty() && ident.len() == value.len()).then_some(ident)
 }
 
 /// A field is optional when its own chain carries `.optional()` or `.default()`.
@@ -558,5 +632,94 @@ export const RawEventSchema = BaseEventSchema.extend({
     #[test]
     fn missing_enum_is_a_hard_error() {
         assert!(extract("export const x = 1;").is_err());
+    }
+
+    /// The gap this closes: `metadata: OptionalMetadataSchema` is imported, so
+    /// there is no `.optional()` to read, and it used to be recorded as a
+    /// required field on every event.
+    const IMPORTED: &str = r#"
+import { z } from "zod";
+import { OptionalMetadataSchema } from "./metadata";
+import { StateSchema } from "./types";
+
+const MaybeName = z.string().optional();
+
+export enum EventType {
+  STATE_SNAPSHOT = "STATE_SNAPSHOT",
+}
+
+export const BaseEventSchema = z
+  .object({
+    type: z.nativeEnum(EventType),
+    metadata: OptionalMetadataSchema,
+  })
+  .passthrough();
+
+export const StateSnapshotEventSchema = BaseEventSchema.extend({
+  type: z.literal(EventType.STATE_SNAPSHOT),
+  snapshot: StateSchema,
+  name: MaybeName,
+});
+"#;
+
+    #[test]
+    fn an_imported_optional_schema_is_read_as_optional() {
+        let up = extract(IMPORTED).unwrap();
+        assert_eq!(
+            up.base_fields,
+            [Field {
+                name: "metadata".into(),
+                required: false
+            }]
+        );
+        assert!(
+            up.notes
+                .iter()
+                .any(|n| n.contains("OptionalMetadataSchema") && n.contains("read as optional")),
+            "{:?}",
+            up.notes
+        );
+    }
+
+    #[test]
+    fn an_imported_schema_without_the_prefix_stays_required() {
+        let up = extract(IMPORTED).unwrap();
+        let snapshot = event(&up, "STATE_SNAPSHOT");
+        assert_eq!(
+            snapshot.fields[0],
+            Field {
+                name: "snapshot".into(),
+                required: true
+            }
+        );
+        assert!(
+            up.notes
+                .iter()
+                .any(|n| n.contains("StateSchema") && n.contains("read as required")),
+            "{:?}",
+            up.notes
+        );
+    }
+
+    /// A const this file declares is followed rather than guessed at, and
+    /// following it is not worth a note.
+    #[test]
+    fn a_locally_declared_schema_is_followed_not_guessed() {
+        let up = extract(IMPORTED).unwrap();
+        let snapshot = event(&up, "STATE_SNAPSHOT");
+        assert_eq!(
+            snapshot.fields[1],
+            Field {
+                name: "name".into(),
+                required: false
+            }
+        );
+        assert!(!up.notes.iter().any(|n| n.contains("MaybeName")));
+    }
+
+    #[test]
+    fn a_note_is_made_once_however_many_fields_share_the_schema() {
+        let up = extract(IMPORTED).unwrap();
+        assert_eq!(up.notes.len(), 2, "{:?}", up.notes);
     }
 }

@@ -10,17 +10,25 @@
 //!   with its tag (`TextMessageStart(TextMessageStartEvent) => "TEXT_MESSAGE_START"`);
 //! * per-event payload structs named `<Name>Event`, where the wire tag follows
 //!   from the type name.
+//!
+//! It also reads the `BaseEvent` envelope on its own. That struct is not an
+//! event type — it is flattened into every payload — so it belongs to none of
+//! the shapes above, and its fields are fields of all 36 events.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::drift::text::{
-    apply_rename_all, match_delim, pascal_to_screaming_snake, read_ident, split_top_level,
-    strip_comments,
+    apply_rename_all, blank_lifetimes, match_delim, pascal_to_screaming_snake, read_ident,
+    split_top_level, strip_comments,
 };
 
+/// The envelope struct every payload flattens in. Not an event type itself,
+/// but its fields are fields of every event, so it is read separately.
+pub const BASE_EVENT: &str = "BaseEvent";
+
 /// Structs that end in `Event` but are envelope plumbing, not event types.
-const NOT_EVENTS: &[&str] = &["BaseEvent", "AnyEvent"];
+const NOT_EVENTS: &[&str] = &[BASE_EVENT, "AnyEvent"];
 
 /// One field of an event payload, named as it appears on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,11 +53,25 @@ pub struct RustEvent {
     pub from_struct: bool,
 }
 
+/// The envelope every event payload flattens in, as the Rust source declares
+/// it.
+#[derive(Debug, Clone)]
+pub struct RustBaseEvent {
+    /// Its fields, named as they appear on the wire.
+    pub fields: Vec<RustField>,
+    /// Repo-relative file it was found in.
+    pub file: String,
+}
+
 /// Everything the scan found.
 #[derive(Debug, Clone, Default)]
 pub struct RustSurface {
     /// One entry per wire tag, sorted.
     pub events: Vec<RustEvent>,
+    /// The `BaseEvent` envelope, when the module declares one. `None` is not
+    /// drift — the comparison warns instead, the same way an unreadable
+    /// payload does.
+    pub base_event: Option<RustBaseEvent>,
     /// Name of the `#[serde(tag = "type")]` enum, when the crate has one yet.
     pub tagged_enum: Option<String>,
     /// Repo-relative paths scanned, sorted.
@@ -75,7 +97,10 @@ pub fn scan(dir: &Path, repo_root: &Path) -> Result<RustSurface, String> {
     for path in &files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let rel = relative(path, repo_root);
-        for item in scan_items(&strip_comments(&text)) {
+        // Lifetimes first: an apostrophe that is not a quote has to stop
+        // looking like one before anything counts delimiters. See
+        // [`blank_lifetimes`].
+        for item in scan_items(&strip_comments(&blank_lifetimes(&text))) {
             match item.kind {
                 ItemKind::Struct => {
                     let parsed = parse_fields(&item.body, container_rename_all(&item.attrs));
@@ -93,6 +118,28 @@ pub fn scan(dir: &Path, repo_root: &Path) -> Result<RustSurface, String> {
                     {
                         continue;
                     }
+                    let rename_all = container_rename_all(&item.attrs);
+                    let rename_fields = serde_args(&item.attrs)
+                        .iter()
+                        .find_map(|arg| arg_value(arg, "rename_all_fields"));
+                    let members = parse_variants(
+                        &item.body,
+                        rename_all.as_deref(),
+                        rename_fields.as_deref(),
+                        &rel,
+                    );
+                    // `type` is a common discriminator, and the event union is
+                    // not the only thing that uses it — `SubagentOutcome` is
+                    // tagged `type` with variants `success` and `suspended`.
+                    // Every AG-UI event tag is SCREAMING_SNAKE, so an enum
+                    // whose variants are not is somebody else's union, and
+                    // reading it would invent two event types that do not
+                    // exist. An enum with no readable variants at all is the
+                    // macro-generated union, whose members come from the
+                    // macro's table instead, so it still counts.
+                    if !members.is_empty() && !members.iter().any(|m| is_wire_tag(&m.tag)) {
+                        continue;
+                    }
                     if let Some(previous) = tagged_enum.replace(item.name.clone()) {
                         notes.push(format!(
                             "two `#[serde(tag = \"type\")]` enums found ({previous} and {}); \
@@ -100,16 +147,7 @@ pub fn scan(dir: &Path, repo_root: &Path) -> Result<RustSurface, String> {
                             item.name
                         ));
                     }
-                    let rename_all = container_rename_all(&item.attrs);
-                    let rename_fields = serde_args(&item.attrs)
-                        .iter()
-                        .find_map(|arg| arg_value(arg, "rename_all_fields"));
-                    variants.extend(parse_variants(
-                        &item.body,
-                        rename_all.as_deref(),
-                        rename_fields.as_deref(),
-                        &rel,
-                    ));
+                    variants.extend(members.into_iter().filter(|m| is_wire_tag(&m.tag)));
                 }
                 ItemKind::Macro => variants.extend(parse_macro_table(&item.body, &rel)),
                 ItemKind::Other => {}
@@ -198,8 +236,16 @@ pub fn scan(dir: &Path, repo_root: &Path) -> Result<RustSurface, String> {
         }
     }
 
+    // The envelope is deliberately not an event, so nothing above would have
+    // picked it up — and a field added there is a field on every event.
+    let base_event = structs.get(BASE_EVENT).map(|(fields, file)| RustBaseEvent {
+        fields: fields.clone(),
+        file: file.clone(),
+    });
+
     Ok(RustSurface {
         events: events.into_values().collect(),
+        base_event,
         tagged_enum,
         files: files.iter().map(|p| relative(p, repo_root)).collect(),
         notes,
@@ -659,13 +705,23 @@ fn screaming_snake_literal(entry: &str) -> Option<String> {
         let after = &rest[open + 1..];
         let close = after.find('"')?;
         let literal = &after[..close];
-        let shape = |c: char| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_';
-        if literal.starts_with(|c: char| c.is_ascii_uppercase()) && literal.chars().all(shape) {
+        if is_wire_tag(literal) {
             return Some(literal.to_string());
         }
         rest = &after[close + 1..];
     }
     None
+}
+
+/// Whether a string has the shape of an AG-UI event tag.
+///
+/// Every one of them is SCREAMING_SNAKE, which is what separates an event tag
+/// from any other string a declaration happens to carry.
+fn is_wire_tag(tag: &str) -> bool {
+    tag.starts_with(|c: char| c.is_ascii_uppercase())
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// The first `Variant(PayloadType)` in `entry`, as `(variant, payload)`.
@@ -1016,6 +1072,157 @@ pub struct ActivityDeltaEvent {
             .collect();
         assert_eq!(union, ["TEXT_MESSAGE_START", "THINKING_END"]);
         assert!(surface.notes.is_empty());
+    }
+
+    /// The envelope is not an event, but its fields are on every event, so it
+    /// is read on its own rather than skipped with the other non-events.
+    #[test]
+    fn reads_the_base_event_envelope() {
+        let surface = scan_str(
+            r#"
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaseEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_event: Option<Value>,
+    #[serde(default, deserialize_with = "reject_null", skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<JsonObject>,
+}
+
+#[serde(rename_all = "camelCase")]
+pub struct RawEvent {
+    #[serde(flatten)]
+    pub base: BaseEvent,
+    pub event: Value,
+}
+"#,
+        );
+        let base = surface.base_event.expect("BaseEvent should have been read");
+        assert_eq!(
+            base.fields,
+            [
+                RustField {
+                    name: "timestamp".into(),
+                    required: false
+                },
+                RustField {
+                    name: "rawEvent".into(),
+                    required: false
+                },
+                RustField {
+                    name: "metadata".into(),
+                    required: false
+                },
+            ]
+        );
+        assert_eq!(base.file, "event.rs");
+        // ...and it is still not an event type.
+        assert_eq!(
+            surface
+                .events
+                .iter()
+                .map(|e| e.tag.clone())
+                .collect::<Vec<_>>(),
+            ["RAW"]
+        );
+    }
+
+    #[test]
+    fn a_module_without_a_base_event_reports_none_rather_than_empty() {
+        let surface = scan_str(
+            r#"
+#[serde(rename_all = "camelCase")]
+pub struct RawEvent {
+    pub event: Value,
+}
+"#,
+        );
+        assert!(surface.base_event.is_none());
+    }
+
+    /// `type` is a common discriminator. Reading every enum tagged with it as
+    /// the event union turned `SubagentOutcome`'s `success` and `suspended`
+    /// into two event types that upstream had never heard of.
+    #[test]
+    fn another_type_tagged_enum_is_not_the_event_union() {
+        let surface = scan_str(
+            r#"
+define_events! {
+    Raw(RawEvent) => "RAW",
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+pub enum Event {
+    #[serde(rename = "RAW")]
+    Raw(RawEvent),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SubagentOutcome {
+    Success,
+    Suspended { interrupt_ids: Option<Vec<String>> },
+}
+
+#[serde(rename_all = "camelCase")]
+pub struct RawEvent {
+    #[serde(flatten)]
+    pub base: BaseEvent,
+    pub event: Value,
+}
+"#,
+        );
+        assert_eq!(
+            surface
+                .events
+                .iter()
+                .map(|e| e.tag.clone())
+                .collect::<Vec<_>>(),
+            ["RAW"]
+        );
+        assert_eq!(surface.tagged_enum.as_deref(), Some("Event"));
+        assert!(surface.notes.is_empty(), "{:?}", surface.notes);
+    }
+
+    /// End to end for the lifetime that swallowed a struct: the payload after
+    /// `&'static str` must still be read, fields and all.
+    #[test]
+    fn a_lifetime_before_a_payload_does_not_hide_it() {
+        let surface = scan_str(
+            r#"
+impl TextMessageRole {
+    pub const fn as_str(&self) -> &'static str {
+        "assistant"
+    }
+}
+
+fn null_role_is_the_default<'de, D>(deserializer: D) -> Result<TextMessageRole, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(TextMessageRole::Assistant)
+}
+
+/// A doc comment with [`brackets`] and a `{` in it.
+#[serde(rename_all = "camelCase")]
+pub struct TextMessageChunkEvent {
+    #[serde(flatten)]
+    pub base: BaseEvent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<MessageId>,
+}
+"#,
+        );
+        assert_eq!(
+            fields(&surface, "TEXT_MESSAGE_CHUNK"),
+            [RustField {
+                name: "messageId".into(),
+                required: false
+            }]
+        );
     }
 
     #[test]
