@@ -56,7 +56,7 @@ what keeps it honest. Detection, not generation: it parses the upstream
 the Rust side. Full code generation would mean writing and maintaining a
 Zod-to-Rust compiler, which is not worth it yet.
 
-The [Event reference](/ag-ui-rust/reference/events/) names the 18 the binary
+The [Event reference](/ag-ui-rust/reference/events/) names the 21 the binary
 transport does carry and the 15 it does not.
 
 ## `Event` is exhaustive on purpose; the errors are not

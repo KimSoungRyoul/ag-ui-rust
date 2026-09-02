@@ -450,7 +450,10 @@ async fn research_delegates_to_two_subagents_and_the_client_files_their_work_und
     // And the board moved twice, once inside each delegate.
     let board = session.state().expect("a board");
     assert_eq!(board.tasks.len(), 2);
-    assert_eq!(board.tasks[1].label(), "#2 name a follow-up owner for onboarding");
+    assert_eq!(
+        board.tasks[1].label(),
+        "#2 name a follow-up owner for onboarding"
+    );
 }
 
 /// The wire shape of a delegation: each subagent's events are bracketed by
@@ -474,10 +477,9 @@ async fn a_subagents_events_are_bracketed_and_attributed_on_the_wire() {
     let lifecycle: Vec<(EventType, &str)> = events
         .iter()
         .filter_map(|event| match event {
-            Event::SubagentStarted(started) => Some((
-                EventType::SubagentStarted,
-                started.subagent_run_id.as_str(),
-            )),
+            Event::SubagentStarted(started) => {
+                Some((EventType::SubagentStarted, started.subagent_run_id.as_str()))
+            }
             Event::SubagentFinished(finished) => Some((
                 EventType::SubagentFinished,
                 finished.subagent_run_id.as_str(),
@@ -512,8 +514,10 @@ async fn a_subagents_events_are_bracketed_and_attributed_on_the_wire() {
     }
     assert!(tagged > 0, "{events:?}");
     assert!(
-        events.iter().any(|event| event.event_type() == EventType::StateSnapshot
-            && event.subagent_run_id().map(SubagentRunId::as_str) == Some("r1-sub-1")),
+        events
+            .iter()
+            .any(|event| event.event_type() == EventType::StateSnapshot
+                && event.subagent_run_id().map(SubagentRunId::as_str) == Some("r1-sub-1")),
         "the board moved inside the scope's brackets:\n{events:?}"
     );
 
@@ -525,7 +529,10 @@ async fn a_subagents_events_are_bracketed_and_attributed_on_the_wire() {
     };
     assert_eq!(finished.result, Some(serde_json::json!({"added": 1})));
     assert!(
-        finished.outcome.as_ref().is_some_and(|outcome| !outcome.is_suspended()),
+        finished
+            .outcome
+            .as_ref()
+            .is_some_and(|outcome| !outcome.is_suspended()),
         "{finished:?}"
     );
 }

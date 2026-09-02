@@ -5,7 +5,7 @@ agent and consuming one.
 
 AG-UI is the protocol between a user-facing application and an agent backend. A run is a
 stream of events: the agent opens messages, streams text and reasoning, calls tools,
-publishes state, and finishes — or pauses for human input.
+publishes state, delegates to subagents, and finishes — or pauses for human input.
 
 It implements all 36 event types, both halves of the protocol, and a drift check in CI that
 fails the build when upstream's event set moves — held to what an official SDK would have to

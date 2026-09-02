@@ -45,6 +45,13 @@ fn render(update: Update<Value>) {
         // update 하나입니다.
         Update::Interrupt(interrupt) => println!("waiting on {}", interrupt.id),
 
+        // subagent가 announce되었거나, 재개되었거나, 끝났거나, 멈췄거나,
+        // 실패했습니다. lifecycle뿐입니다. subagent가 *말한* 것은 평범한
+        // message로 도착합니다.
+        Update::Subagent(subagent) => {
+            println!("{} {:?}", subagent.subagent.name, subagent.change);
+        }
+
         // 어긋난 stream, 적용되지 않는 patch, transport 실패,
         // RUN_ERROR. 반드시 치명적이지는 않습니다.
         Update::Error(error) => eprintln!("{error}"),
@@ -89,6 +96,92 @@ update가 같은 call에 속한다는 보장이 없습니다. 중첩을 알려 �
 도착 순서뿐입니다. 그것을 포기하면 renderer는 무엇을 치를까요. [run
 rendering](/ag-ui-rust/ko/client/rendering/) 한 페이지가 그 이야기입니다.
 :::
+
+## subagent
+
+일을 맡기는 agent는 자식마다 `SUBAGENT_STARTED`로 announce합니다. 자식이 만드는
+모든 것은 그 호출의 id를 달고 도착합니다. 소비하는 쪽에서 그것은 두 가지입니다.
+`Update::Subagent`는 **lifecycle뿐**입니다. subagent가 announce될 때 하나, 끝나거나
+멈추거나 실패할 때 하나입니다. `SubagentChangeKind`(`Started`, `Resumed`, `Finished`,
+`Suspended`, `Failed`)와, 지금 시점의 `Subagent` 항목 전체를 싣습니다. 이름, 설명,
+부모 link, `SubagentStatus`입니다. subagent가 *말하는* 것은 평범한 `Update::Message`와
+`Update::Reasoning`으로 도착합니다. 그 message들은 `Message::subagent_run_id()`에 만든
+쪽을 싣습니다. view는 그것으로 묶고, lifecycle은 group의 머리글에 씁니다.
+
+registry는 session에 있습니다. `session.subagents()`는 지금까지 announce된 모든 호출을
+run을 넘어 나열합니다. `session.subagent(id)`는 하나를 찾습니다. renderer가 지금 그리려는
+message의 id로 하는 일이 그것입니다. interrupt로 멈춘 subagent는 재개하는 run이 같은
+id를 다시 announce할 때까지 `Suspended`로 남습니다. 그 announce는 두 번째 subagent가
+아니라 `Resumed`로 도착합니다.
+
+```rust
+// src/main.rs
+use ag_ui::client::{Session, SubagentChangeKind, SubagentStatus, Update, transport::ReplayTransport};
+use ag_ui::{Event, SubagentFinishedEvent, SubagentOutcome, SubagentRunId, TextMessageRole};
+use futures_util::StreamExt;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() {
+    let tagged = |event: Event| event.with_subagent_run_id("sub-1");
+    let transport = ReplayTransport::new([
+        Event::run_started("thread-1", "run-1"),
+        Event::subagent_started("sub-1", "researcher"),
+        tagged(Event::text_message_start("msg-1", TextMessageRole::Assistant)),
+        tagged(Event::text_message_content("msg-1", "Three sources.")),
+        tagged(Event::text_message_end("msg-1")),
+        Event::SubagentFinished(
+            SubagentFinishedEvent::new("sub-1")
+                .with_result(json!({ "sources": 3 }))
+                .with_outcome(SubagentOutcome::Success),
+        ),
+        Event::text_message_start("msg-2", TextMessageRole::Assistant),
+        Event::text_message_content("msg-2", "Thanks."),
+        Event::text_message_end("msg-2"),
+        Event::run_finished_success("thread-1", "run-1"),
+    ]);
+
+    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut lifecycle = Vec::new();
+
+    let mut run = session.send("research this");
+    while let Some(update) = run.next().await {
+        if let Update::Subagent(subagent) = update {
+            lifecycle.push((subagent.change, subagent.subagent.status));
+        }
+    }
+    drop(run);
+
+    // lifecycle update 둘. announce, 그리고 payload를 실은 닫힘.
+    assert_eq!(
+        lifecycle,
+        [
+            (SubagentChangeKind::Started, SubagentStatus::Running),
+            (
+                SubagentChangeKind::Finished,
+                SubagentStatus::Finished { result: Some(json!({ "sources": 3 })) },
+            ),
+        ]
+    );
+
+    // registry는 run보다 오래 남고, message는 만든 쪽의 이름을 댑니다.
+    let researcher = session.subagent(&SubagentRunId::new("sub-1")).expect("announced");
+    assert_eq!(researcher.name, "researcher");
+    assert_eq!(session.subagents().len(), 1);
+
+    let owner = |i: usize| session.messages()[i].subagent_run_id().map(|id| id.as_str());
+    assert_eq!(owner(1), Some("sub-1"));   // subagent의 답변
+    assert_eq!(owner(2), None);            // 부모 자신의 것
+}
+```
+
+이쪽에서 subagent가 바꾸는 나머지는 update가 도착하기 전에 이미 처리되어 있습니다.
+verifier는 tag가 붙은 continuation이 그 entity를 연 subagent를 지목하는지 검사합니다.
+chunk normalizer는 *subagent마다* 열린 stream을 하나씩 두어, 동시에 도는 자식들이 서로
+섞여 들지 않게 합니다. message의 `metadata()`는 그 message를 만든 모든 event의
+merge입니다. key마다 마지막 쓰기가 이깁니다. 끝에 가서야 알 수 있는 token 수가
+message에 얹히는 방식이 그것입니다. [subagent](/ag-ui-rust/ko/server/subagents/)가
+만드는 쪽 절반입니다.
 
 ## run이 끝나는 세 가지 방법
 

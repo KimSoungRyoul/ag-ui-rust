@@ -24,8 +24,13 @@ costs.
 Every variant wraps a payload struct named after it — `Event::TextMessageStart`
 carries a `TextMessageStartEvent`, and so on the whole way down. The payload's
 fields are serialized beside `type`, not nested under a key, and every payload
-also carries the optional `timestamp` and `rawEvent` fields of `BaseEvent`,
-flattened into the same object.
+also carries the optional `timestamp`, `rawEvent` and `metadata` fields of
+`BaseEvent`, flattened into the same object. `metadata` is an object open by
+key — token usage, a trace id, whatever an application needs to carry — and it
+is absent or an object, never `null`. A consumer merges each event's metadata
+into the message that event builds, key by key with the last write winning;
+[`ag_ui::metadata`](/ag-ui-rust/api/ag_ui/metadata/index.html) has the rules
+and the one reserved key.
 
 The order below is `EventType::ALL`'s order, which is upstream's.
 
@@ -64,9 +69,25 @@ The order below is `EventType::ALL`'s order, which is upstream's.
 | `REASONING_MESSAGE_CHUNK` | `ReasoningMessageChunk` | Reasoning | Start, content and end folded into one self-contained event. |
 | `REASONING_END` | `ReasoningEnd` | Reasoning | Closes the reasoning block. |
 | `REASONING_ENCRYPTED_VALUE` | `ReasoningEncryptedValue` | Reasoning | A provider's opaque reasoning blob, for zero-data-retention modes. `subtype` says whether `entityId` names a `tool-call` or a `message`. |
+| `SUBAGENT_STARTED` | `SubagentStarted` | Subagent | Announces a subagent invocation under a `subagentRunId`, with a display `name`. Optionally a `description`, the enclosing `parentSubagentRunId`, and the `parentToolCallId` / `parentMessageId` that spawned it. |
+| `SUBAGENT_FINISHED` | `SubagentFinished` | Subagent | Closes the invocation. `outcome` is `success` or `suspended` — the latter naming the `interruptIds` the subagent owns — and absent reads as success. `result` mirrors `RUN_FINISHED.result`. |
+| `SUBAGENT_ERROR` | `SubagentError` | Subagent | The invocation failed: a `message` for a human and an optional machine-readable `code`. |
 
 That is 4 text, 5 tool, 5 deprecated thinking, 3 state, 2 activity, 2 escape
 hatches, 5 lifecycle, 7 reasoning and 3 subagent.
+
+### Attribution
+
+Beyond the three lifecycle events, **24** of the 36 types carry an optional
+`subagentRunId` naming the subagent that produced them: the text, tool, state,
+activity, reasoning and step families, plus `RAW` and `CUSTOM`. An event
+without one belongs to the parent agent, so a stream that never sets the field
+is exactly the stream there was before subagents existed. The nine that cannot
+carry it are the run lifecycle (`RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`),
+`MESSAGES_SNAPSHOT` — whose messages carry their own — and the five deprecated
+`THINKING_*` events. `EventType::is_attributable` is that list as a method,
+and `Event::subagent_run_id` reads the tag off any event.
+[Subagents](/ag-ui-rust/server/subagents/) is what to do with it.
 
 ## On the wire
 
@@ -184,7 +205,7 @@ types:
 `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
 `TOOL_CALL_CHUNK`, `STATE_SNAPSHOT`, `STATE_DELTA`, `MESSAGES_SNAPSHOT`, `RAW`,
 `CUSTOM`, `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`,
-`STEP_FINISHED`.
+`STEP_FINISHED`, `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR`.
 
 The other 15 have no binary representation at all: all seven `REASONING_*`
 events, both `ACTIVITY_*` events, all five deprecated `THINKING_*` events, and

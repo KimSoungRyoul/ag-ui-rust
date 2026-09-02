@@ -36,7 +36,8 @@ fn subagent_started_round_trips_with_every_field() {
         SubagentStartedEvent::new("sub-1", "researcher")
             .with_description("Finds sources")
             .with_parent_subagent("sub-0")
-            .with_parent_tool_call("call-1", Some("msg-1".into())),
+            .with_parent_tool_call("call-1")
+            .with_parent_message("msg-1"),
     );
     assert_eq!(built, event);
 

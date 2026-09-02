@@ -42,6 +42,12 @@ fn render(update: Update<Value>) {
         // The run paused and needs a human — one update per pending interrupt.
         Update::Interrupt(interrupt) => println!("waiting on {}", interrupt.id),
 
+        // A subagent was announced, resumed, finished, suspended or failed.
+        // Only the lifecycle: what it *says* arrives as ordinary messages.
+        Update::Subagent(subagent) => {
+            println!("{} {:?}", subagent.subagent.name, subagent.change);
+        }
+
         // A malformed stream, a patch that would not apply, a transport
         // failure, a RUN_ERROR. Not necessarily fatal.
         Update::Error(error) => eprintln!("{error}"),
@@ -84,6 +90,93 @@ events, so consecutive updates need not belong to the same call. Arrival order
 is the only nesting signal there is, and what it costs a renderer to give that
 up is the whole of [Rendering a run](/ag-ui-rust/client/rendering/).
 :::
+
+## Subagents
+
+An agent that delegates announces each child with `SUBAGENT_STARTED`, and everything the
+child produces arrives tagged with that invocation's id. On the consuming side that is
+two things. `Update::Subagent` is the **lifecycle only** — one update when a subagent is
+announced, and one when it finishes, suspends or fails — carrying a `SubagentChangeKind`
+(`Started`, `Resumed`, `Finished`, `Suspended`, `Failed`) and the whole `Subagent` entry
+as it now stands: its name, description, parent links and `SubagentStatus`. What the
+subagent *says* arrives as ordinary `Update::Message`s and `Update::Reasoning`s, whose
+messages carry the producer on `Message::subagent_run_id()`. A view groups by that and
+uses the lifecycle for the group's header.
+
+The registry is on the session: `session.subagents()` lists every invocation announced so
+far, across runs, and `session.subagent(id)` looks one up — which is what a renderer does
+with the id on a message it is about to draw. A subagent that paused on an interrupt stays
+`Suspended` until the run that resumes it announces the same id again, and that arrives as
+`Resumed` rather than as a second subagent.
+
+```rust
+// src/main.rs
+use ag_ui::client::{Session, SubagentChangeKind, SubagentStatus, Update, transport::ReplayTransport};
+use ag_ui::{Event, SubagentFinishedEvent, SubagentOutcome, SubagentRunId, TextMessageRole};
+use futures_util::StreamExt;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() {
+    let tagged = |event: Event| event.with_subagent_run_id("sub-1");
+    let transport = ReplayTransport::new([
+        Event::run_started("thread-1", "run-1"),
+        Event::subagent_started("sub-1", "researcher"),
+        tagged(Event::text_message_start("msg-1", TextMessageRole::Assistant)),
+        tagged(Event::text_message_content("msg-1", "Three sources.")),
+        tagged(Event::text_message_end("msg-1")),
+        Event::SubagentFinished(
+            SubagentFinishedEvent::new("sub-1")
+                .with_result(json!({ "sources": 3 }))
+                .with_outcome(SubagentOutcome::Success),
+        ),
+        Event::text_message_start("msg-2", TextMessageRole::Assistant),
+        Event::text_message_content("msg-2", "Thanks."),
+        Event::text_message_end("msg-2"),
+        Event::run_finished_success("thread-1", "run-1"),
+    ]);
+
+    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut lifecycle = Vec::new();
+
+    let mut run = session.send("research this");
+    while let Some(update) = run.next().await {
+        if let Update::Subagent(subagent) = update {
+            lifecycle.push((subagent.change, subagent.subagent.status));
+        }
+    }
+    drop(run);
+
+    // Two lifecycle updates: the announcement, then the close with its payload.
+    assert_eq!(
+        lifecycle,
+        [
+            (SubagentChangeKind::Started, SubagentStatus::Running),
+            (
+                SubagentChangeKind::Finished,
+                SubagentStatus::Finished { result: Some(json!({ "sources": 3 })) },
+            ),
+        ]
+    );
+
+    // The registry outlives the run, and a message names its producer.
+    let researcher = session.subagent(&SubagentRunId::new("sub-1")).expect("announced");
+    assert_eq!(researcher.name, "researcher");
+    assert_eq!(session.subagents().len(), 1);
+
+    let owner = |i: usize| session.messages()[i].subagent_run_id().map(|id| id.as_str());
+    assert_eq!(owner(1), Some("sub-1"));   // the subagent's reply
+    assert_eq!(owner(2), None);            // the parent's own
+}
+```
+
+The rest of what a subagent changes on this side is already done before an update reaches
+you. The verifier checks that a tagged continuation names the subagent that opened the
+entity, the chunk normalizer keeps one open stream *per subagent* so concurrent children
+do not splice into each other, and a message's `metadata()` is the merge of every event
+that built it — key by key, last write wins, which is how a token count that is only known
+at the end lands on the message. [Subagents](/ag-ui-rust/server/subagents/) is the
+producing half.
 
 ## The three ways a run ends
 

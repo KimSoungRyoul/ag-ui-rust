@@ -105,10 +105,20 @@ what the machine checks:
 | `NotOpen` | content or a terminator for something that was never opened |
 | `UnknownId` | `TOOL_CALL_RESULT` for a call id that was never introduced |
 | `OutOfOrder` | `TOOL_CALL_RESULT` before that call's `TOOL_CALL_END` |
-| `OpenAtFinish` | `RUN_FINISHED` while a message, reasoning block, tool call or step is open |
+| `OpenAtFinish` | `RUN_FINISHED` while a message, reasoning block, tool call, step or subagent is open |
+| `OwnerMismatch` | a tagged continuation, terminator or re-open whose `subagentRunId` is not the one that opened the entity; a tool call tagged with one subagent whose parent message belongs to another |
 
 `RUN_ERROR` is exempt from `OpenAtFinish`: a run that blew up mid-message could
 not have closed it.
+
+`OwnerMismatch` is the one rule subagents added. Every entity is opened *by
+someone* — a subagent, or the parent agent when the opener carries no
+`subagentRunId` — and the machine remembers who. A later event that *names* a
+different owner is rejected; one that names none is accepted, because
+attribution is optional on every event and a bare continuation is what a
+pre-subagent producer sends. Steps are keyed by owner as well as name, so a
+subagent cannot close the parent's step, and two agents may run a step of the
+same name at once.
 
 Each rejection is a
 [`VerificationError`](/ag-ui-rust/api/ag_ui/server/error/struct.VerificationError.html)
@@ -146,7 +156,7 @@ from the set another feature pulls in:
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.2", default-features = false, features = ["server", "sse"] }
+ag-ui = { version = "0.3", default-features = false, features = ["server", "sse"] }
 ```
 
 One thing survives that switch. Whether a terminal event has already gone out is
@@ -160,8 +170,9 @@ someone else's process, and a stream that breaks the rules should produce one
 clear error rather than a confused UI. This is where the TypeScript SDK puts its
 verifier, and for a consumer that is the right instinct.
 
-The rules are the same shape, with three additions that only make sense on the
-receiving end:
+The rules are the same shape — subagent ownership included, spelled out as
+rules 9 to 13 of `ag_ui::client::verify` — with three additions that only make
+sense on the receiving end:
 
 - `RUN_STARTED` opens the stream and does so exactly once. Only `RAW` and
   `CUSTOM` may precede it — they are outside the protocol's vocabulary by
@@ -214,7 +225,7 @@ The Rust event types are a hand-written port of upstream's Zod schemas. Nothing
 in the compiler links the two, so upstream can add an event and this SDK will
 keep building, keep passing its tests, and silently not speak the protocol any
 more. That is exactly how an earlier community SDK came to declare 24 event
-variants against a spec that had 32 at the time — it has 33 today — with nothing
+variants against a spec that had 32 at the time — it has 36 today — with nothing
 anywhere forcing the question.
 
 `xtask drift-check` is that link:
@@ -283,7 +294,7 @@ catch.
 
 - The borrow checker cannot see events emitted through `ctx.emit`, which is why
   layer 2 exists.
-- The runtime verifier cannot know that the protocol grew a 34th event, which is
+- The runtime verifier cannot know that the protocol grew a 37th event, which is
   why layer 3 exists.
 - The drift check cannot tell you an event's *semantics* changed while its name
   and fields did not. Nothing here can. That is what reading the diff in

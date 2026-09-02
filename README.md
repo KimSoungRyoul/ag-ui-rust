@@ -149,6 +149,14 @@ the last handful of `HashSet` lookups back. Neither the TypeScript SDK (which ve
 on the client) nor the .NET one (which does not verify) checks ordering server-side, which is
 where the bug is actually caused.
 
+**A subagent is a scope, and attribution is the sink's job.** `ctx.subagent(name)` announces
+a child agent and returns a handle that dereferences to the run context; everything emitted
+through it — messages, tool calls, nested subagents — comes out carrying that invocation's
+`subagentRunId`, and `SUBAGENT_FINISHED` goes out when the handle drops. The tagging lives in
+the event sink rather than in the emitters, so no emitter needed a second variant. The
+verifier tracks who opened what on both ends, and `SubagentVisibility` flattens or hides the
+surface for consumers older than it.
+
 **IDs are strings.** `ThreadId`, `RunId`, and friends are newtypes over `String`, not `Uuid`.
 The spec says string; real backends such as LangGraph send arbitrary strings.
 

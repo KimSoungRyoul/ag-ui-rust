@@ -285,6 +285,80 @@ the same id. `ReasoningChangeKind::Started` and `Ended` arrive **once** per id
 regardless, so a view that prints a finished thought prints it once and needs no
 dedupe.
 
+## Grouping by subagent
+
+A delegating agent's stream carries who produced what: `SUBAGENT_STARTED` announces a
+child, and every message the child produces arrives with its invocation id on
+`Message::subagent_run_id()`. That is the same shape as the tool-call id above — a tag on
+each line, not a container — and it is enough to draw a subagent's output as a group
+without buffering any of it. Look the id up in the session for the name; the stream lends
+the session back read-only while a run is in flight:
+
+```rust
+// src/render.rs
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, TextMessageRole};
+use futures_util::StreamExt;
+
+#[tokio::main]
+async fn main() {
+    let tagged = |event: Event| event.with_subagent_run_id("sub-1");
+    let transport = ReplayTransport::new([
+        Event::run_started("thread-1", "run-1"),
+        Event::subagent_started("sub-1", "scope"),
+        tagged(Event::text_message_start("msg-1", TextMessageRole::Assistant)),
+        tagged(Event::text_message_content("msg-1", "Onboarding covers the first week.")),
+        tagged(Event::text_message_end("msg-1")),
+        Event::subagent_finished_success("sub-1"),
+        Event::text_message_start("msg-2", TextMessageRole::Assistant),
+        Event::text_message_content("msg-2", "Two tasks added."),
+        Event::text_message_end("msg-2"),
+        Event::run_finished_success("thread-1", "run-1"),
+    ]);
+
+    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut lines = Vec::new();
+
+    let mut run = session.send("research onboarding");
+    while let Some(update) = run.next().await {
+        match update {
+            Update::Subagent(subagent) => {
+                lines.push(format!("⟂ {} {:?}", subagent.subagent.name, subagent.change));
+            }
+            Update::Message(message) => {
+                if let MessageChangeKind::Content { delta } = &message.change {
+                    // The id on the message, resolved to a name through the
+                    // session — readable mid-run, because the stream lends
+                    // it back read-only.
+                    let speaker = message
+                        .message
+                        .subagent_run_id()
+                        .and_then(|id| run.session().subagent(id))
+                        .map_or("agent", |subagent| subagent.name.as_str());
+                    lines.push(format!("[{speaker}] {delta}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        lines,
+        [
+            "⟂ scope Started",
+            "[scope] Onboarding covers the first week.",
+            "⟂ scope Finished",
+            "[agent] Two tasks added.",
+        ]
+    );
+}
+```
+
+The lifecycle updates are where a group opens and closes, and `SubagentStatus` on the
+`Suspended` and `Failed` changes is what the header says while the child waits or after it
+fails. Two children streaming at once interleave their messages exactly as two tool calls
+interleave their arguments, and the id is again the only thing separating them.
+
 ## Redraw hints
 
 - `MessageUpdate::index` is the row that changed. Redraw one row.
@@ -294,6 +368,8 @@ dedupe.
   the run has moved on.
 - `Update::Error` is not terminal. Print it and keep going; the run says when it
   is over.
+- `Update::Subagent` is a group header changing, not a row. The rows are the
+  messages whose `subagent_run_id()` names it.
 - `Update::Done` is the last update of a run, on every path out. It is where the
   input goes live again — see [the update
   stream](/ag-ui-rust/client/updates/#the-three-ways-a-run-ends).

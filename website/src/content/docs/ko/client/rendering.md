@@ -300,6 +300,80 @@ message를 엽니다. 둘은 같은 id를 씁니다. 그래도
 도착합니다. 그래서 끝난 생각을 출력하는 view는 한 번만 출력합니다. 중복
 제거는 필요 없습니다.
 
+## subagent별로 묶기
+
+일을 맡기는 agent의 stream은 누가 무엇을 만들었는지 싣고 있습니다. `SUBAGENT_STARTED`가
+자식을 announce합니다. 자식이 만든 모든 message는 `Message::subagent_run_id()`에 그 호출의
+id를 달고 도착합니다. 위의 tool call id와 같은 모양입니다. 담는 그릇이 아니라 줄마다 붙은
+tag입니다. 그것만으로 subagent의 출력을 buffering 없이 한 group으로 그릴 수 있습니다.
+이름은 session에서 id로 찾으십시오. run이 진행 중인 동안 stream이 session을 읽기 전용으로
+빌려 줍니다.
+
+```rust
+// src/render.rs
+use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::{Event, TextMessageRole};
+use futures_util::StreamExt;
+
+#[tokio::main]
+async fn main() {
+    let tagged = |event: Event| event.with_subagent_run_id("sub-1");
+    let transport = ReplayTransport::new([
+        Event::run_started("thread-1", "run-1"),
+        Event::subagent_started("sub-1", "scope"),
+        tagged(Event::text_message_start("msg-1", TextMessageRole::Assistant)),
+        tagged(Event::text_message_content("msg-1", "Onboarding covers the first week.")),
+        tagged(Event::text_message_end("msg-1")),
+        Event::subagent_finished_success("sub-1"),
+        Event::text_message_start("msg-2", TextMessageRole::Assistant),
+        Event::text_message_content("msg-2", "Two tasks added."),
+        Event::text_message_end("msg-2"),
+        Event::run_finished_success("thread-1", "run-1"),
+    ]);
+
+    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut lines = Vec::new();
+
+    let mut run = session.send("research onboarding");
+    while let Some(update) = run.next().await {
+        match update {
+            Update::Subagent(subagent) => {
+                lines.push(format!("⟂ {} {:?}", subagent.subagent.name, subagent.change));
+            }
+            Update::Message(message) => {
+                if let MessageChangeKind::Content { delta } = &message.change {
+                    // message에 붙은 id를 session에서 이름으로 풉니다. run
+                    // 도중에도 읽을 수 있습니다. stream이 읽기 전용으로
+                    // 빌려 주기 때문입니다.
+                    let speaker = message
+                        .message
+                        .subagent_run_id()
+                        .and_then(|id| run.session().subagent(id))
+                        .map_or("agent", |subagent| subagent.name.as_str());
+                    lines.push(format!("[{speaker}] {delta}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        lines,
+        [
+            "⟂ scope Started",
+            "[scope] Onboarding covers the first week.",
+            "⟂ scope Finished",
+            "[agent] Two tasks added.",
+        ]
+    );
+}
+```
+
+lifecycle update가 group이 열리고 닫히는 자리입니다. `Suspended`와 `Failed` 변경에 실린
+`SubagentStatus`는 자식이 기다리는 동안, 또는 실패한 뒤에 머리글이 말할 내용입니다. 동시에
+stream하는 자식 둘은 tool call 둘이 인자를 뒤섞는 것과 똑같이 message를 뒤섞습니다. 그들을
+가르는 것은 이번에도 id뿐입니다.
+
 ## 다시 그릴 때의 지침
 
 - `MessageUpdate::index`는 바뀐 행입니다. 그 한 행만 다시 그리세요.
@@ -310,6 +384,8 @@ message를 엽니다. 둘은 같은 id를 씁니다. 그래도
   뒤에도 view가 들고 있을 수 있습니다.
 - `Update::Error`는 종료 신호가 아닙니다. 출력하고 계속 진행하세요.
   끝났다는 말은 run이 합니다.
+- `Update::Subagent`는 행이 아니라 group 머리글의 변화입니다. 행은
+  `subagent_run_id()`가 그것을 가리키는 message들입니다.
 - `Update::Done`은 빠져나가는 모든 경로에서 run의 마지막 update입니다.
   입력창을 다시 여는 자리가 여기입니다. [update
   stream](/ag-ui-rust/ko/client/updates/#run이-끝나는-세-가지-방법)을

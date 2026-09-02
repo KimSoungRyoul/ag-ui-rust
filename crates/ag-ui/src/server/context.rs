@@ -362,7 +362,7 @@ impl<S> RunContext<S> {
     /// call.end()?;                                   // the client sees the call close…
     ///
     /// let announce = SubagentStartedEvent::new("researcher-7", "researcher")
-    ///     .with_parent_tool_call(call_id.clone(), None);
+    ///     .with_parent_tool_call(call_id.clone());
     /// let mut researcher = ctx.subagent_with(announce)?;
     /// researcher.say("Three sources found.")?;       // …then the subagent it spawned…
     /// researcher.finish()?;

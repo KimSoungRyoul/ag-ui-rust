@@ -55,7 +55,7 @@ export도 없습니다.
 Zod-to-Rust compiler를 만들어 유지한다는 뜻입니다. 아직 그럴 값어치는 없습니다.
 
 [event reference](/ag-ui-rust/ko/reference/events/)가 binary transport가 싣는
-18개와 싣지 못하는 15개를 짚어 줍니다.
+21개와 싣지 못하는 15개를 짚어 줍니다.
 
 ## `Event`는 일부러 exhaustive하고, error는 아닙니다
 

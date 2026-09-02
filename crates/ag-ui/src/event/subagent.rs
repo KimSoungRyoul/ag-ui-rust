@@ -138,16 +138,20 @@ impl SubagentStartedEvent {
         self
     }
 
-    /// Links the subagent to the tool call that spawned it, and to the message
-    /// that held the call when there is one.
+    /// Links the subagent to the tool call that spawned it — the
+    /// agents-as-tools pattern, where a UI draws the subagent inside the
+    /// call's card.
     #[must_use]
-    pub fn with_parent_tool_call(
-        mut self,
-        tool_call_id: impl Into<ToolCallId>,
-        parent_message_id: Option<MessageId>,
-    ) -> Self {
+    pub fn with_parent_tool_call(mut self, tool_call_id: impl Into<ToolCallId>) -> Self {
         self.parent_tool_call_id = Some(tool_call_id.into());
-        self.parent_message_id = parent_message_id;
+        self
+    }
+
+    /// Links the subagent to the assistant message that held the spawning
+    /// tool call, when the call sat in one.
+    #[must_use]
+    pub fn with_parent_message(mut self, message_id: impl Into<MessageId>) -> Self {
+        self.parent_message_id = Some(message_id.into());
         self
     }
 }

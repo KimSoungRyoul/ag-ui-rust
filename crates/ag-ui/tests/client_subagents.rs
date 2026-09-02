@@ -39,7 +39,8 @@ fn lifecycle_events_build_the_registry() {
         .apply(&Event::SubagentStarted(
             SubagentStartedEvent::new("sub-1", "researcher")
                 .with_description("Finds sources")
-                .with_parent_tool_call("call-1", Some("msg-0".into())),
+                .with_parent_tool_call("call-1")
+                .with_parent_message("msg-0"),
         ))
         .unwrap();
     assert_eq!(started, change(0, "sub-1", SubagentChangeKind::Started));

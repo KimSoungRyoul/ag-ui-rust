@@ -160,9 +160,45 @@ fn main() -> ag_ui::server::Result<()> {
 }
 ```
 
-Seven rules: `RunEnded`, `DuplicateRunStarted`, `DuplicateStart`, `NotOpen`, `UnknownId`,
-`OutOfOrder`, `OpenAtFinish`. `RUN_ERROR` is exempt from `OpenAtFinish` — a run that blew up
-mid-message could not have closed it.
+Eight rules: `RunEnded`, `DuplicateRunStarted`, `DuplicateStart`, `NotOpen`, `UnknownId`,
+`OutOfOrder`, `OpenAtFinish`, `OwnerMismatch`. `RUN_ERROR` is exempt from `OpenAtFinish` — a
+run that blew up mid-message could not have closed it. `OwnerMismatch` is the subagent rule:
+the verifier remembers which subagent opened each message, call and step, and rejects a
+continuation or terminator that *names a different one*. One that names none is accepted —
+attribution is optional per event — and a `subagentRunId` never announced by
+`SUBAGENT_STARTED` is fine too. Every started subagent must close before `RUN_FINISHED`.
+
+### An interrupt raised inside a subagent
+
+The run still pauses the ordinary way. What changes is that the subagent closes *suspended*
+rather than successful, naming the interrupts it owns, and the interrupt carries the
+subagent's id so a client renders it inside that group. On resume, announce the **same id**:
+
+```rust
+use ag_ui::{Interrupt, RunOutcome, SubagentStartedEvent};
+use ag_ui::server::{Agent, Result, RunContext};
+
+struct Janitor;
+
+impl Agent for Janitor {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        let approved = ctx.resume_for("approve-delete").is_some();
+        // The same id on the pausing run and the resuming one.
+        let mut deleter = ctx.subagent_with(SubagentStartedEvent::new("deleter-1", "deleter"))?;
+        if approved {
+            deleter.say("Deleted.")?;
+            return Ok(RunOutcome::Success);   // Drop closes it as a success
+        }
+        deleter.say("May I?")?;
+        let interrupt = Interrupt::new("approve-delete", "tool_approval")
+            .with_subagent_run_id(deleter.id().clone());
+        deleter.suspend(vec![interrupt.id.clone()])?;   // SUBAGENT_FINISHED, outcome suspended
+        Ok(RunOutcome::interrupt(vec![interrupt]))
+    }
+}
+```
 
 ## Cancellation
 

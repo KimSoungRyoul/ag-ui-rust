@@ -297,11 +297,15 @@ async fn the_wire_carries_the_attribution_and_the_parent_link() {
     let estimator = &starts[1].subagent_run_id;
     let opened = events
         .iter()
-        .position(|event| matches!(event, Event::SubagentStarted(e) if &e.subagent_run_id == estimator))
+        .position(
+            |event| matches!(event, Event::SubagentStarted(e) if &e.subagent_run_id == estimator),
+        )
         .expect("the estimator opened");
     let closed = events
         .iter()
-        .position(|event| matches!(event, Event::SubagentFinished(e) if &e.subagent_run_id == estimator))
+        .position(
+            |event| matches!(event, Event::SubagentFinished(e) if &e.subagent_run_id == estimator),
+        )
         .expect("the estimator closed");
     assert!(
         events[opened + 1..closed]
@@ -315,7 +319,11 @@ async fn the_wire_carries_the_attribution_and_the_parent_link() {
     assert_eq!(events[opened].subagent_run_id(), Some(estimator));
     assert_eq!(events[closed].subagent_run_id(), Some(estimator));
     assert_eq!(events[1].event_type(), EventType::TextMessageStart);
-    assert_eq!(events[1].subagent_run_id(), None, "the parent's own message");
+    assert_eq!(
+        events[1].subagent_run_id(),
+        None,
+        "the parent's own message"
+    );
 }
 
 // ---- concurrent, by hand ----------------------------------------------------
@@ -385,7 +393,10 @@ async fn a_subagent_that_pauses_the_run_is_suspended_and_owns_the_interrupt() {
     // inside that subagent's group rather than at the top level.
     assert_eq!(interrupt.id, APPROVAL);
     assert_eq!(
-        interrupt.subagent_run_id.as_ref().map(SubagentRunId::as_str),
+        interrupt
+            .subagent_run_id
+            .as_ref()
+            .map(SubagentRunId::as_str),
         Some(BUYER)
     );
 
@@ -399,7 +410,10 @@ async fn a_subagent_that_pauses_the_run_is_suspended_and_owns_the_interrupt() {
             interrupt_ids: vec![APPROVAL.to_owned()],
         }
     );
-    assert_eq!(said(&session), [("This costs 40. May I?".to_owned(), Some(BUYER))]);
+    assert_eq!(
+        said(&session),
+        [("This costs 40. May I?".to_owned(), Some(BUYER))]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

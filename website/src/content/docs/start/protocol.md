@@ -194,7 +194,7 @@ assert_eq!(EventType::TextMessageContent.as_str(), "TEXT_MESSAGE_CONTENT");
 assert_eq!(EventType::ALL.len(), 36);
 ```
 
-They group into eight families:
+They group into nine families:
 
 | Family | Events | What it is for |
 | --- | --- | --- |
@@ -206,6 +206,7 @@ They group into eight families:
 | Activity | `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA` | What the agent is *doing* — searching, reading, waiting — in a shape the client renders. |
 | Run and step | `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`, `STEP_FINISHED` | The lifecycle above. |
 | Escape hatches | `RAW`, `CUSTOM` | A provider event forwarded verbatim, and an application-defined one. |
+| Subagent | `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR` | A child agent starting and stopping. What it produced is a tag on each of those events, not a container. |
 
 [Event reference](/ag-ui-rust/reference/events/) has the field-by-field version.
 
@@ -234,6 +235,37 @@ call landing rather than only reporting it afterwards. The flip side is that a s
 carries no association with whatever was open when it arrived, because the wire carries
 none either.
 
+## Subagents are a tag, not a container
+
+Many agents delegate — a supervisor dispatching research, a tool call that is itself an
+agent — and to a frontend that arrives as one stream. The protocol's answer is small: an
+optional `subagentRunId` on 24 of the 36 event types, naming the subagent that produced
+each one, and three lifecycle events that say when a subagent starts, finishes or fails.
+An event without the field belongs to the parent, so a stream that never sets it is exactly
+what there was before.
+
+```text
+SUBAGENT_STARTED        subagentRunId=sub-1  name=researcher
+TEXT_MESSAGE_START      messageId=msg-1  subagentRunId=sub-1
+TEXT_MESSAGE_CONTENT    messageId=msg-1  subagentRunId=sub-1  delta="Three sources."
+TEXT_MESSAGE_END        messageId=msg-1  subagentRunId=sub-1
+SUBAGENT_FINISHED       subagentRunId=sub-1  outcome={"type":"success"}
+TEXT_MESSAGE_START      messageId=msg-2                       <- the parent's own
+```
+
+The id names **one invocation**, not a definition: run the same subagent twice and there
+are two ids, and the reusable half is the `name`. A subagent that pauses on an interrupt
+closes with a `suspended` outcome instead of a success, and may announce the same id again
+on the run that resumes it. Two subagents that stream at once interleave under their own
+tags, exactly as two tool calls do. [Subagents](/ag-ui-rust/server/subagents/) is the
+producing side; [The update stream](/ag-ui-rust/client/updates/#subagents) is the consuming
+one.
+
+Every event, message, tool call and resume entry also carries an optional `metadata`
+object, open by key — token usage, a trace id, whatever an application needs beside the
+conversation. Absent or an object, never `null`, and merged into the message an event
+builds with the last write winning.
+
 ## What the ordering rules actually are
 
 The protocol's rules are about brackets and ids, and they are few:
@@ -247,6 +279,7 @@ The protocol's rules are about brackets and ids, and they are few:
 | `unknown-id` | Referencing an id the stream never introduced. |
 | `open-at-finish` | `RUN_FINISHED` while a message, call or step is still open. |
 | `out-of-order` | A legal event in an illegal place — a tool result before its `TOOL_CALL_END`. |
+| `owner-mismatch` | A continuation, terminator or re-open that names a different subagent than the one that opened the entity. |
 
 Those names are the ones this SDK reports, and it checks them on the **server** as well as
 on the client, on by default in release builds. Emitting `TEXT_MESSAGE_CONTENT` without a

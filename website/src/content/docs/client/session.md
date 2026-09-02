@@ -303,6 +303,7 @@ Reading a session takes no run in flight and no transport bound:
 | `raw_state()` | The same state as JSON. Always current. |
 | `reasoning()` | Reasoning messages, kept out of the transcript. |
 | `interrupts()` | What the agent is waiting for, if the last run paused. |
+| `subagents()` | Every subagent invocation announced so far, with its status; `subagent(id)` looks one up. |
 | `thread_id()` | The conversation this session is part of. |
 | `applier()` | The state machine underneath, for a view that wants the raw materialised form. |
 | `agent()` | The `RemoteAgent`, for dropping down a level. |

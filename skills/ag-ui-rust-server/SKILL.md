@@ -1,6 +1,6 @@
 ---
 name: ag-ui-rust-server
-description: "MUST USE when writing Rust against ag-ui-rust to host an agent — the crate ag-ui with its `server` and `axum` features, plus ag-ui-a2ui. UNCONVENTIONAL, and wrong from memory: this is ONE crate named ag-ui, not ag-ui-core / ag-ui-server / ag-ui-axum — those registry names belong to an unrelated community SDK — and the server lives under ag_ui::server, the axum binding under ag_ui::axum, both behind features. Events are emitted through RAII typestate handles — ctx.assistant_message() then delta() then end() — never as raw start/content/end calls; the emit path is SYNCHRONOUS with no .await, because the handle emits its terminator on Drop; two open handles at once is a borrow-check error, not a runtime one; Agent::run is a native async fn (RPITIT), so #[async_trait] does not apply and Box<dyn Agent> does not exist (use BoxAgent). Covers RunContext accessors, RunOutcome, tool calls the agent answers vs. the client runs, shared state as automatic snapshot/delta, human-in-the-loop interrupts, the ordering verifier and its seven rules, cancellation, and mounting with route_agui. Triggers on: ag-ui-rust, ag_ui::server, ag_ui::axum, ag_ui, impl Agent for, RunContext, RunOutcome, route_agui, AG-UI agent in Rust, Rust backend for CopilotKit or AG-UI, A2UI surface from a Rust agent."
+description: "MUST USE when writing Rust against ag-ui-rust to host an agent — the crate ag-ui with its `server` and `axum` features, plus ag-ui-a2ui. UNCONVENTIONAL, and wrong from memory: this is ONE crate named ag-ui, not ag-ui-core / ag-ui-server / ag-ui-axum — those registry names belong to an unrelated community SDK — and the server lives under ag_ui::server, the axum binding under ag_ui::axum, both behind features. Events are emitted through RAII typestate handles — ctx.assistant_message() then delta() then end() — never as raw start/content/end calls; the emit path is SYNCHRONOUS with no .await, because the handle emits its terminator on Drop; two open handles at once is a borrow-check error, not a runtime one; Agent::run is a native async fn (RPITIT), so #[async_trait] does not apply and Box<dyn Agent> does not exist (use BoxAgent). Covers RunContext accessors, RunOutcome, tool calls the agent answers vs. the client runs, shared state as automatic snapshot/delta, human-in-the-loop interrupts, subagent scopes (ctx.subagent — attribution is applied by the event sink, never by hand; SubagentVisibility for older clients), the ordering verifier and its eight rules, cancellation, and mounting with route_agui. Triggers on: ag-ui-rust, ag_ui::server, ag_ui::axum, ag_ui, impl Agent for, RunContext, RunOutcome, route_agui, ctx.subagent, SubagentHandle, SubagentVisibility, AG-UI agent in Rust, Rust backend for CopilotKit or AG-UI, A2UI surface from a Rust agent."
 ---
 
 # Serving an AG-UI agent in Rust
@@ -74,6 +74,7 @@ stream *is* running the agent, so there is no `spawn` and nothing to configure.
 | Reasoning | `ctx.think(text)?`, or `ctx.reasoning()?` |
 | A tool call | `ctx.tool_call(name)?` → `args`/`args_json`, then `result_json` or `end` |
 | A scope | `ctx.step(name)?` — guard emits `STEP_FINISHED` on drop, derefs to the context |
+| A subagent | `ctx.subagent(name)?` — same shape as a step; everything emitted through it is attributed |
 | Anything untyped | `ctx.emit(event)?` |
 
 Handles are RAII: the terminator goes out on `Drop`, including on the early return a `?`
@@ -226,8 +227,64 @@ over HTTP the client sees a truncated body because the `200` is long sent.
 The resumed run is a new run that rebuilds its position from `messages`, `state` and
 `resume` — it remembers nothing. An agent paused on several decisions must re-report every
 one still unanswered, and the client must answer them all in one request, or the pair never
-terminates. `references/state-and-interrupts.md` has the round trip, the verifier's seven
+terminates. `references/state-and-interrupts.md` has the round trip, the verifier's eight
 rules, and cancellation.
+
+## Subagents
+
+`ctx.subagent(name)?` emits `SUBAGENT_STARTED` and returns a handle that derefs to the run
+context. Everything opened through it — messages, tool calls, reasoning, steps, nested
+subagents — goes out carrying that invocation's `subagentRunId`, **tagged by the event sink**,
+so no emitter is told about it and `ctx.emit` inside the scope is tagged too. `Drop` emits
+`SUBAGENT_FINISHED` (success); `finish_with(result)`, `suspend(interrupt_ids)`, `fail(msg)`
+are the other endings. Two handles at once is a borrow-check error, as with every handle.
+
+```rust
+use ag_ui::{Event, EventType, RunAgentInput};
+use ag_ui::server::RunContext;
+use serde_json::json;
+
+fn main() -> ag_ui::server::Result<()> {
+    let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
+    {
+        let mut planner = ctx.subagent("planner")?;
+        planner.say("Two tasks.")?;                    // tagged r-sub-1
+        {
+            let mut estimator = planner.subagent("estimator")?;   // nested: parent filled in
+            estimator.say("A day each.")?;             // tagged r-sub-2
+        }                                              // SUBAGENT_FINISHED r-sub-2
+        planner.finish_with(json!({ "tasks": 2 }))?;   // SUBAGENT_FINISHED r-sub-1, with a result
+    }
+    ctx.say("Plan ready.")?;                           // untagged: the parent's own
+
+    let events = events.drain();
+    assert_eq!(events[0].event_type(), EventType::SubagentStarted);
+    assert_eq!(events[1].subagent_run_id().map(|id| id.as_str()), Some("r-sub-1"));
+    assert_eq!(events[5].subagent_run_id().map(|id| id.as_str()), Some("r-sub-2"));
+    assert_eq!(events[9].event_type(), EventType::SubagentFinished);
+    assert_eq!(events[10].subagent_run_id(), None);
+    Ok(())
+}
+```
+
+- **The id names one invocation**, not a definition: `name` is the reusable half. Ids are
+  derived (`r-sub-1`); `ctx.subagent_with(SubagentStartedEvent::new(id, name))` takes your own,
+  which is how a resuming run *continues* a subagent that suspended — announce the same id
+  again, never a fresh one.
+- **Agents as tools:** end the call, open the subagent with
+  `.with_parent_tool_call(call_id)` (plus `.with_parent_message(id)` when the call sat
+  in a message), finish it, then `ctx.emit` the
+  `TOOL_CALL_RESULT`.
+- **A subagent that needs a human:** build the interrupt with
+  `Interrupt::with_subagent_run_id(sub.id().clone())`, call `sub.suspend(vec![interrupt.id])`,
+  then return `RunOutcome::interrupt(..)` as usual.
+- **Concurrent subagents** are emitted by hand: `Event::…with_subagent_run_id(id)` interleaved
+  via `ctx.emit`, bracketed by `Event::subagent_started` / `subagent_finished_success`. Tag
+  every chunk.
+- **Older clients** fail while decoding `SUBAGENT_*` event types. The default sends the full
+  surface; flip it per endpoint with `AgentEndpoint::transformer(|| SubagentVisibility::inline())`
+  (no lifecycle events, no `subagentRunId` anywhere) or `SubagentVisibility::hidden()` (the
+  parent's events only).
 
 ## Mounting
 
@@ -283,6 +340,8 @@ there for a hand-written handler.
 | `tokio::spawn` around the run | nothing; polling the stream runs the agent |
 | `Uuid::new_v4()` for ids | nothing; ids are derived strings, or `*_with_id` |
 | `Err(..)` when a human declines | `ResumeStatus::Cancelled` — a decline is a successful run |
+| `Event::subagent_started(..)` + tagging each event by hand for a sequential child | `ctx.subagent(name)?` — the sink tags everything emitted through the handle |
+| a fresh id when a suspended subagent resumes | `ctx.subagent_with(SubagentStartedEvent::new(same_id, name))` |
 
 ## Deeper
 
@@ -291,6 +350,7 @@ there for a hand-written handler.
   [Tool calls](https://kimsoungryoul.github.io/ag-ui-rust/server/tools/)
 - [Shared state](https://kimsoungryoul.github.io/ag-ui-rust/server/state/) ·
   [Human in the loop](https://kimsoungryoul.github.io/ag-ui-rust/server/interrupts/) ·
+  [Subagents](https://kimsoungryoul.github.io/ag-ui-rust/server/subagents/) ·
   [Errors and cancellation](https://kimsoungryoul.github.io/ag-ui-rust/server/errors/)
 - [Serving over HTTP](https://kimsoungryoul.github.io/ag-ui-rust/server/axum/) ·
   [A2UI](https://kimsoungryoul.github.io/ag-ui-rust/a2ui/) ·

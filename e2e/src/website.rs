@@ -66,6 +66,7 @@ doc_page!(server_text, "server/text.md");
 doc_page!(server_tools, "server/tools.md");
 doc_page!(server_state, "server/state.md");
 doc_page!(server_interrupts, "server/interrupts.md");
+doc_page!(server_subagents, "server/subagents.md");
 doc_page!(server_errors, "server/errors.md");
 doc_page!(server_axum, "server/axum.md");
 
@@ -104,6 +105,7 @@ doc_page!(ko_server_text, "ko/server/text.md");
 doc_page!(ko_server_tools, "ko/server/tools.md");
 doc_page!(ko_server_state, "ko/server/state.md");
 doc_page!(ko_server_interrupts, "ko/server/interrupts.md");
+doc_page!(ko_server_subagents, "ko/server/subagents.md");
 doc_page!(ko_server_errors, "ko/server/errors.md");
 doc_page!(ko_server_axum, "ko/server/axum.md");
 

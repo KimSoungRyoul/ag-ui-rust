@@ -190,7 +190,8 @@ fn subagent_run() {
         Event::SubagentStarted(
             SubagentStartedEvent::new("sub-1", "researcher")
                 .with_description("Finds sources for the brief")
-                .with_parent_tool_call("call-1", Some("msg-1".into())),
+                .with_parent_tool_call("call-1")
+                .with_parent_message("msg-1"),
         ),
         Event::text_message_start("msg-2", TextMessageRole::Assistant)
             .with_subagent_run_id("sub-1"),
