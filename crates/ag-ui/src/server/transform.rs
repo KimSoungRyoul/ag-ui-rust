@@ -369,13 +369,20 @@ pub enum SubagentVisibility {
     Attributed,
     /// The pre-subagent shape: no lifecycle events and no `subagentRunId`
     /// anywhere — not on events, not on the messages inside
-    /// `MESSAGES_SNAPSHOT` or the `RUN_STARTED` input echo. A subagent's own
-    /// text arrives as the parent's work.
+    /// `MESSAGES_SNAPSHOT` or the `RUN_STARTED` input echo, not on the
+    /// interrupts a paused run reports. A subagent's own text arrives as the
+    /// parent's work.
     Inline,
     /// Only the parent's own events. Everything a subagent produced is
     /// dropped — including the result of a call it requested, even when the
     /// parent executed it, since a result for a call the consumer never saw
     /// is a protocol error.
+    ///
+    /// The one thing kept is the run's shared state. A `STATE_SNAPSHOT` or
+    /// `STATE_DELTA` a subagent published describes the *thread's* state,
+    /// not the subagent's work: a client that never saw it would mirror a
+    /// stale state and send that back on its next request. It goes out with
+    /// the tag cleared, as the parent's.
     Hidden,
 }
 
@@ -448,11 +455,24 @@ impl SubagentFilter {
                     }
                 }
             }
+            Event::RunFinished(finished) => Self::strip_interrupt_tags(finished),
             _ => {
                 event.clear_subagent_run_id();
             }
         }
         vec![event]
+    }
+
+    /// The interrupts a paused run reports name the subagent that raised
+    /// them, and a consumer that never saw that subagent has no group to
+    /// file them under. The question still stands, so the interrupt stays;
+    /// only the tag goes.
+    fn strip_interrupt_tags(finished: &mut crate::RunFinishedEvent) {
+        if let Some(crate::RunOutcome::Interrupt { interrupts }) = &mut finished.outcome {
+            for interrupt in interrupts {
+                interrupt.subagent_run_id = None;
+            }
+        }
     }
 
     /// Keeps the parent's events and drops a subagent's, tracking open ids so
@@ -494,6 +514,9 @@ impl SubagentFilter {
                 !hidden && !owned
             }
 
+            // The thread's state, whoever published it.
+            Event::StateSnapshot(_) | Event::StateDelta(_) => true,
+
             _ => !owned,
         };
         if !keep {
@@ -512,6 +535,10 @@ impl SubagentFilter {
                         .retain(|message| message.subagent_run_id().is_none());
                 }
             }
+            Event::StateSnapshot(_) | Event::StateDelta(_) => {
+                event.clear_subagent_run_id();
+            }
+            Event::RunFinished(finished) => Self::strip_interrupt_tags(finished),
             _ => {}
         }
         vec![event]

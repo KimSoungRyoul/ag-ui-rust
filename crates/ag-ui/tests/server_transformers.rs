@@ -273,3 +273,99 @@ fn hidden_drops_an_untagged_continuation_of_a_subagents_message() {
     );
     assert_eq!(filter.mode(), SubagentVisibility::Hidden);
 }
+
+/// A subagent that moves the shared state, then says so.
+struct Publishing;
+
+impl Agent for Publishing {
+    type State = serde_json::Value;
+
+    async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+        {
+            let mut worker = ctx.subagent("worker")?;
+            worker.set_state(&json!({"done": 1}))?;
+            worker.say("moved it")?;
+        }
+        ctx.say("noted")?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// The state is the thread's, whoever published it: a client that never saw
+/// the subagent's `STATE_SNAPSHOT` would mirror a stale board and send it
+/// back on its next request.
+#[tokio::test]
+async fn hidden_visibility_keeps_the_state_a_subagent_published() {
+    let events = collect(Runner::new(Publishing).transformer(SubagentVisibility::hidden())).await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::StateSnapshot,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::RunFinished,
+        ]
+    );
+    assert_eq!(
+        events[1].subagent_run_id(),
+        None,
+        "the state goes out as the parent's"
+    );
+    let Event::StateSnapshot(snapshot) = &events[1] else {
+        unreachable!("asserted above");
+    };
+    assert_eq!(snapshot.snapshot, json!({"done": 1}));
+
+    // Attributed and inline agree on the payload; only the tag differs.
+    let attributed = collect(Runner::new(Publishing)).await;
+    assert_eq!(
+        attributed[2].subagent_run_id().map(|id| id.as_str()),
+        Some("r-sub-1")
+    );
+    let inline = collect(Runner::new(Publishing).transformer(SubagentVisibility::inline())).await;
+    assert_eq!(inline[1].event_type(), EventType::StateSnapshot);
+    assert_eq!(inline[1].subagent_run_id(), None);
+}
+
+/// A subagent that pauses the run on a question of its own.
+struct Pausing;
+
+impl Agent for Pausing {
+    type State = serde_json::Value;
+
+    async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+        let mut worker = ctx.subagent("worker")?;
+        worker.say("May I?")?;
+        let interrupt =
+            ag_ui::Interrupt::new("ok", "tool_approval").with_subagent_run_id(worker.id().clone());
+        worker.suspend(vec![interrupt.id.clone()])?;
+        Ok(RunOutcome::interrupt(vec![interrupt]))
+    }
+}
+
+/// The question still stands for a consumer that never saw the subagent, so
+/// the interrupt stays and only its tag goes — with it, nothing on the wire
+/// says subagent.
+#[tokio::test]
+async fn inline_and_hidden_strip_the_attribution_from_interrupts_too() {
+    for filter in [SubagentVisibility::inline(), SubagentVisibility::hidden()] {
+        let mode = filter.mode();
+        let events = collect(Runner::new(Pausing).transformer(filter)).await;
+
+        let Some(Event::RunFinished(finished)) = events.last() else {
+            panic!("{mode:?}: the run must end with RUN_FINISHED: {events:?}");
+        };
+        let interrupts = finished.outcome.as_ref().expect("an outcome").interrupts();
+        assert_eq!(interrupts.len(), 1, "{mode:?}: {events:?}");
+        assert_eq!(interrupts[0].id, "ok");
+        assert_eq!(interrupts[0].subagent_run_id, None, "{mode:?}");
+
+        for event in &events {
+            let json = serde_json::to_string(event).expect("serializes");
+            assert!(!json.contains("subagentRunId"), "{mode:?}: {json}");
+        }
+    }
+}

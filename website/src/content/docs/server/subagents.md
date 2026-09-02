@@ -331,8 +331,8 @@ side and is nothing a producer can fix after the fact. A producer with consumers
 | Mode | On the wire |
 | --- | --- |
 | `Attributed` | **The default, and no transformer at all.** The lifecycle events, and `subagentRunId` on everything a subagent produced. |
-| `Inline` | The pre-subagent shape: no lifecycle events and no `subagentRunId` anywhere — not on events, not on the messages inside `MESSAGES_SNAPSHOT` or the `RUN_STARTED` input echo. A subagent's text arrives as the parent's work. |
-| `Hidden` | Only the parent's own events. Everything a subagent produced is dropped, including the result of a call it requested even when the parent executed it — a result for a call the consumer never saw is a protocol error. |
+| `Inline` | The pre-subagent shape: no lifecycle events and no `subagentRunId` anywhere — not on events, not on the messages inside `MESSAGES_SNAPSHOT` or the `RUN_STARTED` input echo, not on the interrupts a paused run reports. A subagent's text arrives as the parent's work. |
+| `Hidden` | Only the parent's own events. Everything a subagent produced is dropped, including the result of a call it requested even when the parent executed it — a result for a call the consumer never saw is a protocol error. The exception is the run's shared state: a `STATE_*` event a subagent published is kept, untagged, because a client that missed it would send a stale state back on its next request. |
 
 Both are ordinary [transformers](/ag-ui-rust/server/axum/), so they compose with the
 rest of the chain and are set per endpoint:

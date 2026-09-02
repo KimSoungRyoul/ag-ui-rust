@@ -329,8 +329,8 @@ type은 application code가 돌기도 전에 decode 단계에서 실패합니다
 | mode | wire에서 |
 | --- | --- |
 | `Attributed` | **기본값이고, transformer가 아예 없는 상태.** lifecycle event, 그리고 subagent가 만든 모든 것에 붙은 `subagentRunId`. |
-| `Inline` | subagent 이전의 모양. lifecycle event도 없고 `subagentRunId`도 어디에도 없습니다. event에도, `MESSAGES_SNAPSHOT`이나 `RUN_STARTED`의 input echo 안 message에도 없습니다. subagent의 text가 부모의 일로 도착합니다. |
-| `Hidden` | 부모 자신의 event만. subagent가 만든 것은 전부 버립니다. subagent가 요청한 call의 result도, 부모가 실행했더라도 버립니다. consumer가 본 적 없는 call의 result는 protocol error이기 때문입니다. |
+| `Inline` | subagent 이전의 모양. lifecycle event도 없고 `subagentRunId`도 어디에도 없습니다. event에도, `MESSAGES_SNAPSHOT`이나 `RUN_STARTED`의 input echo 안 message에도, 멈춘 run이 보고하는 interrupt에도 없습니다. subagent의 text가 부모의 일로 도착합니다. |
+| `Hidden` | 부모 자신의 event만. subagent가 만든 것은 전부 버립니다. subagent가 요청한 call의 result도, 부모가 실행했더라도 버립니다. consumer가 본 적 없는 call의 result는 protocol error이기 때문입니다. 예외는 run의 공유 state입니다. subagent가 publish한 `STATE_*` event는 tag를 지운 채 그대로 내보냅니다. 그것을 놓친 client는 다음 request에 낡은 state를 되돌려 보내기 때문입니다. |
 
 둘 다 평범한 [transformer](/ag-ui-rust/ko/server/axum/)입니다. chain의 나머지와 함께
 compose되고, endpoint마다 정합니다.
