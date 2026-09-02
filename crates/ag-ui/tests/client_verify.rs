@@ -399,3 +399,228 @@ async fn verification_can_be_turned_off_for_a_producer_you_have_decided_to_live_
     // The applier is tolerant, so the text still lands somewhere sensible.
     assert_eq!(session.applier().text_of("msg-1"), Some("orphan text"));
 }
+
+// ---- subagents (rules 9–13) ----------------------------------------------
+
+fn tagged(event: Event, id: &str) -> Event {
+    event.with_subagent_run_id(id)
+}
+
+#[test]
+fn a_tagged_continuation_must_name_the_opener() {
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        tagged(
+            Event::text_message_start("msg-1", TextMessageRole::Assistant),
+            "s1",
+        ),
+        tagged(Event::text_message_content("msg-1", "hi"), "s2"),
+    ]);
+    assert!(said.contains("was opened by"), "{said}");
+    assert!(said.contains("s1") && said.contains("s2"), "{said}");
+
+    // A subagent may not continue the parent's message either.
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        tagged(Event::text_message_end("msg-1"), "s1"),
+    ]);
+    assert!(said.contains("the parent agent"), "{said}");
+}
+
+#[test]
+fn an_untagged_continuation_and_an_unannounced_attribution_are_fine() {
+    verify_all(&[
+        Event::run_started("t", "r"),
+        tagged(
+            Event::text_message_start("msg-1", TextMessageRole::Assistant),
+            "s1",
+        ),
+        Event::text_message_content("msg-1", "hi"),
+        tagged(Event::text_message_end("msg-1"), "s1"),
+        // Attribution without lifecycle events is a supported mode.
+        tagged(Event::custom("ping", json!(1)), "never-announced"),
+        tagged(Event::step_started("plan"), "never-announced"),
+        tagged(Event::step_finished("plan"), "never-announced"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("attribution is optional per event");
+}
+
+#[test]
+fn a_tool_call_belongs_to_the_message_that_carries_it() {
+    let mut start = ag_ui::ToolCallStartEvent::new("call-1", "search");
+    start.parent_message_id = Some("msg-1".into());
+
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        tagged(
+            Event::text_message_start("msg-1", TextMessageRole::Assistant),
+            "s1",
+        ),
+        tagged(Event::ToolCallStart(start.clone()), "s2"),
+    ]);
+    assert!(said.contains("belongs to the message"), "{said}");
+
+    // Untagged, it inherits the message's owner, so a sibling cannot continue it.
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        tagged(
+            Event::text_message_start("msg-1", TextMessageRole::Assistant),
+            "s1",
+        ),
+        Event::ToolCallStart(start),
+        tagged(Event::tool_call_args("call-1", "{}"), "s2"),
+    ]);
+    assert!(said.contains("was opened by subagent \"s1\""), "{said}");
+}
+
+#[test]
+fn steps_are_scoped_to_the_agent_that_opened_them() {
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::step_started("plan"),
+        tagged(Event::step_finished("plan"), "s1"),
+    ]);
+    assert!(said.contains("never started under subagent"), "{said}");
+
+    verify_all(&[
+        Event::run_started("t", "r"),
+        Event::step_started("plan"),
+        tagged(Event::step_started("plan"), "s1"),
+        tagged(Event::step_finished("plan"), "s1"),
+        Event::step_finished("plan"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("the same name under two owners is two steps");
+}
+
+#[test]
+fn subagent_ids_name_one_invocation_each() {
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::subagent_started("s1", "researcher"),
+        Event::subagent_started("s1", "researcher"),
+    ]);
+    assert!(said.contains("already active"), "{said}");
+
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::subagent_finished_success("s1"),
+    ]);
+    assert!(said.contains("not active"), "{said}");
+
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::subagent_started("s1", "researcher"),
+        Event::subagent_finished_success("s1"),
+        Event::subagent_started("s1", "researcher"),
+    ]);
+    assert!(said.contains("already finished"), "{said}");
+
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::SubagentStarted(
+            ag_ui::SubagentStartedEvent::new("s2", "child").with_parent_subagent("s9"),
+        ),
+    ]);
+    assert!(said.contains("was never started"), "{said}");
+
+    // A finished parent is still a parent, and an error closes like a finish.
+    verify_all(&[
+        Event::run_started("t", "r"),
+        Event::subagent_started("s1", "researcher"),
+        Event::subagent_finished_success("s1"),
+        Event::SubagentStarted(
+            ag_ui::SubagentStartedEvent::new("s2", "child").with_parent_subagent("s1"),
+        ),
+        Event::subagent_error("s2", "boom"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("a closed parent is a legal parent");
+}
+
+#[test]
+fn a_run_may_not_finish_with_a_subagent_still_active_but_may_fail() {
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::subagent_started("s1", "researcher"),
+        Event::run_finished_success("t", "r"),
+    ]);
+    assert!(said.contains("still active"), "{said}");
+
+    verify_all(&[
+        Event::run_started("t", "r"),
+        Event::subagent_started("s1", "researcher"),
+        Event::run_error("boom"),
+    ])
+    .expect("an aborted run leaves subagents open");
+}
+
+#[test]
+fn concurrent_subagents_interleave_under_their_own_tags() {
+    verify_all(&[
+        Event::run_started("t", "r"),
+        Event::subagent_started("s1", "researcher"),
+        Event::subagent_started("s2", "researcher"),
+        tagged(
+            Event::text_message_start("m1", TextMessageRole::Assistant),
+            "s1",
+        ),
+        tagged(
+            Event::text_message_start("m2", TextMessageRole::Assistant),
+            "s2",
+        ),
+        tagged(Event::text_message_content("m1", "GDP"), "s1"),
+        tagged(Event::text_message_content("m2", "Population"), "s2"),
+        tagged(Event::text_message_end("m2"), "s2"),
+        Event::subagent_finished_success("s2"),
+        tagged(Event::text_message_end("m1"), "s1"),
+        Event::subagent_finished_success("s1"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("two subagents may stream at once");
+}
+
+#[test]
+fn a_messages_snapshot_seeds_ownership() {
+    use ag_ui::{AssistantMessage, Message, ToolCall};
+
+    let snapshot = Event::messages_snapshot(vec![Message::Assistant(AssistantMessage {
+        id: "m1".into(),
+        content: Some("Searching.".into()),
+        tool_calls: Some(vec![ToolCall::new("c1", "search", "{}")]),
+        subagent_run_id: Some("s1".into()),
+        ..Default::default()
+    })]);
+
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        snapshot.clone(),
+        tagged(
+            Event::text_message_start("m1", TextMessageRole::Assistant),
+            "s2",
+        ),
+    ]);
+    assert!(said.contains("belongs to subagent \"s1\""), "{said}");
+
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        snapshot.clone(),
+        tagged(Event::tool_call_start("c1", "search"), "s2"),
+    ]);
+    assert!(
+        said.contains("the call belongs to subagent \"s1\""),
+        "{said}"
+    );
+
+    verify_all(&[
+        Event::run_started("t", "r"),
+        snapshot,
+        // An untagged re-open takes the message back for the parent.
+        Event::text_message_start("m1", TextMessageRole::Assistant),
+        Event::text_message_end("m1"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("an untagged re-open is accepted");
+}

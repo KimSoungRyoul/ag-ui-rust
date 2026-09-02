@@ -146,12 +146,14 @@ pub mod verify;
 pub use agent::{RemoteAgent, RunParams};
 pub use apply::{
     Applier, Changed, MessageChange, MessageChangeKind, ReasoningChange, ReasoningChangeKind,
+    Subagent, SubagentChange, SubagentChangeKind, SubagentStatus,
 };
 pub use chunks::{ChunkNormalizer, normalize_all};
 pub use error::{Error, Result};
 pub use interrupts::{InterruptExt, ResumeBuilder, interrupts_of, resume_run};
 pub use session::{
-    MessageUpdate, ReasoningUpdate, RunEnd, RunStream, Session, SessionBuilder, Update,
+    MessageUpdate, ReasoningUpdate, RunEnd, RunStream, Session, SessionBuilder, SubagentUpdate,
+    Update,
 };
 pub use transport::{EventStream, Transport};
 pub use verify::{Verifier, verify_all};
