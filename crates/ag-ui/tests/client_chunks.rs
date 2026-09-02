@@ -763,3 +763,43 @@ fn a_subagents_tool_result_closes_only_its_own_stream() {
     );
     verify_all(&events).expect("the normalized stream should verify");
 }
+
+#[test]
+fn a_tagged_chunk_naming_anothers_open_stream_is_a_verifier_complaint_not_a_crossed_message() {
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    // s2 continues m1, which s1 opened by chunk and never closed.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        tagged(text_chunk(Some("m1"), Some("A")), "s1"),
+        tagged(text_chunk(Some("m1"), Some("B")), "s2"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalization does not judge ownership");
+
+    // The normalizer took the tag at its word — a second start for m1 under
+    // s2 — and the verifier is where that is a complaint.
+    let error = verify_all(&events).expect_err("m1 belongs to s1");
+    assert!(error.to_string().contains("m1"), "{error}");
+
+    // An untagged result for a subagent's call closes that call's stream and
+    // the parent's open message — the result is the parent's — but not the
+    // subagent's other stream.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        tagged(tool_chunk(Some("c1"), Some("search"), Some("{}")), "s1"),
+        // One stream per owner: s1's text closes its call.
+        tagged(text_chunk(Some("m1"), Some("child says")), "s1"),
+        text_chunk(Some("m2"), Some("parent says")),
+        Event::tool_call_result("m3", "c1", "hit"),
+        tagged(text_chunk(None, Some(" more")), "s1"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("normalizes");
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    assert_eq!(applier.text_of("m1"), Some("child says more"));
+    assert_eq!(applier.text_of("m2"), Some("parent says"));
+    verify_all(&events).expect("the normalized stream should verify");
+}
