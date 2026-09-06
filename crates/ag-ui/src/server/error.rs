@@ -46,6 +46,15 @@ pub enum Error {
     #[error("the event stream was dropped by the consumer")]
     Disconnected,
 
+    /// The configured event queue filled before the consumer could drain it.
+    /// The stream ends with an `EVENT_BUFFER_FULL` error; the rejected event
+    /// was not delivered. Reconnect/replay is the application's responsibility.
+    #[error("the event buffer reached its capacity of {capacity} events")]
+    EventBufferFull {
+        /// Maximum queued events, excluding the reserved overflow error.
+        capacity: usize,
+    },
+
     /// The agent itself failed. Build one with [`Error::agent`].
     #[error("agent error: {0}")]
     Agent(Box<dyn std::error::Error + Send + Sync>),
@@ -74,6 +83,7 @@ impl Error {
             Self::Verification(_) => "PROTOCOL_VIOLATION",
             Self::Cancelled => "CANCELLED",
             Self::Disconnected => "DISCONNECTED",
+            Self::EventBufferFull { .. } => "EVENT_BUFFER_FULL",
             Self::Agent(_) => "AGENT_ERROR",
         }
     }

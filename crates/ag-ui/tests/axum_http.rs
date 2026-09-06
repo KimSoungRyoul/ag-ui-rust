@@ -196,6 +196,22 @@ impl Agent for Verbose {
 // ----------------------------------------------------------------- tests ----
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_bounded_endpoint_reports_overflow_as_a_valid_terminal_event() {
+    let endpoint =
+        AgentEndpoint::new(Chatty).event_buffer_capacity(std::num::NonZeroUsize::new(4).unwrap());
+    let addr = serve(Router::new().route_agui_with("/agent", endpoint)).await;
+    let (head, body) = request(addr, &[], &input()).await;
+    assert_eq!(head.status, 200);
+    let events = events(&body);
+    assert_eq!(events.len(), 5);
+    ag_ui::client::verify_all(&events).expect("overflow is a legal AG-UI error stream");
+    let Event::RunError(error) = events.last().unwrap() else {
+        panic!("the endpoint must expose its buffer limit over HTTP");
+    };
+    assert_eq!(error.code.as_deref(), Some("EVENT_BUFFER_FULL"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_run_streams_its_events_in_order() {
     let addr = serve(Router::new().route_agui("/agent", Chatty)).await;
     let (head, body) = request(addr, &[], &input()).await;

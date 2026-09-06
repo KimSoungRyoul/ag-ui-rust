@@ -169,9 +169,18 @@ with.
 
 That last guarantee is what forces the design. `Drop` cannot be async, so a handle cannot
 `await` while emitting its terminator. The emit path is therefore synchronous end to end —
-handles push into an unbounded channel and the transport layer drains it. The first draft of
+handles push into a channel and the transport layer drains it. The first draft of
 this API had `msg.delta(t).await?`, copied from the TypeScript and .NET SDKs, and it simply
 cannot coexist with the RAII guarantee.
+
+`Runner::event_buffer_capacity(NonZeroUsize)` and the matching `AgentEndpoint` option bound
+queued events after transformation. The default is unbounded for compatibility. When a
+synchronous burst fills the queue, the next emit fails with `EventBufferFull`; the sink appends
+one reserved `RUN_ERROR` with code `EVENT_BUFFER_FULL` and closes. Accepted events remain in
+order, and no later emit or handle drop can append after that terminal error. The error bypasses
+transformers so a filter cannot hide overflow. This caps event count, not payload bytes or the
+temporary allocations made by a transformer. Applications that need durable execution retain
+their own committed state and reconnect/replay after this transport error.
 
 ## One extension point, not two
 

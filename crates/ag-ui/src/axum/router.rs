@@ -18,6 +18,7 @@
 //! # let _ = app;
 //! ```
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -65,6 +66,7 @@ pub struct AgentEndpoint<A> {
     transformers: Vec<TransformerFactory>,
     echo_input: bool,
     keep_alive: Option<Duration>,
+    event_buffer_capacity: Option<NonZeroUsize>,
 }
 
 impl<A> AgentEndpoint<A> {
@@ -75,6 +77,7 @@ impl<A> AgentEndpoint<A> {
             transformers: Vec::new(),
             echo_input: false,
             keep_alive: None,
+            event_buffer_capacity: None,
         }
     }
 
@@ -119,6 +122,16 @@ impl<A> AgentEndpoint<A> {
         self
     }
 
+    /// Limits each run's queued events. See
+    /// [`Runner::event_buffer_capacity`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/run/struct.Runner.html#method.event_buffer_capacity).
+    /// Overflow produces an `EVENT_BUFFER_FULL` terminal error; callers using
+    /// durable execution can reconnect from their application's saved state.
+    #[must_use]
+    pub fn event_buffer_capacity(mut self, capacity: NonZeroUsize) -> Self {
+        self.event_buffer_capacity = Some(capacity);
+        self
+    }
+
     /// A fresh chain for one run.
     fn chain(&self) -> TransformerChain {
         let mut chain = TransformerChain::new();
@@ -150,9 +163,12 @@ impl<A: Agent + 'static> AgentEndpoint<A> {
             Err(error) => return error.into_response(),
         };
 
-        let runner = Runner::new(Arc::clone(&self.agent))
+        let mut runner = Runner::new(Arc::clone(&self.agent))
             .transformers(self.chain())
             .echo_input(self.echo_input);
+        if let Some(capacity) = self.event_buffer_capacity {
+            runner = runner.event_buffer_capacity(capacity);
+        }
 
         // The token has to come off the runner before `run` consumes it.
         let mut response = response.cancellation(runner.cancellation_token());
@@ -172,6 +188,7 @@ impl<A> std::fmt::Debug for AgentEndpoint<A> {
             .field("transformers", &self.transformers.len())
             .field("echo_input", &self.echo_input)
             .field("keep_alive", &self.keep_alive)
+            .field("event_buffer_capacity", &self.event_buffer_capacity)
             .finish()
     }
 }

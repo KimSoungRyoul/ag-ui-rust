@@ -93,7 +93,9 @@
 //!
 //! **The emit path is synchronous.** `Drop` cannot be async, so a handle cannot
 //! `await` while emitting its terminator: `msg.delta(text)?` takes no `.await`.
-//! Emitters push into an unbounded channel and the transport drains it.
+//! Emitters push into a channel and the transport drains it. Set
+//! [`Runner::event_buffer_capacity`] to terminate on overflow; the default
+//! remains unbounded.
 //!
 //! **Executor-agnostic.** `futures` primitives throughout, no tokio in the
 //! dependency list, no `spawn`. [`CancellationToken`] is an `AtomicBool` and a

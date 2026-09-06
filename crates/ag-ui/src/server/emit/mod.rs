@@ -30,7 +30,9 @@
 //!
 //! `Drop` cannot be async, so a handle cannot `await` while emitting its
 //! terminator. `msg.delta(text)?` therefore does not take `.await`: emitters
-//! push into an unbounded channel and the transport drains it. An earlier draft
+//! push into a channel and the transport drains it. A configured
+//! [`Runner::event_buffer_capacity`](crate::server::Runner::event_buffer_capacity)
+//! rejects overflow with a terminal error instead of waiting. An earlier draft
 //! copied `await`-ing emitters from the TypeScript and .NET SDKs; it cannot
 //! coexist with the `Drop` guarantee.
 //!
@@ -117,7 +119,9 @@ mod step;
 mod subagent;
 mod tool;
 
-use crate::{Event, SubagentRunId};
+use std::num::NonZeroUsize;
+
+use crate::{Event, RunErrorEvent, SubagentRunId};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_core::Stream;
 use futures_util::StreamExt as _;
@@ -151,6 +155,8 @@ pub(crate) struct EventSink {
     /// The subagent scope in force: every attributable event emitted untagged
     /// while it is set goes out carrying it. See [`SubagentHandle`].
     attribution: Option<SubagentRunId>,
+    event_buffer_capacity: Option<NonZeroUsize>,
+    overflowed: bool,
 }
 
 impl std::fmt::Debug for EventSink {
@@ -176,7 +182,14 @@ impl EventSink {
             cancel,
             terminated: false,
             attribution: None,
+            event_buffer_capacity: None,
+            overflowed: false,
         }
+    }
+
+    pub(crate) fn with_event_buffer_capacity(mut self, capacity: Option<NonZeroUsize>) -> Self {
+        self.event_buffer_capacity = capacity;
+        self
     }
 
     /// Emits one event, unless the run was cancelled.
@@ -193,6 +206,14 @@ impl EventSink {
     /// Emits one event even after cancellation — used by the run driver for
     /// `RUN_FINISHED` and `RUN_ERROR`, which must go out regardless.
     pub(crate) fn emit_forced(&mut self, mut event: Event) -> Result<()> {
+        if self.overflowed {
+            return Err(Error::EventBufferFull {
+                capacity: self
+                    .event_buffer_capacity
+                    .expect("overflow requires a limit")
+                    .get(),
+            });
+        }
         // Attribution is applied before the transformers, so a transformer
         // sees the same tagged stream a consumer would. An event the agent
         // tagged itself keeps its tag: that is how a hand-interleaved
@@ -226,6 +247,26 @@ impl EventSink {
     }
 
     fn send(&mut self, event: Event) -> Result<()> {
+        if self.tx.is_closed() {
+            return Err(Error::Disconnected);
+        }
+        if let Some(capacity) = self.event_buffer_capacity {
+            if self.tx.len() >= capacity.get() {
+                let error = Error::EventBufferFull {
+                    capacity: capacity.get(),
+                };
+                let terminal =
+                    Event::from(RunErrorEvent::new(error.to_string()).with_code(error.code()));
+                self.verifier.observe(&terminal)?;
+                self.tx
+                    .unbounded_send(terminal)
+                    .map_err(|_| Error::Disconnected)?;
+                self.terminated = true;
+                self.overflowed = true;
+                self.tx.close_channel();
+                return Err(error);
+            }
+        }
         self.verifier.observe(&event)?;
         self.terminated |= matches!(event, Event::RunFinished(_) | Event::RunError(_));
         self.tx

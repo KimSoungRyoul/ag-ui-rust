@@ -32,6 +32,7 @@
 //! ```
 
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -79,6 +80,7 @@ pub struct Runner<A> {
     chain: TransformerChain,
     cancel: CancellationToken,
     echo_input: bool,
+    event_buffer_capacity: Option<NonZeroUsize>,
 }
 
 // Hand-written so that `Runner` is printable whatever the agent is: requiring
@@ -90,6 +92,7 @@ impl<A> std::fmt::Debug for Runner<A> {
             .field("chain", &self.chain)
             .field("cancel", &self.cancel)
             .field("echo_input", &self.echo_input)
+            .field("event_buffer_capacity", &self.event_buffer_capacity)
             .finish()
     }
 }
@@ -102,6 +105,7 @@ impl<A> Runner<A> {
             chain: TransformerChain::new(),
             cancel: CancellationToken::new(),
             echo_input: false,
+            event_buffer_capacity: None,
         }
     }
 
@@ -140,6 +144,23 @@ impl<A> Runner<A> {
         self.echo_input = echo;
         self
     }
+
+    /// Limits queued events, including lifecycle events, after transformation.
+    ///
+    /// Emission is synchronous, so it cannot wait for a slow consumer. When
+    /// full, the sink rejects the next event, appends one reserved `RUN_ERROR`
+    /// with code `EVENT_BUFFER_FULL`, then closes the stream. Already accepted
+    /// events retain their order. This terminal error bypasses transformers.
+    ///
+    /// The default remains unbounded. This bounds event count, not payload
+    /// bytes or allocations made by an agent/transformer before emission.
+    /// Applications with durable execution should reconnect from committed
+    /// state; this transport failure does not decide business success.
+    #[must_use]
+    pub fn event_buffer_capacity(mut self, capacity: NonZeroUsize) -> Self {
+        self.event_buffer_capacity = Some(capacity);
+        self
+    }
 }
 
 impl<A: Agent> Runner<A> {
@@ -159,9 +180,11 @@ impl<A: Agent> Runner<A> {
             chain,
             cancel,
             echo_input,
+            event_buffer_capacity,
         } = self;
         let (tx, rx) = mpsc::unbounded();
-        let sink = EventSink::new(tx, chain, cancel);
+        let sink =
+            EventSink::new(tx, chain, cancel).with_event_buffer_capacity(event_buffer_capacity);
         RunStream {
             driver: Some(Box::pin(drive(agent, input, sink, echo_input))),
             rx,
@@ -265,9 +288,13 @@ impl<F: Future<Output = ()>> Stream for RunStream<F> {
             // early output flowing.
             match this.rx.poll_next_unpin(cx) {
                 Poll::Ready(Some(event)) => return Poll::Ready(Some(Ok(event))),
-                // The sender lives inside the driver future, so this only
-                // happens once the driver has been dropped below.
-                Poll::Ready(None) => return Poll::Ready(None),
+                // The driver dropped its sender, or overflow closed the queue.
+                Poll::Ready(None) => {
+                    // Overflow closes the queue even if an agent ignored its
+                    // emit error and then awaited forever.
+                    this.driver = None;
+                    return Poll::Ready(None);
+                }
                 Poll::Pending => {}
             }
 
