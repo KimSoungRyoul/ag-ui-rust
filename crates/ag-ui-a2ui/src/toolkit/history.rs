@@ -23,14 +23,12 @@
 //! it contributes no operations and cannot be recovered as a surface that was
 //! never on screen.
 
-use std::collections::BTreeMap;
-
 use serde_json::Value;
 
 use crate::constants::DEFAULT_SURFACE_ID;
-use crate::message::{AgentMessage, AgentPayload, Component};
+use crate::message::{AgentMessage, Component};
 use crate::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
-use crate::toolkit::parser::{has_a2ui_parts, unwrap_response};
+use crate::toolkit::parser::unwrap_response;
 
 /// One entry of conversation history, oldest first in a slice.
 ///
@@ -72,14 +70,14 @@ impl HistoryMessage {
 pub struct PriorSurface {
     /// The surface's id, to reuse on update.
     pub surface_id: String,
-    /// The catalog it was created with. `None` if no `createSurface` was found,
-    /// which happens when history only retains later incremental updates.
+    /// Catalog observed at creation. Successful strict replay always supplies it.
+    /// Partial histories require explicit prior state via `SurfaceStore`.
     pub catalog_id: Option<String>,
     /// Components as they stood after the last operation, in first-definition
     /// order, with later definitions of the same id replacing earlier ones.
     pub components: Vec<Component>,
     /// The data model after replaying every `updateDataModel`.
-    pub data_model: Value,
+    pub data_model: crate::DataModel,
     /// Whether the surface was deleted after being rendered.
     pub deleted: bool,
 }
@@ -97,7 +95,8 @@ impl PriorSurface {
 /// runs backwards to pick the surface, then forwards to replay it, so an update
 /// targets whatever the user is actually looking at.
 ///
-/// Returns `None` when history holds no A2UI at all.
+/// Returns `None` when no surface exists or its history cannot be replayed.
+/// Use [`try_find_prior_surface_by_id`] when replay failures must be reported.
 pub fn find_prior_surface(messages: &[HistoryMessage]) -> Option<PriorSurface> {
     find_prior_surface_by_id(messages, None)
 }
@@ -110,85 +109,67 @@ pub fn find_prior_surface_by_id(
     messages: &[HistoryMessage],
     surface_id: Option<&str>,
 ) -> Option<PriorSurface> {
-    let per_message: Vec<Vec<AgentMessage>> = messages.iter().map(extract_operations).collect();
+    try_find_prior_surface(messages, surface_id).ok().flatten()
+}
 
-    // Newest-first, so the surface the user last saw wins.
+/// Fallible discovery and replay of the latest (or explicitly named) surface.
+/// Malformed recognized A2UI blocks, wire messages, pointers, and lifecycles
+/// fail the entire replay rather than returning a partially reconstructed view.
+pub fn try_find_prior_surface(
+    messages: &[HistoryMessage],
+    surface_id: Option<&str>,
+) -> crate::Result<Option<PriorSurface>> {
+    let per_message: Vec<_> = messages
+        .iter()
+        .map(try_extract_operations)
+        .collect::<crate::Result<_>>()?;
     let target = match surface_id {
         Some(id) => id.to_string(),
-        None => per_message
+        None => match per_message
             .iter()
             .rev()
             .flat_map(|ops| ops.iter().rev())
-            .find_map(|op| op.surface_id().map(str::to_string))?,
+            .find_map(|op| op.surface_id().map(str::to_string))
+        {
+            Some(id) => id,
+            None => return Ok(None),
+        },
     };
+    try_replay(&per_message, &target)
+}
+/// Fallible history replay restricted to one surface ID.
+pub fn try_find_prior_surface_by_id(
+    messages: &[HistoryMessage],
+    surface_id: &str,
+) -> crate::Result<Option<PriorSurface>> {
+    try_find_prior_surface(messages, Some(surface_id))
+}
 
-    let mut components: BTreeMap<String, (usize, Component)> = BTreeMap::new();
-    let mut order = 0usize;
-    let mut data_model = Value::Null;
-    let mut catalog_id = None;
-    let mut deleted = false;
-    let mut seen = false;
-
-    // Oldest-first, so the reconstruction ends where the renderer is now.
-    for op in per_message.iter().flatten() {
-        if op.surface_id() != Some(target.as_str()) {
-            continue;
-        }
-        seen = true;
-        match &op.payload {
-            AgentPayload::CreateSurface(create) => {
-                catalog_id = Some(create.catalog_id.clone());
-                // Re-creating a surface id starts it over.
-                components.clear();
-                data_model = Value::Null;
-                deleted = false;
-            }
-            AgentPayload::UpdateComponents(update) => {
-                deleted = false;
-                for component in &update.components {
-                    match components.get_mut(&component.id) {
-                        // Keep the original position; a redefinition replaces
-                        // the body, not the ordering.
-                        Some((_, existing)) => *existing = component.clone(),
-                        None => {
-                            components.insert(component.id.clone(), (order, component.clone()));
-                            order += 1;
-                        }
-                    }
-                }
-            }
-            AgentPayload::UpdateDataModel(update) => {
-                let _ = update.apply(&mut data_model);
-            }
-            AgentPayload::DeleteSurface(_) => {
-                deleted = true;
-                components.clear();
-                data_model = Value::Null;
-            }
-            _ => {}
-        }
+fn try_replay(
+    per_message: &[Vec<AgentMessage>],
+    target: &str,
+) -> crate::Result<Option<PriorSurface>> {
+    let mut store = crate::surface::SurfaceStore::new();
+    for op in per_message
+        .iter()
+        .flatten()
+        .filter(|op| op.surface_id() == Some(target))
+    {
+        store.apply(op)?;
     }
-
-    if !seen {
-        return None;
-    }
-
-    let mut ordered: Vec<(usize, Component)> = components.into_values().collect();
-    ordered.sort_by_key(|(position, _)| *position);
-
-    Some(PriorSurface {
-        surface_id: target,
-        catalog_id,
-        components: ordered.into_iter().map(|(_, c)| c).collect(),
-        data_model,
-        deleted,
-    })
+    Ok(store.get(target).map(|state| PriorSurface {
+        surface_id: state.surface_id.clone(),
+        catalog_id: Some(state.catalog_id.clone()),
+        components: state.components.clone(),
+        data_model: state.data_model.clone(),
+        deleted: state.deleted,
+    }))
 }
 
 /// A surface id that will not collide with anything already in history.
 ///
-/// `createSurface` requires a globally unique id for the renderer's lifetime, so
-/// creating a second surface in the same conversation needs a fresh one.
+/// Conservatively avoids every ID seen in retained history. The protocol permits
+/// reusing a deleted ID, but this helper does not require callers to track deletion.
 pub fn next_surface_id(messages: &[HistoryMessage], base: &str) -> String {
     let base = if base.is_empty() {
         DEFAULT_SURFACE_ID
@@ -211,63 +192,80 @@ pub fn next_surface_id(messages: &[HistoryMessage], base: &str) -> String {
 
 /// Pulls every A2UI operation out of one history message.
 fn extract_operations(message: &HistoryMessage) -> Vec<AgentMessage> {
+    try_extract_operations(message).unwrap_or_default()
+}
+fn try_extract_operations(message: &HistoryMessage) -> crate::Result<Vec<AgentMessage>> {
     let mut out = Vec::new();
-
     if let Some(data) = &message.data {
-        collect_from_value(data, &mut out);
+        collect_from_value(data, &mut out)?;
+        if !out.is_empty() || data.get("error").is_some() {
+            return Ok(out);
+        }
     }
-
     let content = message.content.trim();
     if content.is_empty() {
-        return out;
+        return Ok(out);
     }
     if let Ok(value) = serde_json::from_str::<Value>(content) {
-        collect_from_value(&value, &mut out);
+        collect_from_value(&value, &mut out)?;
     }
-    if has_a2ui_parts(content) {
-        if let Ok(parts) = unwrap_response(content) {
-            for part in parts {
-                let Some(raw) = part.raw else { continue };
-                if let Ok(value) = serde_json::from_str::<Value>(&raw) {
-                    collect_from_value(&value, &mut out);
+    if content.contains(crate::constants::A2UI_OPEN_TAG) {
+        for part in unwrap_response(content)? {
+            if let Some(raw) = part.raw {
+                let value: Value = serde_json::from_str(&raw)?;
+                if is_operations_envelope(&value) {
+                    out.extend(unwrap_operations_envelope(&value)?)
+                } else if value.is_array() {
+                    out.extend(serde_json::from_value::<Vec<AgentMessage>>(value)?)
+                } else {
+                    out.push(serde_json::from_value(value)?)
                 }
             }
         }
     }
-    out
+    Ok(out)
 }
-
-fn collect_from_value(value: &Value, out: &mut Vec<AgentMessage>) {
-    // `error` first, the way upstream's part converter reads it: a payload that
-    // reports a failure describes a surface that never reached the renderer,
-    // whether or not it also carries the operations key. This crate's own
-    // `wrap_error_envelope` no longer sends both, but producers that predate
-    // that split — and the other toolkits — still do. No agent → renderer
-    // message has a top-level `error`, so nothing legitimate is skipped here.
+fn collect_from_value(value: &Value, out: &mut Vec<AgentMessage>) -> crate::Result<()> {
     if value.get("error").is_some() {
-        return;
+        return Ok(());
     }
     if is_operations_envelope(value) {
-        if let Ok(operations) = unwrap_operations_envelope(value) {
-            out.extend(operations);
-        }
-        return;
+        out.extend(unwrap_operations_envelope(value)?);
+        return Ok(());
     }
     match value {
         Value::Array(items) => {
-            for item in items {
-                if let Ok(message) = serde_json::from_value::<AgentMessage>(item.clone()) {
-                    out.push(message);
-                }
+            if items.iter().any(|item| {
+                [
+                    "createSurface",
+                    "updateComponents",
+                    "updateDataModel",
+                    "deleteSurface",
+                ]
+                .iter()
+                .any(|key| item.get(*key).is_some())
+            }) {
+                out.extend(serde_json::from_value::<Vec<AgentMessage>>(value.clone())?);
             }
         }
-        Value::Object(_) => {
-            if let Ok(message) = serde_json::from_value::<AgentMessage>(value.clone()) {
-                out.push(message);
-            }
+        Value::Object(object)
+            if object.keys().any(|key| {
+                matches!(
+                    key.as_str(),
+                    "createSurface"
+                        | "updateComponents"
+                        | "updateDataModel"
+                        | "deleteSurface"
+                        | "callRendererFunction"
+                        | "agentFunctionResponse"
+                )
+            }) =>
+        {
+            out.push(serde_json::from_value(value.clone())?)
         }
         _ => {}
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -402,7 +400,14 @@ mod tests {
 
     #[test]
     fn recreating_a_surface_id_starts_it_over() {
-        let history = vec![rendered("cart", "old"), rendered("cart", "new")];
+        let history = vec![
+            rendered("cart", "old"),
+            HistoryMessage::text(
+                "assistant",
+                wrap_as_operations_envelope(&[AgentMessage::delete_surface("cart")]).unwrap(),
+            ),
+            rendered("cart", "new"),
+        ];
         let prior = find_prior_surface(&history).unwrap();
         assert_eq!(prior.data_model, json!({"title": "new"}));
         assert_eq!(prior.components.len(), 2);

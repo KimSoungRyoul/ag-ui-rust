@@ -6,11 +6,11 @@
 //! sends the answers back in [`RunAgentInput::resume`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/input/struct.RunAgentInput.html#structfield.resume).
 //!
 //! That round trip is the whole reason `RUN_FINISHED` carries an outcome, and
-//! this module is the client half of it. With a [`Session`](crate::client::Session) it
+//! this module is the client half of it. With a [`Thread`](crate::client::Thread) it
 //! is two calls:
 //!
 //! ```
-//! # use ag_ui::client::{Session, Update, transport::ReplayTransport};
+//! # use ag_ui::client::{Thread, Update, transport::ReplayTransport};
 //! # use ag_ui::{Event, Interrupt};
 //! # use futures_util::StreamExt;
 //! # let transport = ReplayTransport::with_runs([
@@ -22,13 +22,13 @@
 //! #         Event::run_started("thread-1", "run-2"),
 //! #         Event::run_finished_success("thread-1", "run-2"),
 //! #     ],
-//! # ]);
+//! # ]).matching_requests();
 //! # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
 //! # rt.block_on(async {
-//! let mut session = Session::<_>::new(transport, "thread-1");
+//! let mut session = Thread::<_>::new(transport, "thread-1");
 //! let mut pending = Vec::new();
 //!
-//! let mut run = session.send("delete the staging database");
+//! let mut run = session.send("delete the staging database").unwrap();
 //! while let Some(update) = run.next().await {
 //!     if let Update::Interrupt(interrupt) = update {
 //!         pending.push(interrupt);
@@ -37,7 +37,7 @@
 //! drop(run);
 //!
 //! // Ask the human, then answer the agent.
-//! let mut resumed = session.resume(&pending[0], serde_json::json!({ "approved": true }));
+//! let mut resumed = session.resume(&pending[0], serde_json::json!({ "approved": true })).unwrap();
 //! while resumed.next().await.is_some() {}
 //! # });
 //! ```

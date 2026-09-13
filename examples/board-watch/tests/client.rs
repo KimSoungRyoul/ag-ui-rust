@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use ag_ui::client::transport::HttpTransport;
-use ag_ui::client::{HttpAgent, Session};
+use ag_ui::client::{HttpAgent, Thread};
 use ag_ui::{Message, Tool};
 use board_watch::view::message_count;
 use board_watch::watch::{Console, Policy, Watch};
@@ -55,12 +55,12 @@ async fn serve(app: axum::Router) -> String {
 }
 
 /// A session over the client's real HTTP transport.
-fn session(url: &str, thread: &str) -> Session<HttpTransport, Board> {
-    Session::builder(
-        HttpTransport::new(url).expect("a valid endpoint URL"),
-        thread,
-    )
-    .build()
+fn session(url: &str, thread: &str) -> Thread<HttpTransport, Board> {
+    HttpAgent::new(url)
+        .expect("a valid endpoint URL")
+        .thread_builder(thread)
+        .build()
+        .expect("valid initial board")
 }
 
 /// The same, offering tools and with verification off if asked.
@@ -69,19 +69,19 @@ fn configured(
     thread: &str,
     tools: Vec<Tool>,
     verify: bool,
-) -> Session<HttpTransport, Board> {
-    Session::builder(
-        HttpTransport::new(url).expect("a valid endpoint URL"),
-        thread,
-    )
-    .tools(tools)
-    .verify(verify)
-    .build()
+) -> Thread<HttpTransport, Board> {
+    HttpAgent::new(url)
+        .expect("a valid endpoint URL")
+        .thread_builder(thread)
+        .tools(tools)
+        .verify(verify)
+        .build()
+        .expect("valid initial board")
 }
 
 /// Runs `script` through the real client and returns what it printed.
 async fn transcript<T: ag_ui::client::Transport>(
-    session: &mut Session<T, Board>,
+    session: &mut Thread<T, Board>,
     settings: Watch,
     script: &str,
 ) -> String {
@@ -96,7 +96,7 @@ async fn transcript<T: ag_ui::client::Transport>(
 ///
 /// No `T: Transport`: reading a session is not making a request, and the bound
 /// lives on the impl blocks that are.
-fn tool_calls<T, S>(session: &Session<T, S>) -> Vec<(String, String)> {
+fn tool_calls<T, S>(session: &Thread<T, S>) -> Vec<(String, String)> {
     session
         .messages()
         .iter()
@@ -110,7 +110,7 @@ fn tool_calls<T, S>(session: &Session<T, S>) -> Vec<(String, String)> {
 }
 
 /// The assistant text the conversation holds.
-fn said<T, S>(session: &Session<T, S>) -> Vec<String> {
+fn said<T, S>(session: &Thread<T, S>) -> Vec<String> {
     session
         .messages()
         .iter()
@@ -267,11 +267,7 @@ async fn a_pause_on_two_decisions_is_answered_in_one_request() {
         assert_eq!(said(&session).last().map(String::as_str), Some(expected));
         // Two decisions, two runs — not three. Answering one per request never
         // terminates, because the agent only sees what this request carries.
-        assert_eq!(
-            session.applier().run_id().map(|id| id.as_str()),
-            Some("pause-run-2"),
-            "{printed}"
-        );
+        assert_eq!(session.snapshot().run_ids.len(), 2, "{printed}");
         assert!(session.interrupts().is_empty());
     }
 }
@@ -381,8 +377,8 @@ async fn a_truncated_stream_ends_the_run_rather_than_hanging() {
     let printed = transcript(&mut session, Watch::default(), "go\n").await;
     assert!(printed.contains("  error"), "{printed}");
     assert!(printed.contains("  done   failed"), "{printed}");
-    // The message the producer left open was closed on the way out, so a view
-    // that hides its spinner on `Ended` is not left spinning.
+    // The received partial text is preserved; the run is failed, so the
+    // view can stop its spinner without presenting the text as complete.
     assert_eq!(said(&session), ["half a sen"]);
 }
 
@@ -433,10 +429,7 @@ async fn a_second_run_in_the_same_thread_carries_what_the_first_established() {
     // second run's request.
     assert!(printed.contains("[ ] #2 book the room"), "{printed}");
     assert!(session.messages().len() > after_first);
-    assert_eq!(
-        session.applier().run_id().map(|id| id.as_str()),
-        Some("carry-run-2")
-    );
+    assert_eq!(session.snapshot().run_ids.len(), 2);
 }
 
 /// An event emitted *inside* an open tool call loses its nesting on the way to
@@ -453,7 +446,7 @@ async fn an_event_published_inside_a_call_loses_its_nesting() {
     let url = serve_task_board().await;
 
     // What the wire carries: the call opens, then the state, then the close.
-    let agent = HttpAgent::http(&url).expect("a valid endpoint URL");
+    let agent = HttpAgent::new(&url).expect("a valid endpoint URL");
     let mut raw = Vec::new();
     trace::trace(
         &agent,
@@ -673,12 +666,13 @@ fn a_toolkit_tool_definition_can_be_offered_on_a_run() {
     );
 
     // And it is offerable: a session takes it like any other tool.
-    let session: Session<HttpTransport, Board> = Session::builder(
+    let session: Thread<HttpTransport, Board> = Thread::builder(
         HttpTransport::new("http://127.0.0.1:1/agent").expect("a valid endpoint URL"),
         "surfaces",
     )
     .tools(vec![tool])
-    .build();
+    .build()
+    .expect("valid initial board");
     assert_eq!(message_count(&session), 0);
 }
 
@@ -722,7 +716,7 @@ async fn the_low_level_stream_pauses_and_resumes_without_a_session() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_low_level_stream_does_not_assemble_chunks() {
     let url = serve_fake().await;
-    let agent = HttpAgent::http(format!("{url}{}", fake::ROUTE)).expect("a valid endpoint URL");
+    let agent = HttpAgent::new(format!("{url}{}", fake::ROUTE)).expect("a valid endpoint URL");
 
     let mut out = Vec::new();
     trace::trace(&agent, "raw-chunks", "chunks", Vec::new(), false, &mut out)
@@ -745,7 +739,9 @@ async fn the_low_level_stream_does_not_assemble_chunks() {
 async fn a_recorded_run_replays_through_the_same_client() {
     let json = include_str!("../fixtures/chunked-run.json");
     let transport = replay_fixture(json).expect("the fixture");
-    let mut session: Session<_, Board> = Session::new(transport, "replay");
+    let mut session: Thread<_, Board> = Thread::builder(transport, "replay")
+        .build()
+        .expect("valid initial board");
 
     let printed = transcript(
         &mut session,

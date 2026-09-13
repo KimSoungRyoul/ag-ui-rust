@@ -67,22 +67,6 @@ use crate::error::{Error, Result};
 /// which nothing else bounds.
 pub const MAX_VALUE_DEPTH: usize = 256;
 
-/// Splits a JSON Pointer into its decoded tokens.
-///
-/// Uses `jsonptr` for the RFC 6901 escape rules (`~1` → `/`, `~0` → `~`) and
-/// falls back to a best-effort split when the pointer contains an invalid
-/// escape, so callers reporting on bad input still get a usable locator.
-pub(crate) fn pointer_tokens(path: &str) -> Vec<String> {
-    if let Ok(pointer) = Pointer::parse(path) {
-        return pointer.tokens().map(|t| t.decoded().into_owned()).collect();
-    }
-    path.strip_prefix('/')
-        .unwrap_or(path)
-        .split('/')
-        .map(|token| token.replace("~1", "/").replace("~0", "~"))
-        .collect()
-}
-
 /// Whether a string parses as an RFC 6901 JSON Pointer.
 ///
 /// The rule that catches real mistakes is the escape alphabet: `~` may only be
@@ -673,6 +657,41 @@ fn walk_bindings(
     }
 }
 
+/// Binding scope over the lossless model, preserving null versus missing/undefined.
+#[derive(Debug, Clone)]
+pub struct ModelScope<'a> {
+    model: &'a crate::DataModel,
+    prefix: String,
+}
+impl<'a> ModelScope<'a> {
+    /// Starts at the model root.
+    pub fn root(model: &'a crate::DataModel) -> Self {
+        Self {
+            model,
+            prefix: String::new(),
+        }
+    }
+    /// Resolves absolute bindings from the root and relative bindings within this scope.
+    pub fn resolve(&self, path: &str) -> Result<Option<&'a crate::ModelValue>> {
+        self.model.lookup(&self.absolute(path))
+    }
+    /// Opens an item scope in a collection, without inventing a missing item.
+    pub fn item(&self, path: &str, index: usize) -> Self {
+        let collection = self.absolute(path);
+        Self {
+            model: self.model,
+            prefix: format!("{}/{index}", collection.trim_end_matches('/')),
+        }
+    }
+    pub(crate) fn absolute(&self, path: &str) -> String {
+        if path.starts_with('/') {
+            path.into()
+        } else {
+            format!("{}/{}", self.prefix, path)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,7 +939,10 @@ mod tests {
 
     #[test]
     fn pointer_escapes_round_trip() {
-        assert_eq!(pointer_tokens("/a~1b/c~0d"), vec!["a/b", "c~d"]);
+        assert_eq!(
+            Scope::root(&json!({"a/b":{"c~d":1}})).resolve("/a~1b/c~0d"),
+            Some(&json!(1))
+        );
         let data = json!({"a/b": 7});
         assert_eq!(Scope::root(&data).resolve_string("/a~1b"), "7");
     }

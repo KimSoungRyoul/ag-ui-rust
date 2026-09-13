@@ -37,9 +37,9 @@ future는 event stream으로 귀결됩니다. *연결*에 실패하는 것은 fu
 여기 어디에도 lifetime은 적혀 있지 않습니다. 그렇다면 boxed trait
 object의 기본값인 `'static`입니다. 이 점이 구조를 떠받칩니다.
 
-transport는 보통 `Session` 안에 들어 있습니다. session은 event가 도착할
+transport는 보통 `Thread` 안에 들어 있습니다. thread는 event가 도착할
 때마다 자기 state를 바꿉니다. 돌려받은 future가 transport를 borrow하고
-있다면 그 borrow는 run이 끝날 때까지 살아 있습니다. 그러면 session은
+있다면 그 borrow는 run이 끝날 때까지 살아 있습니다. 그러면 thread는
 streaming 중에 자기 자신을 건드릴 수 없습니다. 그래서 `run`은 필요한
 것을 clone합니다. `reqwest::Client`가 바로 그 용도로 설계되어 있습니다.
 future는 홀로 섭니다.
@@ -51,7 +51,7 @@ application 전체에 끌고 다니지 않아도 됩니다.
 ```rust
 // src/main.rs
 use ag_ui::client::transport::{ReplayTransport, Transport};
-use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::Event;
 use futures_util::StreamExt;
 
@@ -62,10 +62,11 @@ async fn main() {
     let transport: Box<dyn Transport> = Box::new(ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]));
+    ]).matching_requests());
 
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let updates: Vec<_> = session.send("hello").collect().await;
+    let mut thread = Thread::<_>::new(transport, "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("hello").expect("run preflight").collect().await;
 
     assert!(matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))));
 }
@@ -79,7 +80,7 @@ wasm에서는 `EventStream`과 `TransportFuture` alias가 `Send` bound를 떼어
 
 ## `HttpTransport`
 
-기본값이며 `http` feature flag 뒤에 있습니다. `RunAgentInput`을 JSON으로
+선택적인 `http` feature로 활성화합니다. `RunAgentInput`을 JSON으로
 한 번 POST 합니다. `text/event-stream` 응답 하나를 frame 단위로
 decode합니다. crate 안에서 HTTP client를 끌어오는 유일한 곳입니다.
 
@@ -124,8 +125,9 @@ client는 모두 `Error::Config`입니다.
 실은 `Error::Http`가 됩니다. gateway의 HTML error 페이지를 읽기에는
 충분한 길이입니다. log 한 줄이 megabyte로 불어나지도 않습니다.
 
-`HttpAgent`는 같은 transport를 한 계층 아래에서 쓰는 것입니다. 이쪽
-builder로 넘겨주는 builder를 가진 `RemoteAgent<HttpTransport>`입니다.
+`HttpAgent`는 기본 HTTP 진입점입니다. builder로 연결을 설정하고 `agent.thread(id)`로
+독립 로컬 대화를 만듭니다. `RemoteAgent<T>::run_events`는 transport에 독립적인 원본 이벤트
+인터페이스이며 `HttpAgent::run_events`도 같은 처리 수준을 제공합니다.
 
 ## `ReplayTransport`
 
@@ -135,7 +137,7 @@ model까지 있어야 합니다. 게다가 그럴 필요도 없습니다. 대화
 
 ```rust
 // tests/client.rs
-use ag_ui::client::{Session, transport::ReplayTransport};
+use ag_ui::client::{Thread, transport::ReplayTransport};
 use ag_ui::{Event, Interrupt};
 use futures_util::StreamExt;
 use serde_json::json;
@@ -158,15 +160,15 @@ async fn main() {
             Event::run_started("thread-1", "run-2"),
             Event::run_finished_success("thread-1", "run-2"),
         ],
-    ]);
+    ]).matching_requests();
 
-    // clone해도 script와 기록은 공유됩니다. 그래서 test는 session에
+    // clone해도 script와 기록은 공유됩니다. 그래서 test는 thread에
     // 하나를 넘겨준 뒤에도 handle을 들고 있을 수 있습니다.
-    let mut session = Session::<_>::new(transport.clone(), "thread-1");
-    session.send("delete the staging database").collect::<Vec<_>>().await;
+    let mut thread = Thread::<_>::new(transport.clone(), "thread-1");
+    thread.send("delete the staging database").expect("run preflight").collect::<Vec<_>>().await;
 
-    let paused = session.interrupts().to_vec();
-    session.resume(&paused[0], json!({ "approved": true })).collect::<Vec<_>>().await;
+    let paused = thread.interrupts().to_vec();
+    thread.resume(&paused[0], json!({ "approved": true })).expect("run preflight").collect::<Vec<_>>().await;
 
     // client가 실제로 보낸 것입니다. 재개가 올바른 답을 실어 갔는지
     // test가 단언하는 방법입니다.
@@ -180,6 +182,10 @@ async fn main() {
 `new`는 run 하나만 script로 짭니다. 그 뒤의 run에는 모두 error로
 답합니다. 대개는 그것이 원하는 동작입니다. 실수로 두 번 실행되는 test는
 그렇다고 말해 주어야 합니다.
+
+
+예제의 `matching_requests()`는 fixture의 정상 시작·종료 ID를 실제 요청 ID로 맞춥니다.
+기본 replay는 원문 그대로 재생하므로 잘못된 ID를 검사하는 테스트에도 사용할 수 있습니다.
 
 ## SSE decoder
 
@@ -237,7 +243,7 @@ adapter입니다. byte stream에서 난 error는 stream을 끝냅니다. payload
 ```rust
 // src/transport.rs
 use ag_ui::client::transport::{EventStream, Transport, TransportFuture};
-use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::{Event, RunAgentInput, TextMessageRole};
 use futures_util::StreamExt;
 
@@ -270,12 +276,13 @@ async fn main() {
         ],
     };
 
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let updates: Vec<_> = session.send("hello").collect().await;
+    let mut thread = Thread::<_>::new(transport, "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("hello").expect("run preflight").collect().await;
 
     assert!(matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))));
     assert_eq!(
-        session.applier().text_of("msg-1"),
+        thread.applier().text_of("msg-1"),
         Some("From somewhere else entirely.")
     );
 }
@@ -288,7 +295,7 @@ helper입니다.
 ```rust
 // src/transport.rs
 use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
-use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::{Event, RunAgentInput, SseFormatter};
 use futures_util::StreamExt;
 
@@ -318,8 +325,9 @@ async fn main() {
         body.push_str(&sse.encode_to_string(&event).expect("encodes"));
     }
 
-    let mut session = Session::<_>::new(Recorded(body), "thread-1");
-    let updates: Vec<_> = session.send("hello").collect().await;
+    let mut thread = Thread::<_>::new(Recorded(body), "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("hello").expect("run preflight").collect().await;
 
     assert!(matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))));
 }
@@ -332,13 +340,13 @@ async fn main() {
 
 ## `http` 끄기
 
-`http`는 기본으로 켜져 있고 `reqwest`를 끌어옵니다. 이것을 끄는 것이
+`http`는 선택적으로 활성화하며 `reqwest`를 끌어옵니다. 이것을 끄는 것이
 crate를 wasm에서 쓸 수 있게 유지하는 방법입니다. 끄면 `HttpTransport`와
 `HttpAgent`도 함께 사라집니다. `Transport`는 직접 가져오세요.
 
 ```toml
 [dependencies.ag-ui]
-version = "0.3"
+version = "0.4"
 default-features = false
 features = ["client", "sse"]
 ```
@@ -360,7 +368,7 @@ flag](/ag-ui-rust/ko/reference/features/) 문서에 있습니다. 무엇이 어�
 
 ## 다음
 
-- [session](/ag-ui-rust/ko/client/session/) — transport 위에 무엇이
+- [thread](/ag-ui-rust/ko/client/thread/) — transport 위에 무엇이
   얹히는지.
 - API 문서의
   [`Transport`](/ag-ui-rust/api/ag_ui/client/transport/trait.Transport.html)와

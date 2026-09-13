@@ -173,7 +173,7 @@ you> research onboarding
 
 `⟂` is a subagent starting or finishing, and `scope>` and `· [scope]` are its
 sentence and its tool call. The agent tags none of this itself:
-`ctx.subagent("scope")` returns a handle that dereferences to the run context,
+`ctx.subagent_events("scope")` returns a handle that dereferences to the run context,
 and everything emitted through it — the sentence, the call, the board it
 publishes — goes out with that invocation's `subagentRunId`, bracketed by
 `SUBAGENT_STARTED` and `SUBAGENT_FINISHED`. On the wire, the first delegate is:
@@ -189,7 +189,7 @@ SUBAGENT_FINISHED   {"subagentRunId":"r1-sub-1","result":{"added":1},"outcome":{
 
 The client reads it back as `Update::Subagent` for the `⟂` lines and, for
 everything else, `Message::subagent_run_id()` resolved to a name through
-`session.subagent(id)` — mid-run, through `RunStream::session()`. The
+`session.subagent(id)` — mid-run, through `RunStream::thread()`. The
 supervisor's own reply comes after both delegates, untagged, which is why it
 prints as `agent>`.
 
@@ -201,7 +201,7 @@ transformers — but this example ships the full one.
 ## Where the board lives
 
 **On the client.** The agent stores nothing between runs: it reads the board out
-of `RunAgentInput.state`, publishes what it changed, and forgets. `Session` is
+of `RunAgentInput.state`, publishes what it changed, and forgets. `Thread` is
 what carries it from one run to the next, along with the conversation.
 
 Two consequences worth knowing before you build on this:

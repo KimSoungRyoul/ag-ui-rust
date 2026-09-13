@@ -5,8 +5,8 @@
 //!
 //! | Direction | Payload keys |
 //! |---|---|
-//! | agent → renderer | `createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`, `callRendererFunction`, `agentFunctionResponse` |
-//! | renderer → agent | `action`, `callAgentFunction`, `rendererFunctionResponse`, `error` |
+//! | agent → renderer | `createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface` |
+//! | renderer → agent | `action`, `error` |
 //!
 //! # The adjacency-list component model
 //!
@@ -36,18 +36,61 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::constants::PROTOCOL_VERSION;
-use crate::error::{Error, Result};
 
+/// Supported A2UI server-message profiles. Candidate v1.0 RPC is excluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum A2uiVersion {
+    /// v0.9 wire discriminator, also accepted by the v0.9.1 schema.
+    #[serde(rename = "v0.9")]
+    V0_9,
+    /// v0.9.1 discriminator.
+    #[serde(rename = "v0.9.1")]
+    V0_9_1,
+}
+impl A2uiVersion {
+    /// The exact wire discriminator.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::V0_9 => "v0.9",
+            Self::V0_9_1 => "v0.9.1",
+        }
+    }
+}
+
+use crate::error::Result;
+
+fn serialize_version<S: serde::Serializer>(
+    version: &str,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    if !matches!(version, "v0.9" | "v0.9.1") {
+        return Err(serde::ser::Error::custom("unsupported A2UI version"));
+    }
+    serializer.serialize_str(version)
+}
+fn deserialize_version<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    let version = String::deserialize(deserializer)?;
+    if !matches!(version.as_str(), "v0.9" | "v0.9.1") {
+        return Err(serde::de::Error::custom("unsupported A2UI version"));
+    }
+    Ok(version)
+}
 fn default_version() -> String {
     PROTOCOL_VERSION.to_string()
 }
 
 /// One agent → renderer message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentMessage {
     /// Protocol version stamped on the wire; defaults to
     /// [`PROTOCOL_VERSION`].
-    #[serde(default = "default_version")]
+    #[serde(
+        serialize_with = "serialize_version",
+        deserialize_with = "deserialize_version"
+    )]
     pub version: String,
     /// The single payload key that gives this message its type.
     #[serde(flatten)]
@@ -101,8 +144,24 @@ impl AgentMessage {
         Self::new(AgentPayload::UpdateDataModel(UpdateDataModel {
             surface_id: surface_id.into(),
             path: path.into(),
-            value,
+            value: DataModelUpdate::Set(value),
         }))
+    }
+
+    /// Removes a data-model location by omitting the wire `value` field.
+    pub fn remove_data_model_value(surface_id: impl Into<String>, path: impl Into<String>) -> Self {
+        Self::new(AgentPayload::UpdateDataModel(UpdateDataModel {
+            surface_id: surface_id.into(),
+            path: path.into(),
+            value: DataModelUpdate::Remove,
+        }))
+    }
+
+    /// Selects the supported wire version explicitly.
+    #[must_use]
+    pub fn with_version(mut self, version: A2uiVersion) -> Self {
+        self.version = version.as_str().into();
+        self
     }
 
     /// `deleteSurface`: drop a surface and everything under it.
@@ -139,9 +198,11 @@ pub enum AgentPayload {
     UpdateDataModel(UpdateDataModel),
     /// Remove a surface entirely.
     DeleteSurface(DeleteSurface),
-    /// Ask the renderer to run one of its local functions.
+    /// Candidate RPC shape, excluded from v0.9-family serialization/deserialization.
+    #[serde(skip)]
     CallRendererFunction(CallRendererFunction),
-    /// Answer a renderer-initiated [`RendererPayload::CallAgentFunction`].
+    /// Candidate RPC response, excluded from v0.9-family serialization/deserialization.
+    #[serde(skip)]
     AgentFunctionResponse(FunctionResponse),
 }
 
@@ -149,7 +210,7 @@ pub enum AgentPayload {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSurface {
-    /// Globally unique surface identifier, for the renderer's lifetime.
+    /// Surface identifier, unique among active surfaces in this renderer context.
     pub surface_id: String,
     /// Opaque identifier of the component catalog this surface speaks.
     ///
@@ -175,149 +236,81 @@ pub struct UpdateComponents {
     pub components: Vec<Component>,
 }
 
+/// A2UI v0.9-family data update. Field omission means removal, including
+/// undefined array slots. Explicit null is a value.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum DataModelUpdate {
+    /// Store the exact JSON value, including null.
+    Set(Value),
+    /// Remove the target. Serialized by omitting the enclosing `value` field.
+    #[default]
+    Remove,
+}
+impl DataModelUpdate {
+    /// Whether the update removes a value.
+    pub fn is_remove(&self) -> bool {
+        matches!(self, Self::Remove)
+    }
+}
+impl Serialize for DataModelUpdate {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Set(v) => v.serialize(serializer),
+            Self::Remove => Err(serde::ser::Error::custom(
+                "Remove must be serialized as an omitted updateDataModel value",
+            )),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for DataModelUpdate {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Ok(Self::Set(Value::deserialize(deserializer)?))
+    }
+}
 /// Payload of an `updateDataModel` message.
-///
-/// Upsert semantics: an existing path is replaced, a missing path is created,
-/// and a `null` value deletes the key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateDataModel {
     /// Surface whose data model is being updated.
     pub surface_id: String,
-    /// JSON Pointer into the data model. Defaults to `/`, the whole model.
+    /// Absolute JSON Pointer; `/` and omission denote the whole model.
     #[serde(default = "root_pointer")]
     pub path: String,
-    /// The new value. `null` deletes the key at `path`.
-    #[serde(default)]
-    pub value: Value,
+    /// A present value is stored; omission removes the target.
+    #[serde(default, skip_serializing_if = "DataModelUpdate::is_remove")]
+    pub value: DataModelUpdate,
 }
-
 fn root_pointer() -> String {
     "/".to_string()
 }
-
 impl UpdateDataModel {
-    /// Applies this update to a surface data model in place.
-    ///
-    /// - `path` of `/` or `""` replaces the whole model (or clears it to `null`).
-    /// - Missing intermediate objects are created.
-    /// - A `null` value removes the key (or, in an array, sets the slot to
-    ///   `null` so the array keeps its length, per spec).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Pointer`] when the pointer is malformed, when it walks
-    /// through a scalar, or when an array index is not a number within bounds.
+    /// Applies an update losslessly, including undefined roots and array slots.
+    pub fn apply_model(&self, model: &mut crate::model::DataModel) -> Result<()> {
+        model.apply(&self.path, &self.value)
+    }
+    /// Applies to plain JSON atomically. Undefined results are rejected; use
+    /// `apply_model` when deletions can affect array slots or the root.
     pub fn apply(&self, model: &mut Value) -> Result<()> {
-        apply_data_model_update(model, &self.path, &self.value)
+        let mut exact = crate::model::DataModel::from(model.clone());
+        self.apply_model(&mut exact)?;
+        *model = exact.to_json()?;
+        Ok(())
     }
 }
-
-/// Applies one `updateDataModel` operation to `model`.
-///
-/// Split out from [`UpdateDataModel::apply`] so callers holding a loose
-/// path/value pair (a replayed history entry, say) can reuse the semantics.
-///
-/// # Errors
-///
-/// See [`UpdateDataModel::apply`].
+/// Stores an exact JSON value at a path. Null is stored rather than removed.
+/// A failed pointer leaves the original model intact.
 pub fn apply_data_model_update(model: &mut Value, path: &str, value: &Value) -> Result<()> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() || trimmed == "/" {
-        *model = value.clone();
-        return Ok(());
+    UpdateDataModel {
+        surface_id: String::new(),
+        path: path.into(),
+        value: DataModelUpdate::Set(value.clone()),
     }
-    if !trimmed.starts_with('/') {
-        return Err(Error::pointer(
-            trimmed,
-            "updateDataModel path must be an absolute JSON Pointer starting with '/'",
-        ));
-    }
-
-    let tokens = crate::binding::pointer_tokens(trimmed);
-    let Some((last, parents)) = tokens.split_last() else {
-        *model = value.clone();
-        return Ok(());
-    };
-
-    let mut cursor = model;
-    for token in parents {
-        cursor = descend_or_create(cursor, token, trimmed)?;
-    }
-
-    match cursor {
-        Value::Object(map) => {
-            if value.is_null() {
-                map.remove(last.as_str());
-            } else {
-                map.insert(last.clone(), value.clone());
-            }
-        }
-        Value::Array(items) => {
-            let idx = parse_index(last, trimmed)?;
-            if idx < items.len() {
-                // A null clears the slot without shortening the array.
-                items[idx] = value.clone();
-            } else if idx == items.len() {
-                items.push(value.clone());
-            } else {
-                return Err(Error::pointer(
-                    trimmed,
-                    format!("array index {idx} is out of bounds (len {})", items.len()),
-                ));
-            }
-        }
-        Value::Null => {
-            let mut map = Map::new();
-            if !value.is_null() {
-                map.insert(last.clone(), value.clone());
-            }
-            *cursor = Value::Object(map);
-        }
-        _ => {
-            return Err(Error::pointer(trimmed, "path walks through a scalar value"));
-        }
-    }
-    Ok(())
-}
-
-fn descend_or_create<'a>(
-    cursor: &'a mut Value,
-    token: &str,
-    full_path: &str,
-) -> Result<&'a mut Value> {
-    if cursor.is_null() {
-        *cursor = Value::Object(Map::new());
-    }
-    match cursor {
-        Value::Object(map) => Ok(map.entry(token.to_string()).or_insert(Value::Null)),
-        Value::Array(items) => {
-            let idx = parse_index(token, full_path)?;
-            let len = items.len();
-            if idx == len {
-                items.push(Value::Null);
-            }
-            items.get_mut(idx).ok_or_else(|| {
-                Error::pointer(
-                    full_path,
-                    format!("array index {idx} is out of bounds (len {len})"),
-                )
-            })
-        }
-        _ => Err(Error::pointer(
-            full_path,
-            "path walks through a scalar value",
-        )),
-    }
-}
-
-fn parse_index(token: &str, full_path: &str) -> Result<usize> {
-    token.parse::<usize>().map_err(|_| {
-        Error::pointer(
-            full_path,
-            format!("expected an array index, found segment {token:?}"),
-        )
-    })
+    .apply(model)
 }
 
 /// Payload of a `deleteSurface` message.
@@ -384,9 +377,13 @@ pub struct FunctionResponse {
 
 /// One renderer → agent message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RendererMessage {
     /// Protocol version stamped on the wire.
-    #[serde(default = "default_version")]
+    #[serde(
+        serialize_with = "serialize_version",
+        deserialize_with = "deserialize_version"
+    )]
     pub version: String,
     /// The single payload key that gives this message its type.
     #[serde(flatten)]
@@ -420,8 +417,10 @@ pub enum RendererPayload {
     /// A user interacted with a component that declares an `action`.
     Action(Action),
     /// The renderer wants the agent to run a function on its behalf.
+    #[serde(skip)]
     CallAgentFunction(CallAgentFunction),
     /// Result of an agent-initiated [`AgentPayload::CallRendererFunction`].
+    #[serde(skip)]
     RendererFunctionResponse(FunctionResponse),
     /// The renderer is reporting a problem, typically a failed validation.
     Error(RendererError),
@@ -584,13 +583,13 @@ mod tests {
     }
 
     #[test]
-    fn upsert_creates_missing_intermediates_and_null_deletes() {
+    fn upsert_creates_missing_intermediates_and_stores_null() {
         let mut model = json!({});
         apply_data_model_update(&mut model, "/user/name", &json!("Ada")).unwrap();
         assert_eq!(model, json!({"user": {"name": "Ada"}}));
 
         apply_data_model_update(&mut model, "/user/name", &Value::Null).unwrap();
-        assert_eq!(model, json!({"user": {}}));
+        assert_eq!(model, json!({"user": {"name":null}}));
 
         apply_data_model_update(&mut model, "/", &json!({"replaced": true})).unwrap();
         assert_eq!(model, json!({"replaced": true}));
@@ -605,8 +604,8 @@ mod tests {
         apply_data_model_update(&mut model, "/items/3", &json!(4)).unwrap();
         assert_eq!(model, json!({"items": [1, null, 3, 4]}));
 
-        let err = apply_data_model_update(&mut model, "/items/9", &json!(0)).unwrap_err();
-        assert!(matches!(err, Error::Pointer { .. }));
+        let err = apply_data_model_update(&mut model, "/items/nope", &json!(0)).unwrap_err();
+        assert!(matches!(err, crate::Error::Pointer { .. }));
     }
 
     #[test]

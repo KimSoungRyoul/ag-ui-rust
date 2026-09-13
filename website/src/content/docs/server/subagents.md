@@ -32,12 +32,11 @@ the question per type.
 
 ## A subagent is a scope
 
-`ctx.subagent(name)` emits `SUBAGENT_STARTED` under a fresh id and returns a handle. Like a
+`ctx.subagent_events(name)` emits `SUBAGENT_STARTED` under a fresh id and returns a handle. Like a
 [step](/ag-ui-rust/server/agent/#bracketing-a-run-with-steps), the handle dereferences to
 the run context, so messages, tool calls, reasoning, steps and further subagents all open
-through it — and everything they emit comes out carrying the subagent's id. When the handle
-drops, `SUBAGENT_FINISHED` goes out with a success outcome, on the early return a `?`
-produces as much as on the happy path.
+through it — and everything they emit comes out carrying the subagent's id. Finish, fail or suspend the handle explicitly. Drop restores attribution without
+assuming an outcome; an unfinished child prevents a successful parent termination.
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
@@ -51,11 +50,12 @@ impl Agent for Supervisor {
     type State = ();
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let mut planner = ctx.subagent("planner")?;
+        let mut planner = ctx.subagent_events("planner")?;
         planner.say("Two tasks: scope, then risks.")?;   // attributed, through Deref
         {
-            let mut estimator = planner.subagent("estimator")?;   // nested
+            let mut estimator = planner.subagent_events("estimator")?;   // nested
             estimator.say("About a day each.")?;
+            estimator.finish()?;
         }                                                          // SUBAGENT_FINISHED
         planner.finish_with(json!({ "tasks": 2 }))?;
 
@@ -113,9 +113,9 @@ paused case below. Every one of them names the subagent it closes and is not its
 attributed to it: the terminator belongs to the enclosing scope, which is back in force the
 moment it goes out.
 
-`Drop` cannot tell success from failure, so on the error path you care about, call `fail`
-yourself. A handle that is simply dropped by a `?` unwinding through it still closes the
-subagent — as a success, followed by the `RUN_ERROR` the driver emits for the run.
+`Drop` cannot tell success from failure and emits no lifecycle outcome. A parent error
+may end the run with its child still open. A successful or interrupted parent must explicitly
+finish, fail or suspend every announced child, including when the optional verifier is off.
 
 ### Where the tag comes from
 
@@ -132,7 +132,7 @@ use serde_json::json;
 fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
     {
-        let mut sub = ctx.subagent("researcher")?;
+        let mut sub = ctx.subagent_events("researcher")?;
         sub.emit(Event::custom("mine", json!(1)))?;
         sub.emit(Event::custom("theirs", json!(2)).with_subagent_run_id("other"))?;
         sub.emit(Event::messages_snapshot(Vec::new()))?;
@@ -326,7 +326,7 @@ closed there is nothing to resolve it against, and the consuming side rejects it
 Attribution is additive and safe: a client that predates it sees an unknown *field* and
 ignores it. The three lifecycle events are unknown *event types* to that client, and an
 unknown event type fails while decoding, before any application code runs — which is
-[by design](/ag-ui-rust/client/updates/#an-event-this-build-does-not-know) on the consuming
+[by design](/ag-ui-rust/client/updates/) on the consuming
 side and is nothing a producer can fix after the fact. A producer with consumers older than
 `@ag-ui/client` 0.0.59 must not send them, and `SubagentVisibility` is how it does not.
 
@@ -352,8 +352,9 @@ impl Agent for Delegating {
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
         ctx.say("parent first")?;
         {
-            let mut researcher = ctx.subagent("researcher")?;
+            let mut researcher = ctx.subagent_events("researcher")?;
             researcher.say("child")?;
+            researcher.finish()?;
         }
         ctx.say("parent last")?;
         Ok(RunOutcome::Success)
@@ -396,7 +397,7 @@ per run.
 :::note[Why the default is not inline]
 Upstream's integrations default to the inline shape and make the full surface opt-in. This
 crate defaults the other way. A transformer that rewrites the stream is opt-in here like
-every other: an agent that wrote `ctx.subagent(..)` meant it, and silently flattening what
+every other: an agent that wrote `ctx.subagent_events(..)` meant it, and silently flattening what
 it said is the kind of surprise [the design notes](/ag-ui-rust/design/commitments/) argue
 against. Flip it per endpoint when your consumers are older.
 :::
@@ -415,4 +416,4 @@ against. Flip it per endpoint when your consumers are older.
   [`SubagentOutcome`](/ag-ui-rust/api/ag_ui/enum.SubagentOutcome.html)
 - [`Event::subagent_run_id`](/ag-ui-rust/api/ag_ui/event/enum.Event.html#method.subagent_run_id)
   and [`EventType::is_attributable`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html#method.is_attributable)
-- The consuming half: [The update stream](/ag-ui-rust/client/updates/#subagents)
+- The consuming half: [The update stream](/ag-ui-rust/client/updates/)

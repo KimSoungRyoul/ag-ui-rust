@@ -18,7 +18,7 @@ mod common;
 use ag_ui::axum::AgentEndpoint;
 use ag_ui::client::transport::HttpTransport;
 use ag_ui::client::{
-    HttpAgent, RunEnd, RunParams, Session, SubagentChangeKind, SubagentStatus, Update,
+    HttpAgent, RunEnd, RunParams, SubagentChangeKind, SubagentStatus, Thread, Update,
 };
 use ag_ui::server::{Agent, Result, RunContext, SubagentVisibility};
 use ag_ui::{
@@ -176,7 +176,7 @@ fn lifecycle(updates: &[Update]) -> Vec<(String, SubagentChangeKind)> {
 }
 
 /// The assistant messages, as `(text, owner)` pairs.
-fn said<T>(session: &Session<T>) -> Vec<(String, Option<&str>)> {
+fn said<T>(session: &Thread<T>) -> Vec<(String, Option<&str>)> {
     session
         .messages()
         .iter()
@@ -192,9 +192,9 @@ fn said<T>(session: &Session<T>) -> Vec<(String, Option<&str>)> {
 
 /// The raw events one run puts on the wire.
 async fn wire(url: &str, thread: &str) -> Vec<Event> {
-    let agent = HttpAgent::http(url).expect("a valid endpoint URL");
+    let agent = HttpAgent::new(url).expect("a valid endpoint URL");
     agent
-        .run(RunParams::new(thread, "r1").user("m1", "go"))
+        .run_events(RunParams::new(thread, "r1").user("m1", "go"))
         .map(|event| event.expect("the stream should not break"))
         .collect()
         .await
@@ -205,9 +205,9 @@ async fn wire(url: &str, thread: &str) -> Vec<Event> {
 #[tokio::test(flavor = "multi_thread")]
 async fn nested_subagents_arrive_as_a_lifecycle_and_attributed_messages() {
     let url = serve(Supervisor).await;
-    let mut session = Session::<HttpTransport>::new(transport(&url), "nested");
+    let mut session = Thread::<HttpTransport>::new(transport(&url), "nested");
 
-    let updates = drain(session.send("plan it")).await;
+    let updates = drain(session.send("plan it").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert!(matches!(
         updates.last(),
@@ -331,9 +331,9 @@ async fn the_wire_carries_the_attribution_and_the_parent_link() {
 #[tokio::test(flavor = "multi_thread")]
 async fn two_subagents_may_stream_at_once_under_their_own_tags() {
     let url = serve(Interleaved).await;
-    let mut session = Session::<HttpTransport>::new(transport(&url), "interleaved");
+    let mut session = Thread::<HttpTransport>::new(transport(&url), "interleaved");
 
-    let updates = drain(session.send("research both")).await;
+    let updates = drain(session.send("research both").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
 
     let subagents = session.subagents();
@@ -361,11 +361,11 @@ async fn two_subagents_may_stream_at_once_under_their_own_tags() {
 // ---- suspended, then continued ---------------------------------------------
 
 /// Runs the first turn: the buyer pauses, and the session holds its interrupt.
-async fn pause() -> (Session<HttpTransport>, Interrupt) {
+async fn pause() -> (Thread<HttpTransport>, Interrupt) {
     let url = serve(Purchasing).await;
-    let mut session = Session::<HttpTransport>::new(transport(&url), "buy");
+    let mut session = Thread::<HttpTransport>::new(transport(&url), "buy");
 
-    let updates = drain(session.send("buy the thing")).await;
+    let updates = drain(session.send("buy the thing").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert_eq!(
         lifecycle(&updates),
@@ -420,7 +420,12 @@ async fn a_subagent_that_pauses_the_run_is_suspended_and_owns_the_interrupt() {
 async fn the_resuming_run_continues_the_same_invocation() {
     let (mut session, interrupt) = pause().await;
 
-    let updates = drain(session.resume(&interrupt, json!({"ok": true}))).await;
+    let updates = drain(
+        session
+            .resume(&interrupt, json!({"ok": true}))
+            .expect("run preflight"),
+    )
+    .await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert!(matches!(
         updates.last(),
@@ -457,7 +462,7 @@ async fn the_resuming_run_continues_the_same_invocation() {
 async fn a_declined_answer_fails_the_continued_invocation() {
     let (mut session, interrupt) = pause().await;
 
-    let updates = drain(session.cancel(&interrupt)).await;
+    let updates = drain(session.decline(&interrupt).expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert_eq!(
         lifecycle(&updates),
@@ -509,8 +514,8 @@ async fn inline_visibility_hides_the_subagent_surface_and_keeps_the_work() {
 
     // Through the session: everything the subagents did still assembles, as
     // the parent's own work.
-    let mut session = Session::<HttpTransport>::new(transport(&url), "inline-session");
-    let updates = drain(session.send("plan it")).await;
+    let mut session = Thread::<HttpTransport>::new(transport(&url), "inline-session");
+    let updates = drain(session.send("plan it").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert!(lifecycle(&updates).is_empty());
     assert!(session.subagents().is_empty());
@@ -548,8 +553,8 @@ async fn hidden_visibility_delivers_only_the_parents_own_events() {
         "{types:?}"
     );
 
-    let mut session = Session::<HttpTransport>::new(transport(&url), "hidden-session");
-    let updates = drain(session.send("plan it")).await;
+    let mut session = Thread::<HttpTransport>::new(transport(&url), "hidden-session");
+    let updates = drain(session.send("plan it").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert!(session.subagents().is_empty());
     assert_eq!(

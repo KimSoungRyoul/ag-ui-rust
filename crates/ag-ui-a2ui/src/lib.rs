@@ -11,7 +11,7 @@
 //! job, and it is a genuinely different program — one with a widget toolkit, an
 //! event loop, and a reactive data model. What this crate gives you instead:
 //!
-//! - [`message`] — the ten protocol envelopes, in both directions.
+//! - [`message`] — the v0.9-family protocol envelopes, in both directions.
 //! - [`catalog`] — what a surface may contain, including the standard
 //!   18-component basic catalog.
 //! - [`validate`] — the semantic checks JSON Schema cannot express: does every
@@ -57,7 +57,7 @@
     not(feature = "ag-ui"),
     doc = "`agui`, and this build does not have it."
 )]
-//! What every toolkit does in practice is wrap a batch of operations in a
+//! The optional AG-UI integration wraps a batch of operations in a
 //! `{"a2ui_operations": [...]}` envelope and let the frontend sniff for that
 //! key.
 #![cfg_attr(
@@ -76,10 +76,9 @@
 //!
 //! # Version
 //!
-//! Messages are stamped `v0.9`. The specification has moved on to v1.0, but the
-//! shipping toolkits in every other language still speak v0.9 on the wire, and
-//! interoperating with them matters more than tracking the newest revision. See
-//! [`constants`] before changing anything there.
+//! Supports `v0.9` and `v0.9.1`. Low-level constructors retain `v0.9` as
+//! their default; use `A2uiVersion` to select a discriminator. Candidate RPC
+//! payloads are not accepted or serialized as v0.9-family messages.
 //!
 //! # Example
 //!
@@ -117,6 +116,17 @@ pub mod catalog;
 pub mod constants;
 pub mod error;
 pub mod message;
+pub mod model;
+pub mod surface;
+
+#[cfg(feature = "author")]
+pub mod author;
+#[cfg(feature = "schema-validation")]
+pub mod schema_validation;
+#[cfg(feature = "author")]
+pub use author::{A2uiAuthor, AuthorRequest, ValidatedSurface};
+pub use message::{A2uiVersion, DataModelUpdate};
+pub use model::{DataModel, ModelValue};
 pub mod validate;
 
 #[cfg(feature = "toolkit")]

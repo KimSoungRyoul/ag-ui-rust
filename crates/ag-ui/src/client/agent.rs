@@ -5,7 +5,7 @@
 //! that wants the events *as they were sent* — a proxy, a recorder, a bridge to
 //! another protocol, a test — should stay at this level.
 //!
-//! For a UI, [`Session`](crate::client::Session) sits on top of this and does the
+//! For a UI, [`Thread`](crate::client::Thread) sits on top of this and does the
 //! assembling.
 //!
 //! ```no_run
@@ -18,7 +18,7 @@
 //!     .header("authorization", "Bearer …")
 //!     .build()?;
 //!
-//! let mut events = agent.run(
+//! let mut events = agent.run_events(
 //!     RunParams::new("thread-1", "run-1").user("msg-1", "What is the weather?"),
 //! );
 //!
@@ -45,7 +45,7 @@ use crate::client::transport::{HttpTransport, HttpTransportBuilder};
 /// What to send when starting a run.
 ///
 /// A builder over [`RunAgentInput`]: the two ids are required, everything else
-/// has a sensible empty default. `agent.run(…)` takes anything that converts
+/// has a sensible empty default. `agent.run_events(…)` takes anything that converts
 /// into the input, so a hand-built [`RunAgentInput`] works just as well.
 ///
 /// [`RunAgentInput`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/input/struct.RunAgentInput.html
@@ -143,18 +143,8 @@ impl From<RunAgentInput> for RunParams {
     }
 }
 
-/// A remote agent, over any [`Transport`].
-///
-#[cfg_attr(
-    feature = "http",
-    doc = "[`HttpAgent`] is this over HTTP; the type is generic so that a wasm"
-)]
-#[cfg_attr(
-    not(feature = "http"),
-    doc = "`HttpAgent` (feature `http`) is this over HTTP; the type is generic so that a wasm"
-)]
-/// transport, an in-process agent, or a recorded fixture substitutes without
-/// anything above noticing.
+/// A raw event interface over any [`Transport`]. HTTP, an in-process agent or a
+/// recorded fixture can supply events without normalization or state management.
 ///
 /// # Not [`crate::server::Agent`]
 ///
@@ -194,36 +184,84 @@ impl<T: Transport> RemoteAgent<T> {
     ///
     /// Nothing is normalized, verified or assembled here — chunk events arrive
     /// as chunk events. That is what a proxy wants; a UI wants
-    /// [`Session`](crate::client::Session).
+    /// [`Thread`](crate::client::Thread).
     ///
     /// Connecting is folded into the stream: a transport that cannot reach the
     /// agent yields one error item and ends.
-    pub fn run(&self, params: impl Into<RunAgentInput>) -> EventStream {
+    pub fn run_events(&self, params: impl Into<RunAgentInput>) -> EventStream {
         let connecting = self.transport.run(params.into());
         boxed_stream(futures_util::stream::once(connecting).try_flatten())
     }
 }
 
-/// An agent reached over HTTP.
+/// An HTTP endpoint and reusable connection settings. Create independent local
+/// conversations with [`HttpAgent::thread`], or consume raw events with `run_events`.
 #[cfg(feature = "http")]
-pub type HttpAgent = RemoteAgent<HttpTransport>;
+#[derive(Clone, Debug)]
+pub struct HttpAgent {
+    agent: RemoteAgent<std::sync::Arc<HttpTransport>>,
+}
 
 #[cfg(feature = "http")]
-impl RemoteAgent<HttpTransport> {
-    /// A builder for an agent at `url`.
+impl HttpAgent {
+    /// Connect to `url` using default settings. No request is made yet.
+    pub fn new(url: impl AsRef<str>) -> Result<Self> {
+        Ok(Self::from_transport(HttpTransport::new(url)?))
+    }
+    /// Use a caller-configured HTTP transport.
+    pub fn from_transport(transport: HttpTransport) -> Self {
+        Self {
+            agent: RemoteAgent::new(std::sync::Arc::new(transport)),
+        }
+    }
+    /// Configure headers, timeouts and the underlying HTTP client.
     pub fn builder(url: impl AsRef<str>) -> HttpAgentBuilder {
         HttpAgentBuilder {
             transport: HttpTransport::builder(url),
         }
     }
-
-    /// An agent at `url`, with default settings.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Config`](crate::client::Error::Config) when the URL does not parse.
-    pub fn http(url: impl AsRef<str>) -> Result<Self> {
-        Ok(Self::new(HttpTransport::new(url)?))
+    /// An independent local conversation. This does not retrieve remote history.
+    pub fn thread(&self, id: impl Into<ThreadId>) -> crate::client::Thread<HttpTransport> {
+        crate::client::Thread::from_shared(self.agent.transport().clone(), id)
+    }
+    /// Initialize a typed conversation using a serializable state value.
+    pub fn thread_with_state<S: serde::Serialize + serde::de::DeserializeOwned>(
+        &self,
+        id: impl Into<ThreadId>,
+        state: S,
+    ) -> Result<crate::client::Thread<HttpTransport, S>> {
+        self.thread_builder(id)
+            .state(serde_json::to_value(state)?)
+            .build()
+    }
+    /// Configure initial history, state, tools, diagnostics and verification.
+    pub fn thread_builder<S>(
+        &self,
+        id: impl Into<ThreadId>,
+    ) -> crate::client::ThreadBuilder<HttpTransport, S> {
+        crate::client::ThreadBuilder::from_shared(self.agent.transport().clone(), id)
+    }
+    /// Restore a saved local JSON conversation with this endpoint's transport.
+    pub fn restore_thread(
+        &self,
+        snapshot: crate::client::ThreadSnapshot,
+    ) -> Result<crate::client::Thread<HttpTransport>> {
+        self.restore_thread_with_state(snapshot)
+    }
+    /// Restore and validate the current raw state against `S`.
+    pub fn restore_thread_with_state<S: serde::de::DeserializeOwned>(
+        &self,
+        snapshot: crate::client::ThreadSnapshot,
+    ) -> Result<crate::client::Thread<HttpTransport, S>> {
+        crate::client::Thread::restore_shared(self.agent.transport().clone(), snapshot)
+    }
+    /// Raw wire events, without normalization, validation or state application.
+    pub fn run_events(&self, params: impl Into<RunAgentInput>) -> EventStream {
+        self.agent.run_events(params)
+    }
+    /// Underlying transport settings.
+    pub fn transport(&self) -> &HttpTransport {
+        self.agent.transport()
     }
 }
 
@@ -282,6 +320,6 @@ impl HttpAgentBuilder {
     /// [`Error::Config`](crate::client::Error::Config) when the URL or a header is not
     /// valid.
     pub fn build(self) -> Result<HttpAgent> {
-        Ok(RemoteAgent::new(self.transport.build()?))
+        Ok(HttpAgent::from_transport(self.transport.build()?))
     }
 }

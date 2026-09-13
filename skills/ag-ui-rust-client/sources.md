@@ -10,10 +10,10 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
 ## SKILL.md
 
 - `website/src/content/docs/start/index.md` — the dependency declarations, and that the
-  crates are not on crates.io
-- `website/src/content/docs/client/session.md` — `Session`, the builder, the constructor-side
-  transport bound, typed state, answering a pause, why there is no stop
-- `website/src/content/docs/client/updates.md` — every `Update` variant, the three ways a run
+  feature costs and package naming
+- `website/src/content/docs/client/thread.md` — `Thread`, the builder, the constructor-side
+  transport bound, typed state, answering a pause, snapshots and local cancellation
+- `website/src/content/docs/client/updates.md` — every `Update` variant, the four ways a run
   ends, why `RunEnd` is exhaustive and `Update` is not, `Success` alongside errors, the
   subagent lifecycle and registry
 - `website/src/content/docs/client/rendering.md` — grouping by subagent
@@ -23,7 +23,7 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
 - `website/src/content/docs/client/transports.md` — the trait, `HttpTransport`'s two timeouts,
   `ReplayTransport`, `SseDecoder`, turning `http` off
 - `website/src/content/docs/client/rendering.md` — arrival order
-- `crates/ag-ui/src/client/session.rs`, `crates/ag-ui/src/client/interrupts.rs`,
+- `crates/ag-ui/src/client/thread.rs`, `crates/ag-ui/src/client/interrupts.rs`,
   `crates/ag-ui/src/client/transport/`, `crates/ag-ui/src/client/error.rs`
 
 ## references/rendering.md

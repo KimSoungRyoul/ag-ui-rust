@@ -6,7 +6,7 @@
 
 use ag_ui::client::apply::{Applier, Changed, SubagentChange, SubagentChangeKind, SubagentStatus};
 use ag_ui::client::transport::ReplayTransport;
-use ag_ui::client::{RunEnd, Session, Update, verify_all};
+use ag_ui::client::{RunEnd, Thread, Update, verify_all};
 use ag_ui::{
     Event, Interrupt, JsonObject, SubagentErrorEvent, SubagentFinishedEvent, SubagentOutcome,
     SubagentRunId, SubagentStartedEvent, TextMessageRole,
@@ -384,12 +384,12 @@ fn the_grouped_run_is_a_valid_stream() {
 
 #[tokio::test]
 async fn a_session_reports_the_lifecycle_and_the_messages_carry_their_owner() {
-    let transport = ReplayTransport::new(grouped_run());
-    let mut session = Session::<_>::new(transport, "t");
+    let transport = ReplayTransport::new(grouped_run()).matching_requests();
+    let mut session = Thread::<_>::new(transport, "t");
     let mut lifecycle = Vec::new();
     let mut ended = None;
 
-    let mut run = session.send("research this");
+    let mut run = session.send("research this").unwrap();
     while let Some(update) = run.next().await {
         match update {
             Update::Subagent(update) => {

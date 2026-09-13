@@ -70,7 +70,7 @@ doc_page!(server_subagents, "server/subagents.md");
 doc_page!(server_errors, "server/errors.md");
 doc_page!(server_axum, "server/axum.md");
 
-doc_page!(client_session, "client/session.md");
+doc_page!(client_thread, "client/thread.md");
 doc_page!(client_updates, "client/updates.md");
 doc_page!(client_rendering, "client/rendering.md");
 doc_page!(client_transports, "client/transports.md");
@@ -109,7 +109,7 @@ doc_page!(ko_server_subagents, "ko/server/subagents.md");
 doc_page!(ko_server_errors, "ko/server/errors.md");
 doc_page!(ko_server_axum, "ko/server/axum.md");
 
-doc_page!(ko_client_session, "ko/client/session.md");
+doc_page!(ko_client_thread, "ko/client/thread.md");
 doc_page!(ko_client_updates, "ko/client/updates.md");
 doc_page!(ko_client_rendering, "ko/client/rendering.md");
 doc_page!(ko_client_transports, "ko/client/transports.md");

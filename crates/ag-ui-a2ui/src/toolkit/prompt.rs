@@ -225,8 +225,13 @@ pub fn build_subagent_prompt(spec: &PromptSpec<'_>) -> String {
 fn render_prior_surface(prior: &PriorSurface) -> String {
     let components =
         serde_json::to_string_pretty(&prior.components).unwrap_or_else(|_| "[]".to_string());
-    let data =
-        serde_json::to_string_pretty(&prior.data_model).unwrap_or_else(|_| "null".to_string());
+    let data = match prior.data_model.to_json() {
+        Ok(value) => serde_json::to_string_pretty(&value).expect("JSON serializes"),
+        Err(_) => format!(
+            "Local lossless snapshot (not wire JSON): {}",
+            serde_json::to_string(&prior.data_model).expect("model snapshot serializes")
+        ),
+    };
     let catalog = prior
         .catalog_id
         .as_deref()
@@ -309,7 +314,7 @@ mod tests {
                 Component::new("root", "Column").with("children", json!(["title"])),
                 Component::new("title", "Text").with("text", json!("Cart")),
             ],
-            data_model: json!({"total": 12}),
+            data_model: json!({"total": 12}).into(),
             deleted: false,
         }
     }

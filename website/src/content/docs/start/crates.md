@@ -159,5 +159,17 @@ program.
 
 - [Getting started](/ag-ui-rust/start/) — the dependency declarations, and a running agent.
 - [The Agent trait](/ag-ui-rust/server/agent/) — what `ag_ui::server` asks of you.
-- [Sessions](/ag-ui-rust/client/session/) — what `ag_ui::client` gives you.
+- [Threads](/ag-ui-rust/client/thread/) — what `ag_ui::client` gives you.
 - [API docs](/ag-ui-rust/api/ag_ui/index.html) — rustdoc for both crates.
+
+
+## A2UI 0.4 features
+
+| Feature | Dependencies | Purpose |
+|---|---|---|
+| `schema-validation` | `toolkit`, `jsonschema` | Full Draft 2020-12 validation using local resources |
+| `author` | `schema-validation` | Async generation and immutable validated output |
+| `ag-ui-server` | `author`, `ag-ui/server` | `send_a2ui` without HTTP or Tokio |
+
+These features are opt-in. The client ID generator and expiry parser also add
+`getrandom` and `time`; they do not introduce an executor.

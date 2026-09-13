@@ -181,7 +181,7 @@ export default defineConfig({
 					label: 'Consuming an agent',
 					translations: { ko: 'agent 사용' },
 					items: [
-						{ label: 'Sessions', translations: { ko: 'session' }, link: '/client/session/' },
+						{ label: 'Threads', translations: { ko: '대화 스레드' }, link: '/client/thread/' },
 						{
 							label: 'The update stream',
 							translations: { ko: 'update stream' },
@@ -263,6 +263,7 @@ export default defineConfig({
 							translations: { ko: 'board-watch (client)' },
 							link: '/examples/board-watch/',
 						},
+						{ label: 'review-desk', link: '/examples/review-desk/' },
 					],
 				},
 			],

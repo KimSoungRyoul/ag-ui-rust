@@ -34,9 +34,9 @@ client wants to say differently.
 `TransportFuture` is `Pin<Box<dyn Future<Output = Result<EventStream>> + Send>>`.
 Nothing in that names a lifetime, which means the default one for a boxed trait
 object — `'static` — and that is load-bearing. A transport is usually held
-inside a `Session`, which mutates its own state as events arrive. If the
+inside a `Thread`, which mutates its own state as events arrive. If the
 returned future borrowed the transport, that borrow would live as long as the
-run and the session could not touch itself while streaming. So `run` clones what
+run and the thread could not touch itself while streaming. So `run` clones what
 it needs — `reqwest::Client` is explicitly designed for exactly that — and the
 future stands alone.
 
@@ -46,7 +46,7 @@ at runtime without a generic parameter reaching through the whole application:
 ```rust
 // src/main.rs
 use ag_ui::client::transport::{ReplayTransport, Transport};
-use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::Event;
 use futures_util::StreamExt;
 
@@ -57,10 +57,11 @@ async fn main() {
     let transport: Box<dyn Transport> = Box::new(ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]));
+    ]).matching_requests());
 
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let updates: Vec<_> = session.send("hello").collect().await;
+    let mut thread = Thread::<_>::new(transport, "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("hello").expect("run preflight").collect().await;
 
     assert!(matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))));
 }
@@ -73,7 +74,7 @@ abstracts the transport in the first place — impossible to satisfy.
 
 ## `HttpTransport`
 
-The default, behind the `http` feature. One POST of the `RunAgentInput` as JSON,
+The HTTP implementation, enabled by the opt-in `http` feature. One POST of the `RunAgentInput` as JSON,
 one `text/event-stream` response decoded frame by frame. It is the only place in
 the crate that pulls in an HTTP client.
 
@@ -116,8 +117,9 @@ A response outside 2xx never becomes a stream: it is an `Error::Http` carrying
 the status and the first 2048 characters of the body, which is enough to read a
 gateway's HTML error page without putting a megabyte of it in a log line.
 
-`HttpAgent` is the same transport at the lower level — `RemoteAgent<HttpTransport>`,
-with a builder that forwards to this one.
+`HttpAgent` is the standard HTTP entrypoint. Its builder configures this transport;
+`agent.thread(id)` creates an owned local conversation. `RemoteAgent<T>::run_events`
+is the transport-generic raw event interface. `HttpAgent::run_events` exposes it too.
 
 ## `ReplayTransport`
 
@@ -126,7 +128,7 @@ also unnecessary: the agent's half of the conversation is just a list of events.
 
 ```rust
 // tests/client.rs
-use ag_ui::client::{Session, transport::ReplayTransport};
+use ag_ui::client::{Thread, transport::ReplayTransport};
 use ag_ui::{Event, Interrupt};
 use futures_util::StreamExt;
 use serde_json::json;
@@ -148,15 +150,15 @@ async fn main() {
             Event::run_started("thread-1", "run-2"),
             Event::run_finished_success("thread-1", "run-2"),
         ],
-    ]);
+    ]).matching_requests();
 
     // Cloning shares the script and the recording, so a test keeps a handle
-    // after handing one to the session.
-    let mut session = Session::<_>::new(transport.clone(), "thread-1");
-    session.send("delete the staging database").collect::<Vec<_>>().await;
+    // after handing one to the thread.
+    let mut thread = Thread::<_>::new(transport.clone(), "thread-1");
+    thread.send("delete the staging database").expect("run preflight").collect::<Vec<_>>().await;
 
-    let paused = session.interrupts().to_vec();
-    session.resume(&paused[0], json!({ "approved": true })).collect::<Vec<_>>().await;
+    let paused = thread.interrupts().to_vec();
+    thread.resume(&paused[0], json!({ "approved": true })).expect("run preflight").collect::<Vec<_>>().await;
 
     // What the client actually sent — how a test asserts that a resume carried
     // the right answers.
@@ -169,6 +171,10 @@ async fn main() {
 
 `new` scripts a single run and answers every later one with an error, which is
 usually what you want: a test that runs twice by accident should say so.
+
+
+The replay examples explicitly use `matching_requests()` to adapt their scripted lifecycle IDs
+to each freshly generated request. The default replay is literal so mismatched-ID tests remain possible.
 
 ## The SSE decoder
 
@@ -221,7 +227,7 @@ frontend takes — no HTTP client anywhere in it:
 ```rust
 // src/transport.rs
 use ag_ui::client::transport::{EventStream, Transport, TransportFuture};
-use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::{Event, RunAgentInput, TextMessageRole};
 use futures_util::StreamExt;
 
@@ -254,12 +260,13 @@ async fn main() {
         ],
     };
 
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let updates: Vec<_> = session.send("hello").collect().await;
+    let mut thread = Thread::<_>::new(transport, "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("hello").expect("run preflight").collect().await;
 
     assert!(matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))));
     assert_eq!(
-        session.applier().text_of("msg-1"),
+        thread.applier().text_of("msg-1"),
         Some("From somewhere else entirely.")
     );
 }
@@ -272,7 +279,7 @@ the trait returns:
 ```rust
 // src/transport.rs
 use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
-use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::{Event, RunAgentInput, SseFormatter};
 use futures_util::StreamExt;
 
@@ -302,8 +309,9 @@ async fn main() {
         body.push_str(&sse.encode_to_string(&event).expect("encodes"));
     }
 
-    let mut session = Session::<_>::new(Recorded(body), "thread-1");
-    let updates: Vec<_> = session.send("hello").collect().await;
+    let mut thread = Thread::<_>::new(Recorded(body), "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("hello").expect("run preflight").collect().await;
 
     assert!(matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))));
 }
@@ -315,13 +323,13 @@ Errors from an exotic runtime do not need a variant in this crate's error enum:
 
 ## Turning `http` off
 
-`http` is on by default and pulls in `reqwest`. Turning it off is what keeps the
+`http` is opt-in and pulls in `reqwest`. Keeping it disabled keeps the
 crate wasm-viable, and it removes `HttpTransport` and `HttpAgent` with it —
 bring your own `Transport`.
 
 ```toml
 [dependencies.ag-ui]
-version = "0.3"
+version = "0.4"
 default-features = false
 features = ["client", "sse"]
 ```
@@ -340,7 +348,7 @@ reference](/ag-ui-rust/reference/features/), and what builds where is in
 
 ## Next
 
-- [Sessions](/ag-ui-rust/client/session/) — what sits on top of a transport.
+- [Threads](/ag-ui-rust/client/thread/) — what sits on top of a transport.
 - [`Transport`](/ag-ui-rust/api/ag_ui/client/transport/trait.Transport.html) and
   [`HttpTransport`](/ag-ui-rust/api/ag_ui/client/transport/http/struct.HttpTransport.html)
   in the API docs.

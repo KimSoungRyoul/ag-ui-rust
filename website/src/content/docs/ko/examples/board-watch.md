@@ -103,7 +103,7 @@ escape하는 `n`이 서로 다른 event로 옵니다. fragment 하나만 따로 
 봅니다. client가 건네는 것은 전체이고, 그것은 parse됩니다:
 
 ```rust
-use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::client::{MessageChangeKind, Thread, Update, transport::ReplayTransport};
 use ag_ui::Event;
 use futures_util::StreamExt;
 
@@ -118,12 +118,12 @@ async fn main() {
         Event::tool_call_args("call-1", r#"tle":"ship the SDK"}"#),
         Event::tool_call_end("call-1"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
+    ]).matching_requests();
 
-    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
     let mut args = String::new();
 
-    let mut run = session.send("call");
+    let mut run = thread.send("call").expect("run preflight");
     while let Some(update) = run.next().await {
         if let Update::Message(message) = update {
             if let MessageChangeKind::ToolCallArgs { delta, .. } = message.change {
@@ -229,7 +229,7 @@ drop합니다:
 
 agent는 영영 끝나지 않을 call에 30초째 들어가 있습니다. drop은 거기까지 닿습니다.
 integration test는 agent의 future가 빠져나온 시점에 그 run의 cancellation token이 이미
-올라가 있었음을 단언합니다. session은 계속 씁니다. 다음 run은 여느 run과 같습니다. 그
+올라가 있었음을 단언합니다. thread는 계속 씁니다. 다음 run은 여느 run과 같습니다. 그
 반대편은 [error와 cancellation](/ag-ui-rust/ko/server/errors/)가 다룹니다.
 
 ## protocol이 금지하는 stream
@@ -316,7 +316,7 @@ agent의 bug처럼 읽히지만 bug가 아닙니다. 특정 agent를 상정하�
 ## 한 단계 아래로, 그리고 offline으로
 
 `trace`는 event를 조립하지 않은 채로 출력합니다. proxy나 recorder, 또는 stream을
-debug하는 사람이 원하는 것입니다. session 없이 human in the loop 왕복도 해냅니다.
+debug하는 사람이 원하는 것입니다. thread 없이 human in the loop 왕복도 해냅니다.
 `interrupts_of`가 run이 무엇에서 멈춰 섰는지 읽습니다. `resume_run`이 그것에 답하는
 request를 만듭니다.
 
@@ -359,9 +359,9 @@ cargo test -p board-watch --test live -- --ignored --nocapture
 | 파일 | 무엇이 들어 있는가 |
 | --- | --- |
 | `src/watch.rs` | driver와 renderer 둘. 입력과 출력에 대해 generic합니다 |
-| `src/view.rs` | panel, A2UI 순회, 그리고 transport를 한정하지 않고 `Session`을 지칭하는 helper |
+| `src/view.rs` | panel, A2UI 순회, 그리고 transport를 한정하지 않고 `Thread`을 지칭하는 helper |
 | `src/board.rs` | agent state에 대한 client 자신의 view model |
-| `src/trace.rs` | 조립하지 않은 view, 그리고 session 없는 재개 |
+| `src/trace.rs` | 조립하지 않은 view, 그리고 thread 없는 재개 |
 | `src/fake.rs` | 까다로운 agent와, 손으로 감싼 불법 stream |
 | `src/main.rs` | CLI |
 | `tests/client.rs` | 위의 모든 흐름을, 실제 socket 위 backend 둘을 상대로 |
@@ -379,7 +379,7 @@ cargo test -p board-watch
 
 ## 다음
 
-- [session](/ag-ui-rust/ko/client/session/)과
+- [thread](/ag-ui-rust/ko/client/thread/)과
   [update stream](/ag-ui-rust/ko/client/updates/) — 이 예제가 딛고 선 API.
 - [run rendering](/ag-ui-rust/ko/client/rendering/) — 묶어 그리기의 거래를, 기록이 아니라
   reference로.

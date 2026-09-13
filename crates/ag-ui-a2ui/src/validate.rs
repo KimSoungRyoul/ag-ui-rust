@@ -439,6 +439,71 @@ impl<'a> Validator<'a> {
         self.run(&nodes, components, data_model)
     }
 
+    /// Validates graph and bindings against a lossless model, including every
+    /// defined item of a template collection and undefined array slots.
+    pub fn validate_model(
+        &self,
+        components: &[Component],
+        model: &crate::DataModel,
+    ) -> ValidationReport {
+        let mut report = self.validate_surface(components, None);
+        if !self.options.check_bindings
+            || report
+                .errors
+                .iter()
+                .any(|e| e.code == ErrorCode::ChildCycle)
+        {
+            return report;
+        }
+        let by_id: BTreeMap<_, _> = components.iter().map(|c| (c.id.as_str(), c)).collect();
+        let mut queue = vec![(
+            self.options.root_id.clone(),
+            crate::binding::ModelScope::root(model),
+        )];
+        let mut visited = BTreeSet::new();
+        while let Some((id, scope)) = queue.pop() {
+            if !visited.insert((id.clone(), scope.absolute(""))) {
+                continue;
+            }
+            let Some(component) = by_id.get(id.as_str()) else {
+                continue;
+            };
+            let raw = serde_json::to_value(component).expect("component JSON is infallible");
+            for binding in collect_bindings(&raw) {
+                let resolved = scope.resolve(&binding.path);
+                let valid = match &resolved {
+                    Ok(Some(crate::ModelValue::Array(_))) => true,
+                    Ok(Some(_)) => !binding.is_collection,
+                    _ => false,
+                };
+                if !valid {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::UnresolvedBinding,
+                        format!("components[{id}].{}", binding.location),
+                        format!(
+                            "Binding {:?} is missing, undefined, or not a collection.",
+                            binding.path
+                        ),
+                    ));
+                }
+            }
+            for reference in self.catalog.references(component) {
+                if let Some(path) = template_path(component, &reference.location) {
+                    if let Ok(Some(crate::ModelValue::Array(items))) = scope.resolve(&path) {
+                        for (index, item) in items.iter().enumerate() {
+                            if !matches!(item, crate::ModelValue::Undefined) {
+                                queue.push((reference.id.clone(), scope.item(&path, index)));
+                            }
+                        }
+                    }
+                } else {
+                    queue.push((reference.id, scope.clone()));
+                }
+            }
+        }
+        report
+    }
+
     /// Validates raw JSON components, as they arrive from a model.
     ///
     /// Unlike the typed entry points this can report [`ErrorCode::MissingId`]
@@ -463,16 +528,25 @@ impl<'a> Validator<'a> {
 
     /// Validates a whole operation stream.
     ///
-    /// Components from every `createSurface` and `updateComponents` are folded
-    /// together, `updateDataModel` operations are replayed to reconstruct the
-    /// data model, and the contract is chosen automatically: a stream with no
-    /// `createSurface` is treated as an incremental update.
+    /// Replays messages separately per surface, then validates complete trees.
+    /// Updates require creation within this stream. Use `validate_updates`
+    /// with explicit prior state for a partial stream.
     pub fn validate_messages(&self, messages: &[AgentMessage]) -> ValidationReport {
-        let raw: Vec<Value> = messages
+        match messages
             .iter()
-            .filter_map(|message| serde_json::to_value(message).ok())
-            .collect();
-        self.validate_json_messages(&raw)
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<Vec<_>, _>>()
+        {
+            Ok(raw) => self.validate_json_messages(&raw),
+            Err(error) => ValidationReport {
+                errors: vec![ValidationError::new(
+                    ErrorCode::InvalidValue,
+                    "messages",
+                    error.to_string(),
+                )],
+                ..Default::default()
+            },
+        }
     }
 
     /// Validates raw protocol messages, as they arrive on the wire.
@@ -501,48 +575,67 @@ impl<'a> Validator<'a> {
             );
         }
 
-        let mut components: Vec<Value> = Vec::new();
-        let mut data_model = Value::Null;
-        let mut has_create = false;
-
-        for message in messages {
-            if message.get("createSurface").is_some() {
-                has_create = true;
-            }
-            for key in ["createSurface", "updateComponents"] {
-                if let Some(Value::Array(list)) = message.pointer(&format!("/{key}/components")) {
-                    components.extend(list.iter().cloned());
-                }
-            }
-            if let Some(update) = message.get("updateDataModel") {
-                let path = update
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .unwrap_or("/")
-                    .to_string();
-                let value = update.get("value").cloned().unwrap_or(Value::Null);
-                // A malformed pointer is reported by the data-model layer, not
-                // here; skip it and validate what we can.
-                let _ = crate::message::apply_data_model_update(&mut data_model, &path, &value);
-            }
-        }
-
-        let mut options = self.options.clone();
-        if !has_create {
-            options.require_root = false;
-            options.allow_dangling_children = true;
-        }
-        // A payload that is nothing but data still gets its depth checked.
-        if components.is_empty() {
+        if !message_report.errors.is_empty() {
             return message_report;
         }
+        let mut store = crate::surface::SurfaceStore::new();
+        for (index, message) in messages.iter().enumerate() {
+            // Preserve raw component diagnostics before serde can normalize fields.
+            if let Some(Value::Array(components)) = message.pointer("/updateComponents/components")
+            {
+                let mut options = self.options.clone();
+                options.require_root = false;
+                options.allow_dangling_children = true;
+                options.check_bindings = false;
+                let report =
+                    Validator::with_options(self.catalog, options).validate_json(components, None);
+                message_report.errors.extend(report.errors);
+            }
+            match serde_json::from_value::<AgentMessage>(message.clone()) {
+                Ok(op) => {
+                    if let Err(error) = store.apply(&op) {
+                        message_report.errors.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            format!("messages[{index}]"),
+                            error.to_string(),
+                        ));
+                    }
+                }
+                Err(error) => message_report.errors.push(ValidationError::new(
+                    ErrorCode::InvalidValue,
+                    format!("messages[{index}]"),
+                    error.to_string(),
+                )),
+            }
+        }
+        for surface in store.surfaces().filter(|surface| !surface.deleted) {
+            let report = self.validate_model(&surface.components, &surface.data_model);
+            message_report.errors.extend(report.errors);
+            message_report.unreachable.extend(report.unreachable);
+        }
+        message_report
+    }
 
-        let data = (!data_model.is_null()).then_some(&data_model);
-        let mut report =
-            Validator::with_options(self.catalog, options).validate_json(&components, data);
-        report.errors.splice(0..0, message_report.errors);
-        report.unreachable.extend(message_report.unreachable);
-        report
+    /// Validates updates against explicit previously observed renderer state.
+    /// The caller receives a candidate store only when every message succeeds.
+    pub fn validate_updates(
+        &self,
+        prior: &crate::surface::SurfaceStore,
+        messages: &[AgentMessage],
+    ) -> Result<crate::surface::SurfaceStore> {
+        let mut next = prior.clone();
+        for message in messages {
+            let raw = serde_json::to_value(message)?;
+            let mut report = ValidationReport::default();
+            check_envelope(&raw, "message", &mut report);
+            report.into_result()?;
+            next.apply(message)?;
+        }
+        for surface in next.surfaces().filter(|s| !s.deleted) {
+            self.validate_model(&surface.components, &surface.data_model)
+                .into_result()?;
+        }
+        Ok(next)
     }
 
     fn run(
@@ -1142,7 +1235,7 @@ fn template_path(component: &Component, location: &str) -> Option<String> {
 /// `updateDataModel` value, a function's arguments) are simply absent: this is
 /// the envelope contract, not a schema for everything inside it.
 pub(crate) type EnvelopeField = (&'static str, PropType, bool);
-pub(crate) const OPERATIONS: [(&str, &[EnvelopeField]); 6] = [
+pub(crate) const OPERATIONS: [(&str, &[EnvelopeField]); 4] = [
     (
         "createSurface",
         &[
@@ -1167,17 +1260,6 @@ pub(crate) const OPERATIONS: [(&str, &[EnvelopeField]); 6] = [
         ],
     ),
     ("deleteSurface", &[("surfaceId", PropType::String, true)]),
-    (
-        "callRendererFunction",
-        &[
-            ("functionCallId", PropType::String, true),
-            ("callFunction", PropType::Object, true),
-        ],
-    ),
-    (
-        "agentFunctionResponse",
-        &[("functionCallId", PropType::String, true)],
-    ),
 ];
 
 /// Checks one message against the v0.9 envelope contract.
@@ -1202,7 +1284,7 @@ fn check_envelope(message: &Value, locator: &str, report: &mut ValidationReport)
     };
 
     match map.get("version") {
-        Some(Value::String(version)) if version == PROTOCOL_VERSION => {}
+        Some(Value::String(version)) if matches!(version.as_str(), "v0.9" | "v0.9.1") => {}
         Some(version) => report.errors.push(ValidationError::new(
             ErrorCode::InvalidValue,
             format!("{locator}.version"),
@@ -1216,6 +1298,14 @@ fn check_envelope(message: &Value, locator: &str, report: &mut ValidationReport)
             format!("{locator}.version"),
             format!("Every message needs \"version\": \"{PROTOCOL_VERSION}\"."),
         )),
+    }
+
+    if map.keys().filter(|key| key.as_str() != "version").count() != 1 {
+        report.errors.push(ValidationError::new(
+            ErrorCode::InvalidValue,
+            locator,
+            "Exactly one A2UI payload key is required.",
+        ));
     }
 
     let Some((key, fields)) = OPERATIONS
@@ -2050,7 +2140,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_checking_can_be_switched_off() {
+    fn disabling_extra_envelope_checks_does_not_bypass_typed_wire_contract() {
         let catalog = basic();
         let options = ValidateOptions {
             check_envelope: false,
@@ -2062,7 +2152,7 @@ mod tests {
             ]}}),
         ];
         let report = Validator::with_options(&catalog, options).validate_json_messages(&messages);
-        assert!(report.is_valid(), "{:?}", report.errors);
+        assert!(!report.is_valid());
     }
 
     #[test]
@@ -2082,7 +2172,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_messages_picks_the_contract_from_the_stream() {
+    fn incremental_streams_require_observed_prior_state() {
         let catalog = basic();
         let validator = Validator::new(&catalog);
 
@@ -2090,7 +2180,7 @@ mod tests {
             "s",
             vec![Component::new("c", "Card").with("child", json!("already-there"))],
         )];
-        assert!(validator.validate_messages(&incremental).is_valid());
+        assert!(!validator.validate_messages(&incremental).is_valid());
 
         let full = vec![
             AgentMessage::create_surface("s", "cat"),

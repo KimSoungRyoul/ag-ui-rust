@@ -11,7 +11,7 @@ mod common;
 
 use std::time::Duration;
 
-use ag_ui::client::{RemoteAgent, RunParams, Session};
+use ag_ui::client::{RemoteAgent, RunParams, Thread};
 use ag_ui::server::{Agent, CancellationToken, Result, RunContext};
 use ag_ui::{EventType, RunOutcome};
 use common::{serve, transport};
@@ -97,7 +97,7 @@ async fn dropping_the_event_stream_mid_run_cancels_the_agent() {
 
     {
         let client = RemoteAgent::new(transport(&url));
-        let mut events = client.run(RunParams::new("patient", "patient-run-1"));
+        let mut events = client.run_events(RunParams::new("patient", "patient-run-1"));
 
         // Read until the agent has finished speaking, so the run is
         // unambiguously under way before the plug is pulled.
@@ -130,7 +130,7 @@ async fn dropping_the_event_stream_mid_run_cancels_the_agent() {
     );
 }
 
-/// The same, one layer up: a UI dropping a [`Session`]'s run stream is the
+/// The same, one layer up: a UI dropping a [`Thread`]'s run stream is the
 /// ordinary way this happens.
 #[tokio::test(flavor = "multi_thread")]
 async fn dropping_a_session_run_stream_cancels_the_agent() {
@@ -142,9 +142,9 @@ async fn dropping_a_session_run_stream_cancels_the_agent() {
     })
     .await;
 
-    let mut session = Session::<_>::new(transport(&url), "patient");
+    let mut session = Thread::<_>::new(transport(&url), "patient");
     {
-        let mut run = session.send("take your time");
+        let mut run = session.send("take your time").expect("run preflight");
         // Four events in, the agent is waiting and the user changes their mind.
         for _ in 0..3 {
             timeout(DEADLINE, run.next())
@@ -177,7 +177,7 @@ async fn a_run_that_completes_is_never_reported_as_cancelled() {
 
     let client = RemoteAgent::new(transport(&url));
     let events: Vec<EventType> = client
-        .run(RunParams::new("prompt", "prompt-run-1"))
+        .run_events(RunParams::new("prompt", "prompt-run-1"))
         .map(|event| event.expect("the stream should not break").event_type())
         .collect()
         .await;

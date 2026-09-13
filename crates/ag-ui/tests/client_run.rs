@@ -6,7 +6,7 @@ use ag_ui::client::apply::{
     Applier, Changed, MessageChangeKind, ReasoningChange, ReasoningChangeKind,
 };
 use ag_ui::client::transport::ReplayTransport;
-use ag_ui::client::{RunEnd, Session, Update, verify_all};
+use ag_ui::client::{RunEnd, Thread, Update, verify_all};
 use ag_ui::{
     ActivityMessage, Event, JsonObject, Message, PatchOperation, ReasoningEncryptedValueSubtype,
     TextMessageRole, ToolCallId,
@@ -310,10 +310,15 @@ async fn a_bare_run_error_over_open_entities_ends_the_run_without_a_protocol_com
             Some(r#"{"city":"#.into()),
         ),
         Event::run_error("the model hung up"),
-    ]);
-    let mut session = Session::<_>::new(transport, "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("what is the weather?").collect().await;
+    let updates: Vec<_> = session
+        .send("what is the weather?")
+        .unwrap()
+        .collect()
+        .await;
     let complaints: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -502,16 +507,19 @@ struct Weather {
     temperature: Option<i64>,
 }
 
-/// What a consumer of [`Session`] actually sees for one thought: opened once,
+/// What a consumer of [`Thread`] actually sees for one thought: opened once,
 /// two deltas, closed once. The scripted run brackets it with all four
 /// `REASONING_*` events, as `ctx.think()` does.
 #[tokio::test]
 async fn a_session_reports_one_ending_per_thought() {
-    let transport = ReplayTransport::new(scripted_run());
-    let mut session = Session::<_, Weather>::new(transport, "thread-1");
+    let transport = ReplayTransport::new(scripted_run()).matching_requests();
+    let mut session = Thread::<_, Weather>::builder(transport, "thread-1")
+        .state(json!({"city": "", "temperature": 0}))
+        .build()
+        .unwrap();
 
     let mut reasoning = Vec::new();
-    let mut run = session.send("what is the weather in Seoul?");
+    let mut run = session.send("what is the weather in Seoul?").unwrap();
     while let Some(update) = run.next().await {
         if let Update::Reasoning(update) = update {
             reasoning.push((update.id.as_str().to_owned(), update.change));
@@ -542,8 +550,11 @@ async fn a_session_reports_one_ending_per_thought() {
 
 #[tokio::test]
 async fn a_session_yields_updates_and_keeps_the_conversation() {
-    let transport = ReplayTransport::new(scripted_run());
-    let mut session = Session::<_, Weather>::new(transport.clone(), "thread-1");
+    let transport = ReplayTransport::new(scripted_run()).matching_requests();
+    let mut session = Thread::<_, Weather>::builder(transport.clone(), "thread-1")
+        .state(json!({"city": "", "temperature": 0}))
+        .build()
+        .unwrap();
 
     let mut messages = 0;
     let mut reasoning = 0;
@@ -551,7 +562,7 @@ async fn a_session_yields_updates_and_keeps_the_conversation() {
     let mut ended = None;
     let mut errors = Vec::new();
 
-    let mut run = session.send("what is the weather in Seoul?");
+    let mut run = session.send("what is the weather in Seoul?").unwrap();
     while let Some(update) = run.next().await {
         match update {
             Update::Message(_) => messages += 1,
@@ -577,7 +588,7 @@ async fn a_session_yields_updates_and_keeps_the_conversation() {
             temperature: Some(21),
         })
     );
-    assert_eq!(session.state(), state.as_ref());
+    assert_eq!(Some(session.state().unwrap()), state.as_ref());
 
     // The user's turn plus the three messages the agent produced.
     assert_eq!(session.messages().len(), 4);
@@ -586,7 +597,7 @@ async fn a_session_yields_updates_and_keeps_the_conversation() {
     // And the request carried the user's message.
     let request = transport.last_request().expect("one request");
     assert_eq!(request.thread_id, "thread-1");
-    assert_eq!(request.run_id, "thread-1-run-1");
+    assert!(!request.run_id.as_str().is_empty());
     assert_eq!(request.messages.len(), 1);
 }
 
@@ -612,10 +623,15 @@ async fn a_chunk_streamed_tool_call_keeps_its_result_in_the_conversation() {
             Event::run_started("thread-1", "run-2"),
             Event::run_finished_success("thread-1", "run-2"),
         ],
-    ]);
-    let mut session = Session::<_>::new(transport.clone(), "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport.clone(), "thread-1");
 
-    let updates: Vec<_> = session.send("what is the weather?").collect().await;
+    let updates: Vec<_> = session
+        .send("what is the weather?")
+        .unwrap()
+        .collect()
+        .await;
     let errors: Vec<_> = updates
         .iter()
         .filter_map(|update| match update {
@@ -642,7 +658,7 @@ async fn a_chunk_streamed_tool_call_keeps_its_result_in_the_conversation() {
 
     // And the next run carries it, which is what lets the model see its own
     // tool's answer.
-    let mut second = session.send("and tomorrow?");
+    let mut second = session.send("and tomorrow?").unwrap();
     while second.next().await.is_some() {}
     drop(second);
     let request = transport.last_request().expect("a second request");
@@ -674,14 +690,15 @@ async fn a_second_run_carries_the_first_run_s_history_and_state() {
             Event::text_message_end("msg-2"),
             Event::run_finished_success("thread-1", "run-2"),
         ],
-    ]);
-    let mut session = Session::<_>::new(transport.clone(), "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport.clone(), "thread-1");
 
-    let mut first = session.send("one");
+    let mut first = session.send("one").unwrap();
     while first.next().await.is_some() {}
     drop(first);
 
-    let mut second = session.send("two");
+    let mut second = session.send("two").unwrap();
     while second.next().await.is_some() {}
     drop(second);
 
@@ -690,7 +707,7 @@ async fn a_second_run_carries_the_first_run_s_history_and_state() {
     // user, assistant, user
     assert_eq!(requests[1].messages.len(), 3);
     assert_eq!(requests[1].state, json!({ "turn": 1 }));
-    assert_eq!(requests[1].run_id, "thread-1-run-2");
+    assert_ne!(requests[1].run_id, requests[0].run_id);
     assert!(requests[1].resume.is_none());
 
     assert_eq!(session.messages().len(), 4);
@@ -701,10 +718,11 @@ async fn a_run_error_ends_the_stream_with_the_failure() {
     let transport = ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::RunError(ag_ui::RunErrorEvent::new("model unavailable").with_code("503")),
-    ]);
-    let mut session = Session::<_>::new(transport, "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").collect().await;
+    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
     let last = updates.last().expect("at least one update");
     assert!(matches!(
         last,
@@ -724,10 +742,11 @@ async fn a_truncated_stream_is_reported_rather_than_looking_like_a_short_answer(
         Event::run_started("thread-1", "run-1"),
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
         Event::text_message_content("msg-1", "Half a sen"),
-    ]);
-    let mut session = Session::<_>::new(transport, "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").collect().await;
+    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
     let complaint = updates
         .iter()
         .filter_map(|update| match update {
@@ -754,23 +773,23 @@ async fn a_truncated_stream_is_reported_rather_than_looking_like_a_short_answer(
 }
 
 #[tokio::test]
-async fn a_truncated_stream_ends_the_message_it_was_streaming() {
-    // The producer never sent `TEXT_MESSAGE_END`, so the normalizer owes one.
-    // Without it a typing indicator keyed on `Ended` spins forever.
+async fn a_truncated_stream_marks_the_message_aborted() {
+    // The local view must stop its typing indicator without claiming successful completion.
     let transport = ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::text_message_chunk(
             Some(ag_ui::MessageId::new("msg-1")),
             Some("Half a sen".into()),
         ),
-    ]);
-    let mut session = Session::<_>::new(transport, "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").collect().await;
+    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
     assert!(
         updates.iter().any(|update| matches!(
             update,
-            Update::Message(message) if message.change == MessageChangeKind::Ended
+            Update::Message(message) if message.change == MessageChangeKind::Aborted
         )),
         "the streamed message should have been closed: {updates:?}"
     );
@@ -784,11 +803,12 @@ async fn a_transport_that_breaks_mid_run_still_ends_the_run() {
     let transport = ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
-    let mut session = Session::<_>::new(transport, "thread-1");
-    session.send("hi").collect::<Vec<_>>().await;
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport, "thread-1");
+    session.send("hi").unwrap().collect::<Vec<_>>().await;
 
-    let updates: Vec<_> = session.send("again").collect().await;
+    let updates: Vec<_> = session.send("again").unwrap().collect().await;
     assert!(
         updates
             .iter()
@@ -811,12 +831,14 @@ async fn a_truncated_stream_ends_the_run_even_with_verification_off() {
     let transport = ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
-    ]);
-    let mut session = Session::<_>::builder(transport, "thread-1")
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::builder(transport, "thread-1")
         .verify(false)
-        .build();
+        .build()
+        .unwrap();
 
-    let updates: Vec<_> = session.send("hi").collect().await;
+    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
     let complaint = updates
         .iter()
         .find_map(|update| match update {
@@ -839,17 +861,21 @@ async fn a_session_can_be_seeded_with_history_and_run_without_a_new_message() {
     let transport = ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
-    let mut session = Session::<_>::builder(transport.clone(), "thread-1")
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::builder(transport.clone(), "thread-1")
         .messages(vec![
             Message::user("u-1", "earlier"),
             Message::assistant("a-1", "earlier reply"),
         ])
         .state(json!({ "seeded": true }))
-        .build();
+        .build()
+        .unwrap();
 
-    session.push_message(Message::tool("t-1", "call-1", "42"));
-    let mut run = session.run();
+    session
+        .push_message(Message::tool("t-1", "call-1", "42"))
+        .unwrap();
+    let mut run = session.run().unwrap();
     while run.next().await.is_some() {}
     drop(run);
 

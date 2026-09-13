@@ -4,7 +4,7 @@
 
 use ag_ui::client::apply::{Applier, Changed};
 use ag_ui::client::transport::ReplayTransport;
-use ag_ui::client::{Error, MessageChangeKind, Session, Update};
+use ag_ui::client::{Error, MessageChangeKind, Thread, Update};
 use ag_ui::{Event, PatchOperation};
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -271,10 +271,11 @@ async fn a_session_reports_a_failed_patch_and_keeps_the_state_it_had() {
         Event::state_delta(vec![PatchOperation::replace("/missing/deeply", json!(2))]),
         Event::state_delta(vec![PatchOperation::replace("/count", json!(2))]),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
-    let mut session = Session::<_>::new(transport, "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("go").collect().await;
+    let updates: Vec<_> = session.send("go").unwrap().collect().await;
     let errors: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -311,10 +312,14 @@ async fn state_published_inside_an_open_tool_call_applies_like_any_other() {
         Event::tool_call_end("call-1"),
         Event::tool_call_result("msg-1", "call-1", r#"{"count":1}"#),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
-    let mut session = Session::<_, Counter>::new(transport, "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_, Counter>::builder(transport, "thread-1")
+        .state(json!({"count": 0}))
+        .build()
+        .unwrap();
 
-    let updates: Vec<_> = session.send("increment").collect().await;
+    let updates: Vec<_> = session.send("increment").unwrap().collect().await;
     assert!(
         !updates
             .iter()
@@ -336,7 +341,7 @@ async fn state_published_inside_an_open_tool_call_applies_like_any_other() {
         .collect();
     assert_eq!(order, ["state", "args", "state", "call ended"]);
 
-    assert_eq!(session.state(), Some(&Counter { count: 1 }));
+    assert_eq!(session.state().unwrap(), &Counter { count: 1 });
 }
 
 #[tokio::test]
@@ -348,10 +353,14 @@ async fn a_state_that_does_not_fit_the_typed_view_is_reported_without_losing_it(
         Event::state_snapshot(json!({ "unrelated": true })),
         Event::state_snapshot(json!({ "count": 7 })),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
-    let mut session = Session::<_, Counter>::new(transport, "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_, Counter>::builder(transport, "thread-1")
+        .state(json!({"count": 0}))
+        .build()
+        .unwrap();
 
-    let updates: Vec<_> = session.send("go").collect().await;
+    let updates: Vec<_> = session.send("go").unwrap().collect().await;
     let errors: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -365,6 +374,6 @@ async fn a_state_that_does_not_fit_the_typed_view_is_reported_without_losing_it(
 
     // The typed view caught up on the next snapshot, and the raw state was
     // never wrong.
-    assert_eq!(session.state(), Some(&Counter { count: 7 }));
+    assert_eq!(session.state().unwrap(), &Counter { count: 7 });
     assert_eq!(session.raw_state(), &json!({ "count": 7 }));
 }

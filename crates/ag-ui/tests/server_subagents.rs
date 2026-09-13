@@ -52,6 +52,7 @@ fn everything_emitted_through_the_handle_is_attributed_until_the_scope_ends() {
         drop(step);
         researcher.think("hmm").unwrap();
         researcher.emit(Event::custom("ping", json!(1))).unwrap();
+        researcher.finish().unwrap();
     }
     assert_eq!(ctx.subagent_run_id(), None);
     ctx.say("after").unwrap();
@@ -109,8 +110,10 @@ fn nested_scopes_link_to_their_parent_and_restore_it_on_close() {
             let mut estimator = planner.subagent("estimator").unwrap();
             assert_eq!(estimator.id().as_str(), "run-1-sub-2");
             estimator.say("inner").unwrap();
+            estimator.finish().unwrap();
         }
         planner.say("outer again").unwrap();
+        planner.finish().unwrap();
     }
 
     let events = events.drain();
@@ -196,6 +199,7 @@ fn an_explicit_tag_inside_a_scope_is_kept_and_unattributable_events_stay_bare() 
         sub.emit(Event::custom("theirs", json!(2)).with_subagent_run_id("other"))
             .unwrap();
         sub.emit(Event::messages_snapshot(Vec::new())).unwrap();
+        sub.finish().unwrap();
     }
     let events = events.drain();
     assert_eq!(tag(&events[1]), Some("run-1-sub-1"));
@@ -222,6 +226,7 @@ fn subagent_with_keeps_an_explicit_parent_and_fills_an_absent_one() {
             .subagent_with(SubagentStartedEvent::new("implicit", "d"))
             .unwrap();
         implicit.finish().unwrap();
+        outer.finish().unwrap();
     }
     let events = events.drain();
     let Event::SubagentStarted(explicit) = &events[3] else {
@@ -253,6 +258,7 @@ async fn a_run_with_nested_subagents_passes_the_driver_and_the_verifier() {
             {
                 let mut estimator = planner.subagent("estimator")?;
                 estimator.say("A day each.")?;
+                estimator.finish()?;
             }
             planner.finish_with(json!({ "tasks": 2 }))?;
             ctx.say("Plan ready.")?;
@@ -344,7 +350,7 @@ async fn a_suspended_subagent_pauses_the_run_and_continues_under_the_same_id() {
 }
 
 #[tokio::test]
-async fn a_scope_open_on_the_error_path_is_closed_before_run_error() {
+async fn a_scope_open_on_the_error_path_does_not_invent_success() {
     struct Broken;
 
     impl Agent for Broken {
@@ -366,10 +372,84 @@ async fn a_scope_open_on_the_error_path_is_closed_before_run_error() {
             EventType::TextMessageStart,
             EventType::TextMessageContent,
             EventType::TextMessageEnd,
-            EventType::SubagentFinished,
             EventType::RunError,
         ]
     );
+}
+
+#[tokio::test]
+async fn forgetting_to_finish_a_scope_rejects_success_and_interrupt_even_when_hidden() {
+    use ag_ui::server::{Runner, SubagentVisibility};
+
+    struct Unfinished(bool);
+    impl Agent for Unfinished {
+        type State = ();
+
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            let mut child = ctx.subagent_events("worker")?;
+            child.say("still running")?;
+            drop(child);
+            ctx.say("parent attribution restored")?;
+            Ok(if self.0 {
+                RunOutcome::interrupt(vec![Interrupt::new("approve", "approval")])
+            } else {
+                RunOutcome::Success
+            })
+        }
+    }
+
+    for interrupted in [false, true] {
+        for hidden in [false, true] {
+            let runner = Runner::new(Unfinished(interrupted));
+            let runner = if hidden {
+                runner.transformer(SubagentVisibility::hidden())
+            } else {
+                runner
+            };
+            let events: Vec<_> = runner
+                .run(RunAgentInput::new("t", "r"))
+                .map(|event| event.unwrap())
+                .collect()
+                .await;
+            assert!(
+                !events.iter().any(|event| matches!(
+                    event,
+                    Event::SubagentFinished(_) | Event::RunFinished(_)
+                ))
+            );
+            let Event::RunError(error) = events.last().unwrap() else {
+                panic!("unfinished producer must report a run error");
+            };
+            assert_eq!(error.code.as_deref(), Some("PROTOCOL_VIOLATION"));
+            assert!(error.message.contains("explicit finish, fail or suspend"));
+            assert!(events.iter().any(|event| matches!(event,
+                Event::TextMessageContent(text)
+                    if text.delta == "parent attribution restored"
+                        && text.subagent_run_id.is_none()
+            )));
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_explicit_child_failure_can_be_handled_by_its_parent() {
+    struct Recovering;
+    impl Agent for Recovering {
+        type State = ();
+
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            ctx.subagent_events("worker")?.fail("search unavailable")?;
+            ctx.say("Using the cached answer.")?;
+            Ok(RunOutcome::Success)
+        }
+    }
+    let events = collect(Recovering).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::SubagentError(_)))
+    );
+    assert!(matches!(events.last(), Some(Event::RunFinished(_))));
 }
 
 #[test]

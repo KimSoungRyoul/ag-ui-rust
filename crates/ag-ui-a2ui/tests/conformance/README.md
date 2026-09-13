@@ -13,7 +13,7 @@ upstream and are driven by `crates/ag-ui-a2ui/tests/conformance.rs`.
 Do not hand-edit these files. To update, re-copy from upstream at a newer commit
 and change the SHA here and in `UPSTREAM_COMMIT` in the harness.
 
-## Current standing: 123 passed, 70 skipped, 0 failed
+## Current standing: 119 passed, 74 skipped, 0 failed
 
 | File | Cases | Checks executed here |
 |---|---:|---|
@@ -21,7 +21,7 @@ and change the SHA here and in `UPSTREAM_COMMIT` in the harness.
 | `core/catalog.yaml` | 24 | 23 of 24 — prune, render, load, modifiers |
 | `core/accessibility.yaml` | 4 | none |
 | `agent/parser.yaml` | 19 | 19 — all of them |
-| `agent/inference_format.yaml` | 19 | 17 of 19 — catalog negotiation, prompts |
+| `agent/inference_format.yaml` | 19 | 13 of 19 — supported catalog negotiation and prompt policies |
 | `agent/streaming_parser.yaml` | 76 | 38 of 76 — every v0.9 case |
 | `test_data/` | — | fixtures the cases above load |
 
@@ -41,10 +41,11 @@ cargo test -p ag-ui-a2ui --all-features -- --nocapture
 to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list every check by
 name.
 
-The 70 skips break down as:
+The 74 skips break down as:
 
 | Count | Reason |
 |---:|---|
+| 4 | **Superseded toolkit policy.** Default fallback and cross-ID inline merging conflict with the reviewed contract. `toolkit::negotiate` tests enforce explicit matching, complete inline documents, and conflict rejection. |
 | 63 | **v0.8 wire format.** v0.8 nests component properties under the type name (`component: {Text: {...}}`) and uses different message names. This crate implements v0.9, where components are flat. |
 | 4 | **Renderer accessibility.** Accessibility trees and axe-core rules belong to a renderer; this crate does not render. |
 | 2 | **v0.8 schema bundle in a prompt.** Two `generate_prompt` cases ask for the v0.8 schema documents to be embedded in the prompt; this crate ships v0.9. The other six prompt cases run. |
@@ -86,3 +87,16 @@ look at bindings. Pointer *syntax* checking stays on, since upstream checks that
 too, as do the envelope and property-type checks, since those are what the cases
 delegated to JSON Schema assert. Matching upstream's scope is what makes the
 comparison meaningful.
+
+## v0.9.1 regression coverage
+
+The full official schemas are pinned separately in `schemas/v0_9_1/` at
+`1c45c809b655878d06e3afc6dda22100afecc0a4`. `tests/author.rs` checks the actual
+Draft 2020-12 engine, local refs, async recovery, targeted edits, and
+multi-catalog transactional streams. `tests/protocol_091.rs` checks lifecycle,
+null/removal/Undefined, snapshots, and fallible history replay.
+
+Legacy structural vectors without a create or prior state exercise the
+component-fragment entry point. Create-only steps exercise pending lifecycle,
+not final tree validation. The new whole-stream tests require explicit state.
+These adaptations do not claim the legacy toolkit policies conform to v0.9.1.

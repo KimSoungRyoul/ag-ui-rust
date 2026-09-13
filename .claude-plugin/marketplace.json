@@ -9,8 +9,8 @@
     {
       "name": "ag-ui-rust",
       "source": "./",
-      "description": "Build AG-UI agent backends and agent clients in Rust: the Agent trait and its typestate emitters, subagent scopes, sessions and the update stream, Qwen Cloud for the live tests, and how to refresh the skills when the SDK moves.",
-      "version": "0.1.0",
+      "description": "Build AG-UI agent backends and agent clients in Rust: the Agent trait and its typestate emitters, subagent scopes, threads and the update stream, Qwen Cloud for the live tests, and how to refresh the skills when the SDK moves.",
+      "version": "0.4.0",
       "author": {
         "name": "KimSoungRyoul",
         "url": "https://github.com/KimSoungRyoul"
@@ -18,7 +18,15 @@
       "homepage": "https://kimsoungryoul.github.io/ag-ui-rust/",
       "repository": "https://github.com/KimSoungRyoul/ag-ui-rust",
       "license": "MIT",
-      "keywords": ["ag-ui", "agent", "llm", "protocol", "rust", "axum", "a2ui"],
+      "keywords": [
+        "ag-ui",
+        "agent",
+        "llm",
+        "protocol",
+        "rust",
+        "axum",
+        "a2ui"
+      ],
       "category": "development"
     }
   ]

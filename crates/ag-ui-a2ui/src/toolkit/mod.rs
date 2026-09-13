@@ -63,10 +63,16 @@ pub mod streaming;
 pub mod tools;
 
 pub use envelope::{wrap_as_operations_envelope, wrap_error_envelope};
-pub use history::{HistoryMessage, PriorSurface, find_prior_surface};
-pub use negotiate::{CatalogRegistry, ClientCapabilities, select_catalog};
+pub use history::{
+    HistoryMessage, PriorSurface, find_prior_surface, try_find_prior_surface,
+    try_find_prior_surface_by_id,
+};
+pub use negotiate::{CatalogRegistry, ClientCapabilities, ClientCapabilitiesWire, select_catalog};
 pub use ops::{Intent, SurfaceSpec, assemble_ops};
-pub use recovery::{RecoveredSurface, RecoveryActivity, RecoveryOptions, generate_with_recovery};
+pub use recovery::{
+    RecoveredSurface, RecoveryActivity, RecoveryOptions, generate_with_recovery,
+    generate_with_recovery_async,
+};
 pub use schema::SchemaBundle;
 pub use streaming::StreamParser;
 pub use tools::{ToolDefinition, generate_a2ui_tool, render_a2ui_tool};

@@ -44,7 +44,7 @@ One crate, and which half of the protocol you get is a feature. For an agent, th
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.3", features = ["axum"] }
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
@@ -54,7 +54,7 @@ For a client, `http`:
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.3", features = ["http"] }
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -222,7 +222,7 @@ async fn main() {
 
 ## Talking to it from Rust
 
-The other half of the SDK consumes an agent. `Session` holds a thread — its messages and
+The other half of the SDK consumes an agent. `Thread` holds a thread — its messages and
 its state — and folds the delta stream back into them, so what you handle is "this message
 grew" rather than "a `TEXT_MESSAGE_CONTENT` arrived":
 
@@ -230,15 +230,15 @@ grew" rather than "a `TEXT_MESSAGE_CONTENT` arrived":
 // src/main.rs
 use std::io::Write;
 
-use ag_ui::client::{MessageChangeKind, RunEnd, Session, Update, transport::HttpTransport};
+use ag_ui::client::{MessageChangeKind, RunEnd, Thread, Update, transport::HttpTransport};
 use futures_util::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = HttpTransport::new("http://127.0.0.1:3000/agent")?;
-    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
 
-    let mut run = session.send("hello");
+    let mut run = thread.send("hello").expect("run preflight");
     while let Some(update) = run.next().await {
         match update {
             Update::Message(message) => {
@@ -254,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     drop(run);
 
-    println!("{} messages in the thread", session.messages().len());
+    println!("{} messages in the thread", thread.messages().len());
     Ok(())
 }
 ```
@@ -262,13 +262,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Run the agent in one terminal and this in another, and it prints `Hello from Rust.` a
 fragment at a time, then `2 messages in the thread` — yours and the agent's.
 
-Two things that are easy to miss. The thread lives in the *client*: the session carries
+Two things that are easy to miss. The thread lives in the *client*: the thread carries
 the conversation and the state from one run to the next, and the agent is handed both on
 every request, which is why a second client joining the same thread id starts empty. And
-`drop(run)` is not ceremony — the run borrows the session while it streams, and dropping
+`drop(run)` is not ceremony — the run borrows the thread while it streams, and dropping
 it early is also how you cancel, because polling the stream is what pulls the bytes.
 
-[Sessions](/ag-ui-rust/client/session/) and
+[Threads](/ag-ui-rust/client/thread/) and
 [The update stream](/ag-ui-rust/client/updates/) take it from here.
 
 ## Where to go next
@@ -279,7 +279,7 @@ it early is also how you cancel, because polling the stream is what pulls the by
   need for which job.
 - [The Agent trait](/ag-ui-rust/server/agent/) — the server side properly: tool calls,
   shared state, human-in-the-loop pauses, errors and cancellation.
-- [Sessions](/ag-ui-rust/client/session/) — the client side properly, including the lower
+- [Threads](/ag-ui-rust/client/thread/) — the client side properly, including the lower
   level a proxy or a recorder wants.
 - [task-board](/ag-ui-rust/examples/task-board/) and
   [board-watch](/ag-ui-rust/examples/board-watch/) — two worked examples, each an agent

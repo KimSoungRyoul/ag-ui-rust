@@ -35,7 +35,7 @@
 //! The applier is *tolerant*: an orphan `TEXT_MESSAGE_CONTENT` opens a message
 //! rather than failing, because a half-drawn conversation beats a blank screen.
 //! Catching the producer's mistake is [`crate::client::verify`]'s job, and
-//! [`crate::client::Session`] runs both. The one thing the applier refuses to do
+//! [`crate::client::Thread`] runs both. The one thing the applier refuses to do
 //! quietly is corrupt state: a patch that does not apply is an error.
 
 // The THINKING_* events are deprecated but still arrive on real streams, so
@@ -53,7 +53,7 @@ use crate::{
     TextMessageChunkEvent, TextMessageRole, ThreadId, ToolCall, ToolCallChunkEvent, ToolCallId,
     ToolMessage, UserContent, UserMessage,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::client::error::{Error, Result};
@@ -123,6 +123,8 @@ pub struct MessageChange {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum MessageChangeKind {
+    /// Local consumption stopped before the producer completed this message.
+    Aborted,
     /// The message was created and is now open for content.
     Started,
     /// Text was appended.
@@ -145,7 +147,7 @@ pub enum MessageChangeKind {
     /// Parallel calls interleave their events, so consecutive `ToolCallArgs`
     /// need not belong to the same call: `tool_call_id` is what separates them,
     /// and arrival order is the only nesting there is — see the [session module
-    /// docs](crate::client::session).
+    /// docs](crate::client::thread).
     ToolCallArgs {
         /// The call being appended to.
         tool_call_id: ToolCallId,
@@ -189,6 +191,8 @@ pub struct ReasoningChange {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ReasoningChangeKind {
+    /// Consumption stopped before this reasoning message completed.
+    Aborted,
     /// The reasoning message was created.
     Started,
     /// Reasoning text was appended.
@@ -208,7 +212,7 @@ pub enum ReasoningChangeKind {
 /// the same subagent twice yields two entries — while [`name`](Self::name) is
 /// the reusable half, for display. Key transient UI by the id; persist
 /// nothing by it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Subagent {
     /// The invocation's id, as every event it produced carries it.
     pub run_id: SubagentRunId,
@@ -227,9 +231,11 @@ pub struct Subagent {
 }
 
 /// Where a subagent invocation stands.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum SubagentStatus {
+    /// The enclosing run stopped without confirming this invocation's outcome.
+    Aborted,
     /// Announced and not yet closed.
     Running,
     /// Closed with a success outcome — or with none, the legacy reading.
@@ -273,6 +279,8 @@ pub struct SubagentChange {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum SubagentChangeKind {
+    /// The enclosing run stopped; no business outcome was inferred.
+    Aborted,
     /// A new invocation was announced.
     Started,
     /// A suspended invocation was announced again — a continuation, not a
@@ -414,7 +422,7 @@ impl Applier {
     /// ```
     /// # use ag_ui::client::apply::Applier;
     /// # use ag_ui::Event;
-    /// # use serde::Deserialize;
+    /// # use serde::{Deserialize, Serialize};
     /// #[derive(Deserialize)]
     /// struct Ui {
     ///     step: u32,
@@ -629,6 +637,78 @@ impl Applier {
         }
     }
 
+    /// Restore materialized auxiliary state without reopening streaming parsers.
+    pub(crate) fn restore_auxiliary(
+        &mut self,
+        reasoning: Vec<ReasoningMessage>,
+        subagents: Vec<Subagent>,
+        interrupts: Vec<Interrupt>,
+    ) {
+        self.reasoning_by_id = reasoning
+            .iter()
+            .enumerate()
+            .map(|(i, message)| (message.id.clone(), i))
+            .collect();
+        self.reasoning = reasoning;
+        self.subagent_by_id = subagents
+            .iter()
+            .enumerate()
+            .map(|(i, subagent)| (subagent.run_id.clone(), i))
+            .collect();
+        self.subagents = subagents;
+        self.interrupts = interrupts;
+    }
+
+    pub(crate) fn reset_streams(&mut self) {
+        self.open_text.clear();
+        self.open_reasoning.clear();
+        self.current_reasoning = None;
+        self.reasoning_streams.clear();
+    }
+
+    pub(crate) fn abort_messages(&mut self) -> (Vec<MessageChange>, Vec<ReasoningChange>) {
+        let messages = self
+            .open_text
+            .iter()
+            .filter_map(|(_, id)| {
+                self.by_id.get(id).map(|index| MessageChange {
+                    index: *index,
+                    id: id.clone(),
+                    kind: MessageChangeKind::Aborted,
+                })
+            })
+            .collect();
+        let reasoning = self
+            .open_reasoning
+            .iter()
+            .map(|id| ReasoningChange {
+                id: id.clone(),
+                kind: ReasoningChangeKind::Aborted,
+            })
+            .collect();
+        self.reset_streams();
+        (messages, reasoning)
+    }
+
+    pub(crate) fn abort_subagents(&mut self) -> Vec<SubagentChange> {
+        self.reset_streams();
+        self.subagents
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, subagent)| {
+                if subagent.status != SubagentStatus::Running {
+                    return None;
+                }
+                subagent.status = SubagentStatus::Aborted;
+                Some(SubagentChange {
+                    index,
+                    run_id: subagent.run_id.clone(),
+                    kind: SubagentChangeKind::Aborted,
+                })
+            })
+            .collect()
+    }
+
     // ---- messages -------------------------------------------------------
 
     fn replace_messages(&mut self, messages: Vec<Message>) {
@@ -783,7 +863,7 @@ impl Applier {
     /// A `TEXT_MESSAGE_CHUNK` applied directly.
     ///
     /// Reachable only for a caller driving the applier itself: a
-    /// [`Session`](crate::client::Session) puts a
+    /// [`Thread`](crate::client::Thread) puts a
     /// [`ChunkNormalizer`](crate::client::ChunkNormalizer) in front, which expands
     /// chunks before they get here. The difference is that the normalizer also
     /// synthesizes the *end* of a chunk stream; this does not, because an
@@ -1071,8 +1151,13 @@ impl Applier {
     /// one — and it has to be the same one for the whole block, which is what
     /// [`Applier::thinking_id`] is for.
     fn mint_thinking_id(&mut self) -> MessageId {
-        self.thinking_counter += 1;
-        MessageId::new(format!("thinking-{}", self.thinking_counter))
+        loop {
+            self.thinking_counter += 1;
+            let id = MessageId::new(format!("thinking-{}", self.thinking_counter));
+            if !self.reasoning_by_id.contains_key(&id) {
+                return id;
+            }
+        }
     }
 
     /// The id a `THINKING_*` event belongs to, minting one when the producer

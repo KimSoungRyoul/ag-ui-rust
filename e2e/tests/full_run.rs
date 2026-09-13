@@ -9,7 +9,7 @@
 mod common;
 
 use ag_ui::client::transport::HttpTransport;
-use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::server::{Agent, Result, RunContext};
 use ag_ui::{AssistantMessage, FunctionCall, Message, RunOutcome, ToolCall, ToolMessage};
 use common::{serve, transport};
@@ -72,13 +72,22 @@ impl Agent for Forecaster {
 
 /// One turn against a freshly served [`Forecaster`]: the session it left
 /// behind, and every update a view would have redrawn on.
-async fn run_once() -> (Session<HttpTransport, Weather>, Vec<Update<Weather>>) {
+async fn run_once() -> (Thread<HttpTransport, Weather>, Vec<Update<Weather>>) {
     let url = serve(Forecaster).await;
-    let mut session = Session::<_, Weather>::new(transport(&url), "weather");
+    let mut session = Thread::<_, Weather>::builder(transport(&url), "weather")
+        .state(serde_json::json!(Weather::default()))
+        .build()
+        .expect("typed thread");
+    session.set_next_run_id("weather-run-1");
 
     let mut updates = Vec::new();
     {
-        let mut run = session.send("what is the weather in Seoul?");
+        let mut run = session
+            .send_message(Message::user(
+                "weather-msg-1",
+                "what is the weather in Seoul?",
+            ))
+            .expect("run preflight");
         while let Some(update) = run.next().await {
             // Asserted here rather than per test: an error anywhere in this
             // stream invalidates every claim made about it below, and a test
@@ -145,7 +154,7 @@ async fn the_state_the_client_ends_with_is_the_state_the_agent_published() {
         temp_c: 21,
         checked: true,
     };
-    assert_eq!(session.state(), Some(&published));
+    assert_eq!(session.state().ok(), Some(&published));
     assert_eq!(
         session.raw_state(),
         &json!({"city": "Seoul", "tempC": 21, "checked": true}),

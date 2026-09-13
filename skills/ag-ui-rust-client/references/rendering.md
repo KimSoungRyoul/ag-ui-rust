@@ -8,7 +8,7 @@ Two calls open before either closes, and their fragments alternate on the wire. 
 does not reorder them, so they alternate in the update stream too:
 
 ```rust
-use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::client::{MessageChangeKind, Thread, Update, transport::ReplayTransport};
 use ag_ui::Event;
 use futures_util::StreamExt;
 
@@ -25,10 +25,11 @@ async fn main() {
         Event::tool_call_end("call-1"),
         Event::tool_call_end("call-2"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
+    ]).matching_requests();
 
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let updates: Vec<_> = session.send("add two things").collect().await;
+    let mut thread = Thread::<_>::new(transport, "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("add two things").expect("run preflight").collect().await;
 
     let fragments: Vec<String> = updates
         .iter()
@@ -60,7 +61,7 @@ not say which call the state belongs to, so any attribution would be invented.
 Drawing in arrival order shows what happened. Buffering by entity is choosing to reorder:
 
 ```rust
-use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::client::{MessageChangeKind, Thread, Update, transport::ReplayTransport};
 use ag_ui::{Event, ToolCallId};
 use futures_util::StreamExt;
 use serde_json::json;
@@ -137,10 +138,11 @@ async fn main() {
         Event::tool_call_args("call-1", r#"the agenda"}"#),
         Event::tool_call_end("call-1"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
+    ]).matching_requests();
 
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let updates: Vec<_> = session.send("add one thing").collect().await;
+    let mut thread = Thread::<_>::new(transport, "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("add one thing").expect("run preflight").collect().await;
 
     let mut ordered = Vec::new();
     let mut grouped = Vec::new();
@@ -180,11 +182,10 @@ What cannot be had is a call drawn as one line **and** kept in order.
 - **Chunk events.** `*_CHUNK` carries its id only on the first event; the normalizer expands
   them into explicit `Started` / `Content` / `Ended`, so a renderer never sees the chunk form.
 - **Unterminated messages.** If the producer never closes its last message, the end of the
-  stream closes it — a view hiding its typing indicator on `Ended` will not spin forever.
+  stream marks it `Aborted`, allowing a view to stop its indicator without claiming completion.
 - **Malformed streams.** An event breaking an ordering rule is reported as `Update::Error`
   and **not applied**, so the conversation never contains state assembled from a broken
-  stream. (Except the event that ends the run, which is applied anyway so the caller is not
-  left waiting.)
+  stream. An invalid terminal becomes `RunEnd::Failed` and does not confirm a submitted approval.
 - **Reasoning lifecycle.** The protocol brackets a thought twice under the same id;
   `ReasoningChangeKind::Started` / `Ended` arrive **once**, so no dedupe is needed.
 

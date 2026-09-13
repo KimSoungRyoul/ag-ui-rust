@@ -7,17 +7,22 @@ AG-UI is the protocol between a user-facing application and an agent backend. A 
 stream of events: the agent opens messages, streams text and reasoning, calls tools,
 publishes state, delegates to subagents, and finishes — or pauses for human input.
 
-It implements all 36 event types, both halves of the protocol, and a drift check in CI that
-fails the build when upstream's event set moves — held to what an official SDK would have to
-be, because becoming the official AG-UI Rust SDK is the goal. It is not that yet: this crate
-is not affiliated with or endorsed by the AG-UI protocol organisation.
+This independent SDK provides protocol types, server emitters and client conversations.
+It is not affiliated with or endorsed by the AG-UI protocol organisation. The upstream
+event baseline is checked in CI.
+
+To host an agent behind axum:
 
 ```toml
 [dependencies]
-# host an agent behind axum
-ag-ui = { version = "0.3", features = ["axum"] }
-# or consume one over HTTP
-ag-ui = { version = "0.3", features = ["http"] }
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
+```
+
+To consume an agent over HTTP:
+
+```toml
+[dependencies]
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["http"] }
 ```
 
 ## What is in the box
@@ -89,3 +94,13 @@ See the [repository](https://github.com/KimSoungRyoul/ag-ui-rust) for the design
 ## License
 
 MIT
+
+## Conversations in 0.4
+
+`HttpAgent::new(url)` configures a connection. `agent.thread(id)` creates a local
+conversation; `thread.send(text)?` returns a run stream. `collect_report().await`
+collects the terminal outcome and local diagnostics. `state()` returns a Result
+for the current typed view; `raw_state()` always exposes current raw JSON.
+
+A subagent event scope records work executed by the application. Finish, fail or
+suspend it explicitly. Drop restores attribution without inventing success.

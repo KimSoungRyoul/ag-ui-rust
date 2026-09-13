@@ -234,7 +234,7 @@ SUBAGENT_FINISHED   {"subagentRunId":"r1-sub-1","result":{"added":1},"outcome":{
 ```
 
 client는 `⟂` 줄을 `Update::Subagent`로 읽고, 나머지는 `Message::subagent_run_id()`를
-`session.subagent(id)`로 이름으로 바꿔 읽습니다. run 도중에는 `RunStream::session()`을
+`thread.subagent(id)`로 이름으로 바꿔 읽습니다. run 도중에는 `RunStream::thread()`을
 통해서입니다. supervisor 자신의 답변은 두 delegate 뒤에 tag 없이 오고, 그래서 `agent>`로
 찍힙니다.
 
@@ -248,7 +248,7 @@ endpoint가 subagent 표면을 평평하게 펴거나 떨어뜨릴 수 있습니
 
 **client에.** agent는 run과 run 사이에 아무것도 저장하지 않습니다.
 `RunAgentInput.state`에서 board를 읽고, 바꾼 것을 publish하고, 잊습니다. 그것을 한
-run에서 다음 run으로 나르는 것은 대화와 함께 `Session`입니다.
+run에서 다음 run으로 나르는 것은 대화와 함께 `Thread`입니다.
 
 이 모양 위에 무언가를 쌓기 전에 흡수해 둘 것이 둘 있습니다:
 
@@ -311,7 +311,7 @@ dependency tree에 LLM crate는 없습니다. `src/llm.rs`는 `reqwest`와 `serd
 평범한 `serde` struct, tool은 `Tool` 정의, surface는 component tree입니다. 그 덕분에
 `src/agent.rs`가 한자리에서 읽을 만큼 짧습니다.
 
-`tests/flows.rs`의 wire 수준 test들은 `Session` 아래 `HttpAgent`까지 내려갑니다. 한 run이
+`tests/flows.rs`의 wire 수준 test들은 `Thread` 아래 `HttpAgent`까지 내려갑니다. 한 run이
 wire에 올리는 정확한 event 순서를, 귀속까지 포함해 못 박습니다:
 
 ```sh

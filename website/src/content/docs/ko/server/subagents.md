@@ -32,12 +32,12 @@ stream은 subagent가 생기기 전과 똑같이 동작합니다. `RUN_STARTED`,
 
 ## subagent는 scope입니다
 
-`ctx.subagent(name)`은 새 id로 `SUBAGENT_STARTED`를 emit하고 handle을 돌려줍니다.
+`ctx.subagent_events(name)`은 새 id로 `SUBAGENT_STARTED`를 emit하고 handle을 돌려줍니다.
 [step](/ag-ui-rust/ko/server/agent/#step으로-run-구간-묶기)처럼 이 handle은 run context로
 deref됩니다. 그래서 message, tool call, reasoning, step, 그리고 또 다른 subagent가 모두 이
-handle을 통해 열립니다. 그들이 emit하는 모든 것은 이 subagent의 id를 달고 나갑니다. handle이
-drop되면 `SUBAGENT_FINISHED`가 success outcome으로 나갑니다. `?`가 만드는 이른 return에서도
-정상 경로에서와 똑같이 나갑니다.
+handle을 통해 열립니다. 그들이 emit하는 모든 것은 이 subagent의 id를 달고 나갑니다. handle은
+finish·fail·suspend로 명시적으로 끝냅니다. Drop은 출처만 복원하며 성공을 추정하지 않습니다.
+미종료 child가 남으면 부모의 정상 종료를 허용하지 않습니다.
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
@@ -51,11 +51,12 @@ impl Agent for Supervisor {
     type State = ();
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let mut planner = ctx.subagent("planner")?;
+        let mut planner = ctx.subagent_events("planner")?;
         planner.say("Two tasks: scope, then risks.")?;   // Deref를 거쳐, attribute된 채로
         {
-            let mut estimator = planner.subagent("estimator")?;   // 중첩
+            let mut estimator = planner.subagent_events("estimator")?;   // 중첩
             estimator.say("About a day each.")?;
+            estimator.finish()?;
         }                                                          // SUBAGENT_FINISHED
         planner.finish_with(json!({ "tasks": 2 }))?;
 
@@ -112,9 +113,9 @@ outcome으로 `SUBAGENT_FINISHED`를 emit합니다. 두 번째는 완료 payload
 자기가 닫는 subagent의 이름을 대되, 그 subagent에 attribute되지는 않습니다. terminator는
 바깥 scope의 것이고, 나가는 순간 그 scope가 다시 유효해집니다.
 
-`Drop`은 성공과 실패를 구분하지 못합니다. 그러니 신경 쓰는 error 경로에서는 직접 `fail`을
-부르십시오. `?`가 풀려 나가며 그냥 drop된 handle도 subagent를 닫기는 합니다. success로
-닫고, 그 뒤에 driver가 run에 대해 emit하는 `RUN_ERROR`가 따라옵니다.
+`Drop`은 lifecycle 결과를 보내지 않습니다. 부모가 오류로 끝나면 child가 열려 있어도
+`RUN_ERROR`로 종료합니다. 부모가 정상 종료하거나 승인을 기다리려면 모든 child를 명시적으로
+finish·fail·suspend해야 하며, 이 검사는 선택적 verifier를 꺼도 유지됩니다.
 
 ### tag는 어디서 오는가
 
@@ -131,7 +132,7 @@ use serde_json::json;
 fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
     {
-        let mut sub = ctx.subagent("researcher")?;
+        let mut sub = ctx.subagent_events("researcher")?;
         sub.emit(Event::custom("mine", json!(1)))?;
         sub.emit(Event::custom("theirs", json!(2)).with_subagent_run_id("other"))?;
         sub.emit(Event::messages_snapshot(Vec::new()))?;
@@ -324,7 +325,7 @@ stream을 잇습니다. subagent 여럿의 stream이 열려 있고 부모의 것
 attribution은 덧붙는 것이고 안전합니다. 그 이전의 client는 모르는 *field*를 보고
 무시합니다. lifecycle event 셋은 그 client에게 모르는 *event type*입니다. 모르는 event
 type은 application code가 돌기도 전에 decode 단계에서 실패합니다. 소비하는 쪽에서는
-[의도된 설계](/ag-ui-rust/ko/client/updates/#이-build가-모르는-event)이고, producer가 나중에
+[의도된 설계](/ag-ui-rust/ko/client/updates/)이고, producer가 나중에
 고칠 수 있는 일이 아닙니다. `@ag-ui/client` 0.0.59보다 오래된 consumer를 둔 producer는
 이들을 보내면 안 됩니다. `SubagentVisibility`가 그 방법입니다.
 
@@ -350,8 +351,9 @@ impl Agent for Delegating {
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
         ctx.say("parent first")?;
         {
-            let mut researcher = ctx.subagent("researcher")?;
+            let mut researcher = ctx.subagent_events("researcher")?;
             researcher.say("child")?;
+            researcher.finish()?;
         }
         ctx.say("parent last")?;
         Ok(RunOutcome::Success)
@@ -394,7 +396,7 @@ closure인 이유는 transformer가 state machine이라서입니다. endpoint는
 :::note[기본값이 inline이 아닌 이유]
 upstream의 integration은 inline 모양을 기본으로 하고 전체 surface를 opt-in으로 둡니다. 이
 crate는 반대로 합니다. stream을 고쳐 쓰는 transformer는 여기서 다른 모든 transformer처럼
-opt-in입니다. `ctx.subagent(..)`를 쓴 agent는 그럴 뜻이 있었던 것이고, 그 말을 조용히
+opt-in입니다. `ctx.subagent_events(..)`를 쓴 agent는 그럴 뜻이 있었던 것이고, 그 말을 조용히
 평평하게 펴는 것은 [설계 원칙](/ag-ui-rust/ko/design/commitments/)이 반대하는 종류의
 놀라움입니다. consumer가 오래되었다면 endpoint마다 뒤집으십시오.
 :::
@@ -413,4 +415,4 @@ opt-in입니다. `ctx.subagent(..)`를 쓴 agent는 그럴 뜻이 있었던 것�
   [`SubagentOutcome`](/ag-ui-rust/api/ag_ui/enum.SubagentOutcome.html)
 - [`Event::subagent_run_id`](/ag-ui-rust/api/ag_ui/event/enum.Event.html#method.subagent_run_id)와
   [`EventType::is_attributable`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html#method.is_attributable)
-- 소비하는 쪽 절반: [update stream](/ag-ui-rust/ko/client/updates/#subagent)
+- 소비하는 쪽 절반: [update stream](/ag-ui-rust/ko/client/updates/)

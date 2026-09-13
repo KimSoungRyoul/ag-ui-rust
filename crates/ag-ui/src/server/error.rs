@@ -31,7 +31,8 @@ pub enum Error {
 
     /// The emitted event stream broke the protocol's ordering rules.
     ///
-    /// Only produced when the `verify` feature is enabled (it is by default).
+    /// Detailed ordering checks use the `verify` feature. The producer's
+    /// requirement to explicitly close announced subagents is always enforced.
     #[error(transparent)]
     Verification(#[from] VerificationError),
 

@@ -84,7 +84,7 @@ each loud.
 **The price is honest and accepted: adding an event is a major version of this
 SDK.** It should be — the wire contract changed. If you match on `Event`
 directly, budget for that. If you would rather not, match on the higher-level
-[`Update`](/ag-ui-rust/api/ag_ui/client/session/enum.Update.html) stream instead,
+[`Update`](/ag-ui-rust/api/ag_ui/client/thread/enum.Update.html) stream instead,
 which does carry the attribute.
 
 The reasoning inverts for errors, which is why they carry it. Nobody wants an
@@ -96,24 +96,21 @@ fall through on the rest, and a new failure mode is not a protocol change.
 The two client types sit on opposite sides of that line, and the split shows
 what the rule actually is.
 
-[`RunEnd`](/ag-ui-rust/api/ag_ui/client/session/enum.RunEnd.html) sits with
-`Event`: exhaustive. A run ends in exactly the three ways the protocol defines,
-that match is the one a front-end most wants checked — it decides whether the
-input goes live again — and a fourth way to end a run *would* be a wire-contract
-change.
+`RunEnd` distinguishes remote success, interruption and failure from local `Aborted`.
+An exhaustive UI match handles every case. Local abortion is not a new wire event.
 
 ```rust
 use ag_ui::client::RunEnd;
 
 fn on_end(end: &RunEnd) -> String {
-    // No `_` arm. A fourth way to end a run would stop this compiling, which is
-    // the point: the protocol changed, and this function has a decision to make.
+    // Handle every remote or local termination explicitly.
     match end {
         RunEnd::Success { .. } => "done".to_owned(),
         RunEnd::Interrupted { interrupts } => {
             format!("waiting on {} interrupt(s)", interrupts.len())
         }
         RunEnd::Failed { message, .. } => format!("failed: {message}"),
+        RunEnd::Aborted => "stopped locally".to_owned(),
     }
 }
 
@@ -130,7 +127,7 @@ fn main() {
 and a new kind of thing worth redrawing is not a protocol change.
 
 The runtime side agrees with the type side. An event type this build does not
-know fails to deserialize, the session reports it and ends the run as
+know fails to deserialize, the thread reports it and ends the run as
 `RunEnd::Failed`. A frontend talking to a newer agent stops with an error naming
 the unknown type rather than quietly rendering three quarters of a conversation.
 
@@ -292,10 +289,9 @@ An agent that wants the stricter rule can have it in one line, because
 example does exactly that, but only for the tools it genuinely expects the
 client to run.
 
-## A2UI pins to v0.9
+## A2UI v0.9 family
 
-The A2UI spec is at v1.0, but every shipping toolkit — TypeScript, .NET, Python
-— still stamps `v0.9`, and .NET's constants file marks these values a
-"cross-language wire contract" that "must not diverge". Implementing v1.0 wire
-values today would mean not interoperating with any of them. v1.0 goes behind a
-feature when the toolkits move. See [A2UI](/ag-ui-rust/a2ui/).
+Both v0.9 and v0.9.1 are accepted. Low-level builders retain v0.9 as their default;
+authors select a version explicitly. v1.0 RPC cannot be sent as a v0.9 message.
+Official schemas are pinned locally and negotiation uses the actual catalog ID.
+Omitted values remove data; explicit null stores null. See [A2UI](/ag-ui-rust/a2ui/).

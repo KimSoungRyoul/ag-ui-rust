@@ -1,6 +1,6 @@
-//! `Session` and its friends are nameable without knowing the transport.
+//! `Thread` and its friends are nameable without knowing the transport.
 //!
-//! A bound on a struct definition is viral: put `T: Transport` on `Session<T, S>`
+//! A bound on a struct definition is viral: put `T: Transport` on `Thread<T, S>`
 //! and every application helper that so much as mentions the type in a signature
 //! has to repeat it, including ones that only read `messages()`. The bound
 //! belongs on the impl blocks that actually call transport methods, and this
@@ -10,13 +10,13 @@
 #![cfg(feature = "client")]
 
 use ag_ui::client::transport::ReplayTransport;
-use ag_ui::client::{RunStream, Session, SessionBuilder};
+use ag_ui::client::{RunStream, Thread, ThreadBuilder};
 
-fn count<T, S>(session: &Session<T, S>) -> usize {
+fn count<T, S>(session: &Thread<T, S>) -> usize {
     session.messages().len()
 }
 
-fn seed<T, S>(builder: SessionBuilder<T, S>) -> SessionBuilder<T, S> {
+fn seed<T, S>(builder: ThreadBuilder<T, S>) -> ThreadBuilder<T, S> {
     builder.verify(false)
 }
 
@@ -27,19 +27,20 @@ fn describe<T, S>(run: &RunStream<'_, T, S>) -> String {
 /// An application holding a session in its own state, deriving `Debug`.
 #[derive(Debug)]
 struct App<T, S> {
-    session: Session<T, S>,
+    session: Thread<T, S>,
 }
 
 #[test]
 fn helpers_naming_a_session_need_no_transport_bound() {
-    let session: Session<ReplayTransport> = Session::new(ReplayTransport::new([]), "thread-1");
+    let session: Thread<ReplayTransport> =
+        Thread::new(ReplayTransport::new([]).matching_requests(), "thread-1");
     assert_eq!(count(&session), 0);
 
-    let builder: SessionBuilder<ReplayTransport> =
-        Session::builder(ReplayTransport::new([]), "thread-1");
-    assert_eq!(count(&seed(builder).build()), 0);
+    let builder: ThreadBuilder<ReplayTransport> =
+        Thread::builder(ReplayTransport::new([]).matching_requests(), "thread-1");
+    assert_eq!(count(&seed(builder).build().unwrap()), 0);
 
     let mut app = App { session };
-    assert!(format!("{app:?}").contains("Session"));
-    assert!(describe(&app.session.run()).contains("RunStream"));
+    assert!(format!("{app:?}").contains("Thread"));
+    assert!(describe(&app.session.run().unwrap()).contains("RunStream"));
 }

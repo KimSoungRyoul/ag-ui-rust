@@ -128,6 +128,7 @@ impl Agent for Delegating {
             let mut call = researcher.tool_call("search")?;
             call.args("{}")?;
             call.result("hit")?;
+            researcher.finish()?;
         }
         ctx.emit(Event::messages_snapshot(vec![
             ag_ui::Message::assistant("h1", "history"),
@@ -292,6 +293,7 @@ impl Agent for Publishing {
             let mut worker = ctx.subagent("worker")?;
             worker.set_state(&json!({"done": 1}))?;
             worker.say("moved it")?;
+            worker.finish()?;
         }
         ctx.say("noted")?;
         // The parent moves it again, so a consumer that missed the first
@@ -506,6 +508,7 @@ impl Agent for AsTool {
             let mut researcher = ctx.subagent_with(announce)?;
             researcher.say("child")?;
             researcher.emit(Event::tool_call_result(result_id, call_id, "3 sources"))?;
+            researcher.finish()?;
         }
         ctx.say("done")?;
         Ok(RunOutcome::Success)
@@ -598,6 +601,8 @@ impl Agent for SameStep {
             let mut worker = outer.subagent("worker")?;
             let mut inner = worker.step("board")?;
             inner.say("nested")?;
+            drop(inner);
+            worker.finish()?;
         }
         outer.say("done")?;
         Ok(RunOutcome::Success)

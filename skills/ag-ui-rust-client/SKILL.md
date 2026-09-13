@@ -1,354 +1,212 @@
 ---
 name: ag-ui-rust-client
-description: "MUST USE when writing Rust against ag-ui-rust to consume an agent — the crate ag-ui with its `http` or `client` feature (AG-UI protocol client: sessions, the update stream, transports, rendering a run). UNCONVENTIONAL, and wrong from memory: this is ONE crate named ag-ui, not ag-ui-client / ag-ui-core — those registry names belong to an unrelated community SDK — and the client lives under ag_ui::client behind a feature. Session::send returns a RunStream that borrows the session mutably — drop it before reading session.messages(); Session<T, S> carries the transport bound on the CONSTRUCTOR, not the type; Update is #[non_exhaustive] but RunEnd is EXHAUSTIVE with exactly three variants (Success, Interrupted, Failed) and wants no `_` arm; Update::Error is NOT terminal and a run can both complain and succeed; an unrecognised event type ends the run rather than being skipped; interrupts must all be answered in ONE request or the resume never terminates; tools travel from the client on every request because AG-UI has no tool discovery; Update::Subagent is the lifecycle only and a subagent's messages arrive as ordinary Update::Message with Message::subagent_run_id() set. Covers HttpTransport (connect_timeout vs timeout), ReplayTransport for tests, writing a Transport in one method, typed state, and rendering in arrival order. Triggers on: ag-ui-rust client, ag_ui::client, Session::send, RunStream, Update::Message, Update::Subagent, MessageChangeKind, RunEnd, HttpTransport, ReplayTransport, RemoteAgent, consume an AG-UI agent from Rust, AG-UI TUI or frontend in Rust."
+description: "Use when writing Rust consumers of AG-UI agents. The client is ag_ui::client in crate ag-ui with client/http features. HttpAgent creates owned Thread conversations; send/resume return Result<RunStream>, state returns Result<&S>, and RunEnd has Success, Interrupted, Failed, Aborted. Covers current typed state, observers, cancellation, reports, snapshots, safe approval resumption, custom transports and subagent rendering."
 ---
 
 # Consuming an AG-UI agent from Rust
 
-Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.3.0**. If the API here disagrees with the compiler, the compiler is
-right and the skill is stale — see `ag-ui-rust-update`.
+This skill targets workspace version **0.4.0**. Check the actual checkout before copying
+APIs into an older released consumer. One crate, `ag-ui`, contains protocol/server/client
+features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 
-## Adding the crates
-
-**One crate, `ag-ui`.** Not `ag-ui-client` / `ag-ui-core` — those names on crates.io are a
-different, unrelated project. Which half of the protocol you get is a feature:
+## Start with HttpAgent and Thread
 
 ```toml
-# Cargo.toml
 [dependencies]
-ag-ui = { version = "0.3", features = ["http"] }
+ag-ui = { version = "0.4", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-`http` brings `reqwest`. Ask for `client` instead and the crate is executor-agnostic,
-builds for `wasm32-unknown-unknown`, and you bring your own `Transport`.
-
-## A session
-
-`Session` folds the delta stream back into a conversation: messages, state, interrupts.
-Below it, `RemoteAgent` hands you events unassembled — the level for a proxy or a recorder.
-
-```rust
-// src/main.rs
-use ag_ui::client::{RunEnd, Session, Update, transport::ReplayTransport};
-use ag_ui::{Event, TextMessageRole};
-use futures_util::StreamExt;
-
-#[tokio::main]
-async fn main() {
-    // A scripted agent: no server, no network. This is how you test a client.
-    let transport = ReplayTransport::new([
-        Event::run_started("thread-1", "run-1"),
-        Event::text_message_start("msg-1", TextMessageRole::Assistant),
-        Event::text_message_content("msg-1", "It is "),
-        Event::text_message_content("msg-1", "sunny."),
-        Event::text_message_end("msg-1"),
-        Event::run_finished_success("thread-1", "run-1"),
-    ]);
-
-    let mut session = Session::<_>::new(transport, "thread-1");
-
-    let mut ended = None;
-    let mut run = session.send("what is the weather?");
-    while let Some(update) = run.next().await {
-        match update {
-            Update::Message(message) => println!("{}: {:?}", message.id, message.change),
-            Update::Done(end) => ended = Some(end),
-            _ => {}
-        }
-    }
-    drop(run); // the RunStream borrows the session mutably until it drops
-
-    assert!(matches!(ended, Some(RunEnd::Success { .. })));
-    assert_eq!(session.messages().len(), 2);
-}
-```
-
-Against a real agent only the transport changes:
+`http` is opt-in. `client` alone accepts custom transports and supports wasm without
+Tokio or reqwest. The public relationship is endpoint → conversation → run:
 
 ```rust,no_run
-use ag_ui::client::{Session, transport::HttpTransport};
-use std::time::Duration;
+use ag_ui::client::{HttpAgent, RunEnd};
 
-fn open() -> Result<(), ag_ui::client::Error> {
-    let transport = HttpTransport::builder("http://localhost:3000/agent")
-        .header("authorization", "Bearer …")
-        // Bounds connection setup only. `timeout` bounds the WHOLE run and will
-        // cut a thinking agent off mid-answer — not what you want here.
-        .connect_timeout(Duration::from_secs(5))
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let agent = HttpAgent::builder("http://localhost:3000/agent")
+        .connect_timeout(std::time::Duration::from_secs(5))
         .build()?;
-
-    let _session = Session::<_>::new(transport, "thread-1");
+    let mut thread = agent.thread("thread-1");
+    let another = agent.thread("thread-2");
+    let report = thread.send("Check my order")?.collect_report().await;
+    match report.end {
+        RunEnd::Success { .. } => println!("completed"),
+        RunEnd::Interrupted { .. } => println!("waiting for answers"),
+        RunEnd::Failed { .. } => println!("failed"),
+        RunEnd::Aborted => println!("stopped locally"),
+    }
+    println!("diagnostics: {:?}", report.diagnostics);
+    assert!(another.messages().is_empty());
     Ok(())
 }
 ```
 
-Three ways to start a run, all returning the same `RunStream`: `send(text)` appends a user
-message first, `send_message(message)` takes any role, `run()` uses the conversation as it
-stands. Run ids are `{thread}-run-{n}`.
+Threads own a shared transport handle and independent history/state. They can outlive
+the agent. Creating a thread does not query server history. Two local objects with the
+same thread ID do not synchronize automatically.
 
-Reading a session needs no run in flight and no transport bound: `messages()`, `state()`,
-`raw_state()`, `reasoning()`, `interrupts()`, `thread_id()`, `applier()`, `agent()`.
+`thread.send`, `send_message`, `run`, `resume`, `resume_many` and `decline` all return
+`Result<RunStream>`. Preflight errors preserve conversation state. The first poll records
+the new message/run and calls the transport. Dropping or aborting before first poll leaves
+the thread unchanged. Default IDs use platform entropy and are checked for reuse.
 
-**The transport bound is on the constructor**, not on `Session<T, S>`. That is deliberate —
-a helper that only reads `messages()` never names a transport, and passing a URL where a
-transport belongs fails at the call site instead of at the first `send`.
+## State and configuration
 
-## The update stream
-
-One `Update` is one redraw. It is per **event**, not per entity: forty deltas are forty
-`Update::Message`s under one id, and two tool calls in flight interleave.
-
-| Variant | Meaning |
-| --- | --- |
-| `Message(MessageUpdate)` | `index`, `id`, `change`, and the whole assembled `message` |
-| `Messages(Vec<Message>)` | `MESSAGES_SNAPSHOT` replaced the conversation — redraw all of it |
-| `State(S)` | the state, in your type, by value. Snapshot and patch arrive identically |
-| `Reasoning(..)` | reasoning text, kept out of the transcript |
-| `Interrupt(Interrupt)` | the run paused; one update per pending interrupt |
-| `Subagent(SubagentUpdate)` | a subagent was announced / resumed / finished / suspended / failed — **lifecycle only** |
-| `Error(ag_ui::client::Error)` | **not terminal** — print it and keep going |
-| `Done(RunEnd)` | always the last update of a run, on every path out |
-
-`Update` is `#[non_exhaustive]` (a view model). `RunEnd` is **exhaustive** — write three arms
-and no `_`, because this is the match that decides whether the input goes live again:
+Use `agent.thread_with_state(id, initial_state)?` for a serializable typed state. For
+history, tools or detailed configuration, use `agent.thread_builder::<State>(id)` with
+`.state(json)`, `.messages(history)`, `.tools(tools)`, `.context(context)`,
+`.forwarded_props(props)`, `.verify(bool)`, `.diagnostic_limit(limit)` and `.build()?`.
+The generic `Thread::<T, S>::builder(transport, id)` supports custom transports.
+`Thread::new(transport, id)` creates an empty JSON thread.
 
 ```rust
-use ag_ui::client::RunEnd;
+use ag_ui::client::{Thread, transport::ReplayTransport};
+use serde::Deserialize;
+use serde_json::json;
 
-fn prompt_again(end: &RunEnd) -> bool {
-    match end {
-        RunEnd::Success { .. } => true,             // result: Option<Value>
-        RunEnd::Interrupted { .. } => false,        // answer the interrupts instead
-        RunEnd::Failed { .. } => true,              // message: String, code: Option<String>
-    }
-}
+#[derive(Clone, Deserialize)]
+struct Counter { count: u32 }
 
-fn main() {
-    assert!(prompt_again(&RunEnd::Success { result: None }));
-    assert!(!prompt_again(&RunEnd::Interrupted { interrupts: Vec::new() }));
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut thread = Thread::<_, Counter>::builder(ReplayTransport::new([]), "t")
+        .state(json!({"count": 1})).build()?;
+    assert_eq!(thread.state()?.count, 1);
+    thread.set_state(json!({"count": 2}))?;
+    assert!(thread.set_state(json!({"count": "wrong"})).is_err());
+    assert_eq!(thread.state()?.count, 2);
+    Ok(())
 }
 ```
 
-**`Success` does not mean nothing went wrong.** A protocol violation the client's verifier
-caught, or a patch that would not apply, arrives as `Update::Error` and the run carries on to
-succeed — the agent is neither told nor asked. Track errors as they land if the difference
-matters. When a failure *is* fatal, `RunEnd::Failed` always has its `Update::Error` in front
-of it, including when the transport simply stopped.
+`state()` returns `Result<&S, StateViewError>`, including for JSON threads. A remote JSON
+value that does not fit `S` invalidates the previous typed view and yields `Update::Error`.
+`raw_state()` stays current and the next request uses it. Later valid remote state restores
+typed access. Local `set_state` validates before changing either representation; an invalid
+JSON Patch changes neither. Streaming typed state needs `DeserializeOwned + Clone + Unpin`.
 
-**An unknown event type ends the run.** `Event` is exhaustive on purpose, so a frontend
-talking to a newer agent stops with an error naming the type rather than quietly rendering
-three quarters of a conversation. What arrived before it is still in `session.messages()`.
+AG-UI has no tool discovery. Configure tools yourself through builder `.tools` or
+`set_tools`. `set_context` and `set_forwarded_props` configure subsequent requests.
 
-## Answering a pause
+## Updates, reports and observers
+
+`RunStream` borrows its thread until dropped. Inside the stream use read-only
+`run.thread()`; outside, finish/drop it before reading `thread.messages()`.
+
+- `Update::Message` carries the ID, index, change and assembled message.
+- `Update::Messages` replaces the transcript view; `State` carries typed current state.
+- `Reasoning` is separate from the transcript; `Subagent` carries lifecycle only.
+- `Interrupt` announces a pending question.
+- `Error` is a diagnostic; keep consuming until `Done`.
+- `Done` contains `RunEnd::{Success, Interrupted, Failed, Aborted}`. Match all four.
+
+`Update` is non-exhaustive. `RunEnd` is exhaustive. A successful terminal can coexist with
+local patch/validation diagnostics. `collect_report()` returns `end`, `new_messages`,
+`diagnostics` and `diagnostics_omitted` for the whole run even after partial consumption.
+It retains 100 diagnostics by default, without suppressing individual Error updates.
+`new_messages` selects IDs absent before this run; edits to old IDs are in the thread.
+
+`thread.on_event` replaces a synchronous read-only callback. It receives every decoded
+raw event once before normalize/verify/apply, including custom/raw/step events. It does
+not observe synthetic normalized events. Use application queues for slow I/O and
+`clear_event_observer` to remove it. Callbacks are `'static` and `Send` on native; wasm
+accepts local callbacks. Decode failures are diagnostics and terminate the high-level run.
+
+## Approvals and uncertainty
+
+Use `thread.resume_many(entries)?` to answer **all** pending interrupts exactly once.
+`resume(&interrupt, payload)` and `decline(&interrupt)` are single-interrupt conveniences.
+Unknown/duplicate/missing IDs and expired stored interrupts fail before dispatch. The
+caller-supplied Interrupt object cannot replace the stored expiry. `response_schema` is
+preserved for form rendering; arbitrary JSON Schema validation and execution authorization
+remain application/server responsibilities.
+
+`ResumeBuilder` and `InterruptExt` construct responses:
 
 ```rust
 use ag_ui::client::interrupts::ResumeBuilder;
 use ag_ui::{Interrupt, ResumeStatus};
-use serde_json::json;
-
-fn main() {
-    let budget = Interrupt::new("approve-budget", "tool_approval");
-    let date = Interrupt::new("confirm-date", "tool_approval");
-
-    let entries = ResumeBuilder::new()
-        .resolve(&budget, json!({ "approved": true }))
-        .cancel(&date)
-        .build();
-
-    assert_eq!(entries[0].interrupt_id, "approve-budget");
-    assert_eq!(entries[1].status, ResumeStatus::Cancelled);
-    // session.resume_many(entries) — both answers, one request.
-}
+let first = Interrupt::new("first", "approval");
+let second = Interrupt::new("second", "approval");
+let entries = ResumeBuilder::new().resolve(&first, true).cancel(&second).build();
+assert_eq!(entries[1].status, ResumeStatus::Cancelled);
 ```
 
-`session.resume(&interrupt, payload)` for one, `resume_many` for several, `session.cancel(..)`
-when the human said no. **Answer every pending interrupt in one request.** The resumed run
-supersedes the paused one and the agent only sees what the resuming request carries, so
-answering one at a time never terminates. The resumed run gets a new run id.
+Dispatch keeps pending questions and records `ResumeSubmission { run_id, entries,
+status: InFlight }`. Only a validated matching `RunFinished` clears the submission and
+either clears or replaces pending questions. Transport failure, abort, `RunError` or invalid
+terminal retains it as `Unconfirmed`. Further ordinary send/resume calls are blocked.
+The application must query its server's actual state and reconstruct a reconciled snapshot.
+There is no generic AG-UI reconciliation endpoint or automatic decision retry.
 
-`resolve_with_edits` writes the `editedArgs` key that agents advertising `approveWithEdits`
-expect.
+## Snapshots and cancellation
 
-## Subagents
+`thread.snapshot()` is serde-compatible and versioned. `agent.restore_thread(snapshot)?`
+restores JSON; `restore_thread_with_state::<S>` validates a typed view. Custom transports
+use `Thread::restore`. Restoration checks duplicate IDs, snapshot version and stored
+references, and does not fetch server state. Snapshots retain history/raw state/reasoning,
+subagents, pending questions, submission attempts, used run IDs and observed local status.
+An in-flight snapshot becomes locally aborted and its submission becomes Unconfirmed.
+Transport credentials, observers, futures, tools/context/forwarded properties are excluded;
+reconfigure request settings explicitly after restoring.
 
-A delegating agent announces each child with `SUBAGENT_STARTED`, and everything the child
-produces arrives with that invocation's id on the message: `Message::subagent_run_id()`.
-`Update::Subagent` is the lifecycle only — `SubagentChangeKind::{Started, Resumed, Finished,
-Suspended, Failed}` plus the whole `Subagent` entry (`name`, `description`, parent links,
-`SubagentStatus`). Group rows by the id on the message; use the lifecycle for the header.
+`run.abort_handle()` returns a cloneable per-run handle that wakes pending polls and drops
+connection/response futures. If a terminal was already applied, later abort keeps it.
+Otherwise consuming the run yields `Aborted` once. Dropping a dispatched run records
+local abortion but cannot deliver Done to a departed consumer. This does not prove remote
+cancellation. `decline` answers a question; it is distinct from aborting a run.
+
+## Rendering subagents and incomplete messages
+
+Group ordinary messages by `Message::subagent_run_id()`. `Update::Subagent` gives the
+name, parent references and status, not the child's text. Suspended invocations can resume
+under the same ID. Attribution without lifecycle events is valid; provide a fallback label.
+A parent error or interrupted connection marks open children `SubagentStatus::Aborted`
+without inventing a business failure or success. Open text/reasoning uses local `Aborted`
+changes so a renderer can stop indicators without claiming successful `Ended`.
+
+State from every source is shared run state. Key interleaved tool fragments by tool call
+ID. Drawing in arrival order preserves sequence; buffering until each call ends moves its
+line after events received during that call. [Rendering details](references/rendering.md).
+
+## Testing and raw transports
 
 ```rust
-use ag_ui::client::{Session, SubagentChangeKind, Update, transport::ReplayTransport};
-use ag_ui::{Event, TextMessageRole};
-use futures_util::StreamExt;
+use ag_ui::client::{Thread, RunEnd, transport::ReplayTransport};
+use ag_ui::Event;
 
 #[tokio::main]
-async fn main() {
-    let tagged = |event: Event| event.with_subagent_run_id("sub-1");
-    let transport = ReplayTransport::new([
-        Event::run_started("thread-1", "run-1"),
-        Event::subagent_started("sub-1", "researcher"),
-        tagged(Event::text_message_start("msg-1", TextMessageRole::Assistant)),
-        tagged(Event::text_message_content("msg-1", "Three sources.")),
-        tagged(Event::text_message_end("msg-1")),
-        Event::subagent_finished_success("sub-1"),
-        Event::run_finished_success("thread-1", "run-1"),
-    ]);
-
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let mut lines = Vec::new();
-    let mut run = session.send("research this");
-    while let Some(update) = run.next().await {
-        match update {
-            Update::Subagent(s) => lines.push(format!("{} {:?}", s.subagent.name, s.change)),
-            Update::Message(m) => {
-                // The id on the message, resolved to a name mid-run: the stream
-                // lends the session back read-only.
-                let who = m.message.subagent_run_id()
-                    .and_then(|id| run.session().subagent(id))
-                    .map_or("agent", |s| s.name.as_str());
-                lines.push(format!("[{who}] {:?}", m.change));
-            }
-            _ => {}
-        }
-    }
-    drop(run);
-
-    assert_eq!(lines[0], "researcher Started");
-    assert!(lines[1].starts_with("[researcher] Started"));
-    assert_eq!(lines.last().map(String::as_str), Some("researcher Finished"));
-    assert_eq!(session.subagents().len(), 1);
-    assert!(matches!(lines.iter().filter(|l| l.ends_with("Finished")).count(), 1));
-    let _ = SubagentChangeKind::Resumed; // a suspended id announced again, not a duplicate
+async fn main() -> Result<(), ag_ui::client::Error> {
+    let replay = ReplayTransport::new([
+        Event::run_started("t", "fixture-run"),
+        Event::run_finished_success("t", "fixture-run"),
+    ]).matching_requests();
+    let mut thread = Thread::new(replay.clone(), "t");
+    let report = thread.send("Hello")?.collect_report().await;
+    assert!(matches!(report.end, RunEnd::Success { .. }));
+    assert_eq!(replay.requests().len(), 1);
+    Ok(())
 }
 ```
 
-`session.subagents()` is the registry across runs; `session.subagent(id)` looks one up. A
-subagent that paused stays `SubagentStatus::Suspended` — its interrupt carries the id — until
-the resuming run announces the same id, which arrives as `Resumed`, not as a second row. The
-verifier and the chunk normalizer are already owner-aware, and `message.metadata()` is the
-merge of every event that built the message (last write wins, key by key).
+Replay is literal by default. `.matching_requests()` rewrites only a matching scripted
+lifecycle pair to the actual request IDs. Use literal replay to test mismatches, or
+`set_next_run_id` to choose a known request ID. `with_runs` supplies multiple fixtures;
+clones share fixtures and recorded requests.
 
-## Tools travel from the client
+`Transport::run(&self, RunAgentInput) -> TransportFuture` returns a `'static` event future;
+clone what it needs instead of borrowing self. `&T`, `Box<T>` and `Arc<T>` implement Transport
+when `T` does. Native event futures/streams are Send, wasm aliases are local.
+`RemoteAgent::run_events(params)` and `HttpAgent::run_events(params)` expose raw events
+without state handling. `decode_events` and `boxed_stream` adapt byte streams. Use
+`Error::transport(error)` for custom transport errors.
 
-AG-UI has no tool discovery and no negotiation: an agent cannot ask for a tool it was not
-sent. Offering none to an agent that needs one produces *the agent's* error ("the client
-offered no add_task tool") as an ordinary failed run — which reads like an agent bug and is
-not one. Configure the tool set the way you configure a URL: `SessionBuilder::tools`, or
-`Session::set_tools` from the next run on.
+HTTP `.connect_timeout` bounds setup; `.timeout` bounds the entire streamed run.
+`HttpAgent::builder` exposes both alongside headers and a configured reqwest Client.
+Neither the client nor the transport retries submitted decisions automatically.
 
-`Session::builder` also takes `messages`, `state`, `context`, `forwarded_props`, and `verify`
-(client-side verification, on by default).
-
-## Typed state
-
-`Session<T, S = Value>`. `S` is inferred from what you do with an `Update::State`, so a
-turbofish is rarely needed. To stream it, `S: Deserialize + Clone + Unpin`.
-
-State that does not fit `S` is not a lost run: `raw_state()` stays correct and the mismatch
-arrives as an `Update::Error`. And `session.state() == None` is **not** "the state is empty"
-— it means no `STATE_*` event has arrived at all, which is usually a broken agent.
-
-## Rendering
-
-Arrival order is the only nesting the protocol has; there is no containment. Two open calls
-alternate their argument fragments, so `MessageChangeKind::ToolCallArgs { tool_call_id, .. }`
-— the id, not adjacency — says which call a fragment belongs to.
-
-`MessageChangeKind`: `Started`, `Content { delta }`, `Ended`, `ToolCallStarted`,
-`ToolCallArgs`, `ToolCallEnded`, `ToolResult`, `Activity`, `EncryptedValue`.
-
-Buffering a call so it draws on one line is legitimate and reorders the run: the line cannot
-be written until the call closes, so anything that arrived during the call draws first.
-Legibility under parallel calls comes from tagging each line with the call id, not from
-buffering. `references/rendering.md` has both renderings side by side, and what the client
-already handles for you (chunk events, unterminated messages, malformed streams).
-
-## Transports
-
-One method, and the returned future must not borrow `self`:
-
-```rust
-use ag_ui::client::transport::{EventStream, Transport, TransportFuture};
-use ag_ui::client::{RunEnd, Session, Update};
-use ag_ui::{Event, RunAgentInput, TextMessageRole};
-use futures_util::StreamExt;
-
-struct StaticTransport {
-    events: Vec<Event>,
-}
-
-impl Transport for StaticTransport {
-    fn run(&self, _input: RunAgentInput) -> TransportFuture {
-        // Cloned, not borrowed: `TransportFuture` is 'static, which is what
-        // lets the session mutate itself while the run streams.
-        let events = self.events.clone();
-        Box::pin(async move {
-            let stream = futures_util::stream::iter(events.into_iter().map(Ok));
-            Ok(Box::pin(stream) as EventStream)
-        })
-    }
-}
-
-#[tokio::main]
-async fn main() {
-    let transport = StaticTransport {
-        events: vec![
-            Event::run_started("thread-1", "run-1"),
-            Event::text_message_start("msg-1", TextMessageRole::Assistant),
-            Event::text_message_content("msg-1", "From somewhere else entirely."),
-            Event::text_message_end("msg-1"),
-            Event::run_finished_success("thread-1", "run-1"),
-        ],
-    };
-
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let updates: Vec<_> = session.send("hello").collect().await;
-
-    assert!(matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))));
-}
-```
-
-A transport that reads bytes puts `decode_events` in the middle and `boxed_stream` around the
-result. Failing to *connect* is an error from the future; failing mid-stream is an error item
-in the stream — clients say those differently. `&T`, `Box<T>` and `Arc<T>` are transports when
-`T` is, so `Box<dyn Transport>` picks one at runtime. On wasm the aliases drop their `Send`
-bound. `Error::transport(e)` wraps any exotic runtime's error.
-
-`SseDecoder` is the wire parser, usable on its own: chunks split lines and UTF-8 sequences,
-`finish` dispatches a body that ended without a blank line, and a frame over `max_frame_size`
-(8 MiB) is refused.
-
-## Stopping
-
-There is no `stop()` method. Polling the stream is what pulls bytes, so **dropping the
-`RunStream` is client-side cancellation** — and it reaches the far end, which trips the
-agent's cancellation token. `Session::cancel` answers an interrupt; it does not stop a run.
-The session stays usable afterwards.
-
-## Do not write
-
-| Instead of | Write |
-| --- | --- |
-| `ag-ui-client = "0.1"` | the git dependency above — the registry name is someone else's crate |
-| `session.messages()` while a run is alive | `drop(run)` first; the stream holds the borrow |
-| `_ => {}` in a `RunEnd` match | three arms; `RunEnd` is exhaustive so a fourth is a compile error |
-| treating `Update::Error` as the end | keep going; `Update::Done` says when it is over |
-| one `resume` per interrupt | `resume_many` / `ResumeBuilder` — all answers, one request |
-| appending args to "the call in progress" | key by `tool_call_id` |
-| `HttpTransport::builder(..).timeout(..)` for a slow agent | `.connect_timeout(..)` |
-| rendering a subagent's text from `Update::Subagent` | it never carries text; group `Update::Message`s by `message.subagent_run_id()` |
-
-## Deeper
-
-- [Sessions](https://kimsoungryoul.github.io/ag-ui-rust/client/session/) ·
-  [The update stream](https://kimsoungryoul.github.io/ag-ui-rust/client/updates/) ·
-  [Rendering a run](https://kimsoungryoul.github.io/ag-ui-rust/client/rendering/) ·
-  [Transports](https://kimsoungryoul.github.io/ag-ui-rust/client/transports/)
-- [board-watch](https://kimsoungryoul.github.io/ag-ui-rust/examples/board-watch/) — a terminal
-  client for any AG-UI agent, with both renderings
-- rustdoc: <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/client/index.html>
-- The agent half is the `ag-ui-rust-server` skill.
+Activity messages remain in the local thread and its snapshot. High-level Thread requests
+omit them from the conversation sent to the server, matching the reference client.
+Raw `RemoteAgent::run_events` requests are transmitted as supplied.

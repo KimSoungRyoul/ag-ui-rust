@@ -44,7 +44,7 @@ crate는 하나이고, protocol의 어느 쪽을 쓸지는 feature로 정합니�
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.3", features = ["axum"] }
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
@@ -54,7 +54,7 @@ client라면 `http`입니다:
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.3", features = ["http"] }
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -222,7 +222,7 @@ async fn main() {
 
 ## Rust에서 말 걸기
 
-SDK의 나머지 절반은 agent를 소비합니다. `Session`은 thread를 들고 있습니다. 그
+SDK의 나머지 절반은 agent를 소비합니다. `Thread`은 thread를 들고 있습니다. 그
 message와 state입니다. delta stream을 도로 그 안으로 접어 넣습니다. 그래서 다루는 것은
 "`TEXT_MESSAGE_CONTENT`가 도착했다"가 아니라 "이 message가 자랐다"입니다:
 
@@ -230,15 +230,15 @@ message와 state입니다. delta stream을 도로 그 안으로 접어 넣습니
 // src/main.rs
 use std::io::Write;
 
-use ag_ui::client::{MessageChangeKind, RunEnd, Session, Update, transport::HttpTransport};
+use ag_ui::client::{MessageChangeKind, RunEnd, Thread, Update, transport::HttpTransport};
 use futures_util::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = HttpTransport::new("http://127.0.0.1:3000/agent")?;
-    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
 
-    let mut run = session.send("hello");
+    let mut run = thread.send("hello").expect("run preflight");
     while let Some(update) = run.next().await {
         match update {
             Update::Message(message) => {
@@ -254,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     drop(run);
 
-    println!("{} messages in the thread", session.messages().len());
+    println!("{} messages in the thread", thread.messages().len());
     Ok(())
 }
 ```
@@ -263,14 +263,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fragment 단위로 출력한 뒤 `2 messages in the thread`를 찍습니다. 당신 것과 agent
 것입니다.
 
-놓치기 쉬운 것이 둘 있습니다. thread는 *client*에 삽니다. session이 대화와 state를 한
+놓치기 쉬운 것이 둘 있습니다. thread는 *client*에 삽니다. thread가 대화와 state를 한
 run에서 다음 run으로 나릅니다. agent는 매 request마다 둘 다 건네받습니다. 같은 thread
 id로 합류한 두 번째 client가 빈 상태에서 시작하는 이유입니다.
 
-`drop(run)`도 격식이 아닙니다. run은 stream을 흘리는 동안 session을 borrow합니다. 일찍
+`drop(run)`도 격식이 아닙니다. run은 stream을 흘리는 동안 thread를 borrow합니다. 일찍
 drop하는 것이 곧 취소입니다. byte를 끌어오는 일이 stream을 poll하는 일이기 때문입니다.
 
-[session](/ag-ui-rust/ko/client/session/)과
+[thread](/ag-ui-rust/ko/client/thread/)과
 [update stream](/ag-ui-rust/ko/client/updates/)이 여기서 이어받습니다.
 
 ## 다음으로
@@ -281,7 +281,7 @@ drop하는 것이 곧 취소입니다. byte를 끌어오는 일이 stream을 pol
   어떤 일에 어느 것이 필요한지.
 - [Agent trait](/ag-ui-rust/ko/server/agent/) — server 쪽 전부. tool call, shared
   state, human in the loop, error와 cancellation.
-- [session](/ag-ui-rust/ko/client/session/) — client 쪽 전부. proxy나 recorder가
+- [thread](/ag-ui-rust/ko/client/thread/) — client 쪽 전부. proxy나 recorder가
   원하는 한 단계 아래까지.
 - [task-board](/ag-ui-rust/ko/examples/task-board/)와
   [board-watch](/ag-ui-rust/ko/examples/board-watch/) — 실제 port로 서로 대화하는
