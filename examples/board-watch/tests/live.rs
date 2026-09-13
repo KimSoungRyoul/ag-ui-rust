@@ -62,7 +62,7 @@ async fn a_real_model_stream_assembles_into_one_message() {
     println!("asking {} via {}", agent.model_name(), agent.base_url());
 
     let url = serve(agent).await;
-    let mut session: Thread<_, Board> = HttpAgent::new(&url)
+    let mut thread: Thread<_, Board> = HttpAgent::new(&url)
         .expect("a valid endpoint URL")
         .thread_builder("live")
         .build()
@@ -74,7 +74,7 @@ async fn a_real_model_stream_assembles_into_one_message() {
     )
     .echoing();
     board_watch::watch::watch(
-        &mut session,
+        &mut thread,
         Watch {
             fragments: true,
             ..Watch::default()
@@ -94,7 +94,7 @@ async fn a_real_model_stream_assembles_into_one_message() {
         return;
     }
 
-    let replies: Vec<&str> = session
+    let replies: Vec<&str> = thread
         .messages()
         .iter()
         .filter_map(|message| match message {

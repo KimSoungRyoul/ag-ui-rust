@@ -5,7 +5,7 @@ description: "Use when writing Rust consumers of AG-UI agents. The client is ag_
 
 # Consuming an AG-UI agent from Rust
 
-This skill targets workspace version **0.4.0**. Check the actual checkout before copying
+This skill targets workspace version **0.4.1**. Check the actual checkout before copying
 APIs into an older released consumer. One crate, `ag-ui`, contains protocol/server/client
 features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 

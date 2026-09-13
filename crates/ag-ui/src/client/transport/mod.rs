@@ -68,9 +68,9 @@ pub type TransportFuture = Pin<Box<dyn Future<Output = Result<EventStream>>>>;
 ///
 /// # Why the future is `'static`
 ///
-/// A transport is usually held inside a [`Session`](crate::client::Session), which
+/// A transport is usually held inside a [`Thread`](crate::client::Thread), which
 /// mutates its own state as events arrive. If the returned future borrowed the
-/// transport, that borrow would live as long as the run and the session could
+/// transport, that borrow would live as long as the run and the thread could
 /// not touch itself while streaming. So `run` clones what it needs —
 /// `reqwest::Client` is explicitly designed for exactly that — and the future
 /// stands alone.

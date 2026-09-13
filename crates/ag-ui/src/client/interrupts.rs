@@ -25,10 +25,10 @@
 //! # ]).matching_requests();
 //! # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
 //! # rt.block_on(async {
-//! let mut session = Thread::<_>::new(transport, "thread-1");
+//! let mut thread = Thread::<_>::new(transport, "thread-1");
 //! let mut pending = Vec::new();
 //!
-//! let mut run = session.send("delete the staging database").unwrap();
+//! let mut run = thread.send("delete the staging database").unwrap();
 //! while let Some(update) = run.next().await {
 //!     if let Update::Interrupt(interrupt) = update {
 //!         pending.push(interrupt);
@@ -37,7 +37,7 @@
 //! drop(run);
 //!
 //! // Ask the human, then answer the agent.
-//! let mut resumed = session.resume(&pending[0], serde_json::json!({ "approved": true })).unwrap();
+//! let mut resumed = thread.resume(&pending[0], serde_json::json!({ "approved": true })).unwrap();
 //! while resumed.next().await.is_some() {}
 //! # });
 //! ```

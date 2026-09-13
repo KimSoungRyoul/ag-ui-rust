@@ -50,7 +50,7 @@ async fn main() -> ExitCode {
 /// `watch` — the application.
 async fn run_watch(mut args: impl Iterator<Item = String>) -> ExitCode {
     let mut url = DEFAULT_URL.to_owned();
-    let mut thread = DEFAULT_THREAD.to_owned();
+    let mut thread_id = DEFAULT_THREAD.to_owned();
     let mut settings = Watch::default();
     let mut verify = true;
     let mut tools_path = None;
@@ -62,7 +62,7 @@ async fn run_watch(mut args: impl Iterator<Item = String>) -> ExitCode {
                 None => return fail("--url needs an endpoint"),
             },
             "--thread" => match args.next() {
-                Some(value) => thread = value,
+                Some(value) => thread_id = value,
                 None => return fail("--thread needs an id"),
             },
             "--approve" => settings.policy = Policy::Approve,
@@ -91,8 +91,8 @@ async fn run_watch(mut args: impl Iterator<Item = String>) -> ExitCode {
         Ok(agent) => agent,
         Err(error) => return fail(&format!("{url} is not a usable endpoint: {error}")),
     };
-    let mut session: Thread<_, Board> = match agent
-        .thread_builder(thread.clone())
+    let mut thread: Thread<_, Board> = match agent
+        .thread_builder(thread_id.clone())
         .tools(tools.clone())
         .verify(verify)
         .build()
@@ -104,13 +104,13 @@ async fn run_watch(mut args: impl Iterator<Item = String>) -> ExitCode {
     let mut console = console();
     let _ = writeln!(
         console,
-        "board-watch · {url} · thread {thread} · verify {} · interrupts {} · {} tools",
+        "board-watch · {url} · thread {thread_id} · verify {} · interrupts {} · {} tools",
         if verify { "on" } else { "off" },
         policy_name(settings.policy),
         tools.len(),
     );
 
-    match watch::watch(&mut session, settings, &mut console).await {
+    match watch::watch(&mut thread, settings, &mut console).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(&format!("the terminal went away: {error}")),
     }
@@ -119,7 +119,7 @@ async fn run_watch(mut args: impl Iterator<Item = String>) -> ExitCode {
 /// `trace` — the same conversation, unassembled.
 async fn run_trace(mut args: impl Iterator<Item = String>) -> ExitCode {
     let mut url = DEFAULT_URL.to_owned();
-    let mut thread = DEFAULT_THREAD.to_owned();
+    let mut thread_id = DEFAULT_THREAD.to_owned();
     let mut approve = false;
     let mut tools_path = None;
     let mut said = Vec::new();
@@ -131,7 +131,7 @@ async fn run_trace(mut args: impl Iterator<Item = String>) -> ExitCode {
                 None => return fail("--url needs an endpoint"),
             },
             "--thread" => match args.next() {
-                Some(value) => thread = value,
+                Some(value) => thread_id = value,
                 None => return fail("--thread needs an id"),
             },
             "--tools" => match args.next() {
@@ -162,7 +162,16 @@ async fn run_trace(mut args: impl Iterator<Item = String>) -> ExitCode {
     };
 
     let mut out = io::stdout().lock();
-    match trace::trace(&agent, &thread, &said.join(" "), tools, approve, &mut out).await {
+    match trace::trace(
+        &agent,
+        &thread_id,
+        &said.join(" "),
+        tools,
+        approve,
+        &mut out,
+    )
+    .await
+    {
         Ok(count) => {
             let _ = writeln!(out, "--- {count} events");
             ExitCode::SUCCESS
@@ -196,14 +205,14 @@ async fn run_replay(args: impl Iterator<Item = String>) -> ExitCode {
         Err(error) => return fail(&format!("{path} is not a run fixture: {error}")),
     };
 
-    let mut session: Thread<_, Board> = match Thread::builder(transport, "replay").build() {
+    let mut thread: Thread<_, Board> = match Thread::builder(transport, "replay").build() {
         Ok(thread) => thread,
         Err(error) => return fail(&format!("invalid initial board: {error}")),
     };
     let mut console = console();
     let _ = writeln!(console, "board-watch · replaying {path}");
 
-    match watch::watch(&mut session, settings, &mut console).await {
+    match watch::watch(&mut thread, settings, &mut console).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(&format!("the terminal went away: {error}")),
     }

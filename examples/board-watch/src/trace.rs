@@ -7,7 +7,7 @@
 //!
 //! Including the human-in-the-loop round trip: [`interrupts_of`] reads what a
 //! `RUN_FINISHED` paused on and [`resume_run`] builds the request that answers
-//! it, so pausing and resuming needs no session at all — only the previous
+//! it, so pausing and resuming needs no `Thread` object — only the previous
 //! request, which the caller already has.
 
 use std::io::{self, Write};

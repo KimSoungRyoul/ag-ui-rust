@@ -1,6 +1,6 @@
 {
   "name": "ag-ui-rust",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Agent skills for ag-ui-rust: serving an agent with ag-ui's server and axum features, consuming one with its client feature, running it against Qwen Cloud, and refreshing the skills when the SDK moves. The version tracks the workspace crate version.",
   "author": {
     "name": "KimSoungRyoul",

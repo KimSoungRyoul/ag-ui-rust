@@ -2,7 +2,7 @@
 
 작성일: 2026-09-13. 분석 대상: `ag-ui-rust`의 `37ce5e0`.
 
-상태: 0.4 구현 반영. 독립 소비자 앱, 공식 renderer core와의 상호운용, Rust 1.85·wasm 검증까지 수행했다. 실제 사용법은 README와 migration-0.4.md를 기준으로 하며 아래 As-is는 0.3 동작을 기록한다.
+상태: 0.4.1 명칭 정리 반영. 독립 소비자 앱, 공식 renderer core와의 상호운용, Rust 1.85·wasm 검증까지 수행했다. 실제 사용법은 README와 migration-0.4.md를 기준으로 하며 아래 As-is는 0.3 동작을 기록한다.
 
 이 문서는 스펙 분석, SDK 사용성 분석, `HttpAgent`·`Thread` 명명 논의와 self-review를 합친 구현 설계 기록이다. To-be의 핵심 API는 0.4에 구현했으며 코드 조각의 `model`, `storage`, `search`는 애플리케이션이 제공하는 객체·함수다. 독립 실행 가능한 예제는 examples/와 컴파일되는 문서 예제에 있다.
 
@@ -18,7 +18,7 @@ HttpAgent                       접속할 원격 에이전트: URL, 인증, HTTP
 Transport                       HTTP·테스트 재생 등 통신 구현
 ```
 
-- `Session`은 `Thread`로 변경한다. 프로토콜의 `threadId`에 대화 상태를 묶는 SDK 객체라는 의미다.
+- 대화 객체의 공개 타입은 `Thread`로 통일하고 옛 명칭의 별칭은 제거한다. 프로토콜의 `threadId`에 대화 상태를 묶는 SDK 객체라는 의미다.
 - `HttpAgent`를 기본 진입점으로 노출하고, URL만으로 사용할 수 있게 한다.
 - 한 agent에서 여러 thread를 만들 수 있다. thread 사이에 메시지·상태·승인 대기를 공유하지 않는다.
 - `agent.thread(id)`는 로컬 대화 객체를 만든다. 서버에 저장된 대화를 자동으로 조회하거나 영속화한다는 뜻은 아니다.
@@ -39,15 +39,15 @@ Transport                       HTTP·테스트 재생 등 통신 구현
 
 | 영역 | As-is | To-be | 구분 |
 |---|---|---|---|
-| 기본 접속 | `HttpTransport`를 만든 뒤 `Session` 구성 | `HttpAgent::new(url)?.thread(id)` | 논의한 방향 |
-| 대화 객체 이름 | `Session` | `Thread` | 논의한 방향 |
+| 기본 접속 | `HttpTransport`를 만든 뒤 기존 대화 객체 구성 | `HttpAgent::new(url)?.thread(id)` | 논의한 방향 |
+| 대화 객체 이름 | 기존 대화 객체 | `Thread` | 논의한 방향 |
 | 원본 이벤트 실행 | `HttpAgent::run()`이 원본 스트림 반환 | `run_events()`처럼 기능이 드러나는 이름으로 제공 | 제안 |
 | 결과만 받기 | `Update`를 순회하고 종료·오류를 직접 모음 | `RunStream::collect_report()`로 종료 결과와 진단 반환 | 제안 |
-| 원본 이벤트 관찰 | `Session`에서 custom/raw/step 이벤트를 볼 수 없음 | 상태 자동 관리를 유지하면서 `on_event` 관찰 | 확인된 제약 / 제안 |
+| 원본 이벤트 관찰 | 기존 대화 객체에서 custom/raw/step 이벤트를 볼 수 없음 | 상태 자동 관리를 유지하면서 `on_event` 관찰 | 확인된 제약 / 제안 |
 | 대화 복원 | 메시지·state를 builder에 넣지만 ID 카운터는 초기화 | snapshot 복원과 충돌 없는 ID 발급 | 확인된 결함 / 제안 |
 | 상태 설정 | `set_state()`가 raw JSON만 갱신 | raw·typed 상태를 함께 검증·갱신, 실패는 `Result` | 확인된 결함 |
 | 승인 재개 | 일부 응답만 보내도 나머지 대기를 제거 | 미응답·중복·잘못된 interrupt ID를 요청 전에 검사 | 확인된 결함 / 제안 |
-| 승인 거절 | `Session::cancel()` | `Thread::decline()` | 제안 |
+| 승인 거절 | 기존 승인 거절 메서드 | `Thread::decline()` | 제안 |
 | 실행 취소 | stream drop | drop 동작 유지 + 명시적 abort handle | 제안 |
 | subagent 종료 | `?`로 나가도 Drop이 성공 종료를 보냄 | 명시적인 이벤트 종료와 미종료 검사; Drop이 성공을 추정하지 않음 | 확인된 결함 |
 | A2UI 비동기 생성 | 동기 `FnMut -> Result<String>`만 수용 | Future를 받는 생성·검증·재시도 | 확인된 제약 / 제안 |
@@ -94,25 +94,7 @@ v0.9.1 스키마는 `v0.9`도 허용하므로 기존 저수준 message helper의
 
 ### As-is
 
-```rust
-use ag_ui::client::{Session, Update, transport::HttpTransport};
-use futures_util::StreamExt;
-
-let transport = HttpTransport::new("http://localhost:3000/agent")?;
-let mut session = Session::<_>::new(transport, "thread-1");
-
-let mut run = session.send("안녕");
-while let Some(update) = run.next().await {
-    match update {
-        Update::Message(message) => println!("{:?}", message.change),
-        Update::Error(error) => eprintln!("{error}"),
-        Update::Done(end) => println!("{end:?}"),
-        _ => {}
-    }
-}
-drop(run);
-println!("{} messages", session.messages().len());
-```
+이전에는 transport와 대화 객체를 직접 구성하고, 종료 결과를 얻기 위해 업데이트 스트림을 순회했습니다.
 
 ### To-be — 0.4
 
@@ -149,9 +131,9 @@ stream을 소비하는 동안 thread를 빌리는 Rust 소유권 모델은 유�
 
 ### As-is
 
-- `Session`은 `CUSTOM`, `RAW`, step 이벤트를 사용자에게 노출하지 않는다.
+- 기존 대화 객체은 `CUSTOM`, `RAW`, step 이벤트를 사용자에게 노출하지 않는다.
 - 관찰하려면 transport 래퍼를 만들거나 저수준 이벤트 API를 사용한다.
-- 실행 중단은 stream을 drop한다. `session.cancel()`은 이 기능이 아니다.
+- 실행 중단은 stream을 drop한다. 기존 승인 거절 메서드은 이 기능이 아니다.
 
 ### To-be — 0.4
 
@@ -189,13 +171,7 @@ println!("{:?}", report.end);
 
 ### As-is
 
-```rust
-session.set_state(serde_json::json!({"selected": "B"}));
-// raw_state()는 B인데 state()는 이전에 수신한 A일 수 있다.
-
-// Session::builder(...).messages(history).state(state).build()로 복원하면
-// 자동 메시지/run ID 카운터는 0부터 다시 시작한다.
-```
+이전에는 로컬 state 설정 후 typed 값이 뒤처지고, 이력 복원 시 ID 카운터가 초기화되는 문제가 있었습니다.
 
 ### To-be — 0.4
 
@@ -236,13 +212,7 @@ snapshot에는 thread ID, 메시지, raw state, 승인 대기와 제출 시도, 
 
 ### As-is
 
-```rust
-session.resume(&first, serde_json::json!({"approved": true}));
-// 다른 interrupt가 남아 있어도 요청을 구성하면서 대기 목록을 비운다.
-
-session.cancel(&first);
-// 실행 중단이 아니라 승인 거절 후 재개다.
-```
+이전에는 일부 승인 응답만 보내도 나머지 대기 목록이 제거되고, 승인 거절과 실행 취소의 명칭도 혼동하기 쉬웠습니다.
 
 ### To-be — 0.4
 
@@ -434,9 +404,9 @@ decode→encode와 history 복원에서도 생략 여부를 보존한다. v1.0�
 3. **A2UI 사용 흐름**: 비동기 recovery, 공통 author 설정, AG-UI 전송 확장.
 4. **스키마와 문서**: 공식 스키마 검증, catalog/capabilities 정합성, 예제·한국어 문서·skills 동시 갱신.
 
-이 변경은 **호환성이 깨지는 SDK 개정**으로 계획한다. Session/SessionBuilder alias는 새 계약으로 이동하는 명칭 호환만 제공한다. `Session`을 `Thread`의 alias로 만들어도 `send()`와 `state()` 반환 타입 변경은 숨길 수 없다. `HttpAgent`의 별칭→struct 변경도 generic `RemoteAgent<HttpTransport>`를 받던 사용자 코드에 영향을 준다.
-
-동일한 의미·signature를 유지할 수 있는 메서드에만 deprecated forwarding을 제공한다. null 삭제나 Drop 성공을 조용히 유지하는 호환 모드는 기본 API에 넣지 않는다. migration 문서와 독립 consumer 수정이 완료되어야 개정이 끝난다. 배포 버전 번호는 출판 단계에서 정한다.
+0.4.1에서는 대화 객체의 옛 타입·모듈 이름과 별칭을 제거한다. 코드·예제·문서는 `Thread`와
+`ThreadBuilder`만 사용한다. 버전은 사용자가 지정한 대로 0.4.0에서 0.4.1로 올린다.
+호출자는 현재 API로 이행해야 하며, 이행 가이드는 옛 이름의 실행 예제를 유지하지 않는다.
 
 ### 의존성과 feature 범위
 

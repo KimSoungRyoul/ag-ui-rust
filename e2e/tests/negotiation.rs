@@ -128,10 +128,10 @@ async fn a_two_hundred_that_is_not_an_event_stream_is_reported_as_a_failed_run()
         axum::serve(listener, app).await.expect("the server to run");
     });
 
-    let mut session = Thread::<_>::new(transport(&format!("http://{addr}/agent")), "gateway");
+    let mut thread = Thread::<_>::new(transport(&format!("http://{addr}/agent")), "gateway");
     let mut updates = Vec::new();
     {
-        let mut run = session.send("hello?").expect("run preflight");
+        let mut run = thread.send("hello?").expect("run preflight");
         while let Some(update) = run.next().await {
             updates.push(update);
         }

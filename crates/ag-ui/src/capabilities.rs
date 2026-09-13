@@ -270,7 +270,7 @@ pub struct HumanInTheLoopCapabilities {
     /// Humans can modify the agent's plan mid-execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interventions: Option<bool>,
-    /// The agent incorporates user feedback within a session.
+    /// The agent incorporates user feedback within a thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feedback: Option<bool>,
     /// The agent speaks the interrupt protocol: it emits `RUN_FINISHED` with

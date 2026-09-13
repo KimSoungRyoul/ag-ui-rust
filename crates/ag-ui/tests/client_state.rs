@@ -264,7 +264,7 @@ fn the_state_can_be_read_as_a_caller_defined_type() {
 }
 
 #[tokio::test]
-async fn a_session_reports_a_failed_patch_and_keeps_the_state_it_had() {
+async fn a_thread_reports_a_failed_patch_and_keeps_the_state_it_had() {
     let transport = ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::state_snapshot(json!({ "count": 1 })),
@@ -273,9 +273,9 @@ async fn a_session_reports_a_failed_patch_and_keeps_the_state_it_had() {
         Event::run_finished_success("thread-1", "run-1"),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("go").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("go").unwrap().collect().await;
     let errors: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -288,7 +288,7 @@ async fn a_session_reports_a_failed_patch_and_keeps_the_state_it_had() {
     assert!(errors[0].contains("state patch failed"));
 
     // The run carried on, and the later delta still applied.
-    assert_eq!(session.raw_state(), &json!({ "count": 2 }));
+    assert_eq!(thread.raw_state(), &json!({ "count": 2 }));
     let states: Vec<_> = updates
         .iter()
         .filter(|update| matches!(update, Update::State(_)))
@@ -314,12 +314,12 @@ async fn state_published_inside_an_open_tool_call_applies_like_any_other() {
         Event::run_finished_success("thread-1", "run-1"),
     ])
     .matching_requests();
-    let mut session = Thread::<_, Counter>::builder(transport, "thread-1")
+    let mut thread = Thread::<_, Counter>::builder(transport, "thread-1")
         .state(json!({"count": 0}))
         .build()
         .unwrap();
 
-    let updates: Vec<_> = session.send("increment").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("increment").unwrap().collect().await;
     assert!(
         !updates
             .iter()
@@ -341,7 +341,7 @@ async fn state_published_inside_an_open_tool_call_applies_like_any_other() {
         .collect();
     assert_eq!(order, ["state", "args", "state", "call ended"]);
 
-    assert_eq!(session.state().unwrap(), &Counter { count: 1 });
+    assert_eq!(thread.state().unwrap(), &Counter { count: 1 });
 }
 
 #[tokio::test]
@@ -355,12 +355,12 @@ async fn a_state_that_does_not_fit_the_typed_view_is_reported_without_losing_it(
         Event::run_finished_success("thread-1", "run-1"),
     ])
     .matching_requests();
-    let mut session = Thread::<_, Counter>::builder(transport, "thread-1")
+    let mut thread = Thread::<_, Counter>::builder(transport, "thread-1")
         .state(json!({"count": 0}))
         .build()
         .unwrap();
 
-    let updates: Vec<_> = session.send("go").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("go").unwrap().collect().await;
     let errors: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -374,6 +374,6 @@ async fn a_state_that_does_not_fit_the_typed_view_is_reported_without_losing_it(
 
     // The typed view caught up on the next snapshot, and the raw state was
     // never wrong.
-    assert_eq!(session.state().unwrap(), &Counter { count: 7 });
-    assert_eq!(session.raw_state(), &json!({ "count": 7 }));
+    assert_eq!(thread.state().unwrap(), &Counter { count: 7 });
+    assert_eq!(thread.raw_state(), &json!({ "count": 7 }));
 }

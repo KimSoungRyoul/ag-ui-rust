@@ -44,12 +44,12 @@ fn paused_then_resumed() -> ReplayTransport {
 #[tokio::test]
 async fn an_interrupt_surfaces_and_resuming_sends_the_answer() {
     let transport = paused_then_resumed();
-    let mut session = Thread::<_>::new(transport.clone(), "thread-1");
+    let mut thread = Thread::<_>::new(transport.clone(), "thread-1");
 
     // First run: the agent pauses.
     let mut pending = Vec::new();
     let mut ended = None;
-    let mut run = session.send("drop the staging database").unwrap();
+    let mut run = thread.send("drop the staging database").unwrap();
     while let Some(update) = run.next().await {
         match update {
             Update::Interrupt(interrupt) => pending.push(interrupt),
@@ -64,11 +64,11 @@ async fn an_interrupt_surfaces_and_resuming_sends_the_answer() {
     assert_eq!(pending[0].id, "i-1");
     assert!(pending[0].is_tool_approval());
     assert!(matches!(ended, Some(RunEnd::Interrupted { .. })));
-    // The session remembers what it is waiting for.
-    assert_eq!(session.interrupts().len(), 1);
+    // The thread remembers what it is waiting for.
+    assert_eq!(thread.interrupts().len(), 1);
 
     // Second run: the human said yes.
-    let mut resumed = session
+    let mut resumed = thread
         .resume(&pending[0], json!({ "approved": true }))
         .unwrap();
     while let Some(update) = resumed.next().await {
@@ -97,17 +97,17 @@ async fn an_interrupt_surfaces_and_resuming_sends_the_answer() {
     assert!(!requests[1].messages.is_empty());
 
     // And the paused interrupt is no longer pending.
-    assert!(session.interrupts().is_empty());
-    assert_eq!(session.applier().text_of("msg-3"), Some("Done."));
+    assert!(thread.interrupts().is_empty());
+    assert_eq!(thread.applier().text_of("msg-3"), Some("Done."));
 }
 
 #[tokio::test]
 async fn declining_an_interrupt_resumes_with_a_cancellation() {
     let transport = paused_then_resumed();
-    let mut session = Thread::<_>::new(transport.clone(), "thread-1");
+    let mut thread = Thread::<_>::new(transport.clone(), "thread-1");
 
     let mut pending = Vec::new();
-    let mut run = session.send("drop the staging database").unwrap();
+    let mut run = thread.send("drop the staging database").unwrap();
     while let Some(update) = run.next().await {
         if let Update::Interrupt(interrupt) = update {
             pending.push(interrupt);
@@ -115,7 +115,7 @@ async fn declining_an_interrupt_resumes_with_a_cancellation() {
     }
     drop(run);
 
-    let mut resumed = session.decline(&pending[0]).unwrap();
+    let mut resumed = thread.decline(&pending[0]).unwrap();
     while resumed.next().await.is_some() {}
     drop(resumed);
 
@@ -142,9 +142,9 @@ async fn several_interrupts_are_answered_in_one_request() {
         ],
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport.clone(), "thread-1");
+    let mut thread = Thread::<_>::new(transport.clone(), "thread-1");
 
-    let updates: Vec<_> = session.send("do two risky things").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("do two risky things").unwrap().collect().await;
     let interrupts: Vec<_> = updates
         .iter()
         .filter(|update| matches!(update, Update::Interrupt(_)))
@@ -155,7 +155,7 @@ async fn several_interrupts_are_answered_in_one_request() {
         .resolve_with_edits(&first, json!({ "name": "staging-2" }))
         .cancel(&second)
         .build();
-    let mut resumed = session.resume_many(entries).unwrap();
+    let mut resumed = thread.resume_many(entries).unwrap();
     while resumed.next().await.is_some() {}
     drop(resumed);
 
@@ -169,7 +169,7 @@ async fn several_interrupts_are_answered_in_one_request() {
 }
 
 #[tokio::test]
-async fn the_low_level_api_can_do_the_round_trip_without_a_session() {
+async fn the_low_level_api_can_do_the_round_trip_without_a_thread() {
     // A proxy holds the raw events and builds the resuming request itself.
     let transport = paused_then_resumed();
     let agent = RemoteAgent::new(transport.clone());

@@ -36,7 +36,7 @@ pub enum Policy {
     Decline,
 }
 
-/// How the watcher behaves for one session.
+/// How the watcher behaves for one thread.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Watch {
     /// What to do with interrupts.
@@ -47,13 +47,13 @@ pub struct Watch {
     /// Draw one line per update, in arrival order, instead of grouping a tool
     /// call onto one line when it closes.
     ///
-    /// The trade `ag-ui-client`'s [session docs] describe, made visible: the
+    /// The trade `ag_ui::client`'s [thread docs] describe, made visible: the
     /// grouped view reads better and reorders anything that happened inside a
     /// call; this one is faithful and noisier. Neither is more correct — the
     /// arrival order is the only nesting there is, so a view that keeps it is
     /// the one that can show it.
     ///
-    /// [session docs]: https://docs.rs/ag-ui-client/latest/ag_ui::client/session/index.html
+    /// [thread docs]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/client/thread/index.html
     pub in_order: bool,
     /// Stop reading after this many updates and drop the stream — what a user
     /// hitting Ctrl-C does, while the explicit abort handle is demonstrated by review-desk.
@@ -63,7 +63,7 @@ pub struct Watch {
 /// Where the conversation is read from and written to.
 ///
 /// One type rather than a pair of arguments because of `echo`: a piped script
-/// has to have its lines printed for the transcript to read as a session, and a
+/// has to have its lines printed for the transcript to read as a thread, and a
 /// human at a terminal has already seen what they typed.
 #[derive(Debug)]
 pub struct Console<R, W> {
@@ -126,7 +126,7 @@ impl<R, W: Write> Write for Console<R, W> {
 ///
 /// `quit` and end-of-input both stop it.
 pub async fn watch<T: Transport>(
-    session: &mut Thread<T, Board>,
+    thread: &mut Thread<T, Board>,
     settings: Watch,
     console: &mut Console<impl BufRead, impl Write>,
 ) -> io::Result<()> {
@@ -138,14 +138,14 @@ pub async fn watch<T: Transport>(
         if said.eq_ignore_ascii_case("quit") || said.eq_ignore_ascii_case("exit") {
             break;
         }
-        turn(session, &said, settings, console).await?;
+        turn(thread, &said, settings, console).await?;
     }
     Ok(())
 }
 
 /// One turn, including however many pauses it takes to finish.
 pub async fn turn<T: Transport>(
-    session: &mut Thread<T, Board>,
+    thread: &mut Thread<T, Board>,
     said: &str,
     settings: Watch,
     console: &mut Console<impl BufRead, impl Write>,
@@ -153,7 +153,7 @@ pub async fn turn<T: Transport>(
     // Each `drive` call ends the mutable borrow `send`/`resume_many` takes,
     // which is what lets the next one start.
     let mut pending = drive(
-        session.send(said).map_err(io::Error::other)?,
+        thread.send(said).map_err(io::Error::other)?,
         settings,
         console,
     )
@@ -165,14 +165,14 @@ pub async fn turn<T: Transport>(
         // answering one per request never terminates.
         let entries = answer(&pending, settings, console)?;
         pending = drive(
-            session.resume_many(entries).map_err(io::Error::other)?,
+            thread.resume_many(entries).map_err(io::Error::other)?,
             settings,
             console,
         )
         .await?;
     }
 
-    for line in view::panel(session) {
+    for line in view::panel(thread) {
         writeln!(console, "{line}")?;
     }
     Ok(())

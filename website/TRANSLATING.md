@@ -95,7 +95,7 @@ them as it is written here:
 
     agent · run · event · event stream · emit · handle · typestate
     borrow checker · ordering · verifier · verification · drift check
-    transport · session · update · interrupt · human in the loop
+    transport · thread · update · interrupt · human in the loop
     shared state · state delta · tool call · surface · feature flag
     doctest · workspace · crate · trait · stream · renderer · client · server
 

@@ -186,7 +186,7 @@ updates:
 
 The agent is thirty seconds into a call it will never finish, and the drop
 reaches it: the integration test asserts the run's cancellation token had been
-tripped by the time the agent's future exited. The session stays usable — the
+tripped by the time the agent's future exited. The thread stays usable — the
 next run is a run like any other.
 
 ## Streams the protocol forbids
@@ -353,7 +353,7 @@ cannot fake.
 | `src/watch.rs` | The driver and both renderers, generic over input and output |
 | `src/view.rs` | The panel, the A2UI walk, and helpers that name a `Thread` without bounding its transport |
 | `src/board.rs` | The client's own view model of the agent's state |
-| `src/trace.rs` | The unassembled view, and resume without a session |
+| `src/trace.rs` | The unassembled view, and resume without a `Thread` object |
 | `src/fake.rs` | The awkward agent and the hand-framed illegal streams |
 | `src/main.rs` | The CLI |
 | `tests/client.rs` | Every flow above, against both backends on real sockets |

@@ -133,7 +133,7 @@ async fn dropping_the_event_stream_mid_run_cancels_the_agent() {
 /// The same, one layer up: a UI dropping a [`Thread`]'s run stream is the
 /// ordinary way this happens.
 #[tokio::test(flavor = "multi_thread")]
-async fn dropping_a_session_run_stream_cancels_the_agent() {
+async fn dropping_a_thread_run_stream_cancels_the_agent() {
     let (token_tx, mut token_rx) = unbounded_channel();
     let (exit_tx, mut exit_rx) = unbounded_channel();
     let url = serve(Patient {
@@ -142,9 +142,9 @@ async fn dropping_a_session_run_stream_cancels_the_agent() {
     })
     .await;
 
-    let mut session = Thread::<_>::new(transport(&url), "patient");
+    let mut thread = Thread::<_>::new(transport(&url), "patient");
     {
-        let mut run = session.send("take your time").expect("run preflight");
+        let mut run = thread.send("take your time").expect("run preflight");
         // Four events in, the agent is waiting and the user changes their mind.
         for _ in 0..3 {
             timeout(DEADLINE, run.next())
@@ -153,7 +153,7 @@ async fn dropping_a_session_run_stream_cancels_the_agent() {
                 .expect("the run should not have ended");
         }
     }
-    drop(session);
+    drop(thread);
 
     let token = timeout(DEADLINE, token_rx.recv())
         .await

@@ -120,12 +120,12 @@ async fn a_failing_agent_ends_its_stream_with_run_error() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_client_surfaces_the_failure_as_an_error_and_a_failed_ending() {
     let url = serve(Broken).await;
-    let mut session = Thread::<_>::new(transport(&url), "broken");
-    session.set_next_run_id("broken-run-1");
+    let mut thread = Thread::<_>::new(transport(&url), "broken");
+    thread.set_next_run_id("broken-run-1");
 
     let updates = timeout(DEADLINE, async {
         let mut updates = Vec::new();
-        let mut run = session.send("what is the weather?").expect("run preflight");
+        let mut run = thread.send("what is the weather?").expect("run preflight");
         while let Some(update) = run.next().await {
             updates.push(update);
         }
@@ -165,16 +165,16 @@ async fn the_client_surfaces_the_failure_as_an_error_and_a_failed_ending() {
 #[tokio::test(flavor = "multi_thread")]
 async fn what_the_agent_managed_to_say_before_failing_is_kept() {
     let url = serve(Broken).await;
-    let mut session = Thread::<_>::new(transport(&url), "broken");
-    session.set_next_run_id("broken-run-1");
+    let mut thread = Thread::<_>::new(transport(&url), "broken");
+    thread.set_next_run_id("broken-run-1");
 
     {
-        let mut run = session.send("what is the weather?").expect("run preflight");
+        let mut run = thread.send("what is the weather?").expect("run preflight");
         while run.next().await.is_some() {}
     }
 
     assert_eq!(
-        session.messages().last(),
+        thread.messages().last(),
         Some(&Message::assistant("broken-run-1-msg-1", "Looking that up"))
     );
 }
@@ -184,11 +184,11 @@ async fn what_the_agent_managed_to_say_before_failing_is_kept() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failure_with_a_message_still_open_is_still_a_clean_stream() {
     let url = serve(Abrupt).await;
-    let mut session = Thread::<_>::new(transport(&url), "abrupt");
+    let mut thread = Thread::<_>::new(transport(&url), "abrupt");
 
     let updates = timeout(DEADLINE, async {
         let mut updates = Vec::new();
-        let mut run = session.send("go on").expect("run preflight");
+        let mut run = thread.send("go on").expect("run preflight");
         while let Some(update) = run.next().await {
             updates.push(update);
         }
@@ -212,7 +212,7 @@ async fn a_failure_with_a_message_still_open_is_still_a_clean_stream() {
         Some(Update::Done(RunEnd::Failed { .. }))
     ));
     assert_eq!(
-        session.messages().last(),
+        thread.messages().last(),
         Some(&Message::assistant("half", "I was saying"))
     );
 }
@@ -229,11 +229,11 @@ async fn a_failure_with_a_message_still_open_is_still_a_clean_stream() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_panicking_agent_ends_the_clients_run_rather_than_hanging_it() {
     let url = serve(Exploder).await;
-    let mut session = Thread::<_>::new(transport(&url), "boom");
+    let mut thread = Thread::<_>::new(transport(&url), "boom");
 
     let updates = timeout(DEADLINE, async {
         let mut updates = Vec::new();
-        let mut run = session.send("what is the weather?").expect("run preflight");
+        let mut run = thread.send("what is the weather?").expect("run preflight");
         while let Some(update) = run.next().await {
             updates.push(update);
         }

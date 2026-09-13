@@ -6,7 +6,7 @@ description: "MUST USE when writing Rust against ag-ui-rust to host an agent —
 # Serving an AG-UI agent in Rust
 
 Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.4.0**. If the API here disagrees with the compiler, the compiler is
+workspace version **0.4.1**. If the API here disagrees with the compiler, the compiler is
 right and the skill is stale — see `ag-ui-rust-update`.
 
 ## Adding the crates

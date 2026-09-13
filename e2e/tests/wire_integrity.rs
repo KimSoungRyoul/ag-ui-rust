@@ -94,42 +94,40 @@ fn split_evenly(text: &str, parts: usize) -> Vec<&str> {
 /// One run against a served [`Awkward`].
 async fn run_once() -> Thread<ag_ui::client::transport::HttpTransport, Document> {
     let url = serve(Awkward).await;
-    let mut session = Thread::<_, Document>::builder(transport(&url), "wire")
+    let mut thread = Thread::<_, Document>::builder(transport(&url), "wire")
         .state(serde_json::json!(Document::default()))
         .build()
         .expect("typed thread");
-    session.set_next_run_id("wire-run-1");
+    thread.set_next_run_id("wire-run-1");
     {
-        let mut run = session
-            .send("say something awkward")
-            .expect("run preflight");
+        let mut run = thread.send("say something awkward").expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("an awkward payload is not a malformed stream: {error}");
             }
         }
     }
-    session
+    thread
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn text_carrying_the_framings_own_delimiters_arrives_unchanged() {
-    let session = run_once().await;
+    let thread = run_once().await;
     assert_eq!(
-        session.messages().get(1),
+        thread.messages().get(1),
         Some(&Message::assistant("wire-run-1-msg-1", AWKWARD))
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_long_multibyte_message_reassembles_character_for_character() {
-    let session = run_once().await;
+    let thread = run_once().await;
     let expected = multibyte();
 
-    let Some(Message::Assistant(message)) = session.messages().get(2) else {
+    let Some(Message::Assistant(message)) = thread.messages().get(2) else {
         panic!(
             "expected a second assistant message: {:?}",
-            session.messages()
+            thread.messages()
         );
     };
     let content = message.content.as_deref().unwrap_or_default();
@@ -140,9 +138,9 @@ async fn a_long_multibyte_message_reassembles_character_for_character() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_state_document_larger_than_any_chunk_arrives_whole() {
-    let session = run_once().await;
+    let thread = run_once().await;
     assert_eq!(
-        session.state().ok(),
+        thread.state().ok(),
         Some(&Document {
             body: bulky(),
             lines: 4_000,
@@ -155,17 +153,15 @@ async fn a_state_document_larger_than_any_chunk_arrives_whole() {
 #[tokio::test(flavor = "multi_thread")]
 async fn state_events_may_interleave_with_an_open_message() {
     let url = serve(Awkward).await;
-    let mut session = Thread::<_, Document>::builder(transport(&url), "wire")
+    let mut thread = Thread::<_, Document>::builder(transport(&url), "wire")
         .state(serde_json::json!(Document::default()))
         .build()
         .expect("typed thread");
-    session.set_next_run_id("wire-run-1");
+    thread.set_next_run_id("wire-run-1");
 
     let mut states = Vec::new();
     {
-        let mut run = session
-            .send("say something awkward")
-            .expect("run preflight");
+        let mut run = thread.send("say something awkward").expect("run preflight");
         while let Some(update) = run.next().await {
             match update {
                 Update::State(state) => states.push(state.lines),
@@ -179,5 +175,5 @@ async fn state_events_may_interleave_with_an_open_message() {
     // that came after it.
     assert_eq!(states, [0, 3, 4_000]);
     // …and the message they interleaved with is still one message.
-    assert_eq!(session.messages().len(), 3, "{:?}", session.messages());
+    assert_eq!(thread.messages().len(), 3, "{:?}", thread.messages());
 }

@@ -324,7 +324,7 @@ fn chunk_events_are_left_to_the_normalizer() {
 }
 
 #[tokio::test]
-async fn a_session_reports_a_malformed_stream_and_does_not_apply_it() {
+async fn a_thread_reports_a_malformed_stream_and_does_not_apply_it() {
     let transport = ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         // No TEXT_MESSAGE_START: this content has nowhere to go.
@@ -332,9 +332,9 @@ async fn a_session_reports_a_malformed_stream_and_does_not_apply_it() {
         Event::run_finished_success("thread-1", "run-1"),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("hi").unwrap().collect().await;
     let errors: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -346,7 +346,7 @@ async fn a_session_reports_a_malformed_stream_and_does_not_apply_it() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("never opened"), "{}", errors[0]);
     // Only the user's own message: the rejected event was not applied.
-    assert_eq!(session.messages().len(), 1);
+    assert_eq!(thread.messages().len(), 1);
 }
 
 #[tokio::test]
@@ -361,9 +361,9 @@ async fn a_run_that_ends_untidily_still_ends() {
         Event::run_finished_success("thread-1", "run-1"),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("hi").unwrap().collect().await;
     let errors: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -378,7 +378,7 @@ async fn a_run_that_ends_untidily_still_ends() {
         updates.last(),
         Some(Update::Done(ag_ui::client::RunEnd::Failed { .. }))
     ));
-    assert_eq!(session.applier().text_of("msg-1"), Some("Unterminated."));
+    assert_eq!(thread.applier().text_of("msg-1"), Some("Unterminated."));
 }
 
 #[tokio::test]
@@ -389,19 +389,19 @@ async fn verification_can_be_turned_off_for_a_producer_you_have_decided_to_live_
         Event::run_finished_success("thread-1", "run-1"),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::builder(transport, "thread-1")
+    let mut thread = Thread::<_>::builder(transport, "thread-1")
         .verify(false)
         .build()
         .unwrap();
 
-    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("hi").unwrap().collect().await;
     assert!(
         !updates
             .iter()
             .any(|update| matches!(update, Update::Error(_)))
     );
     // The applier is tolerant, so the text still lands somewhere sensible.
-    assert_eq!(session.applier().text_of("msg-1"), Some("orphan text"));
+    assert_eq!(thread.applier().text_of("msg-1"), Some("orphan text"));
 }
 
 // ---- subagents (rules 9–13) ----------------------------------------------

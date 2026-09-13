@@ -54,8 +54,8 @@ async fn serve(app: axum::Router) -> String {
     format!("http://{addr}")
 }
 
-/// A session over the client's real HTTP transport.
-fn session(url: &str, thread: &str) -> Thread<HttpTransport, Board> {
+/// A thread over the client's real HTTP transport.
+fn new_thread(url: &str, thread: &str) -> Thread<HttpTransport, Board> {
     HttpAgent::new(url)
         .expect("a valid endpoint URL")
         .thread_builder(thread)
@@ -81,12 +81,12 @@ fn configured(
 
 /// Runs `script` through the real client and returns what it printed.
 async fn transcript<T: ag_ui::client::Transport>(
-    session: &mut Thread<T, Board>,
+    thread: &mut Thread<T, Board>,
     settings: Watch,
     script: &str,
 ) -> String {
     let mut console = Console::new(script.as_bytes(), Vec::new()).echoing();
-    watch::watch(session, settings, &mut console)
+    watch::watch(thread, settings, &mut console)
         .await
         .expect("a Vec never fails to be written to");
     String::from_utf8(console.into_output()).expect("the client prints UTF-8")
@@ -94,10 +94,10 @@ async fn transcript<T: ag_ui::client::Transport>(
 
 /// Every tool call the conversation holds, as `(name, arguments)`.
 ///
-/// No `T: Transport`: reading a session is not making a request, and the bound
+/// No `T: Transport`: reading a thread is not making a request, and the bound
 /// lives on the impl blocks that are.
-fn tool_calls<T, S>(session: &Thread<T, S>) -> Vec<(String, String)> {
-    session
+fn tool_calls<T, S>(thread: &Thread<T, S>) -> Vec<(String, String)> {
+    thread
         .messages()
         .iter()
         .filter_map(|message| match message {
@@ -110,8 +110,8 @@ fn tool_calls<T, S>(session: &Thread<T, S>) -> Vec<(String, String)> {
 }
 
 /// The assistant text the conversation holds.
-fn said<T, S>(session: &Thread<T, S>) -> Vec<String> {
-    session
+fn said<T, S>(thread: &Thread<T, S>) -> Vec<String> {
+    thread
         .messages()
         .iter()
         .filter_map(|message| match message {
@@ -128,10 +128,10 @@ fn said<T, S>(session: &Thread<T, S>) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread")]
 async fn chunked_text_rejoins_into_one_message() {
     let url = serve_fake().await;
-    let mut session = session(&format!("{url}{}", fake::ROUTE), "chunks");
+    let mut thread = new_thread(&format!("{url}{}", fake::ROUTE), "chunks");
 
     let printed = transcript(
-        &mut session,
+        &mut thread,
         Watch {
             fragments: true,
             ..Watch::default()
@@ -147,7 +147,7 @@ async fn chunked_text_rejoins_into_one_message() {
     );
     // …and the assembled message shows it did not matter.
     assert_eq!(
-        said(&session),
+        said(&thread),
         [
             "Chunked text arrives in fragments, and the client rejoins them — emoji included: 👩\u{200d}💻."
         ],
@@ -160,12 +160,12 @@ async fn chunked_text_rejoins_into_one_message() {
 #[tokio::test(flavor = "multi_thread")]
 async fn tool_arguments_split_mid_escape_reassemble_into_valid_json() {
     let url = serve_fake().await;
-    let mut session = session(&format!("{url}{}", fake::ROUTE), "call");
+    let mut thread = new_thread(&format!("{url}{}", fake::ROUTE), "call");
 
-    let printed = transcript(&mut session, Watch::default(), "call\n").await;
+    let printed = transcript(&mut thread, Watch::default(), "call\n").await;
     assert!(!printed.contains("  error"), "{printed}");
 
-    let calls = tool_calls(&session);
+    let calls = tool_calls(&thread);
     assert_eq!(calls.len(), 1, "{calls:?}");
     let (name, arguments) = &calls[0];
     assert_eq!(name, "add_task");
@@ -186,12 +186,12 @@ async fn tool_arguments_split_mid_escape_reassemble_into_valid_json() {
 #[tokio::test(flavor = "multi_thread")]
 async fn two_calls_in_flight_keep_their_arguments_apart() {
     let url = serve_fake().await;
-    let mut session = session(&format!("{url}{}", fake::ROUTE), "parallel");
+    let mut thread = new_thread(&format!("{url}{}", fake::ROUTE), "parallel");
 
-    let printed = transcript(&mut session, Watch::default(), "parallel\n").await;
+    let printed = transcript(&mut thread, Watch::default(), "parallel\n").await;
     assert!(!printed.contains("  error"), "{printed}");
 
-    let calls = tool_calls(&session);
+    let calls = tool_calls(&thread);
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert_eq!(calls[0].1, r#"{"title":"write it down"}"#);
     assert_eq!(calls[1].1, r#"{"title":"read it back"}"#);
@@ -213,20 +213,20 @@ async fn two_calls_in_flight_keep_their_arguments_apart() {
 #[tokio::test(flavor = "multi_thread")]
 async fn unbracketed_streams_are_closed_by_what_follows_them() {
     let url = serve_fake().await;
-    let mut session = session(&format!("{url}{}", fake::ROUTE), "mixed");
+    let mut thread = new_thread(&format!("{url}{}", fake::ROUTE), "mixed");
 
-    let printed = transcript(&mut session, Watch::default(), "mixed\n").await;
+    let printed = transcript(&mut thread, Watch::default(), "mixed\n").await;
     assert!(!printed.contains("  error"), "{printed}");
 
     assert!(
         printed.contains("  think  three streams, no brackets"),
         "{printed}"
     );
-    assert_eq!(said(&session), ["Reading the board, then adding to it."]);
+    assert_eq!(said(&thread), ["Reading the board, then adding to it."]);
     // The final call had no terminator of its own; the end of the run is what
     // closed it, and the client still assembled it whole.
     assert_eq!(
-        tool_calls(&session),
+        tool_calls(&thread),
         [(
             "add_task".to_owned(),
             r#"{"title":"unbracketed"}"#.to_owned()
@@ -247,9 +247,9 @@ async fn a_pause_on_two_decisions_is_answered_in_one_request() {
         (Policy::Approve, "Both approved. Booked."),
         (Policy::Decline, "Both declined. Nothing booked."),
     ] {
-        let mut session = session(&endpoint, "pause");
+        let mut thread = new_thread(&endpoint, "pause");
         let printed = transcript(
-            &mut session,
+            &mut thread,
             Watch {
                 policy,
                 ..Watch::default()
@@ -264,11 +264,11 @@ async fn a_pause_on_two_decisions_is_answered_in_one_request() {
             2,
             "one update per pending decision:\n{printed}"
         );
-        assert_eq!(said(&session).last().map(String::as_str), Some(expected));
+        assert_eq!(said(&thread).last().map(String::as_str), Some(expected));
         // Two decisions, two runs — not three. Answering one per request never
         // terminates, because the agent only sees what this request carries.
-        assert_eq!(session.snapshot().run_ids.len(), 2, "{printed}");
-        assert!(session.interrupts().is_empty());
+        assert_eq!(thread.snapshot().run_ids.len(), 2, "{printed}");
+        assert!(thread.interrupts().is_empty());
     }
 }
 
@@ -276,10 +276,10 @@ async fn a_pause_on_two_decisions_is_answered_in_one_request() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_mixed_answer_reaches_the_agent_as_one_batch() {
     let url = serve_fake().await;
-    let mut session = session(&format!("{url}{}", fake::ROUTE), "mixed-answer");
+    let mut thread = new_thread(&format!("{url}{}", fake::ROUTE), "mixed-answer");
 
     // `Ask` reads the answers off the script, one line per decision.
-    let printed = transcript(&mut session, Watch::default(), "approve\ny\nn\n").await;
+    let printed = transcript(&mut thread, Watch::default(), "approve\ny\nn\n").await;
 
     assert!(
         printed.contains("  answer approve-budget · approved"),
@@ -290,7 +290,7 @@ async fn a_mixed_answer_reaches_the_agent_as_one_batch() {
         "{printed}"
     );
     assert_eq!(
-        said(&session).last().map(String::as_str),
+        said(&thread).last().map(String::as_str),
         Some("Declined: confirm-date. Nothing booked."),
     );
 }
@@ -305,10 +305,10 @@ async fn a_mixed_answer_reaches_the_agent_as_one_batch() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dropping_the_stream_mid_run_cancels_the_agent() {
     let (url, mut exits) = serve_reporting().await;
-    let mut session = session(&format!("{url}{}", fake::ROUTE), "stop");
+    let mut thread = new_thread(&format!("{url}{}", fake::ROUTE), "stop");
 
     let printed = transcript(
-        &mut session,
+        &mut thread,
         Watch {
             stop_after: Some(3),
             ..Watch::default()
@@ -333,8 +333,8 @@ async fn dropping_the_stream_mid_run_cancels_the_agent() {
         "the run should have been cancelled, not merely dropped"
     );
 
-    // And the session is still usable: the next run is a run like any other.
-    let printed = transcript(&mut session, Watch::default(), "chunks\n").await;
+    // And the thread is still usable: the next run is a run like any other.
+    let printed = transcript(&mut thread, Watch::default(), "chunks\n").await;
     assert!(printed.contains("  done   success"), "{printed}");
 }
 
@@ -372,14 +372,14 @@ async fn a_malformed_stream_is_diagnosed_and_the_diagnosis_can_be_declined() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_truncated_stream_ends_the_run_rather_than_hanging() {
     let url = serve_fake().await;
-    let mut session = session(&format!("{url}/raw/truncated"), "cut");
+    let mut thread = new_thread(&format!("{url}/raw/truncated"), "cut");
 
-    let printed = transcript(&mut session, Watch::default(), "go\n").await;
+    let printed = transcript(&mut thread, Watch::default(), "go\n").await;
     assert!(printed.contains("  error"), "{printed}");
     assert!(printed.contains("  done   failed"), "{printed}");
     // The received partial text is preserved; the run is failed, so the
     // view can stop its spinner without presenting the text as complete.
-    assert_eq!(said(&session), ["half a sen"]);
+    assert_eq!(said(&thread), ["half a sen"]);
 }
 
 // ---- a second agent, and the lifecycle ----------------------------------
@@ -388,10 +388,10 @@ async fn a_truncated_stream_ends_the_run_rather_than_hanging() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_client_drives_an_agent_it_did_not_write() {
     let url = serve_task_board().await;
-    let mut session = configured(&url, "board", task_board::board::tools(), true);
+    let mut thread = configured(&url, "board", task_board::board::tools(), true);
 
     let printed = transcript(
-        &mut session,
+        &mut thread,
         Watch::default(),
         "add draft the agenda, book the room\ncomplete 1\n",
     )
@@ -400,7 +400,7 @@ async fn the_client_drives_an_agent_it_did_not_write() {
 
     // The state deserialized into *this* client's view model, which was
     // declared independently of the agent's.
-    let board = session.state().expect("a board");
+    let board = thread.state().expect("a board");
     assert_eq!(board.tasks.len(), 2);
     assert_eq!(board.tasks[0].line(), "[x] #1 draft the agenda");
     assert_eq!(board.summary(), "1 open · 1 done");
@@ -419,17 +419,17 @@ async fn the_client_drives_an_agent_it_did_not_write() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_second_run_in_the_same_thread_carries_what_the_first_established() {
     let url = serve_task_board().await;
-    let mut session = configured(&url, "carry", task_board::board::tools(), true);
+    let mut thread = configured(&url, "carry", task_board::board::tools(), true);
 
-    transcript(&mut session, Watch::default(), "add draft the agenda\n").await;
-    let after_first = session.messages().len();
+    transcript(&mut thread, Watch::default(), "add draft the agenda\n").await;
+    let after_first = thread.messages().len();
 
-    let printed = transcript(&mut session, Watch::default(), "add book the room\n").await;
+    let printed = transcript(&mut thread, Watch::default(), "add book the room\n").await;
     // Id 2, which is only reachable if the first run's state came back in the
     // second run's request.
     assert!(printed.contains("[ ] #2 book the room"), "{printed}");
-    assert!(session.messages().len() > after_first);
-    assert_eq!(session.snapshot().run_ids.len(), 2);
+    assert!(thread.messages().len() > after_first);
+    assert_eq!(thread.snapshot().run_ids.len(), 2);
 }
 
 /// An event emitted *inside* an open tool call loses its nesting on the way to
@@ -475,8 +475,8 @@ async fn an_event_published_inside_a_call_loses_its_nesting() {
 
     // What the assembled view can say: the call is one line, printed when it
     // closes, so the state that happened during it comes first.
-    let mut session = configured(&url, "nested-watch", task_board::board::tools(), true);
-    let printed = transcript(&mut session, Watch::default(), "add one thing\n").await;
+    let mut thread = configured(&url, "nested-watch", task_board::board::tools(), true);
+    let printed = transcript(&mut thread, Watch::default(), "add one thing\n").await;
     let seen = |needle: &str| {
         printed
             .find(needle)
@@ -549,10 +549,10 @@ async fn arrival_order_rendering_shows_the_nesting_that_grouping_hides() {
 #[tokio::test(flavor = "multi_thread")]
 async fn arrival_order_keeps_parallel_calls_apart_by_naming_them() {
     let url = serve_fake().await;
-    let mut session = session(&format!("{url}{}", fake::ROUTE), "ordered-parallel");
+    let mut thread = new_thread(&format!("{url}{}", fake::ROUTE), "ordered-parallel");
 
     let printed = transcript(
-        &mut session,
+        &mut thread,
         Watch {
             in_order: true,
             ..Watch::default()
@@ -584,10 +584,10 @@ async fn arrival_order_keeps_parallel_calls_apart_by_naming_them() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_that_has_already_done_work_can_still_pause() {
     let url = serve_fake().await;
-    let mut session = session(&format!("{url}{}", fake::ROUTE), "busy");
+    let mut thread = new_thread(&format!("{url}{}", fake::ROUTE), "busy");
 
     let printed = transcript(
-        &mut session,
+        &mut thread,
         Watch {
             policy: Policy::Approve,
             ..Watch::default()
@@ -599,20 +599,20 @@ async fn a_run_that_has_already_done_work_can_still_pause() {
 
     // Two calls and a state publish before the pause, one more after it.
     assert!(printed.contains("  done   interrupted on 1"), "{printed}");
-    assert_eq!(tool_calls(&session).len(), 3, "{printed}");
+    assert_eq!(tool_calls(&thread).len(), 3, "{printed}");
     assert_eq!(
-        session.state().expect("a board").tasks.len(),
+        thread.state().expect("a board").tasks.len(),
         3,
         "the resumed run built on the first half's state:\n{printed}"
     );
     // The first half's tool messages are still in the conversation.
     assert!(
-        session.messages().iter().any(|message| matches!(
+        thread.messages().iter().any(|message| matches!(
             message,
             Message::Tool(tool) if tool.content.contains("write it down")
         )),
         "{:?}",
-        session.messages()
+        thread.messages()
     );
 }
 
@@ -624,9 +624,9 @@ async fn a_run_that_has_already_done_work_can_still_pause() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_that_needs_a_tool_says_so_when_the_client_offers_none() {
     let url = serve_task_board().await;
-    let mut session = configured(&url, "bare", Vec::new(), true);
+    let mut thread = configured(&url, "bare", Vec::new(), true);
 
-    let printed = transcript(&mut session, Watch::default(), "add anything\n").await;
+    let printed = transcript(&mut thread, Watch::default(), "add anything\n").await;
     assert!(
         printed.contains("the client offered no add_task tool"),
         "{printed}"
@@ -665,15 +665,15 @@ fn a_toolkit_tool_definition_can_be_offered_on_a_run() {
         tool.parameters
     );
 
-    // And it is offerable: a session takes it like any other tool.
-    let session: Thread<HttpTransport, Board> = Thread::builder(
+    // And it is offerable: a thread takes it like any other tool.
+    let thread: Thread<HttpTransport, Board> = Thread::builder(
         HttpTransport::new("http://127.0.0.1:1/agent").expect("a valid endpoint URL"),
         "surfaces",
     )
     .tools(vec![tool])
     .build()
     .expect("valid initial board");
-    assert_eq!(message_count(&session), 0);
+    assert_eq!(message_count(&thread), 0);
 }
 
 /// The tool list shipped for pointing this client at `task-board` is the one
@@ -687,10 +687,10 @@ fn the_bundled_tool_fixture_matches_the_agent_it_is_for() {
 
 // ---- the low level ------------------------------------------------------
 
-/// Pausing and resuming with no session at all: `interrupts_of` reads what the
+/// Pausing and resuming with no thread at all: `interrupts_of` reads what the
 /// run paused on and `resume_run` builds the request that answers it.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_low_level_stream_pauses_and_resumes_without_a_session() {
+async fn the_low_level_stream_pauses_and_resumes_without_a_thread() {
     let url = serve_fake().await;
     let agent = HttpAgent::builder(format!("{url}{}", fake::ROUTE))
         .header("x-board-watch", "test")
@@ -739,12 +739,12 @@ async fn the_low_level_stream_does_not_assemble_chunks() {
 async fn a_recorded_run_replays_through_the_same_client() {
     let json = include_str!("../fixtures/chunked-run.json");
     let transport = replay_fixture(json).expect("the fixture");
-    let mut session: Thread<_, Board> = Thread::builder(transport, "replay")
+    let mut thread: Thread<_, Board> = Thread::builder(transport, "replay")
         .build()
         .expect("valid initial board");
 
     let printed = transcript(
-        &mut session,
+        &mut thread,
         Watch {
             fragments: true,
             ..Watch::default()
@@ -759,8 +759,8 @@ async fn a_recorded_run_replays_through_the_same_client() {
         "{printed}"
     );
     assert_eq!(
-        tool_calls(&session)[0].1,
+        tool_calls(&thread)[0].1,
         r#"{"note":"line\nbreak","title":"ship the SDK","depth":3}"#
     );
-    assert_eq!(session.messages().len(), 5, "{:?}", session.messages());
+    assert_eq!(thread.messages().len(), 5, "{:?}", thread.messages());
 }

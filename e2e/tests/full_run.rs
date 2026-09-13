@@ -70,19 +70,19 @@ impl Agent for Forecaster {
     }
 }
 
-/// One turn against a freshly served [`Forecaster`]: the session it left
+/// One turn against a freshly served [`Forecaster`]: the thread it left
 /// behind, and every update a view would have redrawn on.
 async fn run_once() -> (Thread<HttpTransport, Weather>, Vec<Update<Weather>>) {
     let url = serve(Forecaster).await;
-    let mut session = Thread::<_, Weather>::builder(transport(&url), "weather")
+    let mut thread = Thread::<_, Weather>::builder(transport(&url), "weather")
         .state(serde_json::json!(Weather::default()))
         .build()
         .expect("typed thread");
-    session.set_next_run_id("weather-run-1");
+    thread.set_next_run_id("weather-run-1");
 
     let mut updates = Vec::new();
     {
-        let mut run = session
+        let mut run = thread
             .send_message(Message::user(
                 "weather-msg-1",
                 "what is the weather in Seoul?",
@@ -98,7 +98,7 @@ async fn run_once() -> (Thread<HttpTransport, Weather>, Vec<Update<Weather>>) {
             updates.push(update);
         }
     }
-    (session, updates)
+    (thread, updates)
 }
 
 /// How the run ended, from the last update.
@@ -111,7 +111,7 @@ fn ending(updates: &[Update<Weather>]) -> &RunEnd {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_full_run_round_trips_into_the_conversation_the_agent_meant_to_have() {
-    let (session, updates) = run_once().await;
+    let (thread, updates) = run_once().await;
     assert_eq!(ending(&updates), &RunEnd::Success { result: None });
 
     // Ids are derived from the thread and run ids, so the whole transcript is
@@ -142,21 +142,21 @@ async fn a_full_run_round_trips_into_the_conversation_the_agent_meant_to_have() 
         Message::assistant(format!("{run}-msg-3"), REPLY),
     ];
 
-    assert_eq!(session.messages(), expected.as_slice());
+    assert_eq!(thread.messages(), expected.as_slice());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_state_the_client_ends_with_is_the_state_the_agent_published() {
-    let (session, updates) = run_once().await;
+    let (thread, updates) = run_once().await;
 
     let published = Weather {
         city: "Seoul".to_owned(),
         temp_c: 21,
         checked: true,
     };
-    assert_eq!(session.state().ok(), Some(&published));
+    assert_eq!(thread.state().ok(), Some(&published));
     assert_eq!(
-        session.raw_state(),
+        thread.raw_state(),
         &json!({"city": "Seoul", "tempC": 21, "checked": true}),
         "the typed view and the raw document must agree"
     );
@@ -173,14 +173,14 @@ async fn the_state_the_client_ends_with_is_the_state_the_agent_published() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn reasoning_stays_out_of_the_transcript() {
-    let (session, updates) = run_once().await;
+    let (thread, updates) = run_once().await;
 
-    let reasoning = session.reasoning();
+    let reasoning = thread.reasoning();
     assert_eq!(reasoning.len(), 1, "{reasoning:?}");
     assert_eq!(reasoning[0].id.as_str(), "weather-run-1-msg-1");
     assert_eq!(reasoning[0].content, THOUGHT);
 
-    for message in session.messages() {
+    for message in thread.messages() {
         assert!(
             !format!("{message:?}").contains(THOUGHT),
             "reasoning leaked into the transcript: {message:?}"
@@ -202,7 +202,7 @@ async fn reasoning_stays_out_of_the_transcript() {
 /// no run produces an error update, and `Done` is last.
 #[tokio::test(flavor = "multi_thread")]
 async fn updates_arrive_in_the_order_the_agent_emitted_them() {
-    let (_session, updates) = run_once().await;
+    let (_thread, updates) = run_once().await;
 
     let kinds: Vec<&str> = updates
         .iter()

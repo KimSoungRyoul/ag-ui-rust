@@ -1,7 +1,7 @@
 //! Many clients, one mounted agent, all in flight at once.
 //!
 //! Nothing behind the endpoint is shared mutable state, and the proof is that
-//! every session ends up with exactly its own events and nobody else's. The
+//! every thread ends up with exactly its own events and nobody else's. The
 //! overlap is not left to luck: each run stops at a shared barrier that only
 //! releases once every run has reached it, so a server that answered one
 //! request at a time would deadlock here rather than pass slowly.
@@ -145,28 +145,28 @@ async fn drive_all(url: String) -> Vec<Transcript> {
         .map(|index| {
             let url = url.clone();
             tokio::spawn(async move {
-                let thread = format!("thread-{index}");
-                let mut session = Thread::<_, Tally>::builder(transport(&url), thread.clone())
+                let thread_id = format!("thread-{index}");
+                let mut thread = Thread::<_, Tally>::builder(transport(&url), thread_id.clone())
                     .state(serde_json::json!(Tally::default()))
                     .build()
                     .expect("typed thread");
 
-                session.set_next_run_id(format!("{thread}-run-1"));
+                thread.set_next_run_id(format!("{thread_id}-run-1"));
                 let mut ended = None;
                 {
-                    let mut run = session
-                        .send(format!("question from {thread}"))
+                    let mut run = thread
+                        .send(format!("question from {thread_id}"))
                         .expect("run preflight");
                     while let Some(update) = run.next().await {
                         match update {
                             Update::Done(end) => ended = Some(end),
-                            Update::Error(error) => panic!("{thread}: {error}"),
+                            Update::Error(error) => panic!("{thread_id}: {error}"),
                             _ => {}
                         }
                     }
                 }
 
-                let replies = session
+                let replies = thread
                     .messages()
                     .iter()
                     .filter_map(|message| match message {
@@ -176,9 +176,9 @@ async fn drive_all(url: String) -> Vec<Transcript> {
                     .collect();
 
                 Transcript {
-                    thread,
+                    thread: thread_id,
                     replies,
-                    state: session.state().ok().cloned(),
+                    state: thread.state().ok().cloned(),
                     ended: ended.expect("every run ends"),
                 }
             })

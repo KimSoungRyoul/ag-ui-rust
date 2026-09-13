@@ -1,6 +1,6 @@
 //! Subagents on the consuming side: the registry the applier keeps, the
 //! attribution that reaches messages, the metadata that merges into them, and
-//! what a session reports.
+//! what a thread reports.
 
 #![cfg(feature = "client")]
 
@@ -383,13 +383,13 @@ fn the_grouped_run_is_a_valid_stream() {
 }
 
 #[tokio::test]
-async fn a_session_reports_the_lifecycle_and_the_messages_carry_their_owner() {
+async fn a_thread_reports_the_lifecycle_and_the_messages_carry_their_owner() {
     let transport = ReplayTransport::new(grouped_run()).matching_requests();
-    let mut session = Thread::<_>::new(transport, "t");
+    let mut thread = Thread::<_>::new(transport, "t");
     let mut lifecycle = Vec::new();
     let mut ended = None;
 
-    let mut run = session.send("research this").unwrap();
+    let mut run = thread.send("research this").unwrap();
     while let Some(update) = run.next().await {
         match update {
             Update::Subagent(update) => {
@@ -424,18 +424,18 @@ async fn a_session_reports_the_lifecycle_and_the_messages_carry_their_owner() {
             ),
         ]
     );
-    assert_eq!(session.subagents().len(), 1);
-    assert_eq!(session.subagents()[0].name, "researcher");
+    assert_eq!(thread.subagents().len(), 1);
+    assert_eq!(thread.subagents()[0].name, "researcher");
 
     // The user's turn, the subagent's reply, the parent's reply.
-    assert_eq!(session.messages().len(), 3);
+    assert_eq!(thread.messages().len(), 3);
     assert_eq!(
-        session.messages()[1]
+        thread.messages()[1]
             .subagent_run_id()
             .map(SubagentRunId::as_str),
         Some("sub-1")
     );
-    assert_eq!(session.messages()[2].subagent_run_id(), None);
+    assert_eq!(thread.messages()[2].subagent_run_id(), None);
 }
 
 /// An activity snapshot with `replace` chosen — the factory's default is true.

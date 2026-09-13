@@ -133,16 +133,16 @@ async fn a_custom_transport_substitutes_for_the_built_in_one() {
         ],
     };
 
-    let mut session = Thread::<_>::new(transport, "thread-1");
-    session.set_next_run_id("run-1");
-    let updates: Vec<_> = session.send("hello").unwrap().collect().await;
+    let mut thread = Thread::<_>::new(transport, "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("hello").unwrap().collect().await;
 
     assert!(matches!(
         updates.last(),
         Some(Update::Done(RunEnd::Success { .. }))
     ));
     assert_eq!(
-        session.applier().text_of("msg-1"),
+        thread.applier().text_of("msg-1"),
         Some("From somewhere else entirely.")
     );
 }
@@ -157,9 +157,9 @@ async fn a_boxed_transport_is_a_transport() {
         ],
     });
 
-    let mut session = Thread::<_>::new(transport, "thread-1");
-    session.set_next_run_id("run-1");
-    let updates: Vec<_> = session.send("hello").unwrap().collect().await;
+    let mut thread = Thread::<_>::new(transport, "thread-1");
+    thread.set_next_run_id("run-1");
+    let updates: Vec<_> = thread.send("hello").unwrap().collect().await;
     assert!(matches!(
         updates.last(),
         Some(Update::Done(RunEnd::Success { .. }))

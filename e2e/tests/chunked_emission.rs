@@ -155,10 +155,10 @@ async fn chunks_travel_as_chunks_and_only_the_first_names_its_stream() {
 #[tokio::test(flavor = "multi_thread")]
 async fn interleaved_chunk_streams_reassemble_into_separate_messages() {
     let url = serve(Chunky).await;
-    let mut session = Thread::<_>::new(transport(&url), "chunky");
+    let mut thread = Thread::<_>::new(transport(&url), "chunky");
 
     {
-        let mut run = session
+        let mut run = thread
             .send_message(Message::user("chunky-msg-1", "say two things"))
             .expect("run preflight");
         while let Some(update) = run.next().await {
@@ -183,7 +183,7 @@ async fn interleaved_chunk_streams_reassemble_into_separate_messages() {
             ..Default::default()
         }),
     ];
-    assert_eq!(session.messages(), expected.as_slice());
+    assert_eq!(thread.messages(), expected.as_slice());
 }
 
 /// The two halves have to agree about a chunk-streamed call and its result.
@@ -198,11 +198,11 @@ async fn interleaved_chunk_streams_reassemble_into_separate_messages() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_chunk_streamed_call_answered_by_the_agent_survives_the_round_trip() {
     let url = serve(ChunkyToolUser).await;
-    let mut session = Thread::<_>::new(transport(&url), "chunky");
+    let mut thread = Thread::<_>::new(transport(&url), "chunky");
 
     let mut errors = Vec::new();
     {
-        let mut run = session
+        let mut run = thread
             .send_message(Message::user("chunky-msg-1", "what is the weather?"))
             .expect("run preflight");
         while let Some(update) = run.next().await {
@@ -228,7 +228,7 @@ async fn a_chunk_streamed_call_answered_by_the_agent_survives_the_round_trip() {
         Message::tool("msg-1", "call-1", r#"{"temp":21}"#),
         Message::assistant("say-1", "It is 21 degrees."),
     ];
-    assert_eq!(session.messages(), expected.as_slice());
+    assert_eq!(thread.messages(), expected.as_slice());
 }
 
 /// Reasoning chunks land in the reasoning pane, not the transcript, and the
@@ -236,10 +236,10 @@ async fn a_chunk_streamed_call_answered_by_the_agent_survives_the_round_trip() {
 #[tokio::test(flavor = "multi_thread")]
 async fn reasoning_chunks_reassemble_separately_from_the_reply() {
     let url = serve(Chunky).await;
-    let mut session = Thread::<_>::new(transport(&url), "chunky");
+    let mut thread = Thread::<_>::new(transport(&url), "chunky");
 
     {
-        let mut run = session
+        let mut run = thread
             .send_message(Message::user("chunky-msg-1", "say two things"))
             .expect("run preflight");
         while let Some(update) = run.next().await {
@@ -249,7 +249,7 @@ async fn reasoning_chunks_reassemble_separately_from_the_reply() {
         }
     }
 
-    let reasoning = session.reasoning();
+    let reasoning = thread.reasoning();
     assert_eq!(reasoning.len(), 1, "{reasoning:?}");
     assert_eq!(reasoning[0].id.as_str(), "think-1");
     assert_eq!(reasoning[0].content, "Two things to say, then a lookup.");
@@ -260,11 +260,11 @@ async fn reasoning_chunks_reassemble_separately_from_the_reply() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_final_chunk_stream_is_closed_by_the_end_of_the_run() {
     let url = serve(Chunky).await;
-    let mut session = Thread::<_>::new(transport(&url), "chunky");
+    let mut thread = Thread::<_>::new(transport(&url), "chunky");
 
     let mut ended_ids = Vec::new();
     {
-        let mut run = session
+        let mut run = thread
             .send_message(Message::user("chunky-msg-1", "say two things"))
             .expect("run preflight");
         while let Some(update) = run.next().await {

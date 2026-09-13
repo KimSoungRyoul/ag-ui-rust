@@ -9,7 +9,7 @@
 //!   pauses on, draw the board.
 //! - [`view`] is what it prints, including a small A2UI renderer.
 //! - [`trace`] is the same conversation one level down — events exactly as they
-//!   arrived, and a resume built without a session.
+//!   arrived, and a resume built without a `Thread` object.
 //! - [`fake`] is the backend: chunked text, tool arguments split mid-escape,
 //!   parallel calls, a run that never finishes, and hand-framed streams the
 //!   protocol forbids.

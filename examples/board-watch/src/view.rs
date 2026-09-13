@@ -1,7 +1,7 @@
 //! Turning what the client assembled into lines a person reads.
 //!
 //! Every helper here names a [`Thread`] without bounding its transport. That
-//! is not incidental: an application's view layer only ever *reads* a session,
+//! is not incidental: an application's view layer only ever *reads* a thread,
 //! and a `T: Transport` bound on the type would force every one of these
 //! signatures to repeat a constraint none of them use. `ag-ui-client` keeps the
 //! bound on the impl blocks that make requests, and this module is what spends
@@ -19,28 +19,28 @@ use serde_json::Value;
 
 use crate::board::Board;
 
-/// The run the session last heard about, for the footer.
+/// The run the thread last heard about, for the footer.
 ///
 /// No `T: Transport` — this only reads.
-pub fn run_id<T, S>(session: &Thread<T, S>) -> String {
-    session
+pub fn run_id<T, S>(thread: &Thread<T, S>) -> String {
+    thread
         .applier()
         .run_id()
         .map_or_else(|| "—".to_owned(), |id| id.as_str().to_owned())
 }
 
 /// How many messages the conversation holds.
-pub fn message_count<T, S>(session: &Thread<T, S>) -> usize {
-    session.messages().len()
+pub fn message_count<T, S>(thread: &Thread<T, S>) -> usize {
+    thread.messages().len()
 }
 
 /// The panel drawn after each run: the board, then where it came from.
 ///
 /// Names `Thread<T, Board>` — a concrete state, still no transport bound.
-pub fn panel<T>(session: &Thread<T, Board>) -> Vec<String> {
+pub fn panel<T>(thread: &Thread<T, Board>) -> Vec<String> {
     let mut lines = vec!["┌ board".to_owned()];
 
-    match session.state() {
+    match thread.state() {
         Ok(board) if !board.tasks.is_empty() => {
             lines.push(format!("│ {}", board.summary()));
             lines.extend(board.tasks.iter().map(|task| format!("│ {}", task.line())));
@@ -49,7 +49,7 @@ pub fn panel<T>(session: &Thread<T, Board>) -> Vec<String> {
         Err(error) => lines.push(format!("│ (invalid board state: {error})")),
     }
 
-    let surface = match surface_in_history(session.messages()) {
+    let surface = match surface_in_history(thread.messages()) {
         Some(prior) => format!(
             " · surface {} ({})",
             prior.surface_id,
@@ -59,8 +59,8 @@ pub fn panel<T>(session: &Thread<T, Board>) -> Vec<String> {
     };
     lines.push(format!(
         "└ run {} · {} messages{surface}",
-        run_id(session),
-        message_count(session)
+        run_id(thread),
+        message_count(thread)
     ));
     lines
 }
@@ -184,17 +184,16 @@ mod tests {
     use ag_ui::client::transport::ReplayTransport;
 
     /// The compile-time half of this module's claim: a helper that names a
-    /// session needs no transport bound. If the bound migrates back onto
+    /// thread needs no transport bound. If the bound migrates back onto
     /// `Thread`, this file stops compiling.
     #[test]
-    fn view_helpers_read_a_session_without_bounding_its_transport() {
-        let session: Thread<ReplayTransport, Board> =
-            Thread::builder(ReplayTransport::new([]), "t")
-                .build()
-                .expect("valid initial board");
-        assert_eq!(message_count(&session), 0);
-        assert_eq!(run_id(&session), "—");
-        assert_eq!(panel(&session)[1], "│ (empty)");
+    fn view_helpers_read_a_thread_without_bounding_its_transport() {
+        let thread: Thread<ReplayTransport, Board> = Thread::builder(ReplayTransport::new([]), "t")
+            .build()
+            .expect("valid initial board");
+        assert_eq!(message_count(&thread), 0);
+        assert_eq!(run_id(&thread), "—");
+        assert_eq!(panel(&thread)[1], "│ (empty)");
     }
 
     #[test]

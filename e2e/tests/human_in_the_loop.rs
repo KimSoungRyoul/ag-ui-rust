@@ -151,8 +151,8 @@ fn ids(interrupts: &[Interrupt]) -> Vec<&str> {
 }
 
 /// The last thing the assistant said.
-fn last_reply<T>(session: &Thread<T>) -> &str {
-    session
+fn last_reply<T>(thread: &Thread<T>) -> &str {
+    thread
         .messages()
         .iter()
         .rev()
@@ -163,29 +163,29 @@ fn last_reply<T>(session: &Thread<T>) -> &str {
         .expect("the agent should have said something")
 }
 
-/// Runs the first turn and returns the session, paused, with its interrupt.
+/// Runs the first turn and returns the thread, paused, with its interrupt.
 async fn pause() -> (Thread<ag_ui::client::transport::HttpTransport>, Interrupt) {
     let url = serve(Deployer).await;
-    let mut session = Thread::<_>::new(transport(&url), "deploy");
+    let mut thread = Thread::<_>::new(transport(&url), "deploy");
 
-    let updates = drain!(session.send("ship build 42"));
+    let updates = drain!(thread.send("ship build 42"));
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
 
     let interrupts = paused_on(updates);
     assert_eq!(interrupts.len(), 1, "{interrupts:?}");
     let interrupt = interrupts.into_iter().next().expect("one interrupt");
-    (session, interrupt)
+    (thread, interrupt)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_interrupt_outcome_reaches_the_client_with_every_field_intact() {
-    let (session, interrupt) = pause().await;
+    let (thread, interrupt) = pause().await;
 
     assert_eq!(interrupt, request(), "the interrupt must survive the wire");
     assert!(interrupt.is_tool_approval());
-    assert_eq!(session.interrupts(), [request()]);
+    assert_eq!(thread.interrupts(), [request()]);
     assert_eq!(
-        last_reply(&session),
+        last_reply(&thread),
         "Deploying to production needs a human."
     );
 }
@@ -193,8 +193,8 @@ async fn an_interrupt_outcome_reaches_the_client_with_every_field_intact() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_run_ends_as_interrupted_rather_than_successful() {
     let url = serve(Deployer).await;
-    let mut session = Thread::<_>::new(transport(&url), "deploy");
-    let updates = drain!(session.send("ship build 42"));
+    let mut thread = Thread::<_>::new(transport(&url), "deploy");
+    let updates = drain!(thread.send("ship build 42"));
 
     match updates.last() {
         Some(Update::Done(RunEnd::Interrupted { interrupts })) => {
@@ -206,9 +206,9 @@ async fn the_run_ends_as_interrupted_rather_than_successful() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resolved_answer_resumes_the_run_and_reaches_ctx_resume() {
-    let (mut session, interrupt) = pause().await;
+    let (mut thread, interrupt) = pause().await;
 
-    let updates = drain!(session.resume(&interrupt, json!({"build": 42})));
+    let updates = drain!(thread.resume(&interrupt, json!({"build": 42})));
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
 
     assert_eq!(
@@ -219,23 +219,23 @@ async fn a_resolved_answer_resumes_the_run_and_reaches_ctx_resume() {
         "{updates:?}"
     );
     // Only reachable by reading `answer.payload` server-side.
-    assert_eq!(last_reply(&session), "Deployed build 42.");
+    assert_eq!(last_reply(&thread), "Deployed build 42.");
     assert!(
-        session.interrupts().is_empty(),
+        thread.interrupts().is_empty(),
         "an answered interrupt is no longer pending"
     );
 
     // The resumed run has an assigned invocation ID in the same thread.
-    assert!(!session.applier().run_id().unwrap().as_str().is_empty());
-    assert_eq!(session.thread_id().as_str(), "deploy");
-    assert_eq!(session.messages().len(), 3, "{:?}", session.messages());
+    assert!(!thread.applier().run_id().unwrap().as_str().is_empty());
+    assert_eq!(thread.thread_id().as_str(), "deploy");
+    assert_eq!(thread.messages().len(), 3, "{:?}", thread.messages());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cancelled_answer_resumes_the_run_down_the_other_branch() {
-    let (mut session, interrupt) = pause().await;
+    let (mut thread, interrupt) = pause().await;
 
-    let updates = drain!(session.decline(&interrupt));
+    let updates = drain!(thread.decline(&interrupt));
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
 
     assert_eq!(
@@ -247,22 +247,22 @@ async fn a_cancelled_answer_resumes_the_run_down_the_other_branch() {
     );
     // The agent took the Cancelled branch: it neither deployed nor paused
     // again, which is what it would have done had the entry gone missing.
-    assert_eq!(last_reply(&session), "Left production alone.");
-    assert!(session.interrupts().is_empty());
+    assert_eq!(last_reply(&thread), "Left production alone.");
+    assert!(thread.interrupts().is_empty());
 }
 
 /// Wrong interrupt IDs fail preflight without changing the pending conversation.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_answer_to_a_different_interrupt_is_rejected_before_dispatch() {
-    let (mut session, _interrupt) = pause().await;
-    let before = session.snapshot();
+    let (mut thread, _interrupt) = pause().await;
+    let before = thread.snapshot();
     let stray = Interrupt::new("some-other-question", "tool_approval");
     assert!(
-        session
+        thread
             .resume_many([stray.resolve(json!({"build": 42}))])
             .is_err()
     );
-    assert_eq!(session.snapshot(), before);
+    assert_eq!(thread.snapshot(), before);
 }
 
 /// The answer that arrives in the wrong shape. A resumed run is a run like any
@@ -271,9 +271,9 @@ async fn an_answer_to_a_different_interrupt_is_rejected_before_dispatch() {
 /// to stay visible without automatically repeating a potentially executed action.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_answer_the_agent_rejects_retains_an_unconfirmed_submission() {
-    let (mut session, interrupt) = pause().await;
+    let (mut thread, interrupt) = pause().await;
 
-    let updates = drain!(session.resume(&interrupt, json!({"build": "forty-two"})));
+    let updates = drain!(thread.resume(&interrupt, json!({"build": "forty-two"})));
     match updates.last() {
         Some(Update::Done(RunEnd::Failed { message, code })) => {
             assert!(
@@ -284,9 +284,9 @@ async fn an_answer_the_agent_rejects_retains_an_unconfirmed_submission() {
         }
         other => panic!("a rejected answer must fail the run, not {other:?}"),
     }
-    assert_eq!(session.interrupts(), std::slice::from_ref(&interrupt));
-    assert!(session.submission().is_some());
-    assert!(session.resume(&interrupt, json!({"build": 42})).is_err());
+    assert_eq!(thread.interrupts(), std::slice::from_ref(&interrupt));
+    assert!(thread.submission().is_some());
+    assert!(thread.resume(&interrupt, json!({"build": 42})).is_err());
 }
 
 /// A run can pause on more than one decision, and the client hears each of them
@@ -294,9 +294,9 @@ async fn an_answer_the_agent_rejects_retains_an_unconfirmed_submission() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_can_pause_on_several_interrupts_at_once() {
     let url = serve(Planner).await;
-    let mut session = Thread::<_>::new(transport(&url), "plan");
+    let mut thread = Thread::<_>::new(transport(&url), "plan");
 
-    let updates = drain!(session.send("book the offsite"));
+    let updates = drain!(thread.send("book the offsite"));
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
 
     match updates.last() {
@@ -310,9 +310,9 @@ async fn a_run_can_pause_on_several_interrupts_at_once() {
         2,
         "one Update::Interrupt per pending decision"
     );
-    assert_eq!(session.interrupts().len(), 2);
+    assert_eq!(thread.interrupts().len(), 2);
     assert_eq!(
-        last_reply(&session),
+        last_reply(&thread),
         "Still waiting on approve-budget and confirm-date."
     );
 }
@@ -321,18 +321,18 @@ async fn a_run_can_pause_on_several_interrupts_at_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn partial_answers_do_not_discard_pending_decisions() {
     let url = serve(Planner).await;
-    let mut session = Thread::<_>::new(transport(&url), "plan");
-    let pending = paused_on(drain!(session.send("book the offsite")));
+    let mut thread = Thread::<_>::new(transport(&url), "plan");
+    let pending = paused_on(drain!(thread.send("book the offsite")));
     assert_eq!(pending.len(), 2);
     assert!(
-        session
+        thread
             .resume(&pending[0], json!({"amount": 5_000}))
             .is_err()
     );
-    assert_eq!(ids(session.interrupts()), [BUDGET, DATE]);
+    assert_eq!(ids(thread.interrupts()), [BUDGET, DATE]);
 
     // Both in one request is what finishes it.
-    let updates = drain!(session.resume_many([
+    let updates = drain!(thread.resume_many([
         pending[0].resolve(json!({"amount": 5_000})),
         pending[1].resolve(json!({"day": "friday"})),
     ]));
@@ -341,5 +341,5 @@ async fn partial_answers_do_not_discard_pending_decisions() {
         matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))),
         "{updates:?}"
     );
-    assert_eq!(last_reply(&session), "Booked.");
+    assert_eq!(last_reply(&thread), "Booked.");
 }

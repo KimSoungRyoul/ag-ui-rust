@@ -139,14 +139,14 @@ async fn the_server_picks_snapshots_and_deltas_and_both_reach_the_client() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_clients_typed_state_matches_the_agents_after_every_publish() {
     let url = serve(Editor).await;
-    let mut session = Thread::<_, Board>::builder(transport(&url), "board")
+    let mut thread = Thread::<_, Board>::builder(transport(&url), "board")
         .state(serde_json::json!(Board::default()))
         .build()
         .expect("typed thread");
 
     let mut states = Vec::new();
     {
-        let mut run = session.send("tidy the board").expect("run preflight");
+        let mut run = thread.send("tidy the board").expect("run preflight");
         while let Some(update) = run.next().await {
             match update {
                 Update::State(state) => states.push(state),
@@ -158,7 +158,7 @@ async fn the_clients_typed_state_matches_the_agents_after_every_publish() {
 
     let expected = published();
     assert_eq!(states, expected, "every intermediate state must agree");
-    assert_eq!(session.state().ok(), expected.last());
+    assert_eq!(thread.state().ok(), expected.last());
 }
 
 /// The delta path specifically: a pointer into a key containing `/` or `~` has
@@ -166,13 +166,13 @@ async fn the_clients_typed_state_matches_the_agents_after_every_publish() {
 #[tokio::test(flavor = "multi_thread")]
 async fn escaped_json_pointers_patch_the_key_they_name() {
     let url = serve(Editor).await;
-    let mut session = Thread::<_, Board>::builder(transport(&url), "board")
+    let mut thread = Thread::<_, Board>::builder(transport(&url), "board")
         .state(serde_json::json!(Board::default()))
         .build()
         .expect("typed thread");
 
     {
-        let mut run = session.send("tidy the board").expect("run preflight");
+        let mut run = thread.send("tidy the board").expect("run preflight");
         while let Some(update) = run.next().await {
             // A patch this test cannot apply would leave the state at its
             // previous value, and every assertion below would then be about the
@@ -183,7 +183,7 @@ async fn escaped_json_pointers_patch_the_key_they_name() {
         }
     }
 
-    let counts = &session.raw_state()["counts"];
+    let counts = &thread.raw_state()["counts"];
     assert_eq!(
         counts,
         &json!({"a/b": 8, "c~d": 9}),
@@ -266,7 +266,7 @@ impl Agent for Fumbler {
         ]))?;
 
         // The run carries on, and so must the state: a patch the client refused
-        // is a report, not a broken session.
+        // is a report, not a broken thread.
         ctx.emit(Event::state_delta(vec![PatchOperation::replace(
             "/seen", 2,
         )]))?;
@@ -290,13 +290,13 @@ struct Applied {
 /// Runs `agent` once against a fresh endpoint.
 async fn apply(agent: impl Agent + 'static) -> Applied {
     let url = serve(agent).await;
-    let mut session = Thread::<_>::new(transport(&url), "patch");
+    let mut thread = Thread::<_>::new(transport(&url), "patch");
 
     let mut states = Vec::new();
     let mut errors = Vec::new();
     let mut ended = None;
     {
-        let mut run = session.send("change the state").expect("run preflight");
+        let mut run = thread.send("change the state").expect("run preflight");
         while let Some(update) = run.next().await {
             match update {
                 Update::State(state) => states.push(state),
@@ -310,7 +310,7 @@ async fn apply(agent: impl Agent + 'static) -> Applied {
     Applied {
         states,
         errors,
-        ended_with: session.raw_state().clone(),
+        ended_with: thread.raw_state().clone(),
         ended: ended.expect("every run ends"),
     }
 }

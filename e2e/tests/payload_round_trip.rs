@@ -154,11 +154,11 @@ impl Agent for Historian {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_messages_snapshot_replaces_the_conversation_without_losing_a_field() {
     let url = serve(Historian).await;
-    let mut session = Thread::<_>::new(transport(&url), "history");
+    let mut thread = Thread::<_>::new(transport(&url), "history");
 
     let mut replaced = None;
     {
-        let mut run = session.send("start over").expect("run preflight");
+        let mut run = thread.send("start over").expect("run preflight");
         while let Some(update) = run.next().await {
             match update {
                 Update::Messages(messages) => replaced = Some(messages),
@@ -170,7 +170,7 @@ async fn a_messages_snapshot_replaces_the_conversation_without_losing_a_field() 
 
     assert_eq!(replaced.as_deref(), Some(conversation().as_slice()));
     // The user's own turn is gone: a snapshot is a replacement, not a merge.
-    assert_eq!(session.messages(), conversation().as_slice());
+    assert_eq!(thread.messages(), conversation().as_slice());
 }
 
 // ------------------------------------------------------------- activities ----
@@ -202,10 +202,10 @@ impl Agent for Searcher {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_activity_is_published_and_then_patched_in_place() {
     let url = serve(Searcher).await;
-    let mut session = Thread::<_>::new(transport(&url), "search");
+    let mut thread = Thread::<_>::new(transport(&url), "search");
 
     {
-        let mut run = session.send("look it up").expect("run preflight");
+        let mut run = thread.send("look it up").expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("an activity patch should apply cleanly: {error}");
@@ -214,7 +214,7 @@ async fn an_activity_is_published_and_then_patched_in_place() {
     }
 
     assert_eq!(
-        session.messages().last(),
+        thread.messages().last(),
         Some(&Message::Activity(ActivityMessage {
             id: "act-1".into(),
             activity_type: "web_search".to_owned(),
@@ -272,10 +272,10 @@ impl Agent for Recaller {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_conversation_the_client_assembled_is_the_one_the_next_run_receives() {
     let url = serve(Recaller).await;
-    let mut session = Thread::<_>::new(transport(&url), "recall");
+    let mut thread = Thread::<_>::new(transport(&url), "recall");
 
     {
-        let mut run = session
+        let mut run = thread
             .send("what is the weather in Seoul?")
             .expect("run preflight");
         while let Some(update) = run.next().await {
@@ -284,11 +284,11 @@ async fn the_conversation_the_client_assembled_is_the_one_the_next_run_receives(
             }
         }
     }
-    let assembled = session.messages().to_vec();
+    let assembled = thread.messages().to_vec();
     assert_eq!(assembled.len(), 4, "{assembled:?}");
 
     {
-        let mut run = session
+        let mut run = thread
             .send_message(Message::user("recall-msg-2", "and tomorrow?"))
             .expect("run preflight");
         while let Some(update) = run.next().await {
@@ -298,7 +298,7 @@ async fn the_conversation_the_client_assembled_is_the_one_the_next_run_receives(
         }
     }
 
-    let echoed = session
+    let echoed = thread
         .messages()
         .iter()
         .rev()
@@ -352,14 +352,14 @@ impl Agent for Accumulator {
 #[tokio::test(flavor = "multi_thread")]
 async fn state_published_by_one_run_is_the_state_the_next_run_starts_from() {
     let url = serve(Accumulator).await;
-    let mut session = Thread::<_, Counter>::builder(transport(&url), "counter")
+    let mut thread = Thread::<_, Counter>::builder(transport(&url), "counter")
         .state(serde_json::json!(Counter::default()))
         .build()
         .expect("typed thread");
 
     for n in 1..=3 {
-        session.set_next_run_id(format!("counter-run-{n}"));
-        let mut run = session.send("again").expect("run preflight");
+        thread.set_next_run_id(format!("counter-run-{n}"));
+        let mut run = thread.send("again").expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("state should carry cleanly: {error}");
@@ -368,7 +368,7 @@ async fn state_published_by_one_run_is_the_state_the_next_run_starts_from() {
     }
 
     assert_eq!(
-        session.state().ok(),
+        thread.state().ok(),
         Some(&Counter {
             clicks: 3,
             seen: vec![

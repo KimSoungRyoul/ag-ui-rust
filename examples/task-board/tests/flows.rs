@@ -34,8 +34,8 @@ async fn serve() -> String {
     format!("http://{addr}{ROUTE}")
 }
 
-/// A session offering the tools the agent expects, as the binary's `chat` does.
-fn session(url: &str, thread: &str) -> Thread<HttpTransport, Board> {
+/// A thread offering the tools the agent expects, as the binary's `chat` does.
+fn thread(url: &str, thread: &str) -> Thread<HttpTransport, Board> {
     HttpAgent::new(url)
         .expect("a valid endpoint URL")
         .thread_builder(thread)
@@ -45,9 +45,9 @@ fn session(url: &str, thread: &str) -> Thread<HttpTransport, Board> {
 }
 
 /// Runs `script` through the real terminal client and returns what it printed.
-async fn transcript(session: &mut Thread<HttpTransport, Board>, script: &str) -> String {
+async fn transcript(thread: &mut Thread<HttpTransport, Board>, script: &str) -> String {
     let mut terminal = Terminal::new(script.as_bytes(), Vec::new()).echoing();
-    chat::converse(session, &mut terminal)
+    chat::converse(thread, &mut terminal)
         .await
         .expect("a Vec never fails to be written to");
 
@@ -60,8 +60,8 @@ async fn transcript(session: &mut Thread<HttpTransport, Board>, script: &str) ->
 }
 
 /// The A2UI operations from the last surface the agent shipped.
-fn last_surface(session: &Thread<HttpTransport, Board>) -> Vec<ag_ui_a2ui::AgentMessage> {
-    let envelope = session
+fn last_surface(thread: &Thread<HttpTransport, Board>) -> Vec<ag_ui_a2ui::AgentMessage> {
+    let envelope = thread
         .messages()
         .iter()
         .rev()
@@ -87,10 +87,10 @@ fn drawn(printed: &str) -> Vec<&str> {
 #[tokio::test(flavor = "multi_thread")]
 async fn adding_listing_and_completing_moves_the_board_and_redraws_it() {
     let url = serve().await;
-    let mut session = session(&url, "happy");
+    let mut thread = thread(&url, "happy");
 
     let printed = transcript(
-        &mut session,
+        &mut thread,
         "add draft the agenda, book the room\nestimate 2 45\nlist\ncomplete 1\n",
     )
     .await;
@@ -130,7 +130,7 @@ async fn adding_listing_and_completing_moves_the_board_and_redraws_it() {
     );
 
     // And the client's typed mirror of it agrees.
-    let board = session.state().expect("a board");
+    let board = thread.state().expect("a board");
     assert_eq!(board.tasks.len(), 2);
     assert_eq!(board.open(), 1);
     assert_eq!(board.remaining_minutes(), 45);
@@ -140,12 +140,12 @@ async fn adding_listing_and_completing_moves_the_board_and_redraws_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn clearing_the_board_asks_a_human_first_and_the_answer_decides() {
     let url = serve().await;
-    let mut session = session(&url, "hitl");
+    let mut thread = thread(&url, "hitl");
 
     // Declined, then approved. The board has to survive the first and not the
     // second, which is the whole of the interrupt round trip.
     let printed = transcript(
-        &mut session,
+        &mut thread,
         "add write the retro notes\nclear\nn\nclear\ny\n",
     )
     .await;
@@ -175,7 +175,7 @@ async fn clearing_the_board_asks_a_human_first_and_the_answer_decides() {
         "{printed}"
     );
 
-    let board = session.state().expect("a board");
+    let board = thread.state().expect("a board");
     assert!(board.tasks.is_empty(), "{board:?}");
     // Ids keep counting past a clear, so a stale reference cannot resolve.
     assert_eq!(board.next_id, 1);
@@ -187,11 +187,11 @@ async fn clearing_the_board_asks_a_human_first_and_the_answer_decides() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_paused_run_ends_as_interrupted_and_resumes_as_its_own_run() {
     let url = serve().await;
-    let mut session = session(&url, "pause");
+    let mut thread = thread(&url, "pause");
 
-    drain(&mut session, "add ship the SDK").await;
+    drain(&mut thread, "add ship the SDK").await;
 
-    let updates = drain(&mut session, "clear").await;
+    let updates = drain(&mut thread, "clear").await;
     let interrupt = match updates.last() {
         Some(Update::Done(RunEnd::Interrupted { interrupts })) => {
             assert_eq!(interrupts.len(), 1, "{interrupts:?}");
@@ -205,9 +205,9 @@ async fn a_paused_run_ends_as_interrupted_and_resumes_as_its_own_run() {
         interrupt.response_schema.is_some(),
         "the client needs a schema to build a form from"
     );
-    assert_eq!(session.interrupts(), std::slice::from_ref(&interrupt));
+    assert_eq!(thread.interrupts(), std::slice::from_ref(&interrupt));
 
-    let mut run = session
+    let mut run = thread
         .resume(&interrupt, serde_json::json!({"confirm": true}))
         .expect("all pending decisions answered");
     let mut updates = Vec::new();
@@ -220,26 +220,26 @@ async fn a_paused_run_ends_as_interrupted_and_resumes_as_its_own_run() {
         matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))),
         "{updates:?}"
     );
-    assert!(session.interrupts().is_empty());
-    assert!(session.state().expect("a board").tasks.is_empty());
+    assert!(thread.interrupts().is_empty());
+    assert!(thread.state().expect("a board").tasks.is_empty());
     // The resumed run is a run of its own, in the same thread.
-    assert_eq!(session.snapshot().run_ids.len(), 3);
+    assert_eq!(thread.snapshot().run_ids.len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_second_run_in_the_same_thread_carries_the_conversation_and_the_board() {
     let url = serve().await;
-    let mut session = session(&url, "carry");
+    let mut thread = thread(&url, "carry");
 
-    transcript(&mut session, "add draft the agenda\n").await;
-    let after_first = session.messages().len();
-    let created = last_surface(&session);
+    transcript(&mut thread, "add draft the agenda\n").await;
+    let after_first = thread.messages().len();
+    let created = last_surface(&thread);
     assert!(
         matches!(created[0].payload, AgentPayload::CreateSurface(_)),
         "the first render creates the surface: {created:?}"
     );
 
-    let printed = transcript(&mut session, "add book the room\n").await;
+    let printed = transcript(&mut thread, "add book the room\n").await;
 
     // The board carried: the second task got id 2, which is only possible if
     // the first run's state came back in the second run's request.
@@ -260,8 +260,8 @@ async fn a_second_run_in_the_same_thread_carries_the_conversation_and_the_board(
     // The conversation carried too, and the agent used it: a surface already on
     // screen is *updated*, never created again, and the only way it can know is
     // the history the client sent.
-    assert!(session.messages().len() > after_first);
-    let updated = last_surface(&session);
+    assert!(thread.messages().len() > after_first);
+    let updated = last_surface(&thread);
     assert!(
         updated
             .iter()
@@ -371,13 +371,13 @@ async fn state_publishes_pick_the_smaller_of_a_snapshot_and_a_patch() {
     );
 
     // Whichever went out, the client lands in the same place.
-    let mut session = session(&url, "encodings");
+    let mut thread = thread(&url, "encodings");
     transcript(
-        &mut session,
+        &mut thread,
         "add write the workshop agenda and circulate it, book the large meeting room for thursday\n",
     )
     .await;
-    let board = session.state().expect("a board");
+    let board = thread.state().expect("a board");
     assert_eq!(board.tasks.len(), 2);
     assert_eq!(
         board.tasks[1].label(),
@@ -388,9 +388,9 @@ async fn state_publishes_pick_the_smaller_of_a_snapshot_and_a_patch() {
 #[tokio::test(flavor = "multi_thread")]
 async fn research_delegates_to_two_subagents_and_the_client_files_their_work_under_them() {
     let url = serve().await;
-    let mut session = session(&url, "research");
+    let mut thread = thread(&url, "research");
 
-    let printed = transcript(&mut session, "research onboarding\n").await;
+    let printed = transcript(&mut thread, "research onboarding\n").await;
 
     // Each delegate's lifecycle brackets its own sentence, its own tool call
     // and the board it moved — printed under its name, not the agent's.
@@ -419,7 +419,7 @@ async fn research_delegates_to_two_subagents_and_the_client_files_their_work_und
 
     // The registry the names came from: two invocations, each finished with
     // the payload the agent handed `finish_with`.
-    let subagents = session.subagents();
+    let subagents = thread.subagents();
     let names: Vec<&str> = subagents.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["scope", "risks"]);
     assert_eq!(
@@ -432,7 +432,7 @@ async fn research_delegates_to_two_subagents_and_the_client_files_their_work_und
     // Every message a delegate produced carries its id — the sentence, the
     // message holding the call, and the tool result — and the rest carry none.
     let owned_by = |id: &SubagentRunId| {
-        session
+        thread
             .messages()
             .iter()
             .filter(|message| message.subagent_run_id() == Some(id))
@@ -440,16 +440,16 @@ async fn research_delegates_to_two_subagents_and_the_client_files_their_work_und
     };
     assert_eq!(owned_by(&subagents[0].run_id), 3);
     assert_eq!(owned_by(&subagents[1].run_id), 3);
-    let untagged = session
+    let untagged = thread
         .messages()
         .iter()
         .filter(|message| message.subagent_run_id().is_none())
         .count();
     // The user's line, the reply, and the surface's call and result.
-    assert_eq!(untagged, 4, "{:?}", session.messages());
+    assert_eq!(untagged, 4, "{:?}", thread.messages());
 
     // And the board moved twice, once inside each delegate.
-    let board = session.state().expect("a board");
+    let board = thread.state().expect("a board");
     assert_eq!(board.tasks.len(), 2);
     assert_eq!(
         board.tasks[1].label(),
@@ -559,8 +559,8 @@ async fn state_events(agent: &HttpAgent, said: &str) -> Vec<EventType> {
 }
 
 /// Drains one run and returns everything it reported.
-async fn drain(session: &mut Thread<HttpTransport, Board>, said: &str) -> Vec<Update<Board>> {
-    let mut run = session.send(said).expect("no pending decisions");
+async fn drain(thread: &mut Thread<HttpTransport, Board>, said: &str) -> Vec<Update<Board>> {
+    let mut run = thread.send(said).expect("no pending decisions");
     let mut updates = Vec::new();
     while let Some(update) = run.next().await {
         updates.push(update);

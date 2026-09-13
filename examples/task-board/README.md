@@ -189,7 +189,7 @@ SUBAGENT_FINISHED   {"subagentRunId":"r1-sub-1","result":{"added":1},"outcome":{
 
 The client reads it back as `Update::Subagent` for the `⟂` lines and, for
 everything else, `Message::subagent_run_id()` resolved to a name through
-`session.subagent(id)` — mid-run, through `RunStream::thread()`. The
+`thread.subagent(id)` — mid-run, through `RunStream::thread()`. The
 supervisor's own reply comes after both delegates, untagged, which is why it
 prints as `agent>`.
 

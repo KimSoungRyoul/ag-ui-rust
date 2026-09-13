@@ -91,7 +91,7 @@ impl<R, W: Write> Write for Terminal<R, W> {
 ///
 /// `quit` and end-of-input both stop it.
 pub async fn converse<T: Transport>(
-    session: &mut Thread<T, Board>,
+    thread: &mut Thread<T, Board>,
     terminal: &mut Terminal<impl BufRead, impl Write>,
 ) -> io::Result<()> {
     while let Some(line) = terminal.prompt("you> ")? {
@@ -102,7 +102,7 @@ pub async fn converse<T: Transport>(
         if said.eq_ignore_ascii_case("quit") || said.eq_ignore_ascii_case("exit") {
             break;
         }
-        turn(session, &said, terminal).await?;
+        turn(thread, &said, terminal).await?;
     }
     Ok(())
 }
@@ -113,18 +113,18 @@ pub async fn converse<T: Transport>(
 /// *resumed*, which is a second request in the same thread, and the resumed run
 /// may pause again.
 async fn turn<T: Transport>(
-    session: &mut Thread<T, Board>,
+    thread: &mut Thread<T, Board>,
     said: &str,
     terminal: &mut Terminal<impl BufRead, impl Write>,
 ) -> io::Result<()> {
     // Each `drive` call ends the mutable borrow `send`/`resume` takes, which is
     // what lets the next one start.
-    let mut pending = drive(session.send(said).map_err(io::Error::other)?, terminal).await?;
+    let mut pending = drive(thread.send(said).map_err(io::Error::other)?, terminal).await?;
 
     while let Some(interrupt) = pending {
         pending = if approved(&interrupt, terminal)? {
             drive(
-                session
+                thread
                     .resume(&interrupt, json!({"confirm": true}))
                     .map_err(io::Error::other)?,
                 terminal,
@@ -132,7 +132,7 @@ async fn turn<T: Transport>(
             .await?
         } else {
             drive(
-                session.decline(&interrupt).map_err(io::Error::other)?,
+                thread.decline(&interrupt).map_err(io::Error::other)?,
                 terminal,
             )
             .await?
@@ -161,7 +161,7 @@ async fn drive<T: Transport>(
                 // A message carries the id of the subagent that produced it,
                 // and the run's registry turns that into a name. Mid-run the
                 // registry is read through the stream, which holds the
-                // session until it is dropped.
+                // thread until it is dropped.
                 let speaker = message
                     .message
                     .subagent_run_id()

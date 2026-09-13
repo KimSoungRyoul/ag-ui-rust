@@ -21,7 +21,7 @@ pub async fn serve(agent: impl Agent + 'static) -> String {
 /// The same, for an endpoint whose defaults a test has changed.
 ///
 /// Port 0 so tests can run concurrently — and they do, both under nextest and
-/// inside a single test that opens several sessions at once.
+/// inside a single test that opens several threads at once.
 pub async fn serve_endpoint<A: Agent + 'static>(endpoint: AgentEndpoint<A>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

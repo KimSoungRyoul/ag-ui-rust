@@ -312,13 +312,9 @@ async fn a_bare_run_error_over_open_entities_ends_the_run_without_a_protocol_com
         Event::run_error("the model hung up"),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session
-        .send("what is the weather?")
-        .unwrap()
-        .collect()
-        .await;
+    let updates: Vec<_> = thread.send("what is the weather?").unwrap().collect().await;
     let complaints: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -341,7 +337,7 @@ async fn a_bare_run_error_over_open_entities_ends_the_run_without_a_protocol_com
     assert!(message.contains("the model hung up"), "{message}");
 
     // The half-finished text still assembled, so a UI can show what there was.
-    assert_eq!(session.applier().text_of("msg-1"), Some("half a sen"));
+    assert_eq!(thread.applier().text_of("msg-1"), Some("half a sen"));
 }
 
 #[test]
@@ -498,7 +494,7 @@ fn an_activity_snapshot_becomes_a_message_and_a_delta_patches_it() {
 ///
 /// `temperature` is optional because the agent publishes the city first and the
 /// temperature in a later delta: a strict field would make the intermediate
-/// state fail to deserialize, which the session reports as an error. See
+/// state fail to deserialize, which the thread reports as an error. See
 /// `state.rs` for that path.
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 struct Weather {
@@ -511,15 +507,15 @@ struct Weather {
 /// two deltas, closed once. The scripted run brackets it with all four
 /// `REASONING_*` events, as `ctx.think()` does.
 #[tokio::test]
-async fn a_session_reports_one_ending_per_thought() {
+async fn a_thread_reports_one_ending_per_thought() {
     let transport = ReplayTransport::new(scripted_run()).matching_requests();
-    let mut session = Thread::<_, Weather>::builder(transport, "thread-1")
+    let mut thread = Thread::<_, Weather>::builder(transport, "thread-1")
         .state(json!({"city": "", "temperature": 0}))
         .build()
         .unwrap();
 
     let mut reasoning = Vec::new();
-    let mut run = session.send("what is the weather in Seoul?").unwrap();
+    let mut run = thread.send("what is the weather in Seoul?").unwrap();
     while let Some(update) = run.next().await {
         if let Update::Reasoning(update) = update {
             reasoning.push((update.id.as_str().to_owned(), update.change));
@@ -549,9 +545,9 @@ async fn a_session_reports_one_ending_per_thought() {
 }
 
 #[tokio::test]
-async fn a_session_yields_updates_and_keeps_the_conversation() {
+async fn a_thread_yields_updates_and_keeps_the_conversation() {
     let transport = ReplayTransport::new(scripted_run()).matching_requests();
-    let mut session = Thread::<_, Weather>::builder(transport.clone(), "thread-1")
+    let mut thread = Thread::<_, Weather>::builder(transport.clone(), "thread-1")
         .state(json!({"city": "", "temperature": 0}))
         .build()
         .unwrap();
@@ -562,7 +558,7 @@ async fn a_session_yields_updates_and_keeps_the_conversation() {
     let mut ended = None;
     let mut errors = Vec::new();
 
-    let mut run = session.send("what is the weather in Seoul?").unwrap();
+    let mut run = thread.send("what is the weather in Seoul?").unwrap();
     while let Some(update) = run.next().await {
         match update {
             Update::Message(_) => messages += 1,
@@ -588,11 +584,11 @@ async fn a_session_yields_updates_and_keeps_the_conversation() {
             temperature: Some(21),
         })
     );
-    assert_eq!(Some(session.state().unwrap()), state.as_ref());
+    assert_eq!(Some(thread.state().unwrap()), state.as_ref());
 
     // The user's turn plus the three messages the agent produced.
-    assert_eq!(session.messages().len(), 4);
-    assert_eq!(session.messages()[0].role(), ag_ui::Role::User);
+    assert_eq!(thread.messages().len(), 4);
+    assert_eq!(thread.messages()[0].role(), ag_ui::Role::User);
 
     // And the request carried the user's message.
     let request = transport.last_request().expect("one request");
@@ -625,13 +621,9 @@ async fn a_chunk_streamed_tool_call_keeps_its_result_in_the_conversation() {
         ],
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport.clone(), "thread-1");
+    let mut thread = Thread::<_>::new(transport.clone(), "thread-1");
 
-    let updates: Vec<_> = session
-        .send("what is the weather?")
-        .unwrap()
-        .collect()
-        .await;
+    let updates: Vec<_> = thread.send("what is the weather?").unwrap().collect().await;
     let errors: Vec<_> = updates
         .iter()
         .filter_map(|update| match update {
@@ -646,11 +638,11 @@ async fn a_chunk_streamed_tool_call_keeps_its_result_in_the_conversation() {
     ));
 
     // The user's turn, the message the call hangs off, and the result.
-    assert_eq!(session.messages().len(), 3);
-    let Some(Message::Tool(result)) = session.messages().last() else {
+    assert_eq!(thread.messages().len(), 3);
+    let Some(Message::Tool(result)) = thread.messages().last() else {
         panic!(
             "the tool result should be in the conversation: {:?}",
-            session.messages()
+            thread.messages()
         );
     };
     assert_eq!(result.tool_call_id, "call-1");
@@ -658,7 +650,7 @@ async fn a_chunk_streamed_tool_call_keeps_its_result_in_the_conversation() {
 
     // And the next run carries it, which is what lets the model see its own
     // tool's answer.
-    let mut second = session.send("and tomorrow?").unwrap();
+    let mut second = thread.send("and tomorrow?").unwrap();
     while second.next().await.is_some() {}
     drop(second);
     let request = transport.last_request().expect("a second request");
@@ -692,13 +684,13 @@ async fn a_second_run_carries_the_first_run_s_history_and_state() {
         ],
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport.clone(), "thread-1");
+    let mut thread = Thread::<_>::new(transport.clone(), "thread-1");
 
-    let mut first = session.send("one").unwrap();
+    let mut first = thread.send("one").unwrap();
     while first.next().await.is_some() {}
     drop(first);
 
-    let mut second = session.send("two").unwrap();
+    let mut second = thread.send("two").unwrap();
     while second.next().await.is_some() {}
     drop(second);
 
@@ -710,7 +702,7 @@ async fn a_second_run_carries_the_first_run_s_history_and_state() {
     assert_ne!(requests[1].run_id, requests[0].run_id);
     assert!(requests[1].resume.is_none());
 
-    assert_eq!(session.messages().len(), 4);
+    assert_eq!(thread.messages().len(), 4);
 }
 
 #[tokio::test]
@@ -720,9 +712,9 @@ async fn a_run_error_ends_the_stream_with_the_failure() {
         Event::RunError(ag_ui::RunErrorEvent::new("model unavailable").with_code("503")),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("hi").unwrap().collect().await;
     let last = updates.last().expect("at least one update");
     assert!(matches!(
         last,
@@ -744,9 +736,9 @@ async fn a_truncated_stream_is_reported_rather_than_looking_like_a_short_answer(
         Event::text_message_content("msg-1", "Half a sen"),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("hi").unwrap().collect().await;
     let complaint = updates
         .iter()
         .filter_map(|update| match update {
@@ -760,7 +752,7 @@ async fn a_truncated_stream_is_reported_rather_than_looking_like_a_short_answer(
         "unexpected error: {complaint}"
     );
     // What did arrive is still there.
-    assert_eq!(session.applier().text_of("msg-1"), Some("Half a sen"));
+    assert_eq!(thread.applier().text_of("msg-1"), Some("Half a sen"));
 
     // And the run said it was over. A view that re-enables its input on `Done`
     // was otherwise left disabled by a dropped connection — the commonest way
@@ -783,9 +775,9 @@ async fn a_truncated_stream_marks_the_message_aborted() {
         ),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("hi").unwrap().collect().await;
     assert!(
         updates.iter().any(|update| matches!(
             update,
@@ -805,10 +797,10 @@ async fn a_transport_that_breaks_mid_run_still_ends_the_run() {
         Event::run_finished_success("thread-1", "run-1"),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::new(transport, "thread-1");
-    session.send("hi").unwrap().collect::<Vec<_>>().await;
+    let mut thread = Thread::<_>::new(transport, "thread-1");
+    thread.send("hi").unwrap().collect::<Vec<_>>().await;
 
-    let updates: Vec<_> = session.send("again").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("again").unwrap().collect().await;
     assert!(
         updates
             .iter()
@@ -833,12 +825,12 @@ async fn a_truncated_stream_ends_the_run_even_with_verification_off() {
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::builder(transport, "thread-1")
+    let mut thread = Thread::<_>::builder(transport, "thread-1")
         .verify(false)
         .build()
         .unwrap();
 
-    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
+    let updates: Vec<_> = thread.send("hi").unwrap().collect().await;
     let complaint = updates
         .iter()
         .find_map(|update| match update {
@@ -857,13 +849,13 @@ async fn a_truncated_stream_ends_the_run_even_with_verification_off() {
 }
 
 #[tokio::test]
-async fn a_session_can_be_seeded_with_history_and_run_without_a_new_message() {
+async fn a_thread_can_be_seeded_with_history_and_run_without_a_new_message() {
     let transport = ReplayTransport::new([
         Event::run_started("thread-1", "run-1"),
         Event::run_finished_success("thread-1", "run-1"),
     ])
     .matching_requests();
-    let mut session = Thread::<_>::builder(transport.clone(), "thread-1")
+    let mut thread = Thread::<_>::builder(transport.clone(), "thread-1")
         .messages(vec![
             Message::user("u-1", "earlier"),
             Message::assistant("a-1", "earlier reply"),
@@ -872,10 +864,10 @@ async fn a_session_can_be_seeded_with_history_and_run_without_a_new_message() {
         .build()
         .unwrap();
 
-    session
+    thread
         .push_message(Message::tool("t-1", "call-1", "42"))
         .unwrap();
-    let mut run = session.run().unwrap();
+    let mut run = thread.run().unwrap();
     while run.next().await.is_some() {}
     drop(run);
 

@@ -28,7 +28,6 @@ pub mod apply;
 pub mod chunks;
 pub mod error;
 pub mod interrupts;
-pub mod session;
 pub mod thread;
 pub mod transport;
 pub mod verify;
@@ -41,7 +40,6 @@ pub use apply::{
 pub use chunks::{ChunkNormalizer, normalize_all};
 pub use error::{Error, Result};
 pub use interrupts::{InterruptExt, ResumeBuilder, interrupts_of, resume_run};
-pub use session::{Session, SessionBuilder};
 pub use thread::{
     AbortHandle, MessageUpdate, ReasoningUpdate, ResumeSubmission, RunDiagnostic, RunEnd,
     RunReport, RunStream, StateViewError, SubagentUpdate, SubmissionStatus, Thread, ThreadBuilder,

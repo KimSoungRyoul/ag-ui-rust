@@ -98,10 +98,10 @@ impl Agent for Butterfingers {
 /// Runs one turn and returns the tool result the agent produced, parsed.
 async fn ship(agent: impl Agent + 'static) -> (Vec<Message>, Value) {
     let url = serve(agent).await;
-    let mut session = Thread::<_>::new(transport(&url), "cart");
+    let mut thread = Thread::<_>::new(transport(&url), "cart");
 
     {
-        let mut run = session.send("show me my cart").expect("run preflight");
+        let mut run = thread.send("show me my cart").expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("shipping a surface should not error: {error}");
@@ -109,7 +109,7 @@ async fn ship(agent: impl Agent + 'static) -> (Vec<Message>, Value) {
         }
     }
 
-    let payload = session
+    let payload = thread
         .messages()
         .iter()
         .find_map(|message| match message {
@@ -119,7 +119,7 @@ async fn ship(agent: impl Agent + 'static) -> (Vec<Message>, Value) {
         .expect("the agent should have produced a tool result");
 
     let value = serde_json::from_str(&payload).expect("the tool result should be JSON");
-    (session.messages().to_vec(), value)
+    (thread.messages().to_vec(), value)
 }
 
 #[tokio::test(flavor = "multi_thread")]

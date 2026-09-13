@@ -146,7 +146,7 @@ pub enum MessageChangeKind {
     ///
     /// Parallel calls interleave their events, so consecutive `ToolCallArgs`
     /// need not belong to the same call: `tool_call_id` is what separates them,
-    /// and arrival order is the only nesting there is — see the [session module
+    /// and arrival order is the only nesting there is — see the [thread module
     /// docs](crate::client::thread).
     ToolCallArgs {
         /// The call being appended to.

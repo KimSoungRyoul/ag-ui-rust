@@ -103,7 +103,7 @@ async fn serve(args: impl Iterator<Item = String>) -> ExitCode {
 /// `chat` — talk to it.
 async fn chat(args: impl Iterator<Item = String>) -> ExitCode {
     let mut url = DEFAULT_URL.to_owned();
-    let mut thread = DEFAULT_THREAD.to_owned();
+    let mut thread_id = DEFAULT_THREAD.to_owned();
     let mut args = args;
 
     while let Some(arg) = args.next() {
@@ -113,7 +113,7 @@ async fn chat(args: impl Iterator<Item = String>) -> ExitCode {
                 None => return fail("--url needs an endpoint"),
             },
             "--thread" => match args.next() {
-                Some(value) => thread = value,
+                Some(value) => thread_id = value,
                 None => return fail("--thread needs an id"),
             },
             other => return fail(&format!("chat: unexpected argument \"{other}\"")),
@@ -127,8 +127,8 @@ async fn chat(args: impl Iterator<Item = String>) -> ExitCode {
 
     // The tools travel on every request; the agent reads them back out of
     // `ctx.tools()` and refuses to call one that is not there.
-    let mut session = match agent
-        .thread_builder(thread.clone())
+    let mut thread = match agent
+        .thread_builder(thread_id.clone())
         .tools(board::tools())
         .build()
     {
@@ -145,9 +145,9 @@ async fn chat(args: impl Iterator<Item = String>) -> ExitCode {
         terminal = terminal.echoing();
     }
 
-    let _ = writeln!(terminal, "task board · {url} · thread {thread}");
+    let _ = writeln!(terminal, "task board · {url} · thread {thread_id}");
     let _ = writeln!(terminal, "try: add draft the agenda, book the room");
-    match chat::converse(&mut session, &mut terminal).await {
+    match chat::converse(&mut thread, &mut terminal).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(&format!("the terminal went away: {error}")),
     }

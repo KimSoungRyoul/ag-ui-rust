@@ -5,22 +5,25 @@ Use the repository dependency; no crates.io publication is implied by this versi
 
 ## Conversations
 
-| 0.3 | 0.4 |
-|---|---|
-| `Session` / `SessionBuilder` | `Thread` / `ThreadBuilder` |
-| `HttpAgent::http(url)` | `HttpAgent::new(url)` |
-| `HttpAgent::new(transport)` | `HttpAgent::from_transport(transport)` |
-| `agent.run(input)` for raw events | `agent.run_events(input)` |
-| `Session::<_, S>::new(...)` | `agent.thread_with_state(id, initial_state)?` or a typed builder |
-| `session.send(text)` | `thread.send(text)?` |
-| `session.cancel(interrupt)` | `thread.decline(interrupt)?` |
-| `run.session()` | `run.thread()` |
-| `state() -> Option<&S>` | `state() -> Result<&S, StateViewError>` |
-| Builder `.build()` | `.build()?` |
+Version 0.4.1 uses only `Thread` and `ThreadBuilder` for conversations. The old
+conversation type aliases and module are removed; update imports to `ag_ui::client`
+or `ag_ui::client::thread`.
 
-`HttpAgent` is now a concrete struct, not an alias of `RemoteAgent<HttpTransport>`.
-`RemoteAgent::new(transport)` remains the low-level custom-transport entry point.
-The Session aliases expose the **new** contracts; they do not preserve old return types.
+| Task | Supported API |
+|---|---|
+| Connect to an HTTP agent | `HttpAgent::new(url)?` |
+| Use a configured HTTP transport | `HttpAgent::from_transport(transport)` |
+| Consume literal wire events | `agent.run_events(input)` |
+| Create a typed conversation | `agent.thread_with_state(id, initial_state)?` |
+| Send a user turn | `thread.send(text)?` |
+| Decline a pending decision | `thread.decline(interrupt)?` |
+| Inspect a running conversation | `run.thread()` |
+| Read typed state | `state() -> Result<&S, StateViewError>` |
+| Finish a thread builder | `.build()?` |
+
+`HttpAgent` is a concrete struct. `RemoteAgent::new(transport)` remains the low-level
+custom-transport entry point. No compatibility aliases are provided for conversation names.
+
 Thread keeps Activity messages locally but omits them from outgoing run input, as the
 official client does. Raw `run_events()` preserves caller-supplied messages verbatim.
 

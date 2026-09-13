@@ -176,8 +176,8 @@ fn lifecycle(updates: &[Update]) -> Vec<(String, SubagentChangeKind)> {
 }
 
 /// The assistant messages, as `(text, owner)` pairs.
-fn said<T>(session: &Thread<T>) -> Vec<(String, Option<&str>)> {
-    session
+fn said<T>(thread: &Thread<T>) -> Vec<(String, Option<&str>)> {
+    thread
         .messages()
         .iter()
         .filter_map(|message| match message {
@@ -205,9 +205,9 @@ async fn wire(url: &str, thread: &str) -> Vec<Event> {
 #[tokio::test(flavor = "multi_thread")]
 async fn nested_subagents_arrive_as_a_lifecycle_and_attributed_messages() {
     let url = serve(Supervisor).await;
-    let mut session = Thread::<HttpTransport>::new(transport(&url), "nested");
+    let mut thread = Thread::<HttpTransport>::new(transport(&url), "nested");
 
-    let updates = drain(session.send("plan it").expect("run preflight")).await;
+    let updates = drain(thread.send("plan it").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert!(matches!(
         updates.last(),
@@ -226,7 +226,7 @@ async fn nested_subagents_arrive_as_a_lifecycle_and_attributed_messages() {
     );
 
     // The registry: two invocations, the inner one linked to the outer.
-    let subagents = session.subagents();
+    let subagents = thread.subagents();
     assert_eq!(subagents.len(), 2, "{subagents:?}");
     let (planner, estimator) = (&subagents[0], &subagents[1]);
     assert_eq!(planner.name, "planner");
@@ -248,7 +248,7 @@ async fn nested_subagents_arrive_as_a_lifecycle_and_attributed_messages() {
     let planner_id = planner.run_id.as_str();
     let estimator_id = estimator.run_id.as_str();
     assert_eq!(
-        said(&session),
+        said(&thread),
         [
             ("Planning.".to_owned(), None),
             ("Two steps.".to_owned(), Some(planner_id)),
@@ -260,7 +260,7 @@ async fn nested_subagents_arrive_as_a_lifecycle_and_attributed_messages() {
     );
     // The tool result is attributed too, so a client can file it under the
     // subagent that ran the tool.
-    let result = session
+    let result = thread
         .messages()
         .iter()
         .find_map(|message| match message {
@@ -331,12 +331,12 @@ async fn the_wire_carries_the_attribution_and_the_parent_link() {
 #[tokio::test(flavor = "multi_thread")]
 async fn two_subagents_may_stream_at_once_under_their_own_tags() {
     let url = serve(Interleaved).await;
-    let mut session = Thread::<HttpTransport>::new(transport(&url), "interleaved");
+    let mut thread = Thread::<HttpTransport>::new(transport(&url), "interleaved");
 
-    let updates = drain(session.send("research both").expect("run preflight")).await;
+    let updates = drain(thread.send("research both").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
 
-    let subagents = session.subagents();
+    let subagents = thread.subagents();
     assert_eq!(subagents.len(), 2, "{subagents:?}");
     assert!(
         subagents
@@ -350,7 +350,7 @@ async fn two_subagents_may_stream_at_once_under_their_own_tags() {
     let gdp = subagents[0].run_id.as_str();
     let pop = subagents[1].run_id.as_str();
     assert_eq!(
-        said(&session),
+        said(&thread),
         [
             ("GDP is up.".to_owned(), Some(gdp)),
             ("Population is flat.".to_owned(), Some(pop)),
@@ -360,12 +360,12 @@ async fn two_subagents_may_stream_at_once_under_their_own_tags() {
 
 // ---- suspended, then continued ---------------------------------------------
 
-/// Runs the first turn: the buyer pauses, and the session holds its interrupt.
+/// Runs the first turn: the buyer pauses, and the thread holds its interrupt.
 async fn pause() -> (Thread<HttpTransport>, Interrupt) {
     let url = serve(Purchasing).await;
-    let mut session = Thread::<HttpTransport>::new(transport(&url), "buy");
+    let mut thread = Thread::<HttpTransport>::new(transport(&url), "buy");
 
-    let updates = drain(session.send("buy the thing").expect("run preflight")).await;
+    let updates = drain(thread.send("buy the thing").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert_eq!(
         lifecycle(&updates),
@@ -382,12 +382,12 @@ async fn pause() -> (Thread<HttpTransport>, Interrupt) {
             _ => None,
         })
         .expect("the run paused");
-    (session, interrupt)
+    (thread, interrupt)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_subagent_that_pauses_the_run_is_suspended_and_owns_the_interrupt() {
-    let (session, interrupt) = pause().await;
+    let (thread, interrupt) = pause().await;
 
     // The interrupt names the subagent, so a client can render the question
     // inside that subagent's group rather than at the top level.
@@ -400,7 +400,7 @@ async fn a_subagent_that_pauses_the_run_is_suspended_and_owns_the_interrupt() {
         Some(BUYER)
     );
 
-    let buyer = session
+    let buyer = thread
         .subagent(&SubagentRunId::from(BUYER))
         .expect("the buyer is registered");
     assert_eq!(
@@ -411,17 +411,17 @@ async fn a_subagent_that_pauses_the_run_is_suspended_and_owns_the_interrupt() {
         }
     );
     assert_eq!(
-        said(&session),
+        said(&thread),
         [("This costs 40. May I?".to_owned(), Some(BUYER))]
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_resuming_run_continues_the_same_invocation() {
-    let (mut session, interrupt) = pause().await;
+    let (mut thread, interrupt) = pause().await;
 
     let updates = drain(
-        session
+        thread
             .resume(&interrupt, json!({"ok": true}))
             .expect("run preflight"),
     )
@@ -440,29 +440,29 @@ async fn the_resuming_run_continues_the_same_invocation() {
             ("buyer".to_owned(), SubagentChangeKind::Finished),
         ]
     );
-    assert_eq!(session.subagents().len(), 1, "{:?}", session.subagents());
+    assert_eq!(thread.subagents().len(), 1, "{:?}", thread.subagents());
     assert_eq!(
-        session.subagents()[0].status,
+        thread.subagents()[0].status,
         SubagentStatus::Finished {
             result: Some(json!({"bought": true}))
         }
     );
     // Both runs' messages belong to the one invocation.
     assert_eq!(
-        said(&session),
+        said(&thread),
         [
             ("This costs 40. May I?".to_owned(), Some(BUYER)),
             ("Bought.".to_owned(), Some(BUYER)),
         ]
     );
-    assert!(session.interrupts().is_empty());
+    assert!(thread.interrupts().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_declined_answer_fails_the_continued_invocation() {
-    let (mut session, interrupt) = pause().await;
+    let (mut thread, interrupt) = pause().await;
 
-    let updates = drain(session.decline(&interrupt).expect("run preflight")).await;
+    let updates = drain(thread.decline(&interrupt).expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert_eq!(
         lifecycle(&updates),
@@ -472,7 +472,7 @@ async fn a_declined_answer_fails_the_continued_invocation() {
         ]
     );
     assert_eq!(
-        session.subagents()[0].status,
+        thread.subagents()[0].status,
         SubagentStatus::Failed {
             message: "the purchase was declined".to_owned(),
             code: Some("declined".to_owned()),
@@ -512,15 +512,15 @@ async fn inline_visibility_hides_the_subagent_surface_and_keeps_the_work() {
         assert!(!json.contains("subagentRunId"), "{json}");
     }
 
-    // Through the session: everything the subagents did still assembles, as
+    // Through the thread: everything the subagents did still assembles, as
     // the parent's own work.
-    let mut session = Thread::<HttpTransport>::new(transport(&url), "inline-session");
-    let updates = drain(session.send("plan it").expect("run preflight")).await;
+    let mut thread = Thread::<HttpTransport>::new(transport(&url), "inline-thread");
+    let updates = drain(thread.send("plan it").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
     assert!(lifecycle(&updates).is_empty());
-    assert!(session.subagents().is_empty());
+    assert!(thread.subagents().is_empty());
     assert_eq!(
-        said(&session),
+        said(&thread),
         [
             ("Planning.".to_owned(), None),
             ("Two steps.".to_owned(), None),
@@ -553,16 +553,16 @@ async fn hidden_visibility_delivers_only_the_parents_own_events() {
         "{types:?}"
     );
 
-    let mut session = Thread::<HttpTransport>::new(transport(&url), "hidden-session");
-    let updates = drain(session.send("plan it").expect("run preflight")).await;
+    let mut thread = Thread::<HttpTransport>::new(transport(&url), "hidden-thread");
+    let updates = drain(thread.send("plan it").expect("run preflight")).await;
     assert!(errors(&updates).is_empty(), "{:?}", errors(&updates));
-    assert!(session.subagents().is_empty());
+    assert!(thread.subagents().is_empty());
     assert_eq!(
-        said(&session),
+        said(&thread),
         [("Planning.".to_owned(), None), ("Done.".to_owned(), None)]
     );
     assert!(
-        session
+        thread
             .messages()
             .iter()
             .all(|message| !matches!(message, Message::Tool(_))),
