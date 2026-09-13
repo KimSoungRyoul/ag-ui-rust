@@ -1196,17 +1196,15 @@ fn validate_responses(pending: &[Interrupt], entries: &[ResumeEntry], expiry: bo
             })?;
         if expiry {
             if let Some(timestamp) = &interrupt.expires_at {
-                let expires = time::OffsetDateTime::parse(
-                    timestamp,
-                    &time::format_description::well_known::Rfc3339,
-                )
-                .map_err(|_| {
+                let expires = chrono::DateTime::parse_from_rfc3339(timestamp).map_err(|_| {
                     Error::Request(format!(
                         "interrupt {} has an invalid expiry timestamp",
                         interrupt.id
                     ))
                 })?;
-                if expires.unix_timestamp_nanos() <= now_unix_nanos() {
+                let expires_nanos = i128::from(expires.timestamp()) * 1_000_000_000
+                    + i128::from(expires.timestamp_subsec_nanos());
+                if expires_nanos <= now_unix_nanos() {
                     return Err(Error::Request(format!(
                         "interrupt {} has expired",
                         interrupt.id
@@ -1302,7 +1300,10 @@ fn validate_snapshot(snapshot: &ThreadSnapshot) -> Result<()> {
 
 #[cfg(not(target_family = "wasm"))]
 fn now_unix_nanos() -> i128 {
-    time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => elapsed.as_nanos() as i128,
+        Err(error) => -(error.duration().as_nanos() as i128),
+    }
 }
 #[cfg(target_family = "wasm")]
 fn now_unix_nanos() -> i128 {

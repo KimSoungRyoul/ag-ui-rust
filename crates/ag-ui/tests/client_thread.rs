@@ -173,6 +173,35 @@ async fn expiry_comes_from_stored_interrupt_not_a_forged_argument() {
 }
 
 #[tokio::test]
+async fn expiry_rejects_invalid_and_offset_timestamps_before_dispatch() {
+    for (timestamp, expected) in [
+        ("2000-01-01T09:00:00.123456789+09:00", "expired"),
+        ("not-a-timestamp", "invalid expiry"),
+        ("2000-02-30T00:00:00Z", "invalid expiry"),
+    ] {
+        let mut interrupt = Interrupt::new("first", "approval");
+        interrupt.expires_at = Some(timestamp.into());
+        let transport = script([
+            Event::run_started("t", "r"),
+            Event::run_finished_interrupt("t", "r", vec![interrupt]),
+        ]);
+        let mut thread = Thread::new(transport.clone(), "t");
+        thread.send("go").unwrap().collect_report().await;
+        let before = thread.snapshot();
+        let pending = thread.interrupts()[0].clone();
+        assert!(
+            thread
+                .resume(&pending, true)
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+        assert_eq!(thread.snapshot(), before);
+        assert_eq!(transport.requests().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn lost_response_run_error_and_invalid_terminal_keep_unconfirmed_submission() {
     let error_cases = [
         vec![Event::run_started("t", "r")],
