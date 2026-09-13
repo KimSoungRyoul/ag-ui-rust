@@ -1,5 +1,5 @@
 ---
-title: HTTP로 serving
+title: HTTP endpoint
 description: axum router에 agent를 얹는 법. 그리고 그렇게 만들어진 endpoint가 주고받는 요청과 응답.
 ---
 
@@ -7,8 +7,8 @@ description: axum router에 agent를 얹는 법. 그리고 그렇게 만들어�
 멈춥니다. 일부러 그렇습니다. executor도 웹 프레임워크도 없어야 wasm으로 빌드됩니다.
 
 `ag_ui::axum`이 나머지 절반입니다. POST endpoint, `text/event-stream` 본문, content
-negotiation, 그리고 client가 끊었음을 agent에게 알리는 일을 맡습니다. 이 workspace에서 tokio,
-axum, tower에 의존하는 유일한 crate입니다.
+negotiation, 그리고 client가 끊었음을 agent에게 알리는 일을 맡습니다. `axum` feature가 이 Tokio 기반 HTTP binding을 활성화합니다.
+선택적인 `http` client feature도 reqwest를 통해 Tokio를 포함합니다.
 
 ## agent 얹기
 
@@ -306,12 +306,19 @@ tower layer는 `Service`를 감쌉니다. 그래서 `Request`와 `Response`를 �
 
 ## API
 
-- [`ag_ui::axum::RouterExt`](/ag-ui-rust/api/ag_ui/axum/trait.RouterExt.html)와
-  [`AgentEndpoint`](/ag-ui-rust/api/ag_ui/axum/struct.AgentEndpoint.html)
-- [`ag_ui::axum::AgUiInput`](/ag-ui-rust/api/ag_ui/axum/struct.AgUiInput.html)
-- [`ag_ui::axum::SseResponse`](/ag-ui-rust/api/ag_ui/axum/struct.SseResponse.html)와
-  [`negotiate`](/ag-ui-rust/api/ag_ui/axum/fn.negotiate.html)
-- [`ag_ui::axum::Error`](/ag-ui-rust/api/ag_ui/axum/enum.Error.html)
+- [`ag_ui::axum::RouterExt`](/ag-ui-rust/api/ag_ui/axum/router/trait.RouterExt.html)와
+  [`AgentEndpoint`](/ag-ui-rust/api/ag_ui/axum/router/struct.AgentEndpoint.html)
+- [`ag_ui::axum::AgUiInput`](/ag-ui-rust/api/ag_ui/axum/extract/struct.AgUiInput.html)
+- [`ag_ui::axum::SseResponse`](/ag-ui-rust/api/ag_ui/axum/respond/struct.SseResponse.html)와
+  [`negotiate`](/ag-ui-rust/api/ag_ui/axum/respond/fn.negotiate.html)
+- [`ag_ui::axum::Error`](/ag-ui-rust/api/ag_ui/axum/error/enum.Error.html)
 - 직접 transport를 만들 때를 위한
-  [`ag_ui::server::Runner`](/ag-ui-rust/api/ag_ui/server/struct.Runner.html)
+  [`ag_ui::server::Runner`](/ag-ui-rust/api/ag_ui/server/run/struct.Runner.html)
 - wire 반대편: [transport](/ag-ui-rust/ko/client/transports/)
+
+## 다음 연결 지점
+
+[서버 컴포넌트 전체 흐름](/ag-ui-rust/ko/server/) · [이 출력을 처리하는 client 가이드](/ag-ui-rust/ko/client/transports/)
+
+Cancellation token은 협력적 신호입니다. 별도로 실행한 작업도 같은 token을 관찰하거나 애플리케이션의 취소 경로에 연결해야 합니다.
+이미 실행한 외부 작업은 자동으로 rollback되지 않으며, 원격 작업이 실제로 중단됐는지는 별도 확인이 필요합니다.

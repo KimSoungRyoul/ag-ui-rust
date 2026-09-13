@@ -13,6 +13,12 @@ The important part is what a pause is on the wire. It is a **finished run** — 
 connection closes, nothing is held open, and no server-side thread survives the pause. The
 next request is an ordinary request in the same thread that happens to carry answers.
 
+
+These examples demonstrate response transport. Before performing real work, the server must correlate the decision
+with the pending action and validate current authorization, expiry, argument schemas and approval payloads.
+The presence of a response alone is not approval.
+
+
 ## The round trip
 
 ```rust
@@ -228,7 +234,13 @@ impl Agent for Planner {
             .collect();
 
         if pending.is_empty() {
-            ctx.say("Booked.")?;
+            let approved = [BUDGET, DATE].into_iter().all(|id| {
+                ctx.resume_for(id).is_some_and(|answer| {
+                    matches!(answer.status, ag_ui::ResumeStatus::Resolved)
+                        && answer.payload.as_ref() == Some(&serde_json::json!(true))
+                })
+            });
+            ctx.say(if approved { "Ready to book." } else { "Not booked." })?;
             return Ok(RunOutcome::Success);
         }
 
@@ -262,9 +274,16 @@ kills the stream.
 
 ## API
 
-- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/enum.RunOutcome.html)
-- [`ag_ui::Interrupt`](/ag-ui-rust/api/ag_ui/struct.Interrupt.html)
-- [`ag_ui::ResumeEntry`](/ag-ui-rust/api/ag_ui/struct.ResumeEntry.html) and
-  [`ResumeStatus`](/ag-ui-rust/api/ag_ui/enum.ResumeStatus.html)
-- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.resume_for)
+- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/outcome/enum.RunOutcome.html)
+- [`ag_ui::Interrupt`](/ag-ui-rust/api/ag_ui/outcome/struct.Interrupt.html)
+- [`ag_ui::ResumeEntry`](/ag-ui-rust/api/ag_ui/outcome/struct.ResumeEntry.html) and
+  [`ResumeStatus`](/ag-ui-rust/api/ag_ui/outcome/enum.ResumeStatus.html)
+- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.resume_for)
 - The client half of the round trip: [The update stream](/ag-ui-rust/client/updates/)
+
+## Connect the other side
+
+[Server component overview](/ag-ui-rust/server/) · [Client guide for this output](/ag-ui-rust/client/interrupts/)
+
+The agents here are stateless examples. A real application may restore database state or framework checkpoints.
+The AG-UI SDK does not durably store workflow progress or automatically restore an execution position.

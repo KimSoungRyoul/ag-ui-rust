@@ -3,9 +3,9 @@ title: Errors and cancellation
 description: How a run reports failure to the client, and what happens to an agent when the caller goes away mid-stream.
 ---
 
-A run that fails is still a run. The driver turns whatever escapes `Agent::run` into a
-`RUN_ERROR` event, so the client gets a well-formed stream that ends by saying what went
-wrong — never a panic, and never a body that simply stops.
+When `Agent::run` returns `Err`, the driver attempts to emit a `RUN_ERROR`.
+A panic, disconnected transport or failed emission can still truncate the stream.
+Return an error for expected failures and handle transport termination separately on the client.
 
 ```rust
 // src/agent.rs
@@ -72,8 +72,7 @@ failure mode is not a wire-contract change. The reasoning is written out in `doc
 A *panic* is not an error. It is not caught anywhere in this crate; it unwinds through
 whoever is polling the stream, as it would through any other future. Over HTTP the status
 line has already been sent by then, so the client sees a truncated body. Return
-`Err(Error::agent(…))` for failures you expect, and reach for `tower_http::catch_panic` only
-for the ones you did not.
+`Err(Error::agent(…))` for failures you expect, A service-level panic catcher does not guarantee protection while a streaming response body is being polled.
 :::
 
 ## Protocol verification
@@ -130,7 +129,7 @@ a matching start): message "msg-2" is not open [open: messages={"msg-1"}]
 ```
 
 The cost is a handful of `HashSet`s and one lookup per event. Turning off the `verify`
-feature — the crate's only feature, on by default — replaces the whole state machine with a
+feature — on by default — replaces the whole state machine with a
 zero-sized type whose `observe` is an inlined `Ok(())`, and removes the `Verification`
 variant's only source. The debug-only dump is the expensive part, which is why it is
 debug-only.
@@ -264,12 +263,19 @@ connection ends.
 
 ## API
 
-- [`ag_ui::server::Error`](/ag-ui-rust/api/ag_ui/server/enum.Error.html) and
-  [`Result`](/ag-ui-rust/api/ag_ui/server/type.Result.html)
-- [`ag_ui::server::Rule`](/ag-ui-rust/api/ag_ui/server/enum.Rule.html) and
-  [`VerificationError`](/ag-ui-rust/api/ag_ui/server/struct.VerificationError.html)
+- [`ag_ui::server::Error`](/ag-ui-rust/api/ag_ui/server/error/enum.Error.html) and
+  [`Result`](/ag-ui-rust/api/ag_ui/server/error/type.Result.html)
+- [`ag_ui::server::Rule`](/ag-ui-rust/api/ag_ui/server/error/enum.Rule.html) and
+  [`VerificationError`](/ag-ui-rust/api/ag_ui/server/error/struct.VerificationError.html)
 - [`ag_ui::server::verify`](/ag-ui-rust/api/ag_ui/server/verify/index.html) — the state
   machine, rule by rule
-- [`ag_ui::server::CancellationToken`](/ag-ui-rust/api/ag_ui/server/struct.CancellationToken.html)
-  and [`Cancelled`](/ag-ui-rust/api/ag_ui/server/struct.Cancelled.html)
+- [`ag_ui::server::CancellationToken`](/ag-ui-rust/api/ag_ui/server/cancel/struct.CancellationToken.html)
+  and [`Cancelled`](/ag-ui-rust/api/ag_ui/server/cancel/struct.Cancelled.html)
 - [Feature flags](/ag-ui-rust/reference/features/) for what `verify` costs and removes
+
+## Connect the other side
+
+[Server component overview](/ag-ui-rust/server/) · [Client guide for this output](/ag-ui-rust/client/updates/)
+
+A cancellation token is a cooperative signal. Independently spawned work must observe the same token or be connected to an application cancellation path.
+Completed external effects are not automatically rolled back, and remote termination requires separate confirmation.

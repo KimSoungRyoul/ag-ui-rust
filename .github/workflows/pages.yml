@@ -85,14 +85,12 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: website
 
-      # This is also the link check. astro.config.ts runs starlight-links-validator
-      # with `failOnError: true`, so a broken internal link fails the build here
-      # and there is deliberately no second link-checking step to add: one more
-      # would only find the same things later and disagree at the margins. Note
-      # what it does *not* cover — the plugin excludes /ag-ui-rust/api/**,
-      # because at this point that tree does not exist; the "place the rustdoc"
-      # step below is what puts it there. Links into the rustdoc are covered by
-      # that step's own assertions instead.
+      - name: check guide types
+        run: pnpm check
+        working-directory: website
+
+      # The build checks document bodies, navigation and Markdown links.
+      # API links are checked after rustdoc is copied into the artifact.
       - name: build the guide
         run: pnpm build
         working-directory: website
@@ -153,6 +151,10 @@ jobs:
           done
           exit $status
 
+      - name: validate guide links against the bundled rustdoc
+        working-directory: website
+        run: node scripts/verify-build.mjs --with-api
+
       # Runs on pull requests too. Packing the tar is the last thing that can
       # fail before a deploy, so letting a pull request do it means the only
       # untested step on main is the publish itself.
@@ -194,10 +196,6 @@ jobs:
       # every pull request; here it fails only the deploy, which is the honest
       # place for "the repository is not configured to receive this".
       #
-      # Which is not hypothetical: Pages is not enabled on this repository yet.
-      # Someone has to turn it on under Settings → Pages with **GitHub Actions**
-      # as the source before the first deploy can succeed. Until then this step
-      # is where the run stops, with that error.
       - uses: actions/configure-pages@v5
       - id: deployment
         uses: actions/deploy-pages@v4

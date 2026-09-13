@@ -1,11 +1,11 @@
 ---
-title: error와 cancellation
+title: 오류와 실행 중지
 description: run이 실패를 client에 알리는 방식. 그리고 stream 도중에 호출자가 사라졌을 때 agent에 벌어지는 일.
 ---
 
-실패한 run도 여전히 run입니다. driver는 `Agent::run`을 빠져나온 것이 무엇이든 `RUN_ERROR`
-event로 바꿉니다. 그래서 client는 온전한 stream을 받습니다. 무엇이 잘못되었는지 말하며 끝나는
-stream입니다. panic도 아니고, 그냥 뚝 끊기는 본문도 아닙니다.
+`Agent::run`이 `Err`를 반환하면 driver는 `RUN_ERROR` 전송을 시도합니다.
+Panic, 연결 해제, event 전송 실패가 발생하면 stream이 잘릴 수 있습니다.
+예상되는 실패는 error로 반환하고, client에서는 transport 종료도 별도로 처리합니다.
 
 ```rust
 // src/agent.rs
@@ -73,8 +73,8 @@ async fn main() {
 *panic*은 오류가 아닙니다. 이 crate 어디에서도 잡히지 않습니다. 다른 future에서와 똑같이,
 stream을 polling하는 쪽으로 그대로 unwind됩니다. HTTP에서는 그때쯤 상태 라인이 이미 나간
 뒤입니다. 그래서 client에게는 본문이 잘린 것으로 보입니다. 예상되는 실패에는
-`Err(Error::agent(…))`를 반환하십시오. `tower_http::catch_panic`은 예상하지 못한 것에만
-쓰십시오.
+`Err(Error::agent(…))`를 반환합니다. Service 수준의 panic catcher만으로 streaming 응답 본문의
+polling 중 panic까지 처리된다고 가정하면 안 됩니다.
 :::
 
 ## protocol verification
@@ -129,8 +129,7 @@ TEXT_MESSAGE_CONTENT breaks rule `not-open` (content and terminators require
 a matching start): message "msg-2" is not open [open: messages={"msg-1"}]
 ```
 
-비용은 `HashSet` 몇 개와 event당 조회 한 번입니다. `verify`는 이 crate의 유일한 feature flag고
-기본으로 켜져 있습니다. 이것을 끄면 상태 기계 전체가 크기 0인 타입으로 바뀝니다. `observe`가
+비용은 `HashSet` 몇 개와 event당 조회 한 번입니다. `verify` feature는 기본으로 켜져 있습니다. 이것을 끄면 상태 기계 전체가 크기 0인 타입으로 바뀝니다. `observe`가
 인라인된 `Ok(())`인 타입입니다. `Verification` 배리언트가 나올 유일한 출처도 사라집니다. 비싼
 쪽은 디버그 전용 덤프입니다. 그래서 그것이 디버그 전용입니다.
 
@@ -265,12 +264,19 @@ runner를 소비하기 전에 말입니다. 그리고 연결이 끝날 때 발�
 
 ## API
 
-- [`ag_ui::server::Error`](/ag-ui-rust/api/ag_ui/server/enum.Error.html)와
-  [`Result`](/ag-ui-rust/api/ag_ui/server/type.Result.html)
-- [`ag_ui::server::Rule`](/ag-ui-rust/api/ag_ui/server/enum.Rule.html)과
-  [`VerificationError`](/ag-ui-rust/api/ag_ui/server/struct.VerificationError.html)
+- [`ag_ui::server::Error`](/ag-ui-rust/api/ag_ui/server/error/enum.Error.html)와
+  [`Result`](/ag-ui-rust/api/ag_ui/server/error/type.Result.html)
+- [`ag_ui::server::Rule`](/ag-ui-rust/api/ag_ui/server/error/enum.Rule.html)과
+  [`VerificationError`](/ag-ui-rust/api/ag_ui/server/error/struct.VerificationError.html)
 - [`ag_ui::server::verify`](/ag-ui-rust/api/ag_ui/server/verify/index.html) — 규칙 하나하나를
   담은 상태 기계
-- [`ag_ui::server::CancellationToken`](/ag-ui-rust/api/ag_ui/server/struct.CancellationToken.html)과
-  [`Cancelled`](/ag-ui-rust/api/ag_ui/server/struct.Cancelled.html)
+- [`ag_ui::server::CancellationToken`](/ag-ui-rust/api/ag_ui/server/cancel/struct.CancellationToken.html)과
+  [`Cancelled`](/ag-ui-rust/api/ag_ui/server/cancel/struct.Cancelled.html)
 - `verify`가 무엇을 치르고 무엇을 없애는지는 [feature flag](/ag-ui-rust/ko/reference/features/)
+
+## 다음 연결 지점
+
+[서버 컴포넌트 전체 흐름](/ag-ui-rust/ko/server/) · [이 출력을 처리하는 client 가이드](/ag-ui-rust/ko/client/updates/)
+
+Cancellation token은 협력적 신호입니다. 별도로 실행한 작업도 같은 token을 관찰하거나 애플리케이션의 취소 경로에 연결해야 합니다.
+이미 실행한 외부 작업은 자동으로 rollback되지 않으며, 원격 작업이 실제로 중단됐는지는 별도 확인이 필요합니다.

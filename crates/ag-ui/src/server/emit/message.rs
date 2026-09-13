@@ -71,8 +71,8 @@ impl<'a, S> MessageHandle<'a, S> {
     /// Emits an unrelated event without closing the message.
     ///
     /// For the unordered families — `STATE_*`, `ACTIVITY_*`, `CUSTOM`, `RAW` —
-    /// which may legally interleave with a message. Opening a second message
-    /// through here is a protocol violation the verifier will reject.
+    /// which may legally interleave with a message. Raw events can open another message with a different ID. The caller must
+    /// maintain its lifecycle; the verifier checks IDs and ordering.
     pub fn emit(&mut self, event: Event) -> Result<()> {
         self.sink.emit(event)
     }

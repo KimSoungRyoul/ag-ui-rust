@@ -1,5 +1,5 @@
 ---
-title: human in the loop
+title: 승인 요청과 재개
 description: 사람을 기다리려고 run을 끝내는 법. 그리고 뒤따르는 요청에서 하던 일을 다시 집어 드는 법.
 ---
 
@@ -14,6 +14,11 @@ AG-UI는 run이 *멈출* 수 있게 해서 이를 표현합니다. agent가 `Suc
 `RUN_FINISHED` event이고, `outcome`이 `interrupt`라고 말하며 무엇이 대기 중인지 나열합니다.
 연결은 닫힙니다. 열어 둔 것도 없습니다. 멈춤을 넘어 살아남는 server 쪽 session도 없습니다. 다음
 요청은 답을 싣고 있을 뿐인, 같은 스레드의 평범한 요청입니다.
+
+
+이 예제는 응답 전달을 보여 줍니다. 실제 작업 실행 전에 서버가 요청과 응답을 연관 짓고
+현재 권한·만료·인자 schema와 승인 payload를 확인해야 합니다. 응답이 존재한다는 사실만으로 승인으로 처리하지 않습니다.
+
 
 ## 왕복 한 번
 
@@ -232,7 +237,13 @@ impl Agent for Planner {
             .collect();
 
         if pending.is_empty() {
-            ctx.say("Booked.")?;
+            let approved = [BUDGET, DATE].into_iter().all(|id| {
+                ctx.resume_for(id).is_some_and(|answer| {
+                    matches!(answer.status, ag_ui::ResumeStatus::Resolved)
+                        && answer.payload.as_ref() == Some(&serde_json::json!(true))
+                })
+            });
+            ctx.say(if approved { "Ready to book." } else { "Not booked." })?;
             return Ok(RunOutcome::Success);
         }
 
@@ -266,9 +277,16 @@ fn main() {
 
 ## API
 
-- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/enum.RunOutcome.html)
-- [`ag_ui::Interrupt`](/ag-ui-rust/api/ag_ui/struct.Interrupt.html)
-- [`ag_ui::ResumeEntry`](/ag-ui-rust/api/ag_ui/struct.ResumeEntry.html)와
-  [`ResumeStatus`](/ag-ui-rust/api/ag_ui/enum.ResumeStatus.html)
-- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.resume_for)
+- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/outcome/enum.RunOutcome.html)
+- [`ag_ui::Interrupt`](/ag-ui-rust/api/ag_ui/outcome/struct.Interrupt.html)
+- [`ag_ui::ResumeEntry`](/ag-ui-rust/api/ag_ui/outcome/struct.ResumeEntry.html)와
+  [`ResumeStatus`](/ag-ui-rust/api/ag_ui/outcome/enum.ResumeStatus.html)
+- [`RunContext::resume_for`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.resume_for)
 - 이 왕복의 client 쪽 절반: [update stream](/ag-ui-rust/ko/client/updates/)
+
+## 다음 연결 지점
+
+[서버 컴포넌트 전체 흐름](/ag-ui-rust/ko/server/) · [이 출력을 처리하는 client 가이드](/ag-ui-rust/ko/client/interrupts/)
+
+여기 나온 agent는 상태를 저장하지 않는 예제입니다. 실제 애플리케이션은 DB나 framework checkpoint를 복원할 수 있습니다.
+AG-UI SDK가 작업 진행 상태를 영속 저장하거나 중단한 실행 위치를 자동 복원하지는 않습니다.

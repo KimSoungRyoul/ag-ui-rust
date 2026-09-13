@@ -54,7 +54,7 @@ one. Nothing in the protocol says a server stores threads, and an agent that kee
 history is a conforming agent. Persisting a conversation is the application's decision.
 
 **The tool list is the client's offer, not the agent's menu.** AG-UI has no tool
-discovery: an agent cannot ask for a tool it was not sent. It also is not an allow-list —
+discovery endpoint for client capabilities. A server must not assume the client implements an unadvertised tool. The list is not an allow-list of server tools —
 emitting a call for a name absent from `tools` is a well-formed stream, and it is how an
 agent reports work it did itself. `docs/DESIGN.md` argues that case at length, and
 [Tool calls](/ag-ui-rust/server/tools/) covers what it means when you are writing an
@@ -172,7 +172,8 @@ emoji built from a zero-width joiner arrives as several pieces.
 Some producers cannot bracket their output. A provider adapter often does not learn that a
 message ended until the next one begins, so the protocol also defines
 `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_CHUNK` and `REASONING_MESSAGE_CHUNK`. A chunk carries its
-id **only on the first one** of a sequence, and everything after it inherits that id.
+id on the first one of a sequence; later chunks may repeat it or omit it when their stream can be resolved unambiguously.
+Concurrent output should repeat the ID or carry subagent attribution.
 Five chunk events can therefore be one message.
 
 A consumer normalizes chunks back into explicit start/content/end triples before anything
@@ -212,7 +213,7 @@ They group into nine families:
 
 That `Event` is exhaustive rather than `#[non_exhaustive]` is a deliberate decision with a
 price: a new protocol event becomes a compile error for everyone who matches on events,
-and a major version of this SDK. The reasoning — under-coverage should be loud, and a `_`
+and a compatibility-breaking SDK version (the next minor during `0.x`). The reasoning — under-coverage should be loud, and a `_`
 arm is exactly what makes it quiet — is in
 [Design commitments](/ag-ui-rust/design/commitments/).
 

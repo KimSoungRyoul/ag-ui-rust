@@ -22,10 +22,7 @@ doctest에 있기 때문입니다. crate별 README, workspace quickstart, 이 �
 보증의, 유일한 실행 가능한 증명입니다. emitter API를 느슨하게 만들어도 nextest는
 초록으로 남습니다.
 
-그 틈은 보기 쉽고, coverage로 착각하기도 쉽습니다. 이 페이지를 쓸 당시
-`cargo nextest list --workspace --all-features`는 50개 binary에 걸친 672개 test
-case를 보고했습니다. 그중 doctest는 하나도 없었습니다. 두 번째 명령이 보고하는
-모든 것에 대해 첫 번째 명령은 할 말이 없습니다.
+`cargo nextest list`에는 doctest가 포함되지 않습니다. 전체 결과는 두 명령을 함께 실행해 확인합니다.
 
 명령 하나로 끝내고 싶고 nextest의 출력 없이 지낼 수 있다면
 `cargo test --workspace --all-features`가 두 종류를 다 돌립니다. CI는 두 형태를 다
@@ -220,28 +217,18 @@ vendor한 fixture 열일곱 개에 조용히 후행 개행을 더했습니다. �
 
 ## CI가 돌리는 것
 
-job은 열 개입니다. 아홉 개는 모든 push와 pull request에서 돕니다. 열 번째는 주간
-timer로 돕니다. 어느 것이든 손으로 발동시킬 수 있습니다.
-
-| job | 하는 일 |
+| 검사 | 범위 |
 | --- | --- |
-| `hygiene (prek)` | 위의 `.pre-commit-config.yaml`을 `--all-files`로. `cargo fmt --all -- --check`가 사는 곳입니다. 포매팅 gate는 하나이고, 기여자가 직접 돌리는 그 자리에 있습니다. |
-| `test` | `cargo clippy --workspace --all-targets --all-features -- -D warnings`, 그다음 `cargo test --workspace --all-features`, 그다음 `cargo test --doc --workspace --all-features`를 일부러 한 번 더. |
-| `doctest error codes (nightly)` | doctest를 nightly에서 한 번 더. `compile_fail,E0499` annotation의 error code를 강제하는 유일한 장치입니다. build에서 nightly를 쓰는 유일한 곳입니다. |
-| `executor-agnostic` | core, server, client, a2ui를 `wasm32-unknown-unknown`으로 build하고(`cargo check` 다섯 번), 의존성 graph 네 개에 tokio가 없음을 단언합니다. |
-| `feature matrix` | `cargo check --all-targets` 열다섯 번. feature를 하나씩 단독으로, 그리고 crate마다 기본 feature를 끈 채로. |
-| `MSRV 1.85` | 1.85에서 `cargo check --workspace --all-features --all-targets`. edition 2024를 이해하는 첫 compiler라, 그 약속에는 여유분이 없습니다. |
-| `docs` | `RUSTDOCFLAGS: -D warnings`로 `cargo doc --workspace --all-features --no-deps`. 공개 API가 곧 제품이라, 깨진 intra-doc link는 산출물의 결함입니다. |
-| `package manifest` | `publish = false`가 없는 crate 둘에 `cargo package --list`를 돌립니다. `ag-ui`와 `ag-ui-a2ui`입니다. `xtask`, e2e suite, 예제와 대비됩니다. 각각이 자기 `README.md`와 `LICENSE`를 packaging하는지 단언합니다. offline입니다. archive를 만들지도, 무엇을 올리지도 않습니다. |
-| `protocol drift vs upstream` | `cargo run -p xtask -- drift-check`. offline이고 결정적이라, 필수 검사가 될 자격이 있습니다. |
-| `upstream freshness (scheduled)` | 주간으로 도는 `drift-check --upstream`. network가 필요하므로 gate가 아니라 timer입니다. rate limit은 이것을 실패시킬 수 없고, 진짜 upstream 변화만 실패시킵니다. |
+| `hygiene` | 파일 형식·오타·Rust formatting |
+| `test` | Clippy, workspace 테스트와 doctest |
+| `doctest-error-codes` | Nightly에서 compile-fail 오류 코드 확인 |
+| `executor-agnostic` | Wasm 컴파일과 Tokio 의존성 격리 |
+| `features`, `doc-features` | 선택한 feature별 컴파일과 rustdoc |
+| `msrv` | Rust 1.85에서 모든 feature와 target 검사 |
+| `renderer-interop` | 공식 A2UI core와 데이터·컴포넌트 동작 비교 |
+| `docs`, `package` | Rustdoc와 배포 crate 구성 |
+| `drift`, `upstream-freshness` | Offline snapshot 비교와 예약된 upstream 최신성 검사 |
 
-마지막 두 개는 [검증 체계](/ag-ui-rust/ko/design/verification/)입니다.
-
-이 가운데 두 job은 손대기 전에 근거를 알아 둘 값어치가 있습니다. `hygiene` job의
-Rust toolchain은 하중을 집니다. `cargo-fmt` hook이 `cargo fmt`를 shell로 불러내는데,
-rustfmt가 없으면 건너뛰지 않고 실패합니다. 그리고 이 job을 지우면 CI에서 포매팅이
-통째로 사라집니다. clippy는 일부러 `hygiene`에 넣지 *않았습니다*. 설정이 그것을
-pre-push 단계에 두는데, `prek run`은 기본적으로 거기에 닿지 않습니다. 그래서
-clippy는 `test` job에 남습니다. 자기 몫의 compile 비용을 따로 치르는 대신 그 job의
-cache를 함께 씁니다.
+Pages workflow는 문서 빌드·타입·링크를 검사하고 rustdoc와 함께 배포합니다.
+`main`에 머지된 변경만 운영 문서에 배포됩니다. 테스트 개수와 외부 모델 목록은 변하므로
+현재 명령 결과와 workflow 파일을 기준으로 확인합니다.

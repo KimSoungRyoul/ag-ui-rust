@@ -165,8 +165,8 @@ event 세 개가 start와 그 content와 end를 그 자체로 완결된 event �
 그렇습니다. upstream API가 message의 끝을 다음 message가 시작되기 전에는 알려 주지
 않기 때문입니다.
 
-id와 이름은 **첫 chunk에만** 실립니다. 그래서 한 stream의 끝은 다음 stream의
-시작에서, 아니면 run의 끝에서만 알 수 있습니다.
+첫 chunk는 식별 정보를 제공합니다. 이후 chunk에서도 ID를 반복할 수 있으며, 출처가 분명할 때 생략할 수 있습니다.
+동시 출력에서는 ID나 subagent 출처를 명시해야 합니다. 새 stream이나 run 종료가 이전 stream을 닫습니다.
 
 ```text
 TEXT_MESSAGE_CHUNK { messageId: "msg-1", delta: "Hel" }
@@ -218,3 +218,6 @@ module은 다뤄지는 집합을 `COVERED_EVENT_TYPES`로 나열하고 `is_cover
 
 port를 proto 정의가 아니라 TypeScript Zod schema를 보고 쓴 이유도 이것입니다. 36개
 중 15개가 빠진 진실의 원천은 원천 노릇을 할 수 없습니다.
+
+`COVERED_EVENT_TYPES`는 protocol snapshot의 protobuf oneof 필드를 설명합니다. 실제 encoder 지원 목록이 아닙니다.
+이 SDK의 protobuf encoding은 모든 event에 대해 미지원입니다.

@@ -1,5 +1,5 @@
 ---
-title: 실행 결과 렌더링
+title: 메시지와 하위 agent 렌더링
 description: 섞여 도착하는 메시지·도구·subagent 변경과 중단 상태를 표시합니다.
 ---
 

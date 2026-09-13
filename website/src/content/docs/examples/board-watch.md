@@ -50,7 +50,7 @@ call onto one line — which turns out to be a real trade, and it gets its own s
 
 A provider adapter often cannot bracket its output: the upstream API does not say a message
 ended until the next one begins. So it sends `*_CHUNK` events, which fold start, content
-and end into one and carry their id **only on the first**. Five events, one message:
+and end into chunk sequences. This example includes the ID on the first chunk and omits it on later chunks; repeating the ID is also valid. Five events, one message:
 
 ```text
 > chunks
@@ -291,9 +291,9 @@ the tool result that happened to carry it.
 
 ### Why `--tools` exists
 
-In AG-UI the *client* offers the tools and the agent picks from them. There is no
-discovery: nothing lets an agent ask for a tool it was not sent, and an agent handed none
-simply fails.
+This example requires the task-board tool descriptions in its request as application policy.
+AG-UI itself accepts an empty tool list and allows a server to report its own tools.
+The client sends metadata here; task-board performs the actual board mutations on the server.
 
 ```text
 $ board-watch watch --url http://127.0.0.1:8080/agent      # no --tools

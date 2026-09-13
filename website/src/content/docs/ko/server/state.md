@@ -1,12 +1,12 @@
 ---
-title: shared state
+title: 공유 상태
 description: agent의 상태를 client에 내보내는 법. 그리고 snapshot과 JSON Patch delta 중 무엇을 고르는지.
 ---
 
 AG-UI run에는 client가 함께 비추어 보는 shared state가 실려 다닙니다. agent가 편집하는 보드,
 채워 넣는 폼, 초안을 잡는 문서 같은 것들입니다. client는 자기 사본을 `RunAgentInput.state`로
-보냅니다. agent가 그것을 바꿉니다. 모든 변경은 `STATE_SNAPSHOT`이나 `STATE_DELTA`가 되어
-되돌아 나갑니다.
+보냅니다. agent가 그것을 바꿉니다. `publish_state()` 등으로 명시적으로 전송한 변경이 `STATE_SNAPSHOT`이나 `STATE_DELTA`로
+되돌아 나갑니다. `state_mut()`만 호출하면 event는 나가지 않습니다.
 
 server 쪽에서 그 상태는 타입이 붙은 값입니다. `Agent::State`, 즉 여러분의 구조체입니다. 어느
 event로 나갈지는 알아서 정해집니다.
@@ -51,7 +51,7 @@ fn main() -> ag_ui::server::Result<()> {
 
 | 메서드 | 하는 일 |
 | --- | --- |
-| `state()` | 마지막으로 내보낸 시점 기준의, 타입이 붙은 상태 |
+| `state()` | 아직 내보내지 않은 변경까지 포함한 현재 typed 상태 |
 | `state_mut()` | 타입이 붙은 상태, 가변으로. 아무것도 emit하지 않습니다 |
 | `publish_state()` | `state_mut`이 남긴 것을 내보냅니다. 바뀐 것이 없으면 아무 일도 하지 않습니다 |
 | `update_state(\|s\| …)` | 한 번의 호출로 바꾸고 내보냅니다 |
@@ -228,12 +228,16 @@ run이 끝날 때까지 아무것도 보지 못합니다.
 
 ## API
 
-- [`RunContext::state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.state),
-  [`state_mut`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.state_mut),
-  [`publish_state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.publish_state),
-  [`update_state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.update_state),
-  [`set_state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.set_state)
-- [`ag_ui::server::StateManager`](/ag-ui-rust/api/ag_ui/server/struct.StateManager.html)와
-  [`StatePublish`](/ag-ui-rust/api/ag_ui/server/enum.StatePublish.html)
-- [`ag_ui::PatchOperation`](/ag-ui-rust/api/ag_ui/enum.PatchOperation.html)
+- [`RunContext::state`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.state),
+  [`state_mut`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.state_mut),
+  [`publish_state`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.publish_state),
+  [`update_state`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.update_state),
+  [`set_state`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.set_state)
+- [`ag_ui::server::StateManager`](/ag-ui-rust/api/ag_ui/server/state/struct.StateManager.html)와
+  [`StatePublish`](/ag-ui-rust/api/ag_ui/server/state/enum.StatePublish.html)
+- [`ag_ui::PatchOperation`](/ag-ui-rust/api/ag_ui/patch/enum.PatchOperation.html)
 - 같은 이야기의 client 쪽: [thread](/ag-ui-rust/ko/client/thread/)
+
+## 다음 연결 지점
+
+[서버 컴포넌트 전체 흐름](/ag-ui-rust/ko/server/) · [이 출력을 처리하는 client 가이드](/ag-ui-rust/ko/client/state/)

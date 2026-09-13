@@ -2,93 +2,32 @@ import starlight from '@astrojs/starlight';
 import { defineConfig } from 'astro/config';
 import starlightLinksValidator from 'starlight-links-validator';
 
-// GitHub Pages serves this as a *project* site, so the deployed URL has the
-// repository name in it. `site` and `base` are both needed and do different
-// jobs: `site` is what makes canonical URLs and the sitemap absolute, `base` is
-// what keeps every generated href inside /ag-ui-rust/ instead of pointing at
-// the domain root, where nothing of ours is served.
-//
-// Neither Astro nor Starlight rewrites hand-written links: `<a href>`, MDX
-// `<LinkCard href>` and the hero actions in frontmatter are emitted verbatim.
-// Only links Starlight itself builds — sidebar entries, the favicon, prev/next
-// — get `base` prefixed for free. Everything hand-written has to carry the base
-// in the page, and it is written out rather than interpolated from
-// `import.meta.env.BASE_URL`, because the links validator below only reads
-// string literals and would skip an interpolated href without saying so. A
-// wrong base is then a red build instead of a 404 after deploy.
+// Hand-written links and static redirect targets must include the GitHub Pages base.
 const site = 'https://kimsoungryoul.github.io';
 const base = '/ag-ui-rust';
 
 export default defineConfig({
 	site,
 	base,
+	redirects: {
+		'/': `${base}/start/`,
+		'/ko/': `${base}/ko/start/`,
+	},
 	integrations: [
 		starlight({
-			// Per-language site titles are supported — Starlight's schema types
-			// `title` as `string | Record<lang, string>` and requires a key for the
-			// default language. It is left as a plain string anyway, because the
-			// title is the crate name and a crate name is spelled the same in
-			// Korean. The record form could only ever hold a duplicate of this
-			// line, and a duplicate is one more place to forget when a name
-			// changes.
 			title: 'ag-ui-rust',
-			// `description`, unlike `title`, has no per-locale form at all: the
-			// schema is a plain optional string, and Starlight uses it only as the
-			// fallback for a page that sets none (`data.description ||
-			// config.description`). That costs nothing here, because every page
-			// carries its own `description` in frontmatter, so a Korean page gets a
-			// Korean description from the page itself rather than from this line.
 			description:
 				'A Rust SDK for the AG-UI protocol — build agent backends and agent clients in Rust.',
-			// `root` is the locale key that means "served from the site root", so
-			// English stays at /ag-ui-rust/start/ rather than moving to
-			// /ag-ui-rust/en/start/. That is the whole reason for spelling English
-			// as `root` instead of `en`: adding a second language must not change
-			// a single existing URL, and this was checked rather than assumed — the
-			// set of HTML files under dist/ is identical before and after, with
-			// /ko/* the only addition.
-			//
-			// Korean pages that do not exist yet are not 404s. Starlight builds a
-			// fallback route for every default-locale page a translation is missing
-			// for, serving the English content under /ko/ with a notice above it,
-			// so the Korean sidebar is fully navigable from the first page
-			// translated rather than the last.
 			defaultLocale: 'root',
 			locales: {
 				root: { label: 'English', lang: 'en' },
 				ko: { label: '한국어', lang: 'ko' },
 			},
-			// Nothing in this repo supplies Korean UI strings, and nothing needs
-			// to: Starlight ships translations/ko.json in the package, covering the
-			// search box, the theme and language pickers, "on this page", prev/next,
-			// the aside titles and the untranslated-content notice. A
-			// src/content/i18n/ collection is therefore deliberately absent — an
-			// override file would only be a copy of the package's, and copies rot.
-			// Both pickers Starlight ships are a native `<select>`. `appearance:
-			// none` reaches the closed box and stops there — the open list is drawn
-			// by the operating system, so on this site it arrived as grey OS chrome
-			// floating over a dark header, and no stylesheet here could touch it.
-			// The replacements are ordinary markup with ordinary CSS.
-			//
-			// The language one is not only a reskin: its options are real
-			// `<a href>` links, so switching language survives JavaScript being
-			// off, opens in a new tab on middle-click or cmd-click, and shows its
-			// destination on hover. A `<select>` can do none of that.
-			//
-			// ThemeProvider is deliberately *not* overridden. It is what sets
-			// `data-theme` before first paint, and its `updatePickers` still owns
-			// the theme trigger's icon; ThemeSelect.astro keeps the element name
-			// and the `svg.label-icon` that contract is written against.
 			components: {
+				SiteTitle: './src/components/SiteTitle.astro',
 				LanguageSelect: './src/components/LanguageSelect.astro',
 				ThemeSelect: './src/components/ThemeSelect.astro',
 			},
-			logo: {
-				src: './src/assets/logo.svg',
-				alt: 'ag-ui-rust',
-			},
-			// Starlight prefixes this with `base` itself (`fileWithBase`), so the
-			// path here is site-root-relative and must not repeat /ag-ui-rust.
 			favicon: '/favicon.svg',
 			social: [
 				{
@@ -100,47 +39,36 @@ export default defineConfig({
 			editLink: {
 				baseUrl: 'https://github.com/KimSoungRyoul/ag-ui-rust/edit/main/website/',
 			},
-			// Read from `git log` at build time. The deploy workflow therefore needs
-			// real history — a `fetch-depth: 1` checkout would date every page to
-			// the day of the deploy.
 			lastUpdated: true,
 			customCss: ['./src/styles/custom.css'],
+			expressiveCode: {
+				plugins: [{
+					name: 'rustdoc-snippets',
+					hooks: {
+						preprocessLanguage: ({ codeBlock }) => {
+							if (codeBlock.language.startsWith('rust,')) codeBlock.language = 'rust';
+						},
+						preprocessCode: ({ codeBlock }) => {
+							if (codeBlock.language !== 'rust') return;
+							// rustdoc setup lines stay in the compiled source, outside the displayed example.
+							const lines = codeBlock.getLines();
+							for (let index = lines.length - 1; index >= 0; index--) {
+								const line = lines[index]!;
+								if (/^\s*#(?: |$)/.test(line.text)) codeBlock.deleteLine(index);
+								else if (/^\s*##/.test(line.text)) line.editText(0, undefined, line.text.replace(/^(\s*)##/, '$1#'));
+							}
+						},
+					},
+				}],
+			},
 			plugins: [
 				starlightLinksValidator({
-					// The point of installing this at all: a broken internal link is a
-					// red build, not a warning nobody reads. Explicit rather than left
-					// to the default, because the value is what the CI gate depends on.
 					failOnError: true,
-					// A Korean page linking to a page that has not been translated
-					// yet is not an error. Starlight serves the English text under
-					// its own "not yet translated" notice at that URL, which is a
-					// working page and a deliberate feature; left at its default of
-					// `true`, this plugin rejects the link anyway, and the whole
-					// site then has to be translated atomically or not linked
-					// across at all. Every new English page would owe a Korean one
-					// before anything Korean could point at it, which is the kind
-					// of tax that ends with someone deleting the check.
-					//
-					// Verified this does not blunt the gate: with it off, a link to
-					// a page that exists in neither locale still fails, and so does
-					// a link to a heading anchor that does not exist. What it
-					// accepts is exactly the fallback case.
 					errorOnFallbackPages: false,
-					// The rustdoc at /ag-ui-rust/api/ is injected at deploy time rather
-					// than built by Astro, so to this plugin the whole directory is
-					// simply missing and any prose link into it is an error. The
-					// sidebar entry below is not what needs this — sidebar links are
-					// not validated at all — the pages that cite a type are.
-					// Patterns are matched against the link exactly as authored, which
-					// is why they carry the base.
+					// rustdoc is copied into this directory by the Pages workflow.
 					exclude: [`${base}/api`, `${base}/api/**`],
 				}),
 			],
-			// Every label carries its Korean translation inline. Starlight keys
-			// `translations` by language tag rather than by locale key and falls
-			// back to `label` when a language is missing, so an untranslated entry
-			// is silently English rather than an error — which is exactly why they
-			// are filled in here in one pass instead of page by page.
 			sidebar: [
 				{
 					label: 'Start here',
@@ -152,51 +80,57 @@ export default defineConfig({
 							translations: { ko: 'AG-UI 동작 방식' },
 							link: '/start/protocol/',
 						},
-						{ label: 'The crates', translations: { ko: 'crate 구성' }, link: '/start/crates/' },
+						{ label: 'Crates and features', translations: { ko: 'crate와 feature 선택' }, link: '/start/crates/' },
 					],
 				},
 				{
-					label: 'Serving an agent',
-					translations: { ko: 'agent serving' },
+					label: 'Connect an agent (server)',
+					translations: { ko: 'Agent에 AG-UI 연결하기' },
 					items: [
-						{ label: 'The Agent trait', translations: { ko: 'Agent trait' }, link: '/server/agent/' },
-						{ label: 'Streaming text', translations: { ko: 'text streaming' }, link: '/server/text/' },
-						{ label: 'Tool calls', translations: { ko: 'tool call' }, link: '/server/tools/' },
-						{ label: 'Shared state', translations: { ko: 'shared state' }, link: '/server/state/' },
+						{ label: 'Integration quickstart', translations: { ko: '연결 시작' }, link: '/server/' },
+						{ label: 'Agent and run context', translations: { ko: 'Agent와 실행 컨텍스트' }, link: '/server/agent/' },
+						{ label: 'HTTP endpoint', translations: { ko: 'HTTP endpoint' }, link: '/server/axum/' },
+						{ label: 'Streaming text', translations: { ko: '텍스트 스트리밍' }, link: '/server/text/' },
+						{ label: 'Tool calls and results', translations: { ko: '도구 호출·결과 전달' }, link: '/server/tools/' },
+						{ label: 'Shared state', translations: { ko: '공유 상태' }, link: '/server/state/' },
 						{
 							label: 'Human in the loop',
-							translations: { ko: 'human in the loop' },
+							translations: { ko: '승인 요청과 재개' },
 							link: '/server/interrupts/',
 						},
-						{ label: 'Subagents', translations: { ko: 'subagent' }, link: '/server/subagents/' },
+						{ label: 'Subagent output and status', translations: { ko: '하위 agent 출력·상태 전달' }, link: '/server/subagents/' },
 						{
 							label: 'Errors and cancellation',
-							translations: { ko: 'error와 cancellation' },
+							translations: { ko: '오류와 실행 중지' },
 							link: '/server/errors/',
 						},
-						{ label: 'Serving over HTTP', translations: { ko: 'HTTP로 serving' }, link: '/server/axum/' },
 					],
 				},
 				{
-					label: 'Consuming an agent',
-					translations: { ko: 'agent 사용' },
+					label: 'Call an agent (Rust client)',
+					translations: { ko: 'Rust에서 Agent 호출하기' },
 					items: [
-						{ label: 'Threads', translations: { ko: '대화 스레드' }, link: '/client/thread/' },
+						{ label: 'Client quickstart', translations: { ko: '호출 시작' }, link: '/client/' },
+						{ label: 'Connect and manage threads', translations: { ko: '연결과 대화 관리' }, link: '/client/thread/' },
 						{
 							label: 'The update stream',
-							translations: { ko: 'update stream' },
+							translations: { ko: '업데이트 처리' },
 							link: '/client/updates/',
 						},
 						{
 							label: 'Rendering a run',
-							translations: { ko: 'run rendering' },
+							translations: { ko: '메시지와 하위 agent 렌더링' },
 							link: '/client/rendering/',
 						},
-						{ label: 'Transports', translations: { ko: 'transport' }, link: '/client/transports/' },
+						{ label: 'Client tools and results', translations: { ko: 'Client 도구와 결과 전달' }, link: '/client/tools/' },
+						{ label: 'Shared state', translations: { ko: '공유 상태 읽기' }, link: '/client/state/' },
+						{ label: 'Approvals and recovery', translations: { ko: '승인 응답과 복원' }, link: '/client/interrupts/' },
+						{ label: 'Transports', translations: { ko: 'Transport 선택' }, link: '/client/transports/' },
 					],
 				},
 				{
 					label: 'A2UI',
+					collapsed: true,
 					translations: { ko: 'A2UI' },
 					items: [
 						{ label: 'Overview', translations: { ko: '개요' }, link: '/a2ui/' },
@@ -205,8 +139,9 @@ export default defineConfig({
 					],
 				},
 				{
-					label: 'Design',
-					translations: { ko: '설계' },
+					label: 'Design and testing',
+					collapsed: true,
+					translations: { ko: '설계와 테스트' },
 					items: [
 						{
 							label: 'Design commitments',
@@ -219,31 +154,22 @@ export default defineConfig({
 				},
 				{
 					label: 'Reference',
-					translations: { ko: 'reference' },
+					translations: { ko: '레퍼런스' },
 					items: [
 						{
 							label: 'Event reference',
-							translations: { ko: 'event reference' },
+							translations: { ko: 'Event 목록' },
 							link: '/reference/events/',
 						},
-						{ label: 'Feature flags', translations: { ko: 'feature flag' }, link: '/reference/features/' },
+						{ label: 'Feature flags', translations: { ko: 'Feature 선택' }, link: '/reference/features/' },
 						{
 							label: 'Platforms and MSRV',
-							translations: { ko: 'platform과 MSRV' },
+							translations: { ko: '플랫폼과 Rust 버전' },
 							link: '/reference/platforms/',
 						},
 						{
 							label: 'API docs (rustdoc)',
 							translations: { ko: 'API 문서 (rustdoc)' },
-							// Written out as a full URL, and that is load-bearing rather
-							// than sloppy. Starlight injects the current locale into every
-							// relative sidebar link — a bare `/api/` becomes `/ko/api/` on
-							// Korean pages — and the rustdoc is copied to /ag-ui-rust/api/
-							// once, not once per language. A link with a protocol skips
-							// both the locale injection and the `base` prefixing and is
-							// emitted verbatim, which is the only form that lands on the
-							// same rustdoc from both languages. Nothing catches this if it
-							// regresses: sidebar links are not validated.
 							link: `${site}${base}/api/`,
 							attrs: { target: '_blank' },
 						},

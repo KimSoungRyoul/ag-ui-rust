@@ -168,8 +168,8 @@ self-contained event. They exist for producers that cannot bracket their output,
 which is most provider adapters: the upstream API does not tell them a message
 has ended until the next one begins.
 
-They carry their id and name **only on the first chunk**, so the end of one
-stream is knowable only from the start of the next, or from the end of the run:
+The first chunk supplies identifying fields. Later chunks may repeat the ID or omit it when attribution is unambiguous.
+For concurrent output, include IDs or subagent attribution. Starting another stream or ending the run closes the prior stream:
 
 ```text
 TEXT_MESSAGE_CHUNK { messageId: "msg-1", delta: "Hel" }
@@ -224,3 +224,6 @@ transport.
 This is also why the port is written against the TypeScript Zod schemas rather
 than the proto definitions: a source of truth that is missing 15 of 36 events
 cannot serve as one.
+
+`COVERED_EVENT_TYPES` describes protobuf oneof fields in the protocol snapshot, not an implemented encoder.
+This SDK does not encode any event as protobuf.

@@ -5,8 +5,8 @@ description: Publishing an agent's state to the client, and how snapshots and JS
 
 An AG-UI run carries a piece of shared state that the client mirrors: the board an agent is
 editing, the form it is filling in, the document it is drafting. The client sends its copy
-in `RunAgentInput.state`, the agent changes it, and every change goes back out as a
-`STATE_SNAPSHOT` or a `STATE_DELTA`.
+in `RunAgentInput.state`, the agent changes it, and explicitly publishes changes as a
+`STATE_SNAPSHOT` or a `STATE_DELTA`. `state_mut()` alone emits nothing.
 
 On the server side that state is a typed value — `Agent::State`, whatever your struct is —
 and the events are chosen for you.
@@ -51,7 +51,7 @@ Five methods, and what separates most of them is only when the event goes out:
 
 | Method | What it does |
 | --- | --- |
-| `state()` | the typed state, as of the last publish |
+| `state()` | the current typed state, including unpublished mutations |
 | `state_mut()` | the typed state, mutably. Emits nothing |
 | `publish_state()` | sends whatever `state_mut` left behind. A no-op when nothing changed |
 | `update_state(\|s\| …)` | mutate and publish, in one call |
@@ -225,12 +225,16 @@ see nothing until the run was over.
 
 ## API
 
-- [`RunContext::state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.state),
-  [`state_mut`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.state_mut),
-  [`publish_state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.publish_state),
-  [`update_state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.update_state),
-  [`set_state`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.set_state)
-- [`ag_ui::server::StateManager`](/ag-ui-rust/api/ag_ui/server/struct.StateManager.html) and
-  [`StatePublish`](/ag-ui-rust/api/ag_ui/server/enum.StatePublish.html)
-- [`ag_ui::PatchOperation`](/ag-ui-rust/api/ag_ui/enum.PatchOperation.html)
+- [`RunContext::state`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.state),
+  [`state_mut`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.state_mut),
+  [`publish_state`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.publish_state),
+  [`update_state`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.update_state),
+  [`set_state`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.set_state)
+- [`ag_ui::server::StateManager`](/ag-ui-rust/api/ag_ui/server/state/struct.StateManager.html) and
+  [`StatePublish`](/ag-ui-rust/api/ag_ui/server/state/enum.StatePublish.html)
+- [`ag_ui::PatchOperation`](/ag-ui-rust/api/ag_ui/patch/enum.PatchOperation.html)
 - The client side of the same story: [Threads](/ag-ui-rust/client/thread/)
+
+## Connect the other side
+
+[Server component overview](/ag-ui-rust/server/) · [Client guide for this output](/ag-ui-rust/client/state/)

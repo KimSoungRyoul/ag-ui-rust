@@ -1,7 +1,10 @@
 ---
-title: subagent
-description: run의 일부를 자식 agent에 맡기는 법, 그 agent가 emit한 것에 출처를 다는 법, 그리고 오래된 client에게 무엇을 보여 줄지 고르는 법.
+title: 하위 agent 출력·상태 전달
+description: 이미 실행되는 하위 agent의 출력 출처와 상태를 client에 전달합니다.
 ---
+
+`ctx.subagent_events()`는 event의 출처를 지정합니다. 하위 agent를 생성하거나 실행하지 않습니다.
+실제 실행·병렬화·graph routing은 framework가 맡고, 아래 코드는 그 출력을 표현하는 예제입니다.
 
 많은 agent가 일을 맡깁니다. supervisor가 조사를 자식에게 넘깁니다. planner가 하위 작업을
 나눠 줍니다. tool call 하나가 그 자체로 중첩된 agent이기도 합니다. frontend에는 그 모두가
@@ -221,12 +224,15 @@ impl Agent for Janitor {
     type State = ();
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let approved = ctx.resume_for(APPROVE).is_some();
+        let decision = ctx.resume_for(APPROVE).map(|answer| {
+            matches!(answer.status, ag_ui::ResumeStatus::Resolved)
+                && answer.payload.as_ref() == Some(&json!(true))
+        });
 
         // 두 run 모두 같은 id입니다. 새 id를 쓰면 subagent가 하나 더 그려집니다.
         let mut deleter = ctx.subagent_with(SubagentStartedEvent::new(DELETER, "deleter"))?;
-        if approved {
-            deleter.say("Deleted.")?;
+        if let Some(approved) = decision {
+            deleter.say(if approved { "Deleted." } else { "Not deleted." })?;
             deleter.finish()?;
             return Ok(RunOutcome::Success);
         }
@@ -264,6 +270,16 @@ async fn main() {
     let Event::SubagentStarted(again) = &resumed[1] else { unreachable!() };
     assert_eq!(again.subagent_run_id.as_str(), DELETER);
     assert_eq!(resumed.last().map(Event::event_type), Some(EventType::RunFinished));
+
+    for answer in [ResumeEntry::cancelled(APPROVE), ResumeEntry::resolved(APPROVE, json!(false))] {
+        let mut input = RunAgentInput::new("t", "run-denied");
+        input.resume = Some(vec![answer]);
+        let events: Vec<Event> = run(Janitor, input).map(Result::unwrap).collect().await;
+        assert!(events.iter().any(|event| matches!(event,
+            Event::TextMessageContent(content) if content.delta == "Not deleted.")));
+        assert!(!events.iter().any(|event| matches!(event,
+            Event::TextMessageContent(content) if content.delta == "Deleted.")));
+    }
 }
 ```
 
@@ -273,7 +289,7 @@ async fn main() {
 
 ## 직접 하는 동시 실행
 
-handle 둘을 동시에 열 수는 없습니다. 두 번째 `subagent()`는 borrow check error입니다. 이
+handle 둘을 동시에 열 수는 없습니다. 두 번째 `subagent_events()`는 borrow check error입니다. 이
 SDK에서 겹치는 것은 모두 그렇습니다. 정말로 동시에 stream하는 subagent들은
 [병렬 tool call](/ag-ui-rust/ko/server/tools/)과 같은 상황입니다. subagent마다 event에
 `Event::with_subagent_run_id`로 직접 tag를 달고, 뒤섞인 그대로 emit하십시오. lifecycle
@@ -403,16 +419,23 @@ opt-in입니다. `ctx.subagent_events(..)`를 쓴 agent는 그럴 뜻이 있었�
 
 ## API
 
-- [`RunContext::subagent`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.subagent),
-  [`subagent_with`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.subagent_with),
-  [`new_subagent_run_id`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.new_subagent_run_id)
-- [`ag_ui::server::SubagentHandle`](/ag-ui-rust/api/ag_ui/server/struct.SubagentHandle.html)
-- [`ag_ui::server::SubagentVisibility`](/ag-ui-rust/api/ag_ui/server/enum.SubagentVisibility.html)과
-  [`SubagentFilter`](/ag-ui-rust/api/ag_ui/server/struct.SubagentFilter.html)
-- [`ag_ui::SubagentStartedEvent`](/ag-ui-rust/api/ag_ui/struct.SubagentStartedEvent.html),
-  [`SubagentFinishedEvent`](/ag-ui-rust/api/ag_ui/struct.SubagentFinishedEvent.html),
-  [`SubagentErrorEvent`](/ag-ui-rust/api/ag_ui/struct.SubagentErrorEvent.html),
-  [`SubagentOutcome`](/ag-ui-rust/api/ag_ui/enum.SubagentOutcome.html)
+- [`RunContext::subagent_events`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.subagent_events),
+  [`subagent_with`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.subagent_with),
+  [`new_subagent_run_id`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.new_subagent_run_id)
+- [`ag_ui::server::SubagentHandle`](/ag-ui-rust/api/ag_ui/server/emit/struct.SubagentHandle.html)
+- [`ag_ui::server::SubagentVisibility`](/ag-ui-rust/api/ag_ui/server/transform/enum.SubagentVisibility.html)과
+  [`SubagentFilter`](/ag-ui-rust/api/ag_ui/server/transform/struct.SubagentFilter.html)
+- [`ag_ui::SubagentStartedEvent`](/ag-ui-rust/api/ag_ui/event/subagent/struct.SubagentStartedEvent.html),
+  [`SubagentFinishedEvent`](/ag-ui-rust/api/ag_ui/event/subagent/struct.SubagentFinishedEvent.html),
+  [`SubagentErrorEvent`](/ag-ui-rust/api/ag_ui/event/subagent/struct.SubagentErrorEvent.html),
+  [`SubagentOutcome`](/ag-ui-rust/api/ag_ui/event/subagent/enum.SubagentOutcome.html)
 - [`Event::subagent_run_id`](/ag-ui-rust/api/ag_ui/event/enum.Event.html#method.subagent_run_id)와
   [`EventType::is_attributable`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html#method.is_attributable)
 - 소비하는 쪽 절반: [update stream](/ag-ui-rust/ko/client/updates/)
+
+## 다음 연결 지점
+
+[서버 컴포넌트 전체 흐름](/ag-ui-rust/ko/server/) · [이 출력을 처리하는 client 가이드](/ag-ui-rust/ko/client/rendering/)
+
+재개된 작업을 이전 invocation과 연결할 수 있을 때 같은 ID를 사용합니다. 연결할 수 없다면 새 ID를 사용할 수 있습니다.
+Client는 같은 ID의 continuation과 새 ID 양쪽을 처리해야 합니다.
