@@ -20,7 +20,13 @@ permissions:
   contents: write
 
 jobs:
+  audit:
+    uses: ./.github/workflows/audit.yml
+    permissions:
+      contents: read
+
   release:
+    needs: audit
     name: verify and release
     runs-on: ubuntu-latest
     steps:

@@ -1202,8 +1202,22 @@ fn validate_responses(pending: &[Interrupt], entries: &[ResumeEntry], expiry: bo
                         interrupt.id
                     ))
                 })?;
+                // RFC 3339 leap seconds can only end a UTC month.
+                if expires.timestamp_subsec_nanos() >= 1_000_000_000 {
+                    let utc_date = expires.naive_utc().date();
+                    let ends_month = utc_date
+                        .succ_opt()
+                        .is_some_and(|next| chrono::Datelike::day(&next) == 1);
+                    if expires.timestamp().rem_euclid(86_400) != 86_399 || !ends_month {
+                        return Err(Error::Request(format!(
+                            "interrupt {} has an invalid expiry timestamp",
+                            interrupt.id
+                        )));
+                    }
+                }
+                // Preserve the previous parser's leap-second clamp and full year range.
                 let expires_nanos = i128::from(expires.timestamp()) * 1_000_000_000
-                    + i128::from(expires.timestamp_subsec_nanos());
+                    + i128::from(expires.timestamp_subsec_nanos().min(999_999_999));
                 if expires_nanos <= now_unix_nanos() {
                     return Err(Error::Request(format!(
                         "interrupt {} has expired",

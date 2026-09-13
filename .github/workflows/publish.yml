@@ -46,7 +46,13 @@ permissions:
   id-token: write
 
 jobs:
+  audit:
+    uses: ./.github/workflows/audit.yml
+    permissions:
+      contents: read
+
   publish:
+    needs: audit
     name: publish to crates.io
     runs-on: ubuntu-latest
     steps:

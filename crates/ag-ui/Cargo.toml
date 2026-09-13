@@ -70,7 +70,7 @@ futures-core = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 json-patch = { workspace = true, optional = true }
-chrono = { version = "0.4.42", default-features = false, features = ["std"], optional = true }
+chrono = { version = "0.4.45", default-features = false, features = ["std"], optional = true }
 reqwest = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 # `time` is for the optional SSE keep-alive on the axum binding.

@@ -133,3 +133,7 @@ and the vendored upstream event baseline.
 ## License
 
 MIT. Vendored A2UI schemas and conformance fixtures retain their Apache-2.0 license.
+
+Dependency security is checked with `cargo audit --deny warnings` on every CI run,
+daily against current RustSec advisories, and before release and registry publishing.
+Vulnerabilities and warnings (including yanked crates) fail the check.

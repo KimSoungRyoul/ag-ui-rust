@@ -173,6 +173,52 @@ async fn expiry_comes_from_stored_interrupt_not_a_forged_argument() {
 }
 
 #[tokio::test]
+async fn expiry_preflight_handles_offsets_fractional_seconds_and_invalid_dates() {
+    for (timestamp, expected_error) in [
+        ("9999-12-31T23:59:59.999999999+09:00", None),
+        ("2999-01-01t00:00:00.123456789z", None),
+        ("2000-01-01T09:00:00+09:00", Some("expired")),
+        ("1969-12-31T23:59:59.999999999Z", Some("expired")),
+        ("2016-12-31T23:59:60Z", Some("expired")),
+        ("2017-01-01T08:59:60+09:00", Some("expired")),
+        ("2999-01-01T12:00:60Z", Some("invalid expiry timestamp")),
+        ("2999-02-30T00:00:00Z", Some("invalid expiry timestamp")),
+        ("2999-01-01T00:00:00", Some("invalid expiry timestamp")),
+        (
+            "Fri, 01 Jan 2999 00:00:00 GMT",
+            Some("invalid expiry timestamp"),
+        ),
+        (
+            "2999-01-01T00:00:00Z trailing",
+            Some("invalid expiry timestamp"),
+        ),
+    ] {
+        let mut interrupt = Interrupt::new("first", "approval");
+        interrupt.expires_at = Some(timestamp.into());
+        let transport = script([
+            Event::run_started("t", "r"),
+            Event::run_finished_interrupt("t", "r", vec![interrupt.clone()]),
+        ]);
+        let mut thread = Thread::new(transport.clone(), "t");
+        thread.send("go").unwrap().collect_report().await;
+        let before = thread.snapshot();
+        match expected_error {
+            Some(message) => assert!(
+                thread
+                    .resume(&interrupt, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message),
+                "{timestamp}"
+            ),
+            None => drop(thread.resume(&interrupt, true).unwrap()),
+        }
+        assert_eq!(thread.snapshot(), before, "{timestamp}");
+        assert_eq!(transport.requests().len(), 1, "{timestamp}");
+    }
+}
+
+#[tokio::test]
 async fn expiry_rejects_invalid_and_offset_timestamps_before_dispatch() {
     for (timestamp, expected) in [
         ("2000-01-01T09:00:00.123456789+09:00", "expired"),

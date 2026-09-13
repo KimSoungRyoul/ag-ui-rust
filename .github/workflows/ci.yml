@@ -15,6 +15,11 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  audit:
+    uses: ./.github/workflows/audit.yml
+    permissions:
+      contents: read
+
   # File hygiene and formatting, driven by prek — a drop-in pre-commit
   # replacement that is a single Rust binary. CI and the contributor's own
   # pre-commit hook run the same hooks out of the same
