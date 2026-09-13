@@ -12,7 +12,7 @@ use ag_ui::client::interrupts::ResumeBuilder;
 use ag_ui::client::transport::Transport;
 use ag_ui::client::{
     InterruptExt as _, MessageChangeKind, MessageUpdate, ReasoningChangeKind, RunEnd, RunStream,
-    Session, SubagentChangeKind, Update,
+    SubagentChangeKind, Thread, Update,
 };
 use ag_ui::{Interrupt, Message, MessageId, ResumeEntry, ToolCallId};
 use futures_util::StreamExt as _;
@@ -56,7 +56,7 @@ pub struct Watch {
     /// [session docs]: https://docs.rs/ag-ui-client/latest/ag_ui::client/session/index.html
     pub in_order: bool,
     /// Stop reading after this many updates and drop the stream — what a user
-    /// hitting Ctrl-C does, and the only cancellation a client actually has.
+    /// hitting Ctrl-C does, while the explicit abort handle is demonstrated by review-desk.
     pub stop_after: Option<usize>,
 }
 
@@ -126,7 +126,7 @@ impl<R, W: Write> Write for Console<R, W> {
 ///
 /// `quit` and end-of-input both stop it.
 pub async fn watch<T: Transport>(
-    session: &mut Session<T, Board>,
+    session: &mut Thread<T, Board>,
     settings: Watch,
     console: &mut Console<impl BufRead, impl Write>,
 ) -> io::Result<()> {
@@ -145,21 +145,31 @@ pub async fn watch<T: Transport>(
 
 /// One turn, including however many pauses it takes to finish.
 pub async fn turn<T: Transport>(
-    session: &mut Session<T, Board>,
+    session: &mut Thread<T, Board>,
     said: &str,
     settings: Watch,
     console: &mut Console<impl BufRead, impl Write>,
 ) -> io::Result<()> {
     // Each `drive` call ends the mutable borrow `send`/`resume_many` takes,
     // which is what lets the next one start.
-    let mut pending = drive(session.send(said), settings, console).await?;
+    let mut pending = drive(
+        session.send(said).map_err(io::Error::other)?,
+        settings,
+        console,
+    )
+    .await?;
 
     while !pending.is_empty() {
         // Every pending decision answered in *one* request. A run pauses on all
         // of them at once and only sees what the resuming request carries, so
         // answering one per request never terminates.
         let entries = answer(&pending, settings, console)?;
-        pending = drive(session.resume_many(entries), settings, console).await?;
+        pending = drive(
+            session.resume_many(entries).map_err(io::Error::other)?,
+            settings,
+            console,
+        )
+        .await?;
     }
 
     for line in view::panel(session) {
@@ -198,6 +208,9 @@ async fn drive<T: Transport>(
             Update::Reasoning(reasoning) if reasoning.change == ReasoningChangeKind::Ended => {
                 writeln!(out, "  think  {}", reasoning.text)?;
             }
+            Update::Reasoning(reasoning) if reasoning.change == ReasoningChangeKind::Aborted => {
+                writeln!(out, "  think  {} [stopped]", reasoning.text)?;
+            }
 
             // Typed, and already patched: this arrived as a STATE_SNAPSHOT or a
             // STATE_DELTA and nothing here can tell which.
@@ -235,8 +248,8 @@ async fn drive<T: Transport>(
             _ => {}
         }
 
-        // Dropping the stream is the whole of client-side cancellation: polling
-        // it is what pulls bytes, so letting go stops the run at the far end.
+        // Dropping stops local consumption. This local server also watches
+        // disconnects; a remote server must confirm its own cancellation.
         if settings.stop_after == Some(seen) {
             writeln!(out, "  stop   dropped the stream after {seen} updates")?;
             return Ok(pending);
@@ -257,6 +270,7 @@ fn delegated(change: &SubagentChangeKind) -> &'static str {
         SubagentChangeKind::Finished => "finished",
         SubagentChangeKind::Suspended => "suspended",
         SubagentChangeKind::Failed => "failed",
+        SubagentChangeKind::Aborted => "stopped without a confirmed result",
         _ => "changed",
     }
 }
@@ -276,6 +290,7 @@ fn ended(end: &RunEnd) -> String {
             Some(code) => format!("failed [{code}] {message}"),
             None => format!("failed {message}"),
         },
+        RunEnd::Aborted => "aborted locally".to_owned(),
     }
 }
 
@@ -339,6 +354,10 @@ impl Open {
             }
 
             MessageChangeKind::Ended => self.close_text(out),
+            MessageChangeKind::Aborted => {
+                self.close_text(out)?;
+                writeln!(out, "  stopped partial message")
+            }
 
             MessageChangeKind::ToolCallStarted { tool_call_id, name } => {
                 self.calls

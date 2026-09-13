@@ -8,7 +8,7 @@
 
 mod common;
 
-use ag_ui::client::{Session, Update};
+use ag_ui::client::{Thread, Update};
 use ag_ui::server::{Agent, Result, RunContext};
 use ag_ui::{Event, Message, PatchOperation, RunOutcome};
 use common::{serve, transport};
@@ -92,11 +92,17 @@ fn split_evenly(text: &str, parts: usize) -> Vec<&str> {
 }
 
 /// One run against a served [`Awkward`].
-async fn run_once() -> Session<ag_ui::client::transport::HttpTransport, Document> {
+async fn run_once() -> Thread<ag_ui::client::transport::HttpTransport, Document> {
     let url = serve(Awkward).await;
-    let mut session = Session::<_, Document>::new(transport(&url), "wire");
+    let mut session = Thread::<_, Document>::builder(transport(&url), "wire")
+        .state(serde_json::json!(Document::default()))
+        .build()
+        .expect("typed thread");
+    session.set_next_run_id("wire-run-1");
     {
-        let mut run = session.send("say something awkward");
+        let mut run = session
+            .send("say something awkward")
+            .expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("an awkward payload is not a malformed stream: {error}");
@@ -136,7 +142,7 @@ async fn a_long_multibyte_message_reassembles_character_for_character() {
 async fn a_state_document_larger_than_any_chunk_arrives_whole() {
     let session = run_once().await;
     assert_eq!(
-        session.state(),
+        session.state().ok(),
         Some(&Document {
             body: bulky(),
             lines: 4_000,
@@ -149,11 +155,17 @@ async fn a_state_document_larger_than_any_chunk_arrives_whole() {
 #[tokio::test(flavor = "multi_thread")]
 async fn state_events_may_interleave_with_an_open_message() {
     let url = serve(Awkward).await;
-    let mut session = Session::<_, Document>::new(transport(&url), "wire");
+    let mut session = Thread::<_, Document>::builder(transport(&url), "wire")
+        .state(serde_json::json!(Document::default()))
+        .build()
+        .expect("typed thread");
+    session.set_next_run_id("wire-run-1");
 
     let mut states = Vec::new();
     {
-        let mut run = session.send("say something awkward");
+        let mut run = session
+            .send("say something awkward")
+            .expect("run preflight");
         while let Some(update) = run.next().await {
             match update {
                 Update::State(state) => states.push(state.lines),

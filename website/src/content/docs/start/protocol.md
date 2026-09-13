@@ -258,7 +258,7 @@ are two ids, and the reusable half is the `name`. A subagent that pauses on an i
 closes with a `suspended` outcome instead of a success, and may announce the same id again
 on the run that resumes it. Two subagents that stream at once interleave under their own
 tags, exactly as two tool calls do. [Subagents](/ag-ui-rust/server/subagents/) is the
-producing side; [The update stream](/ag-ui-rust/client/updates/#subagents) is the consuming
+producing side; [The update stream](/ag-ui-rust/client/updates/) is the consuming
 one.
 
 Every event, message, tool call and resume entry also carries an optional `metadata`

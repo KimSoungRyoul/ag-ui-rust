@@ -65,13 +65,13 @@ fn a_turn_generates_validates_and_ships_a_surface() {
     assert_eq!(surface.components.len(), 4);
 
     // 3. The reconstructed surface validates against its own data.
-    let report =
-        Validator::new(&catalog).validate_surface(&surface.components, Some(&surface.data_model));
+    let report = Validator::new(&catalog).validate_model(&surface.components, &surface.data_model);
     assert!(report.is_valid(), "{:?}", report.errors);
     assert!(report.unreachable.is_empty());
 
     // 4. Bindings resolve the way the renderer will resolve them.
-    let root = Scope::root(&surface.data_model);
+    let json_model = surface.data_model.to_json().unwrap();
+    let root = Scope::root(&json_model);
     assert_eq!(root.resolve_string("/title"), "Your order");
     assert_eq!(
         root.item("/items", 1)
@@ -119,7 +119,10 @@ fn a_follow_up_turn_edits_the_surface_without_re_creating_it() {
     assert_eq!(prior.surface_id, "order");
     assert_eq!(prior.catalog_id.as_deref(), Some(BASIC_CATALOG_ID));
     assert_eq!(prior.components.len(), 4);
-    assert_eq!(prior.data_model["items"][0]["name"], "Espresso");
+    assert_eq!(
+        prior.data_model.to_json().unwrap()["items"][0]["name"],
+        "Espresso"
+    );
 
     // The prompt shows the model the current tree and forbids re-creation.
     let prompt = build_subagent_prompt(
@@ -150,7 +153,7 @@ fn a_follow_up_turn_edits_the_surface_without_re_creating_it() {
     let mut merged = prior.components.clone();
     merged.retain(|c| c.id != "root");
     merged.extend(edit.components.iter().cloned());
-    let mut data = prior.data_model.clone();
+    let mut data = prior.data_model.to_json().unwrap();
     data["total"] = json!("$7.50");
     let report = Validator::new(&catalog).validate_surface(&merged, Some(&data));
     assert!(report.is_valid(), "{:?}", report.errors);
@@ -363,12 +366,14 @@ fn a_catalog_is_negotiated_then_pruned_into_the_prompt() {
         }
     })];
     let renderer = ClientCapabilities {
-        supported_catalog_ids: vec!["example.com:design-system".to_string()],
-        inline_catalogs: vec![json!({"components": {"Sparkline": {"type": "object"}}})],
+        supported_catalog_ids: vec!["example.com:extended".to_string()],
+        inline_catalogs: vec![
+            json!({"catalogId":"example.com:extended","components": {"Text":{}, "Sparkline": {"type": "object"}}}),
+        ],
     };
 
     let negotiated = select_catalog_schema(&agent_catalogs, &renderer, true).unwrap();
-    assert_eq!(negotiated["catalogId"], "example.com:design-system");
+    assert_eq!(negotiated["catalogId"], "example.com:extended");
     assert!(negotiated["components"]["Sparkline"].is_object());
 
     // The prompt carries only the components this turn is allowed to use.

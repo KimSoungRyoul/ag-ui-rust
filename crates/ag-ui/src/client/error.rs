@@ -9,6 +9,14 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A local request failed before dispatch.
+    #[error("request rejected: {0}")]
+    Request(String),
+
+    /// A saved local conversation is invalid or unsupported.
+    #[error("invalid thread snapshot: {0}")]
+    Snapshot(String),
+
     /// A frame's payload was not valid JSON, or not a valid [`Event`].
     ///
     /// [`Event`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/event/enum.Event.html

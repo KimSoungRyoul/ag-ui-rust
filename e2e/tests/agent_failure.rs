@@ -11,7 +11,7 @@ mod common;
 
 use std::time::Duration;
 
-use ag_ui::client::{Error as ClientError, RemoteAgent, RunEnd, RunParams, Session, Update};
+use ag_ui::client::{Error as ClientError, RemoteAgent, RunEnd, RunParams, Thread, Update};
 use ag_ui::server::{Agent, Error, Result, RunContext};
 use ag_ui::{Event, EventType, Message, RunOutcome, TextMessageRole};
 use common::{serve, transport};
@@ -86,7 +86,7 @@ async fn a_failing_agent_ends_its_stream_with_run_error() {
 
     let events: Vec<Event> = timeout(DEADLINE, async {
         agent
-            .run(RunParams::new("broken", "broken-run-1"))
+            .run_events(RunParams::new("broken", "broken-run-1"))
             .map(|event| event.expect("a failing agent is not a broken stream"))
             .collect()
             .await
@@ -120,11 +120,12 @@ async fn a_failing_agent_ends_its_stream_with_run_error() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_client_surfaces_the_failure_as_an_error_and_a_failed_ending() {
     let url = serve(Broken).await;
-    let mut session = Session::<_>::new(transport(&url), "broken");
+    let mut session = Thread::<_>::new(transport(&url), "broken");
+    session.set_next_run_id("broken-run-1");
 
     let updates = timeout(DEADLINE, async {
         let mut updates = Vec::new();
-        let mut run = session.send("what is the weather?");
+        let mut run = session.send("what is the weather?").expect("run preflight");
         while let Some(update) = run.next().await {
             updates.push(update);
         }
@@ -164,10 +165,11 @@ async fn the_client_surfaces_the_failure_as_an_error_and_a_failed_ending() {
 #[tokio::test(flavor = "multi_thread")]
 async fn what_the_agent_managed_to_say_before_failing_is_kept() {
     let url = serve(Broken).await;
-    let mut session = Session::<_>::new(transport(&url), "broken");
+    let mut session = Thread::<_>::new(transport(&url), "broken");
+    session.set_next_run_id("broken-run-1");
 
     {
-        let mut run = session.send("what is the weather?");
+        let mut run = session.send("what is the weather?").expect("run preflight");
         while run.next().await.is_some() {}
     }
 
@@ -182,11 +184,11 @@ async fn what_the_agent_managed_to_say_before_failing_is_kept() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failure_with_a_message_still_open_is_still_a_clean_stream() {
     let url = serve(Abrupt).await;
-    let mut session = Session::<_>::new(transport(&url), "abrupt");
+    let mut session = Thread::<_>::new(transport(&url), "abrupt");
 
     let updates = timeout(DEADLINE, async {
         let mut updates = Vec::new();
-        let mut run = session.send("go on");
+        let mut run = session.send("go on").expect("run preflight");
         while let Some(update) = run.next().await {
             updates.push(update);
         }
@@ -227,11 +229,11 @@ async fn a_failure_with_a_message_still_open_is_still_a_clean_stream() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_panicking_agent_ends_the_clients_run_rather_than_hanging_it() {
     let url = serve(Exploder).await;
-    let mut session = Session::<_>::new(transport(&url), "boom");
+    let mut session = Thread::<_>::new(transport(&url), "boom");
 
     let updates = timeout(DEADLINE, async {
         let mut updates = Vec::new();
-        let mut run = session.send("what is the weather?");
+        let mut run = session.send("what is the weather?").expect("run preflight");
         while let Some(update) = run.next().await {
             updates.push(update);
         }
@@ -264,7 +266,7 @@ async fn a_state_the_agent_cannot_decode_fails_the_run_rather_than_the_request()
     let client = RemoteAgent::new(transport(&url));
 
     let events: Vec<Event> = client
-        .run(RunParams::new("picky", "picky-run-1").state(json!({"not": "a number"})))
+        .run_events(RunParams::new("picky", "picky-run-1").state(json!({"not": "a number"})))
         .map(|event| event.expect("a rejected state is not a broken stream"))
         .collect()
         .await;

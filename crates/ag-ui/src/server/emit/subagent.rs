@@ -10,10 +10,9 @@ use crate::server::error::Result;
 
 /// One open subagent invocation.
 ///
-/// Created by [`RunContext::subagent`](crate::server::RunContext::subagent).
-/// `SUBAGENT_STARTED` has already gone out; `Drop` emits `SUBAGENT_FINISHED`
-/// with a success outcome, including on the early return that a `?`
-/// produces.
+/// Created by [`RunContext::subagent_events`](crate::server::RunContext::subagent_events).
+/// `SUBAGENT_STARTED` has already gone out. Finish, fail or suspend explicitly:
+/// dropping an unfinished scope restores attribution without inventing an outcome.
 ///
 /// A subagent is a *scope*, like a step: everything emitted through the
 /// handle comes out attributed to it. The handle therefore dereferences to
@@ -26,7 +25,7 @@ use crate::server::error::Result;
 /// # use ag_ui::server::RunContext;
 /// # let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
 /// {
-///     let mut researcher = ctx.subagent("researcher")?;
+///     let mut researcher = ctx.subagent_events("researcher")?;
 ///     researcher.say("Three sources found.")?;   // attributed, through Deref
 ///     researcher.finish_with(serde_json::json!({ "sources": 3 }))?;
 /// }
@@ -51,9 +50,10 @@ use crate::server::error::Result;
 ///
 /// The terminator names the subagent it closes and is not itself attributed
 /// to it, so every method here restores the enclosing attribution *before*
-/// emitting. `Drop` cannot tell success from failure: on the error path you
-/// care about, call [`fail`](Self::fail) — or [`suspend`](Self::suspend) when
-/// the run is about to pause on an interrupt the subagent raised.
+/// emitting. A parent error may terminate with the child still open. A successful
+/// or interrupted parent must explicitly close every announced child; otherwise
+/// the run driver reports a protocol error, including when `verify` is disabled.
+/// This handle records events; the application executes the work.
 #[derive(Debug)]
 pub struct SubagentHandle<'a, S> {
     ctx: &'a mut RunContext<S>,
@@ -111,8 +111,7 @@ impl<'a, S> SubagentHandle<'a, S> {
     /// Emits `SUBAGENT_FINISHED` with a success outcome and consumes the
     /// handle.
     ///
-    /// Only worth calling over letting the handle drop when you want to see
-    /// the error: `Drop` cannot report one.
+    /// Unlike `Drop`, this explicitly reports successful completion.
     pub fn finish(mut self) -> Result<()> {
         self.leave();
         self.ctx
@@ -187,11 +186,6 @@ impl<S> Drop for SubagentHandle<'_, S> {
     fn drop(&mut self) {
         if !self.ended {
             self.leave();
-            // Nowhere to report a failure to; a dead channel or a cancelled run
-            // makes the terminator moot anyway.
-            let _ = self
-                .ctx
-                .emit(Event::subagent_finished_success(self.id.clone()));
         }
     }
 }

@@ -109,7 +109,7 @@ or MCP. It implies `toolkit`, because everything it converts lives there.
 ```toml
 # A2UI without AG-UI.
 [dependencies.ag-ui-a2ui]
-version = "0.3"
+git = "https://github.com/KimSoungRyoul/ag-ui-rust"
 default-features = false
 features = ["toolkit"]
 ```
@@ -164,3 +164,15 @@ Two other jobs constrain features from a different direction. `msrv` builds
 newer compiler. `executor-agnostic` asserts tokio is absent from four dependency graphs, one of
 which is `ag_ui::client --no-default-features` — see
 [Platforms and MSRV](/ag-ui-rust/reference/platforms/).
+
+
+## A2UI 0.4 features
+
+| Feature | Dependencies | Purpose |
+|---|---|---|
+| `schema-validation` | `toolkit`, `jsonschema` | Full Draft 2020-12 validation using local resources |
+| `author` | `schema-validation` | Async generation and immutable validated output |
+| `ag-ui-server` | `author`, `ag-ui/server` | `send_a2ui` without HTTP or Tokio |
+
+These features are opt-in. The client ID generator and expiry parser also add
+`getrandom` and `time`; they do not introduce an executor.

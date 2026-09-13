@@ -156,7 +156,7 @@ from the set another feature pulls in:
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.3", default-features = false, features = ["server", "sse"] }
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", default-features = false, features = ["server", "sse"] }
 ```
 
 One thing survives that switch. Whether a terminal event has already gone out is
@@ -205,8 +205,8 @@ fn main() {
 }
 ```
 
-A `Session` runs the streaming form by default. There is no cargo feature here —
-it is a runtime switch, `SessionBuilder::verify(false)`, for producers whose
+A `Thread` runs the streaming form by default. There is no cargo feature here —
+it is a runtime switch, `ThreadBuilder::verify(false)`, for producers whose
 quirks you have decided to live with. What you lose by turning it off is the
 diagnosis, not the conversation: the applier stays tolerant either way.
 

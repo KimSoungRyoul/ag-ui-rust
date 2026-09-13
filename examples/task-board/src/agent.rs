@@ -261,7 +261,7 @@ fn apply(
                 // dereferences to the run context, so the sentence, the tool
                 // call and the state publish below are the same code the
                 // other commands run — they merely come out attributed.
-                let mut delegate = ctx.subagent(name)?;
+                let mut delegate = ctx.subagent_events(name)?;
                 stream(&mut delegate, &finding)?;
 
                 let mut call = offered(&mut delegate, board::ADD_TASK)?;
@@ -272,7 +272,7 @@ fn apply(
 
                 added.push(format!("#{} {}", task.id, task.title));
                 // `finish_with` is the subagent's `RUN_FINISHED.result`; a
-                // handle that merely drops finishes with no payload.
+                // handle must be ended explicitly; Drop only restores attribution.
                 delegate.finish_with(json!({"added": task.id}))?;
             }
             Ok(Report {

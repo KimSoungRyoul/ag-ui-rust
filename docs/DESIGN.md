@@ -83,14 +83,13 @@ The same reasoning inverts for errors, which is why they carry the attribute. No
 an exhaustive match over failure modes, callers route on a handful of variants and fall
 through on the rest, and a new failure mode is not a protocol change.
 
-`ag_ui::client::RunEnd` sits with `Event` rather than with the errors, for the same reason
-scaled down: a run ends in exactly the three ways the protocol defines, that match is the one
-a front-end most wants checked — it decides whether the input goes live again — and a fourth
-way to end a run *would* be a wire-contract change. `Update` keeps the attribute: it is a view
-model rather than a wire type, and a new kind of thing worth redrawing is not a protocol change.
+`ag_ui::client::RunEnd` is exhaustive so a UI handles remote success, interrupt,
+failure and local abort explicitly. `Aborted` is local observation, not a new wire
+event. `Update` remains non-exhaustive because new display changes can be added
+without changing the protocol.
 
 The runtime side agrees with the type side. An event type this build does not know fails to
-deserialize, `Session` reports it and ends the run as `RunEnd::Failed`. A frontend talking
+deserialize, `Thread` reports it and ends the run as `RunEnd::Failed`. A frontend talking
 to a newer agent stops with an error naming the unknown type rather than quietly rendering
 three quarters of a conversation.
 
@@ -212,7 +211,7 @@ it belongs to and writes the field on each event it emits. That doubles every em
 subagent-aware and a plain variant of each — and still misses `ctx.emit`, which is the path
 every hand-built event takes.
 
-So the attribution lives one layer down, in the event sink. `ctx.subagent(name)` announces
+So the attribution lives one layer down, in the event sink. `ctx.subagent_events(name)` announces
 the subagent and sets a scope on the sink; while it is open, every attributable event that
 arrives untagged is tagged, whichever emitter produced it, and an event the agent tagged
 explicitly is left alone. The handle that represents the scope dereferences to the run
@@ -239,7 +238,7 @@ subagent support fails while decoding the three new event types. That is a real 
 and `SubagentVisibility::inline()` and `hidden()` exist for it.
 
 This crate defaults the other way. A transformer that rewrites the stream is opt-in here like
-every other transformer: an agent that wrote `ctx.subagent(..)` meant it, and silently
+every other transformer: an agent that wrote `ctx.subagent_events(..)` meant it, and silently
 flattening what it said would make the emitted stream and the wire disagree by default,
 which is the kind of surprise the rest of this document argues against. The producer is the
 one who knows how old its consumers are, so the producer flips it, per endpoint.
@@ -266,9 +265,29 @@ An agent that wants the stricter rule can have it in one line, because
 unoffered. `examples/task-board` does exactly that, but only for the tools it genuinely expects
 the client to run.
 
-## A2UI pins to v0.9
+## A2UI v0.9 family
 
-The A2UI spec is at v1.0, but every shipping toolkit — TypeScript, .NET, Python — still stamps
-`v0.9`, and .NET's constants file marks these values a "cross-language wire contract" that "must
-not diverge". Implementing v1.0 wire values today would mean not interoperating with any of them.
-v1.0 goes behind a feature when the toolkits move.
+The SDK accepts v0.9 and v0.9.1. Low-level builders retain v0.9 as their wire default;
+the author selects a version explicitly. v1.0 RPC payloads cannot be emitted as v0.9.
+Official schemas are pinned locally. Catalog identifiers follow the document being
+negotiated, with explicit compatibility aliases rather than URL rewriting.
+
+Data-model field omission removes a value; explicit null stores null. Array holes and
+an absent root use the lossless local DataModel representation and never silently become null.
+
+
+## Conversations and protocol observation
+
+`HttpAgent` owns reusable connection settings and creates `Thread` conversations.
+A thread owns messages, raw state, its typed view and pending interrupts; it does
+not automatically fetch or persist server history. A `RunStream` lazily dispatches
+one request. Preflight failures leave the conversation unchanged.
+
+A subagent emitter records application-owned work. It must be explicitly finished,
+failed or suspended. Drop restores attribution but cannot infer the work outcome.
+The producer tracks open child lifecycles before visibility transforms and enforces
+closure on RunFinished even without optional detailed verification. RunError can
+terminate with children open.
+
+The 0.4 migration and implementation contract are in `migration-0.4.md` and
+`sdk-api-improvement-proposal.ko.md`.

@@ -233,4 +233,4 @@ see nothing until the run was over.
 - [`ag_ui::server::StateManager`](/ag-ui-rust/api/ag_ui/server/struct.StateManager.html) and
   [`StatePublish`](/ag-ui-rust/api/ag_ui/server/enum.StatePublish.html)
 - [`ag_ui::PatchOperation`](/ag-ui-rust/api/ag_ui/enum.PatchOperation.html)
-- The client side of the same story: [Sessions](/ag-ui-rust/client/session/)
+- The client side of the same story: [Threads](/ag-ui-rust/client/thread/)

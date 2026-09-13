@@ -488,7 +488,7 @@ fn a_tool_result_closes_the_chunk_streamed_call_it_answers() {
     // A chunk-streamed call has no `TOOL_CALL_END` of its own, so the result
     // is the first event that says the call is over. Until this was handled the
     // synthesized end came out *after* the result — a stream both verifiers
-    // reject, and whose `TOOL_CALL_RESULT` a `Session` then discards.
+    // reject, and whose `TOOL_CALL_RESULT` a `Thread` then discards.
     let events = normalize_all([
         Event::run_started("t", "r"),
         tool_chunk(Some("call-1"), Some("search"), Some("{}")),

@@ -10,7 +10,7 @@
 #![cfg(feature = "client")]
 
 use ag_ui::client::transport::{EventStream, Transport, TransportFuture};
-use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::{Event, RunAgentInput, TextMessageRole};
 use futures_util::StreamExt;
 
@@ -133,8 +133,9 @@ async fn a_custom_transport_substitutes_for_the_built_in_one() {
         ],
     };
 
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let updates: Vec<_> = session.send("hello").collect().await;
+    let mut session = Thread::<_>::new(transport, "thread-1");
+    session.set_next_run_id("run-1");
+    let updates: Vec<_> = session.send("hello").unwrap().collect().await;
 
     assert!(matches!(
         updates.last(),
@@ -156,8 +157,9 @@ async fn a_boxed_transport_is_a_transport() {
         ],
     });
 
-    let mut session = Session::<_>::new(transport, "thread-1");
-    let updates: Vec<_> = session.send("hello").collect().await;
+    let mut session = Thread::<_>::new(transport, "thread-1");
+    session.set_next_run_id("run-1");
+    let updates: Vec<_> = session.send("hello").unwrap().collect().await;
     assert!(matches!(
         updates.last(),
         Some(Update::Done(RunEnd::Success { .. }))

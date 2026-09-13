@@ -10,7 +10,7 @@ and a second request carries them back.
 
 The important part is what a pause is on the wire. It is a **finished run** — a normal
 `RUN_FINISHED` event whose `outcome` says `interrupt` and lists what is pending. The
-connection closes, nothing is held open, and no server-side session survives the pause. The
+connection closes, nothing is held open, and no server-side thread survives the pause. The
 next request is an ordinary request in the same thread that happens to carry answers.
 
 ## The round trip

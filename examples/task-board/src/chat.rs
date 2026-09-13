@@ -12,8 +12,8 @@ use std::io::{self, BufRead, Write};
 
 use ag_ui::client::transport::Transport;
 use ag_ui::client::{
-    MessageChangeKind, MessageUpdate, ReasoningChangeKind, RunEnd, RunStream, Session,
-    SubagentChangeKind, SubagentStatus, SubagentUpdate, Update,
+    MessageChangeKind, MessageUpdate, ReasoningChangeKind, RunEnd, RunStream, SubagentChangeKind,
+    SubagentStatus, SubagentUpdate, Thread, Update,
 };
 use ag_ui::{Interrupt, Message};
 use ag_ui_a2ui::binding::Scope;
@@ -91,7 +91,7 @@ impl<R, W: Write> Write for Terminal<R, W> {
 ///
 /// `quit` and end-of-input both stop it.
 pub async fn converse<T: Transport>(
-    session: &mut Session<T, Board>,
+    session: &mut Thread<T, Board>,
     terminal: &mut Terminal<impl BufRead, impl Write>,
 ) -> io::Result<()> {
     while let Some(line) = terminal.prompt("you> ")? {
@@ -113,23 +113,29 @@ pub async fn converse<T: Transport>(
 /// *resumed*, which is a second request in the same thread, and the resumed run
 /// may pause again.
 async fn turn<T: Transport>(
-    session: &mut Session<T, Board>,
+    session: &mut Thread<T, Board>,
     said: &str,
     terminal: &mut Terminal<impl BufRead, impl Write>,
 ) -> io::Result<()> {
     // Each `drive` call ends the mutable borrow `send`/`resume` takes, which is
     // what lets the next one start.
-    let mut pending = drive(session.send(said), terminal).await?;
+    let mut pending = drive(session.send(said).map_err(io::Error::other)?, terminal).await?;
 
     while let Some(interrupt) = pending {
         pending = if approved(&interrupt, terminal)? {
             drive(
-                session.resume(&interrupt, json!({"confirm": true})),
+                session
+                    .resume(&interrupt, json!({"confirm": true}))
+                    .map_err(io::Error::other)?,
                 terminal,
             )
             .await?
         } else {
-            drive(session.cancel(&interrupt), terminal).await?
+            drive(
+                session.decline(&interrupt).map_err(io::Error::other)?,
+                terminal,
+            )
+            .await?
         };
     }
     Ok(())
@@ -159,7 +165,7 @@ async fn drive<T: Transport>(
                 let speaker = message
                     .message
                     .subagent_run_id()
-                    .and_then(|id| run.session().subagent(id))
+                    .and_then(|id| run.thread().subagent(id))
                     .map(|subagent| subagent.name.clone());
                 open_line = print_message(output, &message, open_line, speaker.as_deref())?;
             }
@@ -179,6 +185,9 @@ async fn drive<T: Transport>(
             Update::Reasoning(reasoning) if reasoning.change == ReasoningChangeKind::Ended => {
                 writeln!(output, "  ~ {}", reasoning.text)?;
             }
+            Update::Reasoning(reasoning) if reasoning.change == ReasoningChangeKind::Aborted => {
+                writeln!(output, "  ~ {} [stopped]", reasoning.text)?;
+            }
 
             // The typed state, already patched: `Board` came off the wire as a
             // STATE_SNAPSHOT or a STATE_DELTA and neither this line nor the
@@ -190,6 +199,7 @@ async fn drive<T: Transport>(
             Update::Done(RunEnd::Failed { message, .. }) => {
                 writeln!(output, "  !! the run failed: {message}")?;
             }
+            Update::Done(RunEnd::Aborted) => writeln!(output, "  run stopped locally")?,
             _ => {}
         }
 
@@ -206,6 +216,7 @@ async fn drive<T: Transport>(
 fn lifecycle(update: &SubagentUpdate) -> Option<String> {
     Some(match &update.change {
         SubagentChangeKind::Started => "started".to_owned(),
+        SubagentChangeKind::Aborted => "stopped without a confirmed result".to_owned(),
         // The same invocation, announced again by the run that resumed it.
         SubagentChangeKind::Resumed => "resumed".to_owned(),
         SubagentChangeKind::Finished => "done".to_owned(),
@@ -245,6 +256,10 @@ fn print_message(
         }
         MessageChangeKind::Ended => {
             writeln!(output)?;
+            Ok(false)
+        }
+        MessageChangeKind::Aborted => {
+            writeln!(output, " [stopped]")?;
             Ok(false)
         }
 
@@ -316,7 +331,7 @@ fn surface_lines(envelope: &Value) -> Option<Vec<String>> {
     for operation in &operations {
         match &operation.payload {
             AgentPayload::UpdateComponents(payload) => components.clone_from(&payload.components),
-            AgentPayload::UpdateDataModel(payload) => data = payload.value.clone(),
+            AgentPayload::UpdateDataModel(payload) => payload.apply(&mut data).ok()?,
             _ => {}
         }
     }

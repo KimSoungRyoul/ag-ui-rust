@@ -10,7 +10,7 @@
 mod common;
 
 use ag_ui::RunOutcome;
-use ag_ui::client::{Error as ClientError, HttpAgent, RunEnd, RunParams, Session, Update};
+use ag_ui::client::{Error as ClientError, HttpAgent, RunEnd, RunParams, Thread, Update};
 use ag_ui::server::{Agent, Result, RunContext};
 use axum::Router;
 use axum::routing::post;
@@ -36,7 +36,7 @@ impl Agent for Tattletale {
 
 /// The one error a run yields, or a panic naming what came instead.
 async fn only_error(agent: &HttpAgent, params: RunParams) -> ClientError {
-    let items: Vec<_> = agent.run(params).collect().await;
+    let items: Vec<_> = agent.run_events(params).collect().await;
     let mut items = items.into_iter();
     match (items.next(), items.next()) {
         (Some(Err(error)), None) => error,
@@ -87,7 +87,7 @@ async fn an_accept_the_endpoint_can_satisfy_is_served() {
             .header("accept", accept)
             .build()
             .expect("a valid endpoint");
-        let events: Vec<_> = agent.run(RunParams::new("t", "r")).collect().await;
+        let events: Vec<_> = agent.run_events(RunParams::new("t", "r")).collect().await;
         assert!(
             events.iter().all(std::result::Result::is_ok),
             "{accept} should have been served: {events:?}"
@@ -101,7 +101,7 @@ async fn a_wrong_path_is_an_http_error_rather_than_an_empty_stream() {
     let url = serve(Tattletale { ran }).await;
     let elsewhere = url.replace("/agent", "/nowhere");
 
-    let agent = HttpAgent::new(transport(&elsewhere));
+    let agent = HttpAgent::from_transport(transport(&elsewhere));
     let error = only_error(&agent, RunParams::new("t", "r")).await;
 
     assert!(
@@ -128,10 +128,10 @@ async fn a_two_hundred_that_is_not_an_event_stream_is_reported_as_a_failed_run()
         axum::serve(listener, app).await.expect("the server to run");
     });
 
-    let mut session = Session::<_>::new(transport(&format!("http://{addr}/agent")), "gateway");
+    let mut session = Thread::<_>::new(transport(&format!("http://{addr}/agent")), "gateway");
     let mut updates = Vec::new();
     {
-        let mut run = session.send("hello?");
+        let mut run = session.send("hello?").expect("run preflight");
         while let Some(update) = run.next().await {
             updates.push(update);
         }
@@ -163,7 +163,7 @@ async fn nothing_listening_is_a_transport_error_not_a_protocol_one() {
     let addr = listener.local_addr().expect("the bound address");
     drop(listener);
 
-    let agent = HttpAgent::new(transport(&format!("http://{addr}/agent")));
+    let agent = HttpAgent::from_transport(transport(&format!("http://{addr}/agent")));
     let error = only_error(&agent, RunParams::new("t", "r")).await;
 
     assert!(

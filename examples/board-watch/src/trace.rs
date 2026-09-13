@@ -1,6 +1,6 @@
 //! The low level: events exactly as the agent sent them.
 //!
-//! [`Session`](ag_ui::client::Session) assembles; this does not. A proxy, a
+//! [`Thread`](ag_ui::client::Thread) assembles; this does not. A proxy, a
 //! recorder, a bridge to another protocol and a person debugging a stream all
 //! want the events unassembled, and that is what
 //! [`RemoteAgent`](ag_ui::client::RemoteAgent) is for.
@@ -62,7 +62,7 @@ async fn stream_once(
     approve: bool,
     out: &mut impl Write,
 ) -> io::Result<(usize, Option<Vec<ResumeEntry>>)> {
-    let mut events = agent.run(input);
+    let mut events = agent.run_events(input);
     let mut printed = 0;
     let mut resume = None;
 

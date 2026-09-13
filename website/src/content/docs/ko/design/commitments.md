@@ -80,7 +80,7 @@ Zod-to-Rust compiler를 만들어 유지한다는 뜻입니다. 아직 그럴 �
 **대가는 정직하게 받아들입니다. event 하나를 추가하는 것은 이 SDK의 major
 version입니다.** 그래야 합니다. wire 계약이 바뀌었으니까요. `Event`를 직접
 match한다면 그 비용을 예산에 넣으십시오. 그러고 싶지 않다면 상위의
-[`Update`](/ag-ui-rust/api/ag_ui/client/session/enum.Update.html) stream을
+[`Update`](/ag-ui-rust/api/ag_ui/client/thread/enum.Update.html) stream을
 match하십시오. 이쪽은 그 attribute를 답니다.
 
 error는 논리가 뒤집힙니다. 그래서 attribute를 답니다. 실패 모드를 exhaustive하게
@@ -91,10 +91,8 @@ match하고 싶어 하는 사람은 없습니다. 호출자는 몇 개의 varian
 
 두 client type은 그 선의 반대편에 각각 서 있습니다. 그 갈림이 규칙을 보여 줍니다.
 
-[`RunEnd`](/ag-ui-rust/api/ag_ui/client/session/enum.RunEnd.html)는 `Event`
-쪽입니다. exhaustive합니다. run은 protocol이 정의한 세 가지 방식으로만 끝납니다.
-frontend가 가장 검사받고 싶어 하는 match도 그것입니다. 입력을 다시 살릴지
-결정하니까요. 그리고 run이 끝나는 네 번째 방식은 wire 계약 변경이 맞습니다.
+`RunEnd`는 서버의 성공·승인 대기·실패와 로컬 수신 중단 `Aborted`를 구분합니다.
+UI는 모든 종료 상태를 처리해야 합니다. 로컬 중단은 새로운 wire event가 아닙니다.
 
 ```rust
 use ag_ui::client::RunEnd;
@@ -109,6 +107,7 @@ fn on_end(end: &RunEnd) -> String {
             format!("waiting on {} interrupt(s)", interrupts.len())
         }
         RunEnd::Failed { message, .. } => format!("failed: {message}"),
+        RunEnd::Aborted => "stopped locally".to_owned(),
     }
 }
 
@@ -125,7 +124,7 @@ fn main() {
 다시 그릴 만한 종류가 하나 늘어나는 것은 protocol 변경이 아닙니다.
 
 runtime 쪽도 type 쪽과 같은 편입니다. 이 build가 모르는 event type은
-deserialize에 실패합니다. session이 그것을 보고하고 run을 `RunEnd::Failed`로
+deserialize에 실패합니다. thread가 그것을 보고하고 run을 `RunEnd::Failed`로
 끝냅니다. 더 새로운 agent와 이야기하는 frontend는 모르는 type의 이름을 대며
 error로 멈춥니다. 대화의 4분의 3만 조용히 그리지 않습니다.
 
@@ -282,11 +281,9 @@ activity로 그리든, 보고하든 말입니다. protocol이 제약하는 것�
 않은 이름에 `None`을 돌려주기 때문입니다. `task-board` 예제가 그렇게 합니다. 단,
 client가 실행하리라고 진짜로 기대하는 tool에 대해서만 그렇게 합니다.
 
-## A2UI는 v0.9에 고정됩니다
+## A2UI v0.9 계열
 
-A2UI spec은 v1.0입니다. 하지만 출시된 toolkit은 TypeScript도 .NET도 Python도
-여전히 `v0.9`를 찍습니다. .NET의 상수 파일은 이 값들을 "cross-language wire
-contract"(언어 간 wire 계약)이라고, 그리고 "must not diverge"(어긋나서는 안
-된다)라고 표시합니다. 오늘 v1.0 wire 값을 구현하면 그중 어느 것과도 상호 운용하지
-못합니다. toolkit들이 움직이면 v1.0은 feature 뒤로 들어갑니다.
-[A2UI](/ag-ui-rust/ko/a2ui/)를 보십시오.
+v0.9와 v0.9.1을 모두 수용합니다. 저수준 builder는 v0.9를 기본값으로 유지하고
+고수준 author는 송신 버전을 명시합니다. v1.0 RPC를 v0.9 메시지에 섞지 않습니다.
+공식 스키마는 로컬에 고정하며 실제 catalog ID로 협상합니다.
+값 생략은 삭제, 명시적 null은 저장입니다. [A2UI](/ag-ui-rust/ko/a2ui/)를 참고하세요.

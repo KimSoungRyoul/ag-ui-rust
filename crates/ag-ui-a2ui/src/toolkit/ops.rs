@@ -160,7 +160,7 @@ pub fn update_components(
 
 /// Builds an `updateDataModel` operation.
 ///
-/// A `null` value deletes the key at `path`; a `path` of `/` replaces the whole
+/// A `null` value is stored explicitly; a `path` of `/` replaces the whole
 /// data model.
 pub fn update_data_model(
     surface_id: impl Into<String>,

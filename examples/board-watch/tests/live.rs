@@ -28,8 +28,7 @@
 //! message out of them.
 
 use ag_ui::Message;
-use ag_ui::client::Session;
-use ag_ui::client::transport::HttpTransport;
+use ag_ui::client::{HttpAgent, Thread};
 use board_watch::Board;
 use board_watch::watch::{Console, Watch};
 use tokio::net::TcpListener;
@@ -63,10 +62,11 @@ async fn a_real_model_stream_assembles_into_one_message() {
     println!("asking {} via {}", agent.model_name(), agent.base_url());
 
     let url = serve(agent).await;
-    let mut session: Session<_, Board> = Session::new(
-        HttpTransport::new(&url).expect("a valid endpoint URL"),
-        "live",
-    );
+    let mut session: Thread<_, Board> = HttpAgent::new(&url)
+        .expect("a valid endpoint URL")
+        .thread_builder("live")
+        .build()
+        .expect("valid initial board");
 
     let mut console = Console::new(
         "Reply with exactly this sentence and nothing else: the board is ready.\n".as_bytes(),

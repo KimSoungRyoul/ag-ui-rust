@@ -407,12 +407,30 @@ pub fn router(agent: Awkward) -> Router {
 /// is to frame the bytes here, the way a producer in another language does.
 /// [`SseFormatter`](ag_ui::SseFormatter) is the same encoder the real
 /// endpoint uses; only the ordering is wrong.
-async fn raw(axum::extract::Path(scenario): axum::extract::Path<String>) -> Response {
+async fn raw(
+    axum::extract::Path(scenario): axum::extract::Path<String>,
+    request: Option<axum::Json<ag_ui::RunAgentInput>>,
+) -> Response {
     use ag_ui::SseFormatter;
 
     let formatter = SseFormatter::new();
     let mut body = String::new();
-    for event in raw_script(&scenario) {
+    for mut event in raw_script(&scenario) {
+        // The intended fixture defect is inside the run. Its outer request
+        // identity must still match the real client's freshly generated IDs.
+        if let Some(axum::Json(input)) = &request {
+            match &mut event {
+                Event::RunStarted(started) => {
+                    started.thread_id = input.thread_id.clone();
+                    started.run_id = input.run_id.clone();
+                }
+                Event::RunFinished(finished) => {
+                    finished.thread_id = input.thread_id.clone();
+                    finished.run_id = input.run_id.clone();
+                }
+                _ => {}
+            }
+        }
         match formatter.encode_to_string(&event) {
             Ok(frame) => body.push_str(&frame),
             Err(error) => {

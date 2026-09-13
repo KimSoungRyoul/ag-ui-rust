@@ -102,7 +102,7 @@ it escapes arrive in different events, so anything that parses a fragment on its
 invalid JSON. What the client hands over is the whole thing, which parses:
 
 ```rust
-use ag_ui::client::{MessageChangeKind, Session, Update, transport::ReplayTransport};
+use ag_ui::client::{MessageChangeKind, Thread, Update, transport::ReplayTransport};
 use ag_ui::Event;
 use futures_util::StreamExt;
 
@@ -117,12 +117,12 @@ async fn main() {
         Event::tool_call_args("call-1", r#"tle":"ship the SDK"}"#),
         Event::tool_call_end("call-1"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
+    ]).matching_requests();
 
-    let mut session = Session::<_>::new(transport, "thread-1");
+    let mut thread = Thread::<_>::new(transport, "thread-1");
     let mut args = String::new();
 
-    let mut run = session.send("call");
+    let mut run = thread.send("call").expect("run preflight");
     while let Some(update) = run.next().await {
         if let Update::Message(message) = update {
             if let MessageChangeKind::ToolCallArgs { delta, .. } = message.change {
@@ -224,7 +224,7 @@ cancellation. `--stop-after N` drops the run stream after N updates:
 
 The agent is thirty seconds into a call it will never finish, and the drop reaches it: the
 integration test asserts the run's cancellation token had been tripped by the time the
-agent's future exited. The session stays usable — the next run is a run like any other.
+agent's future exited. The thread stays usable — the next run is a run like any other.
 [Errors and cancellation](/ag-ui-rust/server/errors/) covers the other end of that.
 
 ## Streams the protocol forbids
@@ -311,7 +311,7 @@ has not drifted.
 ## One level down, and offline
 
 `trace` prints the events unassembled — what a proxy, a recorder or a person debugging a
-stream wants. It also does the human-in-the-loop round trip with no session at all:
+stream wants. It also does the human-in-the-loop round trip with no thread at all:
 `interrupts_of` reads what the run paused on, `resume_run` builds the request that answers
 it.
 
@@ -354,9 +354,9 @@ by an actual provider on its own schedule rather than by this crate's idea of on
 | File | What is in it |
 | --- | --- |
 | `src/watch.rs` | The driver and both renderers, generic over input and output |
-| `src/view.rs` | The panel, the A2UI walk, and helpers that name a `Session` without bounding its transport |
+| `src/view.rs` | The panel, the A2UI walk, and helpers that name a `Thread` without bounding its transport |
 | `src/board.rs` | The client's own view model of the agent's state |
-| `src/trace.rs` | The unassembled view, and resume without a session |
+| `src/trace.rs` | The unassembled view, and resume without a thread |
 | `src/fake.rs` | The awkward agent and the hand-framed illegal streams |
 | `src/main.rs` | The CLI |
 | `tests/client.rs` | Every flow above, against both backends on real sockets |
@@ -374,7 +374,7 @@ cargo test -p board-watch
 
 ## Next
 
-- [Sessions](/ag-ui-rust/client/session/) and
+- [Threads](/ag-ui-rust/client/thread/) and
   [The update stream](/ag-ui-rust/client/updates/) — the API this example is built on.
 - [Rendering a run](/ag-ui-rust/client/rendering/) — the grouping trade, as a reference
   rather than a transcript.

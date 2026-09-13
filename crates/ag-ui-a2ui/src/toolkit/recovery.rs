@@ -12,9 +12,8 @@
 //! under the [`A2UI_RECOVERY_ACTIVITY_TYPE`] activity type so a caller can show
 //! progress rather than a stall.
 //!
-//! The loop is synchronous and takes the model as a closure, so it imposes no
-//! async runtime: wrap a blocking call directly, or drive an async client with
-//! whatever executor the host already uses.
+//! Both synchronous and asynchronous callbacks are supported. The async form
+//! takes an owned prompt and awaits each generation without selecting an executor.
 //!
 //! ```
 //! use ag_ui_a2ui::catalog::Catalog;
@@ -60,18 +59,20 @@ use serde_json::Value;
 use crate::catalog::Catalog;
 use crate::constants::{A2UI_RECOVERY_ACTIVITY_TYPE, MAX_A2UI_ATTEMPTS};
 use crate::error::{Error, Result, ValidationErrors};
-use crate::message::{AgentMessage, AgentPayload, Component};
+use crate::message::{AgentMessage, Component};
 use crate::toolkit::parser::parse_response;
 use crate::toolkit::prompt::augment_prompt_with_errors;
 use crate::validate::{ValidateOptions, ValidationError, Validator};
 
 /// How the recovery loop should behave.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RecoveryOptions {
     /// Total attempts before giving up. Defaults to [`MAX_A2UI_ATTEMPTS`].
     pub max_attempts: u32,
     /// The contract each attempt is held to.
     pub validate: ValidateOptions,
+    /// Explicit prior renderer state for incremental updates.
+    pub prior: Option<crate::surface::SurfaceStore>,
 }
 
 impl Default for RecoveryOptions {
@@ -79,12 +80,14 @@ impl Default for RecoveryOptions {
         Self {
             max_attempts: MAX_A2UI_ATTEMPTS,
             validate: ValidateOptions::full_surface(),
+            prior: None,
         }
     }
 }
 
 impl RecoveryOptions {
-    /// Options for editing a surface that already exists.
+    /// Semantic options for editing. Set `prior` to the observed surface store;
+    /// an update stream without prior state is rejected.
     pub fn for_update() -> Self {
         Self {
             validate: ValidateOptions::incremental_update(),
@@ -143,7 +146,7 @@ pub struct RecoveredSurface {
     /// The components those operations define, folded together.
     pub components: Vec<Component>,
     /// The data model those operations build.
-    pub data_model: Value,
+    pub data_model: crate::DataModel,
     /// Conversational text the model wrote around the A2UI blocks.
     pub text: String,
     /// How many attempts it took, 1 when the first try was clean.
@@ -193,7 +196,95 @@ pub fn generate_with_recovery(
 
         let response = generate(&attempt_prompt, attempt)?;
 
-        match interpret(&response, &validator) {
+        match interpret(&response, &validator, options.prior.as_ref()) {
+            Ok(mut surface) => {
+                surface.attempts = attempt;
+                on_activity(&RecoveryActivity {
+                    activity_type: A2UI_RECOVERY_ACTIVITY_TYPE,
+                    attempt,
+                    max_attempts,
+                    status: RecoveryStatus::Succeeded,
+                    message: format!(
+                        "A2UI surface validated on attempt {attempt} with {} component(s).",
+                        surface.components.len()
+                    ),
+                    errors: Vec::new(),
+                });
+                return Ok(surface);
+            }
+            Err(attempt_errors) => {
+                errors = attempt_errors;
+                let last = attempt == max_attempts;
+                on_activity(&RecoveryActivity {
+                    activity_type: A2UI_RECOVERY_ACTIVITY_TYPE,
+                    attempt,
+                    max_attempts,
+                    status: if last {
+                        RecoveryStatus::Failed
+                    } else {
+                        RecoveryStatus::Retrying
+                    },
+                    message: if last {
+                        format!(
+                            "Gave up after {max_attempts} attempt(s); {} error(s) remain.",
+                            errors.len()
+                        )
+                    } else {
+                        format!(
+                            "Attempt {attempt} produced {} validation error(s); retrying.",
+                            errors.len()
+                        )
+                    },
+                    errors: errors.clone(),
+                });
+            }
+        }
+    }
+
+    Err(Error::RecoveryExhausted {
+        attempts: max_attempts,
+        last: ValidationErrors(errors),
+    })
+}
+
+/// Async form of [`generate_with_recovery`], with an owned prompt per attempt.
+/// No executor or Send bound is imposed; provider failures are returned immediately.
+pub async fn generate_with_recovery_async<F, Fut>(
+    prompt: &str,
+    catalog: &Catalog,
+    options: &RecoveryOptions,
+    mut generate: F,
+    mut on_activity: impl FnMut(&RecoveryActivity),
+) -> Result<RecoveredSurface>
+where
+    F: FnMut(String, u32) -> Fut,
+    Fut: std::future::Future<Output = Result<String>>,
+{
+    let max_attempts = options.max_attempts.max(1);
+    let validator = Validator::with_options(catalog, options.validate.clone());
+    let mut errors: Vec<ValidationError> = Vec::new();
+
+    for attempt in 1..=max_attempts {
+        let attempt_prompt = augment_prompt_with_errors(prompt, &errors);
+        on_activity(&RecoveryActivity {
+            activity_type: A2UI_RECOVERY_ACTIVITY_TYPE,
+            attempt,
+            max_attempts,
+            status: RecoveryStatus::Started,
+            message: if attempt == 1 {
+                "Generating the A2UI surface.".to_string()
+            } else {
+                format!(
+                    "Retrying the A2UI surface after {} validation error(s).",
+                    errors.len()
+                )
+            },
+            errors: Vec::new(),
+        });
+
+        let response = generate(attempt_prompt, attempt).await?;
+
+        match interpret(&response, &validator, options.prior.as_ref()) {
             Ok(mut surface) => {
                 surface.attempts = attempt;
                 on_activity(&RecoveryActivity {
@@ -259,6 +350,7 @@ pub fn generate_with_recovery(
 fn interpret(
     response: &str,
     validator: &Validator<'_>,
+    prior: Option<&crate::surface::SurfaceStore>,
 ) -> std::result::Result<RecoveredSurface, Vec<ValidationError>> {
     let parts = match parse_response(response) {
         Ok(parts) => parts,
@@ -299,24 +391,42 @@ fn interpret(
         }
     }
 
-    let report = validator.validate_messages(&operations);
-    if !report.is_valid() {
-        return Err(report.errors);
-    }
-
-    let mut components: Vec<Component> = Vec::new();
-    let mut data_model = Value::Null;
-    for operation in &operations {
-        match &operation.payload {
-            AgentPayload::UpdateComponents(update) => {
-                components.extend(update.components.iter().cloned());
-            }
-            AgentPayload::UpdateDataModel(update) => {
-                let _ = update.apply(&mut data_model);
-            }
-            _ => {}
+    let raw: Vec<Value> = parts
+        .iter()
+        .filter_map(|part| part.a2ui.as_ref())
+        .flatten()
+        .cloned()
+        .collect();
+    let store = if let Some(prior) = prior {
+        validator
+            .validate_updates(prior, &operations)
+            .map_err(|error| {
+                vec![ValidationError::new(
+                    crate::ErrorCode::InvalidValue,
+                    "response",
+                    error.to_string(),
+                )]
+            })?
+    } else {
+        let report = validator.validate_json_messages(&raw);
+        if !report.is_valid() {
+            return Err(report.errors);
         }
-    }
+        let mut store = crate::surface::SurfaceStore::new();
+        for operation in &operations {
+            store.apply(operation).map_err(|error| {
+                vec![ValidationError::new(
+                    crate::ErrorCode::InvalidValue,
+                    "response",
+                    error.to_string(),
+                )]
+            })?;
+        }
+        store
+    };
+    let surface = store.surfaces().find(|s| !s.deleted);
+    let components = surface.map_or_else(Vec::new, |s| s.components.clone());
+    let data_model = surface.map_or_else(crate::DataModel::default, |s| s.data_model.clone());
 
     Ok(RecoveredSurface {
         operations,
@@ -508,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn update_options_accept_an_incremental_payload() {
+    fn incremental_recovery_without_prior_state_is_rejected() {
         let catalog = Catalog::basic();
         let response = "<a2ui-json>[{\"version\":\"v0.9\",\"updateComponents\":\
                         {\"surfaceId\":\"s\",\"components\":[{\"id\":\"label\",\
@@ -520,14 +630,8 @@ mod tests {
             |_, _| Ok(response.to_string()),
             |_| {},
         )
-        .unwrap();
-        assert_eq!(surface.components.len(), 1);
-        assert!(
-            !surface
-                .operations
-                .iter()
-                .any(|op| matches!(op.payload, AgentPayload::CreateSurface(_)))
-        );
+        .unwrap_err();
+        assert!(matches!(surface, Error::RecoveryExhausted { .. }));
     }
 
     #[test]

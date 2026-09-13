@@ -12,8 +12,7 @@
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
-use ag_ui::client::Session;
-use ag_ui::client::transport::HttpTransport;
+use ag_ui::client::HttpAgent;
 use task_board::chat::Terminal;
 use task_board::llm::Voice;
 use task_board::{ROUTE, TaskBoard, board, chat, router};
@@ -121,16 +120,21 @@ async fn chat(args: impl Iterator<Item = String>) -> ExitCode {
         }
     }
 
-    let transport = match HttpTransport::new(&url) {
-        Ok(transport) => transport,
+    let agent = match HttpAgent::new(&url) {
+        Ok(agent) => agent,
         Err(error) => return fail(&format!("{url} is not a usable endpoint: {error}")),
     };
 
     // The tools travel on every request; the agent reads them back out of
     // `ctx.tools()` and refuses to call one that is not there.
-    let mut session = Session::builder(transport, thread.clone())
+    let mut session = match agent
+        .thread_builder(thread.clone())
         .tools(board::tools())
-        .build();
+        .build()
+    {
+        Ok(thread) => thread,
+        Err(error) => return fail(&format!("invalid initial board: {error}")),
+    };
 
     let stdin = io::stdin();
     // A script on a pipe has to be echoed for the transcript to read as a

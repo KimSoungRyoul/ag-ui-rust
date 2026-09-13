@@ -334,12 +334,21 @@ impl<S> RunContext<S> {
     }
 
     /// Announces a subagent under a fresh id and scopes everything emitted
-    /// through the returned handle to it — `SUBAGENT_STARTED` now,
-    /// `SUBAGENT_FINISHED` when the handle drops.
+    /// through the returned handle to it. Call `finish`, `fail` or `suspend`
+    /// explicitly; dropping the handle only restores the parent's attribution.
     ///
     /// `name` is the subagent's reusable type or name, for display; the id is
     /// this invocation's alone. See [`SubagentHandle`].
     pub fn subagent(&mut self, name: impl Into<String>) -> Result<SubagentHandle<'_, S>> {
+        self.subagent_events(name)
+    }
+
+    /// Opens an event scope for work executed by the application or framework.
+    ///
+    /// Announces the invocation and attributes output to it. It does not create,
+    /// schedule or execute an agent. Explicitly finish, fail or suspend the
+    /// returned handle; a dropped handle never assumes success.
+    pub fn subagent_events(&mut self, name: impl Into<String>) -> Result<SubagentHandle<'_, S>> {
         let id = self.new_subagent_run_id();
         self.subagent_with(SubagentStartedEvent::new(id, name))
     }

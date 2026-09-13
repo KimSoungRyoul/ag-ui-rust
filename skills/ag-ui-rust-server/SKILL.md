@@ -6,7 +6,7 @@ description: "MUST USE when writing Rust against ag-ui-rust to host an agent —
 # Serving an AG-UI agent in Rust
 
 Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.3.0**. If the API here disagrees with the compiler, the compiler is
+workspace version **0.4.0**. If the API here disagrees with the compiler, the compiler is
 right and the skill is stale — see `ag-ui-rust-update`.
 
 ## Adding the crates
@@ -18,7 +18,7 @@ feature; `axum` implies `server`:
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { version = "0.3", features = ["axum"] }
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
@@ -74,7 +74,7 @@ stream *is* running the agent, so there is no `spawn` and nothing to configure.
 | Reasoning | `ctx.think(text)?`, or `ctx.reasoning()?` |
 | A tool call | `ctx.tool_call(name)?` → `args`/`args_json`, then `result_json` or `end` |
 | A scope | `ctx.step(name)?` — guard emits `STEP_FINISHED` on drop, derefs to the context |
-| A subagent | `ctx.subagent(name)?` — same shape as a step; everything emitted through it is attributed |
+| A subagent | `ctx.subagent_events(name)?` — same shape as a step; everything emitted through it is attributed |
 | Anything untyped | `ctx.emit(event)?` |
 
 Handles are RAII: the terminator goes out on `Drop`, including on the early return a `?`
@@ -218,7 +218,7 @@ Publish once per change, not once per run — the point is that the client watch
 
 - `Ok(RunOutcome::Success)` — done.
 - `Ok(RunOutcome::interrupt(pending))` — paused for a human. Still a `RUN_FINISHED`; the
-  connection closes and **no server-side session survives**.
+  connection closes and **no server-side thread survives**.
 - `Err(Error::agent(..))` — failed. Becomes `RUN_ERROR`, never a truncated stream.
 
 A panic is *not* an error and is not caught: it unwinds through whoever polls the stream, and
@@ -232,12 +232,12 @@ rules, and cancellation.
 
 ## Subagents
 
-`ctx.subagent(name)?` emits `SUBAGENT_STARTED` and returns a handle that derefs to the run
+`ctx.subagent_events(name)?` emits `SUBAGENT_STARTED` and returns a handle that derefs to the run
 context. Everything opened through it — messages, tool calls, reasoning, steps, nested
 subagents — goes out carrying that invocation's `subagentRunId`, **tagged by the event sink**,
-so no emitter is told about it and `ctx.emit` inside the scope is tagged too. `Drop` emits
-`SUBAGENT_FINISHED` (success); `finish_with(result)`, `suspend(interrupt_ids)`, `fail(msg)`
-are the other endings. Two handles at once is a borrow-check error, as with every handle.
+so no emitter is told about it and `ctx.emit` inside the scope is tagged too. Explicit
+`finish()`, `finish_with(result)`, `suspend(interrupt_ids)` or `fail(msg)` reports the ending.
+Drop restores attribution without inventing success; an unfinished scope blocks RunFinished. Two handles at once is a borrow-check error, as with every handle.
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
@@ -247,11 +247,12 @@ use serde_json::json;
 fn main() -> ag_ui::server::Result<()> {
     let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
     {
-        let mut planner = ctx.subagent("planner")?;
+        let mut planner = ctx.subagent_events("planner")?;
         planner.say("Two tasks.")?;                    // tagged r-sub-1
         {
-            let mut estimator = planner.subagent("estimator")?;   // nested: parent filled in
+            let mut estimator = planner.subagent_events("estimator")?;   // nested: parent filled in
             estimator.say("A day each.")?;             // tagged r-sub-2
+            estimator.finish()?;
         }                                              // SUBAGENT_FINISHED r-sub-2
         planner.finish_with(json!({ "tasks": 2 }))?;   // SUBAGENT_FINISHED r-sub-1, with a result
     }
@@ -340,7 +341,7 @@ there for a hand-written handler.
 | `tokio::spawn` around the run | nothing; polling the stream runs the agent |
 | `Uuid::new_v4()` for ids | nothing; ids are derived strings, or `*_with_id` |
 | `Err(..)` when a human declines | `ResumeStatus::Cancelled` — a decline is a successful run |
-| `Event::subagent_started(..)` + tagging each event by hand for a sequential child | `ctx.subagent(name)?` — the sink tags everything emitted through the handle |
+| `Event::subagent_started(..)` + tagging each event by hand for a sequential child | `ctx.subagent_events(name)?` — the sink tags everything emitted through the handle |
 | a fresh id when a suspended subagent resumes | `ctx.subagent_with(SubagentStartedEvent::new(same_id, name))` |
 
 ## Deeper

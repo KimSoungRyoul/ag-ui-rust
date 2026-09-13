@@ -565,6 +565,25 @@ impl Catalog {
                 );
             }
         }
+        if let Some(Value::Array(functions)) = root.get("functions") {
+            for definition in functions {
+                let name = definition
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::catalog("inline function needs a name"))?;
+                if catalog.functions.contains_key(name) {
+                    return Err(Error::catalog(format!("duplicate function {name}")));
+                }
+                catalog.functions.insert(
+                    name.into(),
+                    FunctionDef {
+                        name: name.into(),
+                        description: string_field(definition.get("description")),
+                        return_type: string_field(definition.get("returnType")),
+                    },
+                );
+            }
+        }
         Ok(catalog)
     }
 
@@ -802,7 +821,7 @@ fn component_def_from_schema(name: &str, schema: &Value) -> ComponentDef {
         if let Some(Value::Array(names)) = object.get("required") {
             for entry in names {
                 if let Some(field) = entry.as_str() {
-                    if field != "component" && required.insert(field.to_string()) {
+                    if field != "component" && field != "id" && required.insert(field.to_string()) {
                         required_order.push(field.to_string());
                     }
                 }

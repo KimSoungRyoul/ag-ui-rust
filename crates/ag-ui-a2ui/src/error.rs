@@ -64,6 +64,14 @@ pub enum Error {
     #[error("invalid catalog: {0}")]
     Catalog(String),
 
+    /// The provider failed; its original error remains available as the source.
+    #[error("A2UI provider generation failed: {0}")]
+    Generation(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    /// A model cannot be exported as JSON without losing undefined values.
+    #[error("A2UI model contains an undefined value at {0}")]
+    Undefined(String),
+
     /// A model failed to produce a valid surface within
     /// [`MAX_A2UI_ATTEMPTS`](crate::constants::MAX_A2UI_ATTEMPTS) attempts.
     #[error("A2UI generation gave up after {attempts} attempt(s); last errors: {last}")]
@@ -76,6 +84,11 @@ pub enum Error {
 }
 
 impl Error {
+    /// Preserves a provider error without treating it as model-generated invalid JSON.
+    pub fn generation(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Generation(Box::new(error))
+    }
+
     /// Builds a [`Error::Parse`] from anything printable.
     pub fn parse(reason: impl fmt::Display) -> Self {
         Self::Parse(reason.to_string())

@@ -53,6 +53,96 @@ pub struct SchemaBundle {
 }
 
 impl SchemaBundle {
+    /// The unmodified official v0.9.1 schemas (which accept both wire versions).
+    /// No network or filesystem access is performed.
+    pub fn basic() -> Result<Self> {
+        Ok(Self {
+            s2c: serde_json::from_str(include_str!("../../schemas/v0_9_1/server_to_client.json"))?,
+            common_types: serde_json::from_str(include_str!(
+                "../../schemas/v0_9_1/common_types.json"
+            ))?,
+            catalog: serde_json::from_str(include_str!("../../schemas/v0_9_1/catalog.json"))?,
+            custom_cuttable_keys: None,
+        })
+    }
+
+    /// Builds a complete v0.9-family bundle from an inline capabilities catalog.
+    /// The selected document retains its ID, components, function array, and
+    /// theme. Local definitions supply the envelope's component/function unions;
+    /// external references must still be registered explicitly by the caller.
+    pub fn from_inline_catalog(catalog: Value) -> Result<Self> {
+        let mut bundle = Self::basic()?;
+        let mut catalog = catalog
+            .as_object()
+            .cloned()
+            .ok_or_else(|| Error::catalog("inline catalog must be an object"))?;
+        if catalog.get("catalogId").and_then(Value::as_str).is_none() {
+            return Err(Error::catalog("inline catalogId is required"));
+        }
+        let components = catalog
+            .get("components")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let component_union:Vec<_>=components.keys().map(|name|serde_json::json!({"allOf":[
+            {"$ref":"https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"},
+            {"$ref":format!("#/components/{}",name.replace('~',"~0").replace('/',"~1"))},
+            {"properties":{"component":{"const":name}},"required":["component"]}
+        ]})).collect();
+        let mut function_union = Vec::new();
+        let mut seen = BTreeSet::new();
+        if let Some(functions) = catalog.get("functions") {
+            let functions = functions
+                .as_array()
+                .ok_or_else(|| Error::catalog("inline functions must be an array"))?;
+            for function in functions {
+                let name = function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::catalog("inline function needs a name"))?;
+                if !seen.insert(name) {
+                    return Err(Error::catalog("duplicate inline function"));
+                }
+                let parameters = function
+                    .get("parameters")
+                    .filter(|v| v.is_object())
+                    .ok_or_else(|| {
+                        Error::catalog("inline function parameters must be a schema object")
+                    })?;
+                let result = function
+                    .get("returnType")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::catalog("inline function returnType is required"))?;
+                function_union.push(serde_json::json!({"type":"object","properties":{"call":{"const":name},"args":parameters,"returnType":{"const":result}},"required":["call","args"],"additionalProperties":false}));
+            }
+        }
+        let component_schema = if component_union.is_empty() {
+            Value::Bool(false)
+        } else {
+            serde_json::json!({"oneOf":component_union})
+        };
+        let function_schema = if function_union.is_empty() {
+            Value::Bool(false)
+        } else {
+            serde_json::json!({"oneOf":function_union})
+        };
+        let theme = catalog
+            .get("theme")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        catalog.insert(
+            "$schema".into(),
+            Value::String("https://json-schema.org/draft/2020-12/schema".into()),
+        );
+        catalog.insert(
+            "$id".into(),
+            Value::String("https://a2ui.invalid/local/inline-catalog.json".into()),
+        );
+        catalog.insert("$defs".into(),serde_json::json!({"anyComponent":component_schema,"anyFunction":function_schema,"theme":{"type":"object","properties":theme,"additionalProperties":false}}));
+        bundle.catalog = Value::Object(catalog);
+        Ok(bundle)
+    }
+
     /// A bundle holding only a catalog document.
     pub fn from_catalog(catalog: Value) -> Self {
         Self {

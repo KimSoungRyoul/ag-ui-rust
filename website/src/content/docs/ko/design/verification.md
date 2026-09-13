@@ -149,7 +149,7 @@ id가 자기 자신과 겹칠 수 없다는 것입니다.
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.3", default-features = false, features = ["server", "sse"] }
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", default-features = false, features = ["server", "sse"] }
 ```
 
 그 스위치를 넘어 살아남는 것이 하나 있습니다. 종료 event가 이미 나갔는지는
@@ -198,8 +198,8 @@ fn main() {
 }
 ```
 
-`Session`은 기본적으로 streaming 형태를 돌립니다. 여기에는 cargo feature가
-없습니다. runtime 스위치인 `SessionBuilder::verify(false)`가 있을 뿐입니다. 버릇을
+`Thread`은 기본적으로 streaming 형태를 돌립니다. 여기에는 cargo feature가
+없습니다. runtime 스위치인 `ThreadBuilder::verify(false)`가 있을 뿐입니다. 버릇을
 알고 감수하기로 한 producer를 위한 것입니다. 끄면 잃는 것은 진단이지 대화가
 아닙니다. applier는 어느 쪽이든 너그럽습니다.
 

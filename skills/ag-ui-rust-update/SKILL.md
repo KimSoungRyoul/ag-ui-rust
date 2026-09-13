@@ -38,7 +38,7 @@ npx skills add KimSoungRyoul/ag-ui-rust -y
 ```
 
 Both pull from `skills/` in <https://github.com/KimSoungRyoul/ag-ui-rust>, so they deliver
-the same files. **Start a new session afterwards** — a loaded skill is not re-read mid-run.
+the same files. **Start a new thread afterwards** — a loaded skill is not re-read mid-run.
 
 ## When the skill is right and the compiler disagrees
 

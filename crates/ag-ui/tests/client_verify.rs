@@ -3,7 +3,7 @@
 #![cfg(feature = "client")]
 
 use ag_ui::client::transport::ReplayTransport;
-use ag_ui::client::{Error, Session, Update, Verifier, verify_all};
+use ag_ui::client::{Error, Thread, Update, Verifier, verify_all};
 use ag_ui::{Event, TextMessageRole};
 use futures_util::StreamExt;
 use serde_json::json;
@@ -330,10 +330,11 @@ async fn a_session_reports_a_malformed_stream_and_does_not_apply_it() {
         // No TEXT_MESSAGE_START: this content has nowhere to go.
         Event::text_message_content("msg-1", "orphan text"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
-    let mut session = Session::<_>::new(transport, "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").collect().await;
+    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
     let errors: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -358,10 +359,11 @@ async fn a_run_that_ends_untidily_still_ends() {
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
         Event::text_message_content("msg-1", "Unterminated."),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
-    let mut session = Session::<_>::new(transport, "thread-1");
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::new(transport, "thread-1");
 
-    let updates: Vec<_> = session.send("hi").collect().await;
+    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
     let errors: Vec<String> = updates
         .iter()
         .filter_map(|update| match update {
@@ -374,7 +376,7 @@ async fn a_run_that_ends_untidily_still_ends() {
     assert!(errors[0].contains("still open"), "{}", errors[0]);
     assert!(matches!(
         updates.last(),
-        Some(Update::Done(ag_ui::client::RunEnd::Success { .. }))
+        Some(Update::Done(ag_ui::client::RunEnd::Failed { .. }))
     ));
     assert_eq!(session.applier().text_of("msg-1"), Some("Unterminated."));
 }
@@ -385,12 +387,14 @@ async fn verification_can_be_turned_off_for_a_producer_you_have_decided_to_live_
         Event::run_started("thread-1", "run-1"),
         Event::text_message_content("msg-1", "orphan text"),
         Event::run_finished_success("thread-1", "run-1"),
-    ]);
-    let mut session = Session::<_>::builder(transport, "thread-1")
+    ])
+    .matching_requests();
+    let mut session = Thread::<_>::builder(transport, "thread-1")
         .verify(false)
-        .build();
+        .build()
+        .unwrap();
 
-    let updates: Vec<_> = session.send("hi").collect().await;
+    let updates: Vec<_> = session.send("hi").unwrap().collect().await;
     assert!(
         !updates
             .iter()

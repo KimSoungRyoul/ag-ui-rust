@@ -16,7 +16,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use ag_ui::client::{Error as ClientError, RemoteAgent, RunEnd, RunParams, Session, Update};
+use ag_ui::client::{Error as ClientError, RemoteAgent, RunEnd, RunParams, Thread, Update};
 use ag_ui::server::{Agent, Result, RunContext};
 use ag_ui::{Event, EventType, PatchOperation, RunOutcome};
 use common::{serve, transport};
@@ -112,7 +112,7 @@ async fn the_server_picks_snapshots_and_deltas_and_both_reach_the_client() {
     let agent = RemoteAgent::new(transport(&url));
 
     let mut encodings = Vec::new();
-    let mut events = agent.run(RunParams::new("board", "board-run-1"));
+    let mut events = agent.run_events(RunParams::new("board", "board-run-1"));
     while let Some(event) = events.next().await {
         let event = event.expect("the stream should not break");
         if matches!(event, Event::StateSnapshot(_) | Event::StateDelta(_)) {
@@ -139,11 +139,14 @@ async fn the_server_picks_snapshots_and_deltas_and_both_reach_the_client() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_clients_typed_state_matches_the_agents_after_every_publish() {
     let url = serve(Editor).await;
-    let mut session = Session::<_, Board>::new(transport(&url), "board");
+    let mut session = Thread::<_, Board>::builder(transport(&url), "board")
+        .state(serde_json::json!(Board::default()))
+        .build()
+        .expect("typed thread");
 
     let mut states = Vec::new();
     {
-        let mut run = session.send("tidy the board");
+        let mut run = session.send("tidy the board").expect("run preflight");
         while let Some(update) = run.next().await {
             match update {
                 Update::State(state) => states.push(state),
@@ -155,7 +158,7 @@ async fn the_clients_typed_state_matches_the_agents_after_every_publish() {
 
     let expected = published();
     assert_eq!(states, expected, "every intermediate state must agree");
-    assert_eq!(session.state(), expected.last());
+    assert_eq!(session.state().ok(), expected.last());
 }
 
 /// The delta path specifically: a pointer into a key containing `/` or `~` has
@@ -163,10 +166,13 @@ async fn the_clients_typed_state_matches_the_agents_after_every_publish() {
 #[tokio::test(flavor = "multi_thread")]
 async fn escaped_json_pointers_patch_the_key_they_name() {
     let url = serve(Editor).await;
-    let mut session = Session::<_, Board>::new(transport(&url), "board");
+    let mut session = Thread::<_, Board>::builder(transport(&url), "board")
+        .state(serde_json::json!(Board::default()))
+        .build()
+        .expect("typed thread");
 
     {
-        let mut run = session.send("tidy the board");
+        let mut run = session.send("tidy the board").expect("run preflight");
         while let Some(update) = run.next().await {
             // A patch this test cannot apply would leave the state at its
             // previous value, and every assertion below would then be about the
@@ -284,13 +290,13 @@ struct Applied {
 /// Runs `agent` once against a fresh endpoint.
 async fn apply(agent: impl Agent + 'static) -> Applied {
     let url = serve(agent).await;
-    let mut session = Session::<_>::new(transport(&url), "patch");
+    let mut session = Thread::<_>::new(transport(&url), "patch");
 
     let mut states = Vec::new();
     let mut errors = Vec::new();
     let mut ended = None;
     {
-        let mut run = session.send("change the state");
+        let mut run = session.send("change the state").expect("run preflight");
         while let Some(update) = run.next().await {
             match update {
                 Update::State(state) => states.push(state),

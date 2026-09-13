@@ -1,183 +1,89 @@
 ---
 title: 개요
-description: A2UI가 무엇인지, 왜 AG-UI와 별개의 protocol인지, surface가 AG-UI run에 어떻게 실려 가는지, 이 crate가 명세의 어느 revision을 말하는지.
+description: A2UI v0.9/v0.9.1의 화면 표현, 비동기 생성, 스키마 검증과 AG-UI 전송 연동.
 ---
 
-[A2UI](https://a2ui.org)는 선언적인 agent 주도 UI protocol입니다. agent가 *surface*를
-기술하는 JSON을 stream합니다. surface는 component의 flat list와 그것들이 bind하는
-data입니다. renderer는 그것을 그립니다. `ag-ui-a2ui`는 그 교환의 **agent 쪽 절반**입니다.
+[A2UI](https://a2ui.org/specification/v0.9.1-a2ui/)는 화면의 컴포넌트와 데이터 모델을 JSON으로 표현합니다.
+`ag-ui-a2ui`는 이 설명을 만들고, 검증하고, 이력에서 복원합니다. 생성 모델과 화면을 그리는 renderer는 애플리케이션이 제공합니다.
 
-이 crate는 pixel을 그리지 않습니다. tree를 배치하지도, runtime에 UI를 평가하지도
-않습니다. A2UI를 만들고 검증하고 transport용으로 감쌀 뿐입니다. rendering은 완전히 다른
-program입니다. widget toolkit과 event loop, reactive data model이 있어야 합니다. 그리고
-wire 반대편에 있습니다.
+A2UI는 AG-UI와 별도의 프로토콜입니다. 선택적인 AG-UI 연동은 `render_a2ui` 도구 결과에
+`a2ui_operations` envelope를 담아 전달합니다. 다른 전송 방식은 프로토콜 타입을 직접 사용할 수 있습니다.
+MIME 타입은 `application/a2ui+json`입니다.
+
+## 필요한 작업으로 시작하기
+
+| 작업 | API |
+| --- | --- |
+| 정해진 화면 직접 작성 | `AgentMessage`, `Component`, `SurfaceSpec` |
+| 컴포넌트 연결과 데이터 바인딩 검사 | `Validator` |
+| 전체 스키마와 여러 surface의 메시지 검증 | `schema_validation::SurfaceValidator` |
+| 비동기 모델에 화면 생성·수정 요청 | `A2uiAuthor` |
+| 검증된 화면을 AG-UI로 전송 | `A2uiRunContextExt::send_a2ui` |
+| 데이터 모델을 손실 없이 보관·복원 | `DataModel`, `SurfaceStore` |
 
 ```rust
 use ag_ui_a2ui::{Catalog, Component, Validator};
 use serde_json::json;
 
 let catalog = Catalog::basic();
-let components = vec![
-    Component::new("root", "Column").with("children", json!(["title", "count"])),
-    Component::new("title", "Text").with("text", json!("Your cart")),
-    Component::new("count", "Text").with("text", json!({"path": "/items"})),
+let components = [
+    Component::new("root", "Column").with("children", json!(["title"])),
+    Component::new("title", "Text").with("text", json!({"path":"/title"})),
 ];
-
-let report = Validator::new(&catalog).validate_surface(&components, Some(&json!({"items": 2})));
+let report = Validator::new(&catalog)
+    .validate_surface(&components, Some(&json!({"title":"Your cart"})));
 assert!(report.is_valid());
 ```
 
-## A2UI는 별개의 protocol입니다
+컴포넌트는 평평한 목록으로 전달하고 부모는 자식의 ID를 참조합니다. 각 surface는 자기 `root`와
+컴포넌트 ID를 가집니다. 후속 메시지에서 같은 ID를 정의하면 교체하지만, 한 메시지 내부의 중복 ID는 오류입니다.
 
-A2UI는 AG-UI의 일부가 아닙니다. 자체 명세와 자체 version 번호를 가집니다. 다른 언어로 된
-자체 toolkit도 있습니다. `ag-ui-a2ui`가 이 workspace에 있는 이유는 하나입니다. 사용자 앞에
-form을 띄우려는 AG-UI agent에게 필요하기 때문입니다. AG-UI가 A2UI를 정의해서가 아닙니다.
-그 분리는 말이 아니라 code로 강제됩니다. `ag_ui_a2ui::agui` 밖에는 AG-UI를 아는 code가
-없습니다.
+## 버전과 feature
 
-그 경계를 긋는 것은 Cargo feature 두 개입니다:
+`v0.9`와 `v0.9.1`을 수용합니다. 저수준 생성자의 기본값은 `v0.9`이며,
+`.with_version(A2uiVersion::V0_9_1)`로 송신 버전을 지정합니다.
+`A2uiAuthor::basic(version)`은 두 버전을 모두 허용하는 고정된 공식 v0.9.1 스키마를 사용합니다.
 
-| feature | 기본값 | 무엇인가 |
+서버 메시지는 `createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface` 네 종류입니다.
+renderer 응답은 `action` 또는 `error`입니다. 후보 RPC 타입은 남아 있지만 v0.9 계열 메시지로 직렬화·역직렬화할 수 없습니다.
+타입이 존재한다는 이유로 v1.0 지원을 의미하지 않습니다.
+
+| Feature | 기본 | 추가 기능 |
 | --- | --- | --- |
-| `toolkit` | on | agent 쪽 authoring: operation builder, catalog negotiation, prompt assembly, stream parsing, recovery loop. |
-| `ag-ui` | on | `ag-ui`와의 interop: AG-UI message에서 만드는 history entry, offer 가능한 tool로 바뀌는 toolkit tool 정의. `toolkit`을 함의합니다. |
+| `toolkit` | 켜짐 | 수동 조립, prompt/parser, history, 동기·비동기 recovery |
+| `ag-ui` | 켜짐 | AG-UI 이력과 도구 정의 연동 |
+| `schema-validation` | 꺼짐 | Draft 2020-12, 공식 스키마, 로컬 참조 registry |
+| `author` | 꺼짐 | 공통 생성 설정과 불변 검증 결과 |
+| `ag-ui-server` | 꺼짐 | author와 AG-UI 서버 이벤트 전송 |
 
-`ag-ui`를 끄면 `ag-ui` dependency도 함께 사라집니다:
+새 feature는 HTTP, axum, Tokio를 자동으로 추가하지 않습니다. 기본 feature를 끄면 프로토콜·모델 사용자는
+AG-UI나 스키마 엔진에 의존하지 않습니다. Rust 1.85와 wasm 빌드를 검사하며, 스키마 엔진의 브라우저 난수 지원도
+해당 feature·target에만 적용합니다.
 
-```toml
-[dependencies.ag-ui-a2ui]
-version = "0.3"
-default-features = false
-features = ["toolkit"]
-```
+## Catalog 합의
 
-남는 것은 A2A나 MCP 위에서 구동하는 crate입니다. 이 crate가 만드는 envelope는 평범한 JSON
-string입니다. media type을 요구하는 transport를 위해 `ag_ui_a2ui::constants::MIME_TYPE`가
-`application/a2ui+json`으로 있습니다. 전체 matrix는
-[feature flag](/ag-ui-rust/ko/reference/features/)를 보십시오.
+`A2uiAuthor::basic`은 공식 catalog가 선언한
+`https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json`을 사용합니다.
+기존 `BASIC_CATALOG_ID`는 수동 연동을 위해 유지합니다. 두 ID가 같은 renderer 구현을 뜻한다고
+자동으로 가정하지 않으며, 실제로 같을 때 애플리케이션이 alias를 등록합니다.
 
-## component model은 flat list입니다
+Capabilities는 v0.9.1 메시지를 써도 `v0.9` namespace를 사용합니다. Inline catalog는 광고한 자기 ID로
+문서 전체를 선택합니다. 일치하는 ID가 없거나 정의가 충돌하면 오류입니다.
+[화면 작성](/ag-ui-rust/ko/a2ui/authoring/)에서 사용 흐름을 설명합니다.
 
-component는 flat adjacency list로 전송됩니다. 부모와 자식은 중첩이 아니라 **id reference**로
-이어집니다. `Card`는 자식을 id로 지목하고, `Column`은 id array를 담습니다. renderer는 모든
-component를 map에 담아 두었다가 render 시점에 tree를 다시 세웁니다.
-
-그 indirection이 protocol을 streaming 가능하게 만듭니다. agent는 component를 어떤 순서로든
-정의할 수 있습니다. renderer는 id가 `root`인 component가 도착하는 즉시 그리기 시작합니다.
-명세가 그 id를 못 박습니다. component list 중 하나에 `id: "root"`인 component가 반드시 하나
-있어야 합니다. 그것이 [validator](/ag-ui-rust/ko/a2ui/validation/)가 확인하는 모든 것의
-기준점입니다.
-
-message envelope 열 개가 이 모두를 실어 나릅니다. agent에서 여섯 개, 반대로 네 개입니다:
-
-| 방향 | payload key |
-| --- | --- |
-| agent → renderer | `createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`, `callRendererFunction`, `agentFunctionResponse` |
-| renderer → agent | `action`, `callAgentFunction`, `rendererFunctionResponse`, `error` |
-
-각 message는 `version` discriminator와 payload key 정확히 하나를 담습니다.
-`ag_ui_a2ui::message`가 그 열 개를 모두 옮겨 놓은 곳입니다. `AgentMessage`에는 authoring
-agent가 가장 자주 보내는 네 개를 위한 constructor가 있습니다.
-
-## surface가 AG-UI run에 실려 가는 방식
-
-A2UI는 message가 renderer에 어떻게 닿는지 말하지 않습니다. 그래서 toolkit들이 스스로
-합의해야 했습니다. 합의한 것은 JSON object 하나입니다. key는 `a2ui_operations`이고,
-operation array를 담습니다. frontend는 그 key가 있는지만 보고 payload가 A2UI인지
-판별합니다.
+## Null 저장과 삭제
 
 ```rust
-use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
-use ag_ui_a2ui::{Component, wrap_as_operations_envelope};
-use serde_json::json;
+use ag_ui_a2ui::AgentMessage;
+use serde_json::Value;
 
-let spec = SurfaceSpec::new("cart")
-    .with_components(vec![Component::new("root", "Text").with("text", json!("Your cart"))]);
-
-let envelope = wrap_as_operations_envelope(&assemble_ops(Intent::Create, &spec)).unwrap();
-assert!(envelope.starts_with(r#"{"a2ui_operations":["#));
+let set_null = AgentMessage::update_data_model("cart", "/memo", Value::Null);
+let remove = AgentMessage::remove_data_model_value("cart", "/memo");
+assert!(serde_json::to_value(&set_null).unwrap()["updateDataModel"].get("value").is_some());
+assert!(serde_json::to_value(&remove).unwrap()["updateDataModel"].get("value").is_none());
 ```
 
-envelope는 JSON **string**입니다. 그래서 더 감싸지 않고 AG-UI tool result나 A2A data part,
-MCP tool result에 그대로 들어갑니다. AG-UI 위에서는 `render_a2ui`라는 tool call이
-운반자입니다. 그 result가 envelope입니다:
-
-```rust
-use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
-use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
-use ag_ui_a2ui::{Component, wrap_as_operations_envelope};
-use ag_ui::RunOutcome;
-use ag_ui::server::{Agent, Error, Result, RunContext};
-use serde_json::json;
-
-struct Merchant;
-
-impl Agent for Merchant {
-    type State = ();
-
-    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let spec = SurfaceSpec::new("cart").with_components(vec![
-            Component::new("root", "Text").with("text", json!("Your cart")),
-        ]);
-        let envelope = wrap_as_operations_envelope(&assemble_ops(Intent::Create, &spec))
-            .map_err(Error::agent)?;
-
-        let mut call = ctx.tool_call(RENDER_A2UI_TOOL_NAME)?;
-        call.args_json(&json!({ "surfaceId": "cart" }))?;
-        call.result(envelope)?;
-
-        ctx.say("Here is your cart.")?;
-        Ok(RunOutcome::Success)
-    }
-}
-```
-
-`render_a2ui`는 agent가 스스로 답하는 call입니다. client가 offer한 적이 없습니다. client가
-실행할 것이 없기 때문입니다. frontend는 tool을 실행하지 않고 그 result를 그립니다. 그래서
-`ag_ui::server`는 `RunAgentInput.tools`를 allow-list가 아니라 capability list로 취급합니다.
-그 list에 없는 이름으로 call을 emit해도 형식이 올바른 stream입니다. ordering verifier는 그에
-대해 아무 말도 하지 않습니다. protocol이 제약하는 것은 ordering이고, 검사되는 것도
-그것입니다.
-
-`e2e/tests/a2ui_surface.rs`가 이것을 정직하게 유지합니다. agent가 toolkit으로 surface를
-만들어 tool result로 보냅니다. 진짜 `ag_ui::client`가 진짜 port로 그것을 받습니다. 반대편으로
-나온 operation이 들어간 것과 같은지, 그리고 authoring 대상이었던 catalog로 여전히
-검증되는지를 단언합니다.
-
-:::note[실패는 빈 surface가 아닙니다]
-생성이 실패하면 `wrap_error_envelope`가 `error` key를 담은 payload를 만듭니다.
-`a2ui_operations` key는 **없습니다**. 의도한 것입니다. 그 key가 곧 content sniff이기
-때문입니다. 빈 list와 함께 그 key를 실으면 실패한 생성과 rendering된 생성을 구별할 수 없게
-됩니다. 나중에 thread를 재생해 사용자가 무엇을 보고 있는지 알아내는 history scan에게도
-마찬가지입니다.
-:::
-
-## 이 crate는 v0.9를 말합니다
-
-모든 message에 `"version": "v0.9"`가 찍힙니다.
-
-A2UI 명세 자체는 이미 v1.0으로 갔습니다. 출시된 toolkit들은 아닙니다. TypeScript와 .NET,
-Python 모두 wire에는 `v0.9`를 찍습니다. .NET의 constants file은 그 값들을 어긋나면 안 되는
-언어 간 wire contract로 표시해 두었습니다. 지금 v1.0 wire 값을 구현하면 그 어느 것과도
-interop되지 않습니다. 그래서 이 crate는 생태계가 실제로 말하는 것에 고정합니다. toolkit들이
-옮겨 가면 v1.0은 feature 뒤에 들어갑니다.
-
-이 고정은 장식이 아닙니다. `Validator`는 다른 version을 선언한 message를 `invalid_value`로
-보고합니다. vendoring된 conformance suite의 v0.8 case는 이식하지 않고 건너뜁니다. skip
-70건 중 63건이 그것입니다.
-
-## crate의 생김새
-
-| module | 담긴 것 |
-| --- | --- |
-| [`message`](/ag-ui-rust/api/ag_ui_a2ui/message/index.html) | protocol envelope 열 개와 `Component`, `ChildList`, data model update semantics. |
-| [`catalog`](/ag-ui-rust/api/ag_ui_a2ui/catalog/index.html) | surface가 담을 수 있는 것. `Catalog::basic()`은 표준 18-component catalog입니다. `Catalog::from_schema`는 custom catalog를 parsing합니다. |
-| [`validate`](/ag-ui-rust/api/ag_ui_a2ui/validate/index.html) | JSON Schema로 표현할 수 없는 의미 검사. 생성 model이 자주 틀리는 envelope 검사와 property type 검사도 함께. |
-| [`binding`](/ag-ui-rust/api/ag_ui_a2ui/binding/index.html) | JSON Pointer 해석, template scope, `formatString` interpolation syntax. |
-| [`constants`](/ag-ui-rust/api/ag_ui_a2ui/constants/index.html) | 언어를 가로지르는 wire 값: envelope key, protocol version, tool 이름 둘. |
-| [`toolkit`](/ag-ui-rust/api/ag_ui_a2ui/toolkit/index.html) *(feature)* | "사용자가 UI를 요청했다"와 "유효한 A2UI가 wire에 올랐다" 사이의 모든 것. |
-| [`agui`](/ag-ui-rust/api/ag_ui_a2ui/agui/index.html) *(feature)* | AG-UI glue. crate의 나머지는 AG-UI의 존재를 모릅니다. |
-
-더 깊이 들어가는 page가 둘 있습니다. toolkit은
-[surface 작성](/ag-ui-rust/ko/a2ui/authoring/)입니다. 무엇이 검사되고 conformance suite가
-그에 대해 무엇을 말하는지는 [validation](/ag-ui-rust/ko/a2ui/validation/)입니다.
+삭제는 객체 키를 제거하고, 배열 길이를 유지한 채 해당 슬롯을 Undefined로 만들며,
+root 삭제는 Undefined root를 남깁니다. `DataModel`은 이 차이를 로컬 snapshot으로 보존합니다.
+`to_json()`은 Undefined를 null로 바꾸지 않고 오류를 반환합니다.
+[검증과 복원](/ag-ui-rust/ko/a2ui/validation/)을 참고하세요.

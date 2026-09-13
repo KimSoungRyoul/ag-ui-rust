@@ -9,7 +9,7 @@
 
 mod common;
 
-use ag_ui::client::{Session, Update};
+use ag_ui::client::{Thread, Update};
 use ag_ui::server::{Agent, Error, Result, RunContext};
 use ag_ui::{Message, RunOutcome};
 use ag_ui_a2ui::catalog::Catalog;
@@ -98,10 +98,10 @@ impl Agent for Butterfingers {
 /// Runs one turn and returns the tool result the agent produced, parsed.
 async fn ship(agent: impl Agent + 'static) -> (Vec<Message>, Value) {
     let url = serve(agent).await;
-    let mut session = Session::<_>::new(transport(&url), "cart");
+    let mut session = Thread::<_>::new(transport(&url), "cart");
 
     {
-        let mut run = session.send("show me my cart");
+        let mut run = session.send("show me my cart").expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("shipping a surface should not error: {error}");
@@ -165,7 +165,9 @@ async fn the_surface_still_validates_after_the_round_trip() {
                 assert_eq!(payload.surface_id, SURFACE_ID);
                 components.clone_from(&payload.components);
             }
-            AgentPayload::UpdateDataModel(payload) => data_model = payload.value.clone(),
+            AgentPayload::UpdateDataModel(payload) => {
+                payload.apply(&mut data_model).expect("data model update")
+            }
             _ => {}
         }
     }

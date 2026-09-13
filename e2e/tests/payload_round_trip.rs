@@ -11,7 +11,7 @@
 mod common;
 
 use ag_ui::axum::AgentEndpoint;
-use ag_ui::client::{RemoteAgent, Session, Update};
+use ag_ui::client::{RemoteAgent, Thread, Update};
 use ag_ui::server::{Agent, Error, Result, RunContext};
 use ag_ui::{
     ActivityMessage, AssistantMessage, Context, Event, InputContent, InputContentSource,
@@ -117,7 +117,7 @@ async fn the_request_the_client_sent_is_the_request_the_agent_received() {
     let client = RemoteAgent::new(transport(&url));
 
     let sent = request();
-    let mut events = client.run(sent.clone());
+    let mut events = client.run_events(sent.clone());
     let first = events
         .next()
         .await
@@ -154,11 +154,11 @@ impl Agent for Historian {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_messages_snapshot_replaces_the_conversation_without_losing_a_field() {
     let url = serve(Historian).await;
-    let mut session = Session::<_>::new(transport(&url), "history");
+    let mut session = Thread::<_>::new(transport(&url), "history");
 
     let mut replaced = None;
     {
-        let mut run = session.send("start over");
+        let mut run = session.send("start over").expect("run preflight");
         while let Some(update) = run.next().await {
             match update {
                 Update::Messages(messages) => replaced = Some(messages),
@@ -202,10 +202,10 @@ impl Agent for Searcher {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_activity_is_published_and_then_patched_in_place() {
     let url = serve(Searcher).await;
-    let mut session = Session::<_>::new(transport(&url), "search");
+    let mut session = Thread::<_>::new(transport(&url), "search");
 
     {
-        let mut run = session.send("look it up");
+        let mut run = session.send("look it up").expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("an activity patch should apply cleanly: {error}");
@@ -272,10 +272,12 @@ impl Agent for Recaller {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_conversation_the_client_assembled_is_the_one_the_next_run_receives() {
     let url = serve(Recaller).await;
-    let mut session = Session::<_>::new(transport(&url), "recall");
+    let mut session = Thread::<_>::new(transport(&url), "recall");
 
     {
-        let mut run = session.send("what is the weather in Seoul?");
+        let mut run = session
+            .send("what is the weather in Seoul?")
+            .expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("the first turn should be clean: {error}");
@@ -286,7 +288,9 @@ async fn the_conversation_the_client_assembled_is_the_one_the_next_run_receives(
     assert_eq!(assembled.len(), 4, "{assembled:?}");
 
     {
-        let mut run = session.send("and tomorrow?");
+        let mut run = session
+            .send_message(Message::user("recall-msg-2", "and tomorrow?"))
+            .expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("the second turn should be clean: {error}");
@@ -348,10 +352,14 @@ impl Agent for Accumulator {
 #[tokio::test(flavor = "multi_thread")]
 async fn state_published_by_one_run_is_the_state_the_next_run_starts_from() {
     let url = serve(Accumulator).await;
-    let mut session = Session::<_, Counter>::new(transport(&url), "counter");
+    let mut session = Thread::<_, Counter>::builder(transport(&url), "counter")
+        .state(serde_json::json!(Counter::default()))
+        .build()
+        .expect("typed thread");
 
-    for _ in 0..3 {
-        let mut run = session.send("again");
+    for n in 1..=3 {
+        session.set_next_run_id(format!("counter-run-{n}"));
+        let mut run = session.send("again").expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("state should carry cleanly: {error}");
@@ -360,7 +368,7 @@ async fn state_published_by_one_run_is_the_state_the_next_run_starts_from() {
     }
 
     assert_eq!(
-        session.state(),
+        session.state().ok(),
         Some(&Counter {
             clicks: 3,
             seen: vec![

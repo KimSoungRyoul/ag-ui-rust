@@ -258,7 +258,7 @@ TEXT_MESSAGE_START      messageId=msg-2                       <- the parent's ow
 outcome으로 닫힙니다. 재개하는 run에서 같은 id를 다시 announce할 수 있습니다. 동시에
 stream하는 subagent 둘은 tool call 둘과 똑같이 각자의 tag 아래 뒤섞입니다.
 [subagent](/ag-ui-rust/ko/server/subagents/)가 만드는 쪽이고,
-[update stream](/ag-ui-rust/ko/client/updates/#subagent)이 소비하는 쪽입니다.
+[update stream](/ag-ui-rust/ko/client/updates/)이 소비하는 쪽입니다.
 
 모든 event, message, tool call, resume entry는 optional `metadata` 객체도 싣습니다. key로
 열려 있습니다. token 사용량, trace id, application이 대화 옆에 실어야 하는 무엇이든

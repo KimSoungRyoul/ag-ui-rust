@@ -9,7 +9,7 @@
 
 mod common;
 
-use ag_ui::client::{RemoteAgent, RunParams, Session, Update};
+use ag_ui::client::{RemoteAgent, RunParams, Thread, Update};
 use ag_ui::server::{Agent, Result, RunContext};
 use ag_ui::{AssistantMessage, Event, EventType, Message, MessageId, RunOutcome, ToolCallId};
 use common::{serve, transport};
@@ -99,7 +99,7 @@ async fn chunks_travel_as_chunks_and_only_the_first_names_its_stream() {
     let agent = RemoteAgent::new(transport(&url));
 
     let mut events = Vec::new();
-    let mut stream = agent.run(RunParams::new("chunky", "chunky-run-1"));
+    let mut stream = agent.run_events(RunParams::new("chunky", "chunky-run-1"));
     while let Some(event) = stream.next().await {
         events.push(event.expect("the stream should not break"));
     }
@@ -155,10 +155,12 @@ async fn chunks_travel_as_chunks_and_only_the_first_names_its_stream() {
 #[tokio::test(flavor = "multi_thread")]
 async fn interleaved_chunk_streams_reassemble_into_separate_messages() {
     let url = serve(Chunky).await;
-    let mut session = Session::<_>::new(transport(&url), "chunky");
+    let mut session = Thread::<_>::new(transport(&url), "chunky");
 
     {
-        let mut run = session.send("say two things");
+        let mut run = session
+            .send_message(Message::user("chunky-msg-1", "say two things"))
+            .expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("a chunked run should not produce an error: {error}");
@@ -196,11 +198,13 @@ async fn interleaved_chunk_streams_reassemble_into_separate_messages() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_chunk_streamed_call_answered_by_the_agent_survives_the_round_trip() {
     let url = serve(ChunkyToolUser).await;
-    let mut session = Session::<_>::new(transport(&url), "chunky");
+    let mut session = Thread::<_>::new(transport(&url), "chunky");
 
     let mut errors = Vec::new();
     {
-        let mut run = session.send("what is the weather?");
+        let mut run = session
+            .send_message(Message::user("chunky-msg-1", "what is the weather?"))
+            .expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 errors.push(error.to_string());
@@ -232,10 +236,12 @@ async fn a_chunk_streamed_call_answered_by_the_agent_survives_the_round_trip() {
 #[tokio::test(flavor = "multi_thread")]
 async fn reasoning_chunks_reassemble_separately_from_the_reply() {
     let url = serve(Chunky).await;
-    let mut session = Session::<_>::new(transport(&url), "chunky");
+    let mut session = Thread::<_>::new(transport(&url), "chunky");
 
     {
-        let mut run = session.send("say two things");
+        let mut run = session
+            .send_message(Message::user("chunky-msg-1", "say two things"))
+            .expect("run preflight");
         while let Some(update) = run.next().await {
             if let Update::Error(error) = update {
                 panic!("a chunked run should not produce an error: {error}");
@@ -254,11 +260,13 @@ async fn reasoning_chunks_reassemble_separately_from_the_reply() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_final_chunk_stream_is_closed_by_the_end_of_the_run() {
     let url = serve(Chunky).await;
-    let mut session = Session::<_>::new(transport(&url), "chunky");
+    let mut session = Thread::<_>::new(transport(&url), "chunky");
 
     let mut ended_ids = Vec::new();
     {
-        let mut run = session.send("say two things");
+        let mut run = session
+            .send_message(Message::user("chunky-msg-1", "say two things"))
+            .expect("run preflight");
         while let Some(update) = run.next().await {
             match update {
                 Update::Message(message) => {

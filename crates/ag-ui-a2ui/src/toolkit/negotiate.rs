@@ -6,9 +6,8 @@
 //! `createSurface` fixes that choice for the surface's lifetime.
 //!
 //! [`select_catalog`] is that negotiation. The renderer's preference order wins
-//! — it is the one that has to draw the result — and inline catalogs are merged
-//! into the selection so a renderer can extend a standard catalog rather than
-//! replace it.
+//! — it is the one that has to draw the result. An inline catalog is selected
+//! as a complete document under its own advertised ID.
 //!
 //! ```
 //! use ag_ui_a2ui::toolkit::negotiate::{select_catalog_schema, ClientCapabilities};
@@ -27,7 +26,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
@@ -37,10 +36,9 @@ use crate::toolkit::schema::SchemaBundle;
 ///
 /// Carried in transport metadata as `a2uiClientCapabilities`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientCapabilities {
     /// Catalog ids the renderer supports, most preferred first.
-    #[serde(default)]
     pub supported_catalog_ids: Vec<String>,
     /// Catalog documents the renderer supplies itself.
     #[serde(default)]
@@ -63,10 +61,9 @@ impl ClientCapabilities {
 
 /// Picks the catalog document both sides can speak.
 ///
-/// The renderer's order is the preference order. When it supplies inline
-/// catalogs and `accepts_inline` is set, their components are merged into the
-/// selection — keeping the selected catalog's `catalogId`, because that id is
-/// what the two sides negotiated on and what `createSurface` will carry.
+/// The renderer's order is the preference order. Accepted inline documents
+/// remain whole; they are never merged into another catalog under its ID.
+/// Missing matches and conflicting definitions are explicit errors.
 ///
 /// # Errors
 ///
@@ -79,41 +76,54 @@ pub fn select_catalog_schema(
     accepts_inline: bool,
 ) -> Result<Value> {
     if !capabilities.inline_catalogs.is_empty() && !accepts_inline {
-        return Err(Error::catalog(
-            "the renderer supplied inline catalogs but the agent does not accept inline catalogs",
-        ));
+        return Err(Error::catalog("the agent does not accept inline catalogs"));
     }
-
-    let matched = match_by_preference(supported, &capabilities.supported_catalog_ids);
-    let base = match matched {
-        Some(catalog) => catalog,
-        // Falling back to the agent's default is only reasonable when inline
-        // definitions are coming; otherwise the renderer cannot draw the result.
-        None if !capabilities.inline_catalogs.is_empty() => supported
-            .first()
-            .ok_or_else(|| Error::catalog("the agent has no catalogs to offer"))?,
-        None if capabilities.supported_catalog_ids.is_empty() => supported
-            .first()
-            .ok_or_else(|| Error::catalog("the agent has no catalogs to offer"))?,
-        None => {
-            return Err(Error::catalog(format!(
-                "No client-supported catalog found: the renderer supports [{}], the agent offers \
-                 [{}]",
-                capabilities.supported_catalog_ids.join(", "),
-                supported
-                    .iter()
-                    .filter_map(|catalog| catalog.get("catalogId").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
+    let mut candidates = std::collections::BTreeMap::new();
+    for document in supported.iter().chain(&capabilities.inline_catalogs) {
+        let id = document
+            .get("catalogId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::catalog("catalogId is required"))?;
+        if let Some(previous) = candidates.insert(id, document) {
+            if previous != document {
+                return Err(Error::catalog(format!(
+                    "conflicting definitions for catalog {id}"
+                )));
+            }
         }
-    };
-
-    let mut selected = base.clone();
-    for inline in &capabilities.inline_catalogs {
-        merge_components(&mut selected, inline);
     }
-    Ok(selected)
+    capabilities
+        .supported_catalog_ids
+        .iter()
+        .find_map(|id| candidates.get(id.as_str()).map(|v| (*v).clone()))
+        .ok_or_else(|| {
+            Error::catalog(
+                "No client-supported catalog found; advertise the inline catalog ID to select it",
+            )
+        })
+}
+
+/// Wire metadata for the v0.9 family, including v0.9.1 messages. The namespace
+/// remains `v0.9` as specified by the official capabilities schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClientCapabilitiesWire {
+    /// Internal capabilities within the wire version namespace.
+    #[serde(rename = "v0.9")]
+    pub v0_9: ClientCapabilities,
+}
+impl ClientCapabilitiesWire {
+    /// Validates raw metadata against the pinned official capabilities schema,
+    /// then decodes the v0.9 namespace. No resources are fetched.
+    #[cfg(feature = "schema-validation")]
+    pub fn from_json(value: &Value) -> Result<Self> {
+        crate::schema_validation::validate_capabilities(value)?;
+        Ok(serde_json::from_value(value.clone())?)
+    }
+}
+impl From<ClientCapabilities> for ClientCapabilitiesWire {
+    fn from(v0_9: ClientCapabilities) -> Self {
+        Self { v0_9 }
+    }
 }
 
 /// [`select_catalog_schema`], parsed into a typed [`Catalog`].
@@ -132,34 +142,6 @@ pub fn select_catalog(
         capabilities,
         accepts_inline,
     )?)
-}
-
-fn match_by_preference<'a>(supported: &'a [Value], preferred: &[String]) -> Option<&'a Value> {
-    preferred.iter().find_map(|id| {
-        supported
-            .iter()
-            .find(|catalog| catalog.get("catalogId").and_then(Value::as_str) == Some(id.as_str()))
-    })
-}
-
-/// Folds one catalog's components and functions into another.
-fn merge_components(target: &mut Value, source: &Value) {
-    let Some(target) = target.as_object_mut() else {
-        return;
-    };
-    for section in ["components", "functions"] {
-        let Some(Value::Object(extra)) = source.get(section) else {
-            continue;
-        };
-        let entry = target
-            .entry(section.to_string())
-            .or_insert_with(|| Value::Object(Map::new()));
-        if let Some(existing) = entry.as_object_mut() {
-            for (name, definition) in extra {
-                existing.insert(name.clone(), definition.clone());
-            }
-        }
-    }
 }
 
 /// The catalogs an agent knows about.
@@ -204,6 +186,27 @@ impl CatalogRegistry {
             name: name.into(),
             schema,
         });
+    }
+
+    /// Explicitly registers a second wire ID for the same local catalog.
+    /// No aliases are inferred from URL spelling or version strings.
+    pub fn insert_alias(&mut self, alias: impl Into<String>, existing: &str) -> Result<()> {
+        let alias = alias.into();
+        let mut schema = self
+            .get(existing)
+            .ok_or_else(|| Error::catalog("unknown alias target"))?
+            .schema
+            .clone();
+        schema["catalogId"] = Value::String(alias.clone());
+        if self
+            .entries
+            .iter()
+            .any(|e| e.catalog_id() == alias && e.schema != schema)
+        {
+            return Err(Error::catalog("conflicting catalog alias"));
+        }
+        self.insert(alias, schema);
+        Ok(())
     }
 
     /// Registers a catalog document read from disk.
@@ -288,11 +291,11 @@ mod tests {
     }
 
     #[test]
-    fn no_preference_takes_the_agents_default() {
-        let chosen =
+    fn no_advertised_catalog_is_not_a_match() {
+        assert!(
             select_catalog_schema(&agent_catalogs(), &ClientCapabilities::default(), false)
-                .unwrap();
-        assert_eq!(chosen["catalogId"], "id_basic");
+                .is_err()
+        );
     }
 
     #[test]
@@ -330,64 +333,45 @@ mod tests {
     }
 
     #[test]
-    fn inline_catalogs_extend_the_selection() {
-        let capabilities = ClientCapabilities {
-            supported_catalog_ids: vec![],
-            inline_catalogs: vec![json!({"catalogId": "id_inline", "components": {"Button": {}}})],
+    fn inline_catalog_is_selected_whole_under_its_own_id() {
+        let inline = json!({"catalogId":"inline","components":{"X":{}},"functions":[{"name":"f","parameters":{},"returnType":"void"}],"theme":{"color":{"type":"string"}}});
+        let caps = ClientCapabilities {
+            supported_catalog_ids: vec!["inline".into()],
+            inline_catalogs: vec![inline.clone()],
         };
-        let chosen = select_catalog_schema(
-            &[json!({"catalogId": "id_basic", "components": {"Text": {}}})],
-            &capabilities,
-            true,
-        )
-        .unwrap();
-        // The negotiated id survives; only the components are added.
         assert_eq!(
-            chosen,
-            json!({"catalogId": "id_basic", "components": {"Text": {}, "Button": {}}})
+            select_catalog_schema(&agent_catalogs(), &caps, true).unwrap(),
+            inline
         );
+        let parsed = Catalog::from_schema(&inline).unwrap();
+        assert!(parsed.functions.contains_key("f"));
     }
-
     #[test]
-    fn several_inline_catalogs_merge_in_order() {
-        let capabilities = ClientCapabilities {
-            supported_catalog_ids: vec![],
-            inline_catalogs: vec![
-                json!({"catalogId": "id_basic", "components": {"Button": {}}}),
-                json!({"catalogId": "id_basic", "components": {"Icon": {}}}),
-            ],
+    fn conflicting_same_id_inline_is_rejected() {
+        let caps = ClientCapabilities {
+            supported_catalog_ids: vec!["id_basic".into()],
+            inline_catalogs: vec![json!({"catalogId":"id_basic","components":{"X":{}}})],
         };
-        let chosen = select_catalog_schema(
-            &[json!({"catalogId": "id_basic", "components": {"Text": {}}})],
-            &capabilities,
-            true,
-        )
-        .unwrap();
-        assert_eq!(
-            chosen,
-            json!({"catalogId": "id_basic", "components": {"Text": {}, "Button": {}, "Icon": {}}})
-        );
+        assert!(select_catalog_schema(&agent_catalogs(), &caps, true).is_err());
     }
-
     #[test]
-    fn inline_catalogs_rescue_a_failed_match() {
-        let capabilities = ClientCapabilities {
-            supported_catalog_ids: vec!["id_not_exists".to_string()],
-            inline_catalogs: vec![json!({"catalogId": "id_basic", "components": {"Button": {}}})],
+    fn inline_does_not_rescue_unadvertised_id() {
+        let caps = ClientCapabilities {
+            supported_catalog_ids: vec!["unknown".into()],
+            inline_catalogs: vec![json!({"catalogId":"inline"})],
         };
-        let chosen = select_catalog_schema(
-            &[
-                json!({"catalogId": "id_basic", "components": {"Text": {}}}),
-                json!({"catalogId": "id_custom1", "components": {}}),
-            ],
-            &capabilities,
-            true,
-        )
-        .unwrap();
+        assert!(select_catalog_schema(&agent_catalogs(), &caps, true).is_err());
+    }
+    #[test]
+    fn capabilities_wire_namespace_cannot_be_silently_read_as_flat() {
+        let raw = json!({"v0.9":{"supportedCatalogIds":["id_basic"]}});
+        let wire: ClientCapabilitiesWire = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(wire.v0_9.supported_catalog_ids, vec!["id_basic"]);
         assert_eq!(
-            chosen,
-            json!({"catalogId": "id_basic", "components": {"Text": {}, "Button": {}}})
+            serde_json::to_value(wire).unwrap()["v0.9"]["supportedCatalogIds"],
+            raw["v0.9"]["supportedCatalogIds"]
         );
+        assert!(serde_json::from_value::<ClientCapabilities>(raw).is_err());
     }
 
     #[test]

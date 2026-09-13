@@ -4,18 +4,16 @@
 
 A Rust SDK for the AG-UI protocol — hosting an agent and consuming one, in a single workspace.
 
-It exists to replace the upstream
-[community Rust SDK](https://github.com/ag-ui-protocol/ag-ui/tree/main/sdks/community/rust):
-that one consumes an agent but cannot host one, declares 24 of the protocol's 36 event types —
-an unrecognised `type` fails to deserialize and stops the run rather than being skipped — and
-carries no `RunFinished.outcome`, so a run cannot pause for a human at all.
+This is an independent SDK, not an official AG-UI project. Protocol types, server
+event emitters and client conversations are its scope. Agent execution, scheduling,
+model loops and durable workflows remain in applications or agent frameworks.
 
 The server story is the priority here; the client is written against the same types, and `e2e/` proves
 the two halves against each other over a real port rather than against a mock.
 
 ## Crate layout
 
-Two published crates. **`ag-ui`** is the SDK: the protocol types at the crate root, always
+Two SDK crates. **`ag-ui`** is the SDK: the protocol types at the crate root, always
 compiled, with `server` (host an agent), `client` / `http` (consume one) and `axum` behind
 features. Each runtime keeps its own `Error` under its own module — `ag_ui::Error` is a
 protocol error, `ag_ui::server::Error` is a hosting error. **`ag-ui-a2ui`** stays separate

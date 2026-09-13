@@ -161,5 +161,17 @@ program입니다.
 
 - [시작하기](/ag-ui-rust/ko/start/) — 의존성 선언, 그리고 돌아가는 agent 하나.
 - [Agent trait](/ag-ui-rust/ko/server/agent/) — `ag_ui::server`가 요구하는 것.
-- [session](/ag-ui-rust/ko/client/session/) — `ag_ui::client`가 내어 주는 것.
+- [thread](/ag-ui-rust/ko/client/thread/) — `ag_ui::client`가 내어 주는 것.
 - [API 문서](/ag-ui-rust/api/ag_ui/index.html) — crate 둘 모두의 rustdoc.
+
+
+## A2UI 0.4 기능
+
+| Feature | 의존성 | 역할 |
+|---|---|---|
+| `schema-validation` | `toolkit`, `jsonschema` | 로컬 리소스로 Draft 2020-12 전체 검증 |
+| `author` | `schema-validation` | 비동기 생성과 불변 검증 결과 |
+| `ag-ui-server` | `author`, `ag-ui/server` | HTTP·Tokio 없이 `send_a2ui` 전송 |
+
+이 기능들은 선택적으로 켭니다. client ID 생성과 만료 검사는 `getrandom`과 `time`을
+추가하며 특정 executor에 의존하지 않습니다.

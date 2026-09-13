@@ -15,8 +15,7 @@
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
-use ag_ui::client::transport::HttpTransport;
-use ag_ui::client::{HttpAgent, Session};
+use ag_ui::client::{HttpAgent, Thread};
 use board_watch::watch::{Console, Policy, Watch};
 use board_watch::{Board, fake, load_tools, replay_fixture, trace, watch};
 
@@ -88,14 +87,19 @@ async fn run_watch(mut args: impl Iterator<Item = String>) -> ExitCode {
         Err(message) => return fail(&message),
     };
 
-    let transport = match HttpTransport::new(&url) {
-        Ok(transport) => transport,
+    let agent = match HttpAgent::new(&url) {
+        Ok(agent) => agent,
         Err(error) => return fail(&format!("{url} is not a usable endpoint: {error}")),
     };
-    let mut session: Session<_, Board> = Session::builder(transport, thread.clone())
+    let mut session: Thread<_, Board> = match agent
+        .thread_builder(thread.clone())
         .tools(tools.clone())
         .verify(verify)
-        .build();
+        .build()
+    {
+        Ok(thread) => thread,
+        Err(error) => return fail(&format!("invalid initial board: {error}")),
+    };
 
     let mut console = console();
     let _ = writeln!(
@@ -192,7 +196,10 @@ async fn run_replay(args: impl Iterator<Item = String>) -> ExitCode {
         Err(error) => return fail(&format!("{path} is not a run fixture: {error}")),
     };
 
-    let mut session: Session<_, Board> = Session::new(transport, "replay");
+    let mut session: Thread<_, Board> = match Thread::builder(transport, "replay").build() {
+        Ok(thread) => thread,
+        Err(error) => return fail(&format!("invalid initial board: {error}")),
+    };
     let mut console = console();
     let _ = writeln!(console, "board-watch · replaying {path}");
 

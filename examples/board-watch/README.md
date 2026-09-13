@@ -106,7 +106,7 @@ arrival order, each tool line tagged with its call:
 
 That is where the wire put it. Arrival order *is* the nesting — `Update::State`
 carries no association with the call it arrived during, and
-[`ag_ui::client`'s session docs](https://docs.rs/ag_ui::client) explain why one
+[`ag_ui::client`'s thread docs](https://docs.rs/ag_ui::client) explain why one
 would be invented rather than reported: under parallel calls two calls are open
 and the wire does not attribute the state either.
 
@@ -281,7 +281,7 @@ a test asserts it has not drifted.
 
 `trace` prints the events unassembled — what a proxy, a recorder or a person
 debugging a stream wants. It also does the human-in-the-loop round trip with no
-`Session` at all: `interrupts_of` reads what the run paused on, `resume_run`
+`Thread` at all: `interrupts_of` reads what the run paused on, `resume_run`
 builds the request that answers it.
 
 ```text
@@ -351,7 +351,7 @@ cannot fake.
 | File | What is in it |
 | --- | --- |
 | `src/watch.rs` | The driver and both renderers, generic over input and output |
-| `src/view.rs` | The panel, the A2UI walk, and helpers that name a `Session` without bounding its transport |
+| `src/view.rs` | The panel, the A2UI walk, and helpers that name a `Thread` without bounding its transport |
 | `src/board.rs` | The client's own view model of the agent's state |
 | `src/trace.rs` | The unassembled view, and resume without a session |
 | `src/fake.rs` | The awkward agent and the hand-framed illegal streams |

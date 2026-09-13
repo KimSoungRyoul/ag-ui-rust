@@ -1,0 +1,19 @@
+[package]
+name = "review-desk"
+description = "Independent HTTP dogfood app for AG-UI threads, approvals, cancellation and A2UI authoring."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ag-ui = { workspace = true, features = ["client", "http", "server", "axum"] }
+ag-ui-a2ui = { workspace = true, features = ["ag-ui-server"] }
+axum.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+
+[dev-dependencies]
+reqwest.workspace = true

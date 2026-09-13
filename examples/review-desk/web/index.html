@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Review Desk · AG-UI</title>
+<style>
+  :root { color-scheme: light; font: 15px/1.55 system-ui,sans-serif; color:#202a29; background:#f4f5ee; }
+  * { box-sizing:border-box; } body { margin:0; } button { font:inherit; cursor:pointer; }
+  main { max-width:1220px; margin:auto; padding:40px 32px 64px; }
+  header { display:flex; justify-content:space-between; align-items:center; gap:24px; margin-bottom:30px; }
+  h1 { font-size:38px; letter-spacing:-1.6px; margin:8px 0; font-weight:650; }
+  h2 { font-size:16px; margin:0 0 16px; } p { margin:0; color:#63716b; }
+  .eyebrow { font-size:11px; font-weight:700; letter-spacing:2px; color:#526a56; text-transform:uppercase; }
+  #start { border:0; border-radius:7px; padding:12px 24px; background:#263f32; color:white; white-space:nowrap; }
+  #start:disabled { opacity:.6; cursor:wait; } #status { margin-top:8px; font-size:12px; text-align:right; }
+  .grid { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr); gap:20px; }
+  section { min-width:0; border:1px solid #dde1d6; background:#fff; border-radius:10px; padding:24px; }
+  .wide { grid-column:1/-1; } .label { font-size:11px; letter-spacing:1px; text-transform:uppercase; color:#748078; }
+  .threads { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; }
+  .thread { padding:18px; border-radius:6px; background:#f6f7f2; }
+  .thread strong { display:block; font-size:17px; margin:7px 0; }
+  ul { padding-left:19px; margin:8px 0; } li { margin:4px 0; } .decision { font-size:13px; color:#47614e; }
+  progress { width:100%; height:7px; accent-color:#54795d; margin:12px 0 16px; }
+  #messages { max-height:210px; overflow:auto; font-size:14px; } .message { border-left:2px solid #d4dfce; margin:10px 0; padding-left:12px; }
+  .source { display:block; font:10px/1.5 ui-monospace,monospace; color:#748078; overflow-wrap:anywhere; }
+  #children { display:grid; gap:10px; max-height:280px; overflow:auto; } .child { min-width:0; padding:12px; background:#f6f7f2; border-radius:6px; }
+  .child strong { font-size:14px; } .child pre { margin:8px 0 0; white-space:pre-wrap; font-size:11px; }
+  .card { border:1px solid #d3dfcf; border-radius:8px; padding:20px; background:#f5f9f0; }
+  .card strong { display:block; font-size:23px; margin:8px 0 16px; } #checks { font-size:13px; }
+  #events { max-height:230px; overflow:auto; background:#202c27; color:#d4e7d2; padding:16px; border-radius:6px; font:11px/1.6 ui-monospace,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+  details { margin-top:16px; color:#647267; font-size:12px; } #transcript { white-space:pre-wrap; overflow-wrap:anywhere; }
+  @media(max-width:760px) { main{padding:24px 16px;} header{align-items:flex-start;flex-direction:column;} .grid,.threads{grid-template-columns:1fr;} .wide{grid-column:auto;} h1{font-size:32px;} #status{text-align:left;} }
+</style>
+<main>
+  <header>
+    <div><div class="eyebrow">AG-UI / independent consumer</div><h1>Review Desk</h1><p>Two conversations. Visible agent work. Decisions that stay with the right thread.</p></div>
+    <div><button id="start">Run local review</button><div id="status" role="status">Ready · no API key needed</div></div>
+  </header>
+  <div class="grid">
+    <section class="wide"><h2>Conversations</h2><div class="threads"><div class="thread" id="primary"><div class="label">Primary thread</div><strong>Release notes</strong><p>The SDK will retain findings and decisions.</p></div><div class="thread" id="secondary"><div class="label">Independent thread</div><strong>Dependency review</strong><p>A child error remains visible without losing the review.</p></div></div></section>
+    <section><h2>Live conversation</h2><div class="label" id="progress-label">Waiting for a run</div><progress id="progress" max="100" value="0"></progress><div id="messages" aria-live="polite"><p>Messages arrive through the Rust Thread event observer.</p></div></section>
+    <section><h2>Subagent activity</h2><div id="children"><p>Invocation, parent, status and returned result appear here.</p></div></section>
+    <section><h2>A2UI review card</h2><div class="card"><div class="label">Create → edit · v0.9.1</div><strong id="surface-title">Waiting for the surface</strong><div id="surface-memo">The SDK reconstructs the final data model from tool results.</div></div><p style="font-size:12px;margin-top:12px">This focused preview displays the example card. It is not a general A2UI renderer.</p></section>
+    <section><h2>Workflow checks</h2><div id="checks"><p>HTTP streaming, thread isolation, mixed decisions, snapshot restoration and explicit abort.</p></div></section>
+    <section class="wide"><h2>Wire events <span id="event-count" class="label">0</span></h2><div id="events">Run the review to inspect decoded AG-UI events.</div><details><summary>Application transcript</summary><pre id="transcript"></pre></details></section>
+  </div>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  const add = (parent, tag, text, cls) => { const node=document.createElement(tag); node.textContent=text; if(cls)node.className=cls; parent.append(node); return node; };
+  let source;
+  $('start').onclick = () => {
+    if(source)source.close();
+    $('start').disabled=true; $('status').textContent='Review in progress';
+    for(const id of ['messages','children','events','checks'])$(id).replaceChildren();
+    let count=0;
+    source=new EventSource('/demo-events');
+    source.addEventListener('agui', ({data}) => {
+      const event=JSON.parse(data); $('event-count').textContent=++count;
+      $('events').textContent+=JSON.stringify(event)+'\n'; $('events').scrollTop=$('events').scrollHeight;
+      if(event.type==='CUSTOM' && event.name==='progress') {
+        $('progress').value=event.value.percent; $('progress-label').textContent=`Observed progress · ${event.value.percent}%`;
+      }
+      if(event.type==='TEXT_MESSAGE_CONTENT') {
+        const line=add($('messages'),'div',event.delta,'message');
+        add(line,'span',event.subagentRunId || 'supervisor','source'); $('messages').scrollTop=$('messages').scrollHeight;
+      }
+      if(event.type.startsWith('SUBAGENT_')) {
+        const card=add($('children'),'div','','child');
+        add(card,'strong',`${event.name || 'Invocation'} · ${event.type.replace('SUBAGENT_','').toLowerCase()}`);
+        add(card,'span',`${event.subagentRunId} · parent ${event.parentSubagentRunId || 'supervisor'}`,'source');
+        add(card,'pre',JSON.stringify(event.outcome || event.message || event.result || 'running',null,2));
+      }
+    });
+    source.addEventListener('done', ({data}) => {
+      source.close(); $('start').disabled=false;
+      const result=JSON.parse(data);
+      if(result.error) { $('status').textContent='Failed: '+result.error; return; }
+      const e=result.evidence; $('status').textContent='Complete · real HTTP workflow';
+      for(const [id,state] of [['primary',e.first],['secondary',e.second]]) {
+        $(id).replaceChildren(); add($(id),'div',id+' thread · revision '+state.revision,'label'); add($(id),'strong',state.title);
+        const list=add($(id),'ul',''); state.checks.forEach(check=>add(list,'li',check)); state.decisions.forEach(d=>add($(id),'div',d,'decision'));
+      }
+      $('surface-title').textContent=e.surface_data.title;
+      $('surface-memo').textContent='Memo: '+JSON.stringify(e.surface_data.memo)+' · explicit value preserved';
+      const checks=[['Independent threads',e.first.title!==e.second.title],['Partial approval rejected',e.partial_approval_rejected],['Restored IDs remain unique',e.unique_message_ids],['Invalid A2UI response corrected',e.generation_attempts===2],['Create and edit received',e.surface_batches===2],['Run aborted, next run succeeded',e.aborted]];
+      checks.forEach(([label,ok])=>add($('checks'),'p',(ok?'✓ ':'✗ ')+label));
+      $('transcript').textContent=result.transcript;
+      $('messages').replaceChildren();
+      e.messages.forEach(message=>{
+        const line=add($('messages'),'div',message.text,'message');
+        add(line,'span',message.speaker+' · '+message.thread,'source');
+      });
+      $('children').replaceChildren();
+      e.subagents.forEach(child=>{
+        const card=add($('children'),'div','','child');
+        add(card,'strong',child.name+' · '+child.status);
+        add(card,'span',child.thread+' · '+child.invocation,'source');
+        add(card,'span','parent: '+(child.parent || 'supervisor'),'source');
+        add(card,'pre',child.error || JSON.stringify(child.result,null,2));
+      });
+    });
+    source.onerror=()=>{source.close();$('start').disabled=false;$('status').textContent='Connection closed before completion';};
+  };
+</script>
+</html>

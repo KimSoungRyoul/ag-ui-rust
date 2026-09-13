@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ag_ui::axum::AgentEndpoint;
-use ag_ui::client::{RunEnd, Session, Update};
+use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::server::{Agent, Result, RunContext, StreamTransformer};
 use ag_ui::{Event, Message, RunOutcome, UserContent};
 use common::{serve, serve_endpoint, transport};
@@ -146,11 +146,17 @@ async fn drive_all(url: String) -> Vec<Transcript> {
             let url = url.clone();
             tokio::spawn(async move {
                 let thread = format!("thread-{index}");
-                let mut session = Session::<_, Tally>::new(transport(&url), thread.clone());
+                let mut session = Thread::<_, Tally>::builder(transport(&url), thread.clone())
+                    .state(serde_json::json!(Tally::default()))
+                    .build()
+                    .expect("typed thread");
 
+                session.set_next_run_id(format!("{thread}-run-1"));
                 let mut ended = None;
                 {
-                    let mut run = session.send(format!("question from {thread}"));
+                    let mut run = session
+                        .send(format!("question from {thread}"))
+                        .expect("run preflight");
                     while let Some(update) = run.next().await {
                         match update {
                             Update::Done(end) => ended = Some(end),
@@ -172,7 +178,7 @@ async fn drive_all(url: String) -> Vec<Transcript> {
                 Transcript {
                     thread,
                     replies,
-                    state: session.state().cloned(),
+                    state: session.state().ok().cloned(),
                     ended: ended.expect("every run ends"),
                 }
             })

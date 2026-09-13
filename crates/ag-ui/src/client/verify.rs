@@ -5,8 +5,8 @@
 //! a stream that breaks the rules should produce one clear error rather than a
 //! confused UI. This module is that check, as an ordering state machine.
 //!
-//! [`crate::client::Session`] runs it by default. Turn it off with
-//! [`SessionBuilder::verify`](crate::client::SessionBuilder::verify) when talking to a
+//! [`crate::client::Thread`] runs it by default. Turn it off with
+//! [`ThreadBuilder::verify`](crate::client::ThreadBuilder::verify) when talking to a
 //! producer whose quirks you have decided to live with.
 //!
 //! ```

@@ -236,4 +236,4 @@ run이 끝날 때까지 아무것도 보지 못합니다.
 - [`ag_ui::server::StateManager`](/ag-ui-rust/api/ag_ui/server/struct.StateManager.html)와
   [`StatePublish`](/ag-ui-rust/api/ag_ui/server/enum.StatePublish.html)
 - [`ag_ui::PatchOperation`](/ag-ui-rust/api/ag_ui/enum.PatchOperation.html)
-- 같은 이야기의 client 쪽: [session](/ag-ui-rust/ko/client/session/)
+- 같은 이야기의 client 쪽: [thread](/ag-ui-rust/ko/client/thread/)

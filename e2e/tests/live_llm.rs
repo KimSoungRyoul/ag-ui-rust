@@ -416,9 +416,9 @@ async fn run(live: &Live, params: RunParams) -> Option<Vec<Event>> {
 
 /// One run's events, exactly as the agent sent them.
 async fn collect(url: &str, params: RunParams) -> Vec<Event> {
-    let agent = HttpAgent::http(url).expect("the URL was just built from an address");
+    let agent = HttpAgent::new(url).expect("the URL was just built from an address");
     agent
-        .run(params)
+        .run_events(params)
         .map(|event| event.expect("the transport should not break over loopback"))
         .collect()
         .await
@@ -664,8 +664,7 @@ impl Agent for Delegating {
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
         let mut researcher = ctx.subagent("researcher")?;
-        // `?` here would let the handle drop, which reports a success: the
-        // error path names the subagent's failure before the run's.
+        // Report the subagent failure explicitly before propagating it to the run.
         let outcome = match self.0.run(&mut researcher).await {
             Ok(outcome) => outcome,
             Err(error) => {

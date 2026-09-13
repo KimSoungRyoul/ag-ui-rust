@@ -6,7 +6,7 @@
 //! integration tests are what keep the two honest about each other.
 //!
 //! It carries only what the view draws. `nextId` is on the wire and absent
-//! here, which is the case worth having: `Session` deserializes state into `S`
+//! here, which is the case worth having: `Thread` deserializes state into `S`
 //! by value, so a client that models less than the agent publishes has to keep
 //! working, and a client that models it *wrongly* has to say so.
 

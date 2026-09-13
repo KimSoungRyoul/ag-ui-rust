@@ -1,16 +1,8 @@
 //! Wire-contract constants shared across every A2UI toolkit.
 //!
-//! # These values are a cross-language wire contract
-//!
-//! Every shipping A2UI toolkit (TypeScript, .NET, Python) hard-codes the same
-//! strings, and the .NET constants file declares them a "cross-language wire
-//! contract" that "must not diverge". A renderer written against the TypeScript
-//! toolkit will silently fail to see this crate's output if any of them change.
-//!
-//! **Do not change these to match a newer spec revision on its own.** The A2UI
-//! specification is at v1.0, but the interoperable toolkits still stamp
-//! [`PROTOCOL_VERSION`] `"v0.9"` — so this crate does too. Changing a value here
-//! is a breaking protocol change that has to land in every language at once.
+//! The operation envelope and tool names belong to the optional AG-UI
+//! integration. A2UI itself remains transport neutral. The v0.9.1 schema
+//! accepts both v0.9 and v0.9.1 discriminators; constructors default to v0.9.
 
 /// Envelope key carrying a batch of A2UI operations over the transport.
 ///
@@ -18,14 +10,15 @@
 /// doubles as the content sniff.
 pub const A2UI_OPERATIONS_KEY: &str = "a2ui_operations";
 
-/// `catalogId` for the standard basic component catalog.
-///
-/// Note that the upstream specification repository serves the same catalog
-/// document under `.../v0_9/catalogs/basic/catalog.json`, and the document's own
-/// `catalogId` field carries that longer URI. The value below is what the
-/// shipping toolkits negotiate with, and a `catalogId` is an opaque identifier
-/// rather than a resolvable URL, so this is the one that matters on the wire.
+/// Historical toolkit catalog identifier, retained by low-level helpers.
+/// It is not automatically an alias for [`OFFICIAL_BASIC_CATALOG_ID`].
+/// Register both explicitly only when the renderer implements the same catalog.
 pub const BASIC_CATALOG_ID: &str = "https://a2ui.org/specification/v0_9/basic_catalog.json";
+
+/// Canonical ID declared by the official v0.9.1 Basic Catalog.
+/// The older toolkit ID is not automatically an alias.
+pub const OFFICIAL_BASIC_CATALOG_ID: &str =
+    "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
 
 /// `surfaceId` used when the caller does not supply one.
 pub const DEFAULT_SURFACE_ID: &str = "dynamic-surface";

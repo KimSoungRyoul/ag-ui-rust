@@ -1,5 +1,29 @@
 # QA strategy
 
+## 0.4 implementation verification (2026-09-13)
+
+| Gate | Result |
+|---|---|
+| `cargo nextest run --workspace --all-features` | 835 passed; 4 opt-in live tests excluded from this deterministic command |
+| `cargo test --doc --workspace --all-features` | 269 passed |
+| `cargo +nightly test --doc --workspace --all-features` | 269 passed, including expected compiler-error checks |
+| `cargo +1.85.0 check --workspace --all-features --all-targets` | Passed |
+| wasm client, server and A2UI feature builds | Passed |
+| client/server/A2UI dependency graphs | No Tokio in executor-neutral profiles |
+| clippy and rustdoc with warnings denied | Passed |
+| `prek run --all-files` | Passed |
+| site build and internal links | Passed |
+| official `@a2ui/web_core@0.11.0` | 13 steps; model equality after each Rust-generated update |
+| Review Desk browser | Two independent conversations, decisions, child success/error, edited A2UI card, abort then next run; no console errors |
+| live model smoke | 4 passed: board-watch consumer, text streaming, tool round trip and subagent attribution against Gemini |
+
+Independent review found and fixed activity-message egress, null/numeric/sparse upsert
+behavior and edits masking invalid prior history from a different author. Subagent
+failure and verify-disabled/hidden lifecycle checks are covered by server tests.
+The browser is a focused card preview; official core interoperability does not claim
+complete Lit layout rendering. See `examples/README.md` for consumer commands and
+`examples/review-desk/interop/README.md` for the reproducible reference check.
+
 Two tiers, because they answer different questions.
 
 | Tier | What it proves | Runs |

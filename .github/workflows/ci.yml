@@ -183,8 +183,27 @@ jobs:
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features toolkit
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui
+      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features schema-validation
+      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features author
+      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui-server
       - run: cargo check --all-targets -p ag-ui-a2ui --all-features
       - run: cargo check --all-targets -p ag-ui --features axum
+
+  renderer-interop:
+    name: official A2UI renderer core
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: examples/review-desk/interop/package-lock.json
+      - run: npm ci --ignore-scripts --prefix examples/review-desk/interop
+      - run: npm test --prefix examples/review-desk/interop
 
   # `rust-version = "1.85"` is a promise to anyone pinning an older toolchain,
   # and edition 2024 stabilised in exactly 1.85, so there is no slack in it.
@@ -323,6 +342,9 @@ jobs:
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features toolkit
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features ag-ui
+      - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features schema-validation
+      - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features author
+      - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features ag-ui-server
 
   # Every published crate must carry the metadata and files crates.io needs, and
   # must not ship anything it should not. `--list` is offline and does not

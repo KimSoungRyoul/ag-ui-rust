@@ -233,8 +233,8 @@ SUBAGENT_FINISHED   {"subagentRunId":"r1-sub-1","result":{"added":1},"outcome":{
 ```
 
 The client reads it back as `Update::Subagent` for the `⟂` lines and, for everything else,
-`Message::subagent_run_id()` resolved to a name through `session.subagent(id)` — mid-run,
-through `RunStream::session()`. The supervisor's own reply comes after both delegates,
+`Message::subagent_run_id()` resolved to a name through `thread.subagent(id)` — mid-run,
+through `RunStream::thread()`. The supervisor's own reply comes after both delegates,
 untagged, which is why it prints as `agent>`.
 
 A client written before subagents existed rejects an event type it does not know. An
@@ -246,7 +246,7 @@ mechanics.
 ## Where the board lives
 
 **On the client.** The agent stores nothing between runs: it reads the board out of
-`RunAgentInput.state`, publishes what it changed, and forgets. `Session` is what carries it
+`RunAgentInput.state`, publishes what it changed, and forgets. `Thread` is what carries it
 from one run to the next, along with the conversation.
 
 Two consequences are worth absorbing before you build on this shape:
@@ -310,7 +310,7 @@ depends on no model client, so an example that needed one would be arguing again
 state is a plain `serde` struct, the tools are `Tool` definitions, the surface is a
 component tree — is what makes `src/agent.rs` short enough to read in one sitting.
 
-The wire-level tests in `tests/flows.rs` drop below `Session` to `HttpAgent` and pin the
+The wire-level tests in `tests/flows.rs` drop below `Thread` to `HttpAgent` and pin the
 exact event sequence a run puts on the wire, attribution included:
 
 ```sh

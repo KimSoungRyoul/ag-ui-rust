@@ -119,6 +119,7 @@ mod step;
 mod subagent;
 mod tool;
 
+use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 use crate::{Event, RunErrorEvent, SubagentRunId};
@@ -127,7 +128,7 @@ use futures_core::Stream;
 use futures_util::StreamExt as _;
 
 use crate::server::cancel::CancellationToken;
-use crate::server::error::{Error, Result};
+use crate::server::error::{Error, Result, Rule, VerificationError};
 use crate::server::transform::TransformerChain;
 use crate::server::verify::Verifier;
 
@@ -155,6 +156,8 @@ pub(crate) struct EventSink {
     /// The subagent scope in force: every attributable event emitted untagged
     /// while it is set goes out carrying it. See [`SubagentHandle`].
     attribution: Option<SubagentRunId>,
+    /// Producer lifecycles survive output filtering and the optional verifier.
+    active_subagents: BTreeSet<SubagentRunId>,
     event_buffer_capacity: Option<NonZeroUsize>,
     overflowed: bool,
 }
@@ -182,6 +185,7 @@ impl EventSink {
             cancel,
             terminated: false,
             attribution: None,
+            active_subagents: BTreeSet::new(),
             event_buffer_capacity: None,
             overflowed: false,
         }
@@ -214,6 +218,22 @@ impl EventSink {
                     .get(),
             });
         }
+        if matches!(event, Event::RunFinished(_)) {
+            if let Some(id) = self.active_subagents.first() {
+                return Err(VerificationError::new(
+                    event.event_type(),
+                    Rule::OpenAtFinish,
+                    format!("subagent '{id}' requires an explicit finish, fail or suspend"),
+                )
+                .into());
+            }
+        }
+        let lifecycle = match &event {
+            Event::SubagentStarted(started) => Some((started.subagent_run_id.clone(), true)),
+            Event::SubagentFinished(finished) => Some((finished.subagent_run_id.clone(), false)),
+            Event::SubagentError(error) => Some((error.subagent_run_id.clone(), false)),
+            _ => None,
+        };
         // Attribution is applied before the transformers, so a transformer
         // sees the same tagged stream a consumer would. An event the agent
         // tagged itself keeps its tag: that is how a hand-interleaved
@@ -224,10 +244,18 @@ impl EventSink {
             }
         }
         if self.chain.is_empty() {
-            return self.send(event);
-        }
-        for event in self.chain.transform(event) {
             self.send(event)?;
+        } else {
+            for event in self.chain.transform(event) {
+                self.send(event)?;
+            }
+        }
+        if let Some((id, opened)) = lifecycle {
+            if opened {
+                self.active_subagents.insert(id);
+            } else {
+                self.active_subagents.remove(&id);
+            }
         }
         Ok(())
     }

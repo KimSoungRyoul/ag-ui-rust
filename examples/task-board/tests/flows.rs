@@ -7,7 +7,7 @@
 //! `README.md` are assertions rather than illustrations.
 
 use ag_ui::client::transport::HttpTransport;
-use ag_ui::client::{HttpAgent, RunEnd, RunParams, Session, SubagentStatus, Update};
+use ag_ui::client::{HttpAgent, RunEnd, RunParams, SubagentStatus, Thread, Update};
 use ag_ui::{Event, EventType, Message, SubagentRunId};
 use ag_ui_a2ui::message::AgentPayload;
 use ag_ui_a2ui::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
@@ -35,15 +35,17 @@ async fn serve() -> String {
 }
 
 /// A session offering the tools the agent expects, as the binary's `chat` does.
-fn session(url: &str, thread: &str) -> Session<HttpTransport, Board> {
-    let transport = HttpTransport::new(url).expect("a valid endpoint URL");
-    Session::builder(transport, thread)
+fn session(url: &str, thread: &str) -> Thread<HttpTransport, Board> {
+    HttpAgent::new(url)
+        .expect("a valid endpoint URL")
+        .thread_builder(thread)
         .tools(board::tools())
         .build()
+        .expect("valid initial board")
 }
 
 /// Runs `script` through the real terminal client and returns what it printed.
-async fn transcript(session: &mut Session<HttpTransport, Board>, script: &str) -> String {
+async fn transcript(session: &mut Thread<HttpTransport, Board>, script: &str) -> String {
     let mut terminal = Terminal::new(script.as_bytes(), Vec::new()).echoing();
     chat::converse(session, &mut terminal)
         .await
@@ -58,7 +60,7 @@ async fn transcript(session: &mut Session<HttpTransport, Board>, script: &str) -
 }
 
 /// The A2UI operations from the last surface the agent shipped.
-fn last_surface(session: &Session<HttpTransport, Board>) -> Vec<ag_ui_a2ui::AgentMessage> {
+fn last_surface(session: &Thread<HttpTransport, Board>) -> Vec<ag_ui_a2ui::AgentMessage> {
     let envelope = session
         .messages()
         .iter()
@@ -205,7 +207,9 @@ async fn a_paused_run_ends_as_interrupted_and_resumes_as_its_own_run() {
     );
     assert_eq!(session.interrupts(), std::slice::from_ref(&interrupt));
 
-    let mut run = session.resume(&interrupt, serde_json::json!({"confirm": true}));
+    let mut run = session
+        .resume(&interrupt, serde_json::json!({"confirm": true}))
+        .expect("all pending decisions answered");
     let mut updates = Vec::new();
     while let Some(update) = run.next().await {
         updates.push(update);
@@ -219,10 +223,7 @@ async fn a_paused_run_ends_as_interrupted_and_resumes_as_its_own_run() {
     assert!(session.interrupts().is_empty());
     assert!(session.state().expect("a board").tasks.is_empty());
     // The resumed run is a run of its own, in the same thread.
-    assert_eq!(
-        session.applier().run_id().map(|id| id.as_str()),
-        Some("pause-run-3")
-    );
+    assert_eq!(session.snapshot().run_ids.len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -284,7 +285,7 @@ async fn the_event_stream_is_ordered_as_the_protocol_requires() {
         .tools(board::tools());
 
     let events: Vec<Event> = agent
-        .run(params)
+        .run_events(params)
         .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
@@ -345,7 +346,7 @@ async fn the_event_stream_is_ordered_as_the_protocol_requires() {
 #[tokio::test(flavor = "multi_thread")]
 async fn state_publishes_pick_the_smaller_of_a_snapshot_and_a_patch() {
     let url = serve().await;
-    let agent = HttpAgent::http(&url).expect("a valid endpoint URL");
+    let agent = HttpAgent::new(&url).expect("a valid endpoint URL");
 
     // Two publishes on a board small enough that resending it beats patching
     // it, and two on a board where it does not.
@@ -461,13 +462,13 @@ async fn research_delegates_to_two_subagents_and_the_client_files_their_work_und
 #[tokio::test(flavor = "multi_thread")]
 async fn a_subagents_events_are_bracketed_and_attributed_on_the_wire() {
     let url = serve().await;
-    let agent = HttpAgent::http(&url).expect("a valid endpoint URL");
+    let agent = HttpAgent::new(&url).expect("a valid endpoint URL");
     let params = RunParams::new("wire", "r1")
         .user("m1", "research onboarding")
         .tools(board::tools());
 
     let events: Vec<Event> = agent
-        .run(params)
+        .run_events(params)
         .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
@@ -544,7 +545,7 @@ async fn state_events(agent: &HttpAgent, said: &str) -> Vec<EventType> {
         .tools(board::tools());
 
     agent
-        .run(params)
+        .run_events(params)
         .map(|event| event.expect("the stream should not break"))
         .map(|event| event.event_type())
         .filter(|kind| {
@@ -558,8 +559,8 @@ async fn state_events(agent: &HttpAgent, said: &str) -> Vec<EventType> {
 }
 
 /// Drains one run and returns everything it reported.
-async fn drain(session: &mut Session<HttpTransport, Board>, said: &str) -> Vec<Update<Board>> {
-    let mut run = session.send(said);
+async fn drain(session: &mut Thread<HttpTransport, Board>, said: &str) -> Vec<Update<Board>> {
+    let mut run = session.send(said).expect("no pending decisions");
     let mut updates = Vec::new();
     while let Some(update) = run.next().await {
         updates.push(update);

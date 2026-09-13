@@ -61,7 +61,7 @@ pub fn load_tools(json: &str) -> serde_json::Result<Vec<ag_ui::Tool>> {
 /// `docs/DESIGN.md`.
 pub fn replay_fixture(json: &str) -> serde_json::Result<ReplayTransport> {
     let runs: Vec<Vec<Event>> = serde_json::from_str(json)?;
-    Ok(ReplayTransport::with_runs(runs))
+    Ok(ReplayTransport::with_runs(runs).matching_requests())
 }
 
 #[cfg(test)]

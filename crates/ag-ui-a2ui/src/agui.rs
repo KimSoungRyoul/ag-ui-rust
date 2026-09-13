@@ -87,6 +87,25 @@ pub fn find_prior_surface_in(messages: &[Message]) -> Option<PriorSurface> {
     find_prior_surface(&history)
 }
 
+/// Sends a fully validated batch through this integration's `a2ui_operations`
+/// tool-result envelope. Enqueue success does not acknowledge renderer application.
+#[cfg(feature = "ag-ui-server")]
+pub trait A2uiRunContextExt {
+    /// Emits one render tool call and its result. Never automatically retries a batch.
+    fn send_a2ui(&mut self, surface: &crate::ValidatedSurface) -> ag_ui::server::Result<()>;
+}
+#[cfg(feature = "ag-ui-server")]
+impl<S: ag_ui::server::AgentState> A2uiRunContextExt for ag_ui::server::RunContext<S> {
+    fn send_a2ui(&mut self, surface: &crate::ValidatedSurface) -> ag_ui::server::Result<()> {
+        let envelope = crate::toolkit::envelope::wrap_as_operations_envelope(surface.operations())
+            .map_err(ag_ui::server::Error::agent)?;
+        let mut call = self.tool_call(crate::constants::RENDER_A2UI_TOOL_NAME)?;
+        call.args_json(&serde_json::json!({"surfaceId":surface.surface_id()}))?;
+        call.result(envelope)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

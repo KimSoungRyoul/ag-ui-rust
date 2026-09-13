@@ -19,6 +19,12 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = ["ag-ui", "toolkit"]
 # Agent-side authoring: op builders, prompt assembly, recovery loop.
 toolkit = []
+# Full Draft 2020-12 validation with local resources only.
+schema-validation = ["toolkit", "dep:jsonschema", "dep:schema-getrandom"]
+# Provider-neutral async generation with full validation.
+author = ["toolkit", "schema-validation"]
+# AG-UI event emission; does not enable HTTP, axum, or Tokio.
+ag-ui-server = ["author", "ag-ui", "ag-ui/server"]
 # Interop with `ag-ui`: history entries from AG-UI messages, toolkit tool
 # definitions as offerable tools. Implies `toolkit`, because everything it
 # converts lives there. Turn it off to use A2UI standalone over A2A or MCP —
@@ -31,7 +37,13 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 jsonptr.workspace = true
+jsonschema = { version = "=0.29.1", default-features = false, optional = true }
 ag-ui = { workspace = true, optional = true }
+
+# jsonschema's randomized hash maps require browser entropy on wasm. Kept
+# target- and feature-specific, so standalone protocol users do not acquire it.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+schema-getrandom = { package = "getrandom", version = "=0.3.4", features = ["wasm_js"], optional = true }
 
 [dev-dependencies]
 # Reads the vendored upstream language-agnostic conformance suite

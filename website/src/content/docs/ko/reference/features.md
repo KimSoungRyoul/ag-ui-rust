@@ -107,7 +107,7 @@ message와 A2UI history entry 사이의 `From` 구현, toolkit tool 정의를 of
 ```toml
 # AG-UI 없는 A2UI.
 [dependencies.ag-ui-a2ui]
-version = "0.3"
+git = "https://github.com/KimSoungRyoul/ag-ui-rust"
 default-features = false
 features = ["toolkit"]
 ```
@@ -162,3 +162,15 @@ job 둘이 다른 방향에서 feature를 제약합니다. `msrv`는 Rust 1.85�
 새로운 compiler를 요구할 수 없습니다. `executor-agnostic`은 dependency graph 넷에 tokio가
 없음을 단언합니다. 그중 하나가 `ag_ui::client --no-default-features`입니다 —
 [platform과 MSRV](/ag-ui-rust/ko/reference/platforms/)를 보십시오.
+
+
+## A2UI 0.4 기능
+
+| Feature | 의존성 | 역할 |
+|---|---|---|
+| `schema-validation` | `toolkit`, `jsonschema` | 로컬 리소스로 Draft 2020-12 전체 검증 |
+| `author` | `schema-validation` | 비동기 생성과 불변 검증 결과 |
+| `ag-ui-server` | `author`, `ag-ui/server` | HTTP·Tokio 없이 `send_a2ui` 전송 |
+
+이 기능들은 선택적으로 켭니다. client ID 생성과 만료 검사는 `getrandom`과 `time`을
+추가하며 특정 executor에 의존하지 않습니다.

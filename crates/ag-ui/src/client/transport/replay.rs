@@ -27,10 +27,11 @@ use crate::client::transport::{EventStream, Transport, TransportFuture};
 /// A [`Transport`] that answers each run from a script.
 ///
 /// Cloning shares the script and the recording, so a test can keep a handle
-/// after handing one to a [`Session`](crate::client::Session).
+/// after handing one to a [`Thread`](crate::client::Thread).
 #[derive(Clone, Debug, Default)]
 pub struct ReplayTransport {
     inner: Arc<Mutex<Script>>,
+    matching_requests: bool,
 }
 
 #[derive(Debug, Default)]
@@ -52,11 +53,21 @@ impl ReplayTransport {
     /// on an interrupt, the second — the resume — carries on.
     pub fn with_runs(runs: impl IntoIterator<Item = Vec<Event>>) -> Self {
         Self {
+            matching_requests: false,
             inner: Arc::new(Mutex::new(Script {
                 runs: runs.into_iter().collect(),
                 requests: Vec::new(),
             })),
         }
+    }
+
+    /// Rebind each script's first RUN_STARTED and its matching RUN_FINISHED
+    /// to the actual request IDs. Unmatched terminal IDs stay unchanged so
+    /// malformed fixtures still fail. The default replays events literally.
+    #[must_use]
+    pub fn matching_requests(mut self) -> Self {
+        self.matching_requests = true;
+        self
     }
 
     /// Every request this transport has been handed, in order.
@@ -84,8 +95,35 @@ impl ReplayTransport {
 impl Transport for ReplayTransport {
     fn run(&self, input: RunAgentInput) -> TransportFuture {
         let mut script = self.lock();
-        script.requests.push(input);
-        let next = script.runs.pop_front();
+        script.requests.push(input.clone());
+        let mut next = script.runs.pop_front();
+        if self.matching_requests {
+            if let Some(events) = &mut next {
+                let original = events.iter().find_map(|event| match event {
+                    Event::RunStarted(e) => Some((e.thread_id.clone(), e.run_id.clone())),
+                    _ => None,
+                });
+                if let Some((thread_id, run_id)) = original {
+                    for event in events {
+                        match event {
+                            Event::RunStarted(e)
+                                if e.thread_id == thread_id && e.run_id == run_id =>
+                            {
+                                e.thread_id = input.thread_id.clone();
+                                e.run_id = input.run_id.clone();
+                            }
+                            Event::RunFinished(e)
+                                if e.thread_id == thread_id && e.run_id == run_id =>
+                            {
+                                e.thread_id = input.thread_id.clone();
+                                e.run_id = input.run_id.clone();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
         drop(script);
 
         Box::pin(async move {
