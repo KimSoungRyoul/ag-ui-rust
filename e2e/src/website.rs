@@ -55,11 +55,11 @@ macro_rules! doc_page {
     };
 }
 
-doc_page!(index, "index.mdx");
-
 doc_page!(start_index, "start/index.md");
 doc_page!(start_protocol, "start/protocol.md");
 doc_page!(start_crates, "start/crates.md");
+
+doc_page!(server_index, "server/index.md");
 
 doc_page!(server_agent, "server/agent.md");
 doc_page!(server_text, "server/text.md");
@@ -69,6 +69,11 @@ doc_page!(server_interrupts, "server/interrupts.md");
 doc_page!(server_subagents, "server/subagents.md");
 doc_page!(server_errors, "server/errors.md");
 doc_page!(server_axum, "server/axum.md");
+
+doc_page!(client_index, "client/index.md");
+doc_page!(client_tools, "client/tools.md");
+doc_page!(client_state, "client/state.md");
+doc_page!(client_interrupts, "client/interrupts.md");
 
 doc_page!(client_thread, "client/thread.md");
 doc_page!(client_updates, "client/updates.md");
@@ -94,11 +99,11 @@ doc_page!(examples_board_watch, "examples/board-watch.md");
 // extension included, so the two halves read as one table and a page that
 // exists in one language but not the other is visible at a glance rather than
 // only when someone goes looking.
-doc_page!(ko_index, "ko/index.mdx");
-
 doc_page!(ko_start_index, "ko/start/index.md");
 doc_page!(ko_start_protocol, "ko/start/protocol.md");
 doc_page!(ko_start_crates, "ko/start/crates.md");
+
+doc_page!(ko_server_index, "ko/server/index.md");
 
 doc_page!(ko_server_agent, "ko/server/agent.md");
 doc_page!(ko_server_text, "ko/server/text.md");
@@ -108,6 +113,11 @@ doc_page!(ko_server_interrupts, "ko/server/interrupts.md");
 doc_page!(ko_server_subagents, "ko/server/subagents.md");
 doc_page!(ko_server_errors, "ko/server/errors.md");
 doc_page!(ko_server_axum, "ko/server/axum.md");
+
+doc_page!(ko_client_index, "ko/client/index.md");
+doc_page!(ko_client_tools, "ko/client/tools.md");
+doc_page!(ko_client_state, "ko/client/state.md");
+doc_page!(ko_client_interrupts, "ko/client/interrupts.md");
 
 doc_page!(ko_client_thread, "ko/client/thread.md");
 doc_page!(ko_client_updates, "ko/client/updates.md");

@@ -55,7 +55,7 @@ server가 thread를 저장한다는 말은 protocol 어디에도 없습니다. �
 agent도 규격을 지킵니다. 대화를 남길지는 application이 정합니다.
 
 **tool 목록은 client의 제안이지 agent의 메뉴가 아닙니다.** AG-UI에는 tool discovery가
-없습니다. agent는 받지 않은 tool을 달라고 할 수 없습니다. 그렇다고 allow-list도
+없습니다. 서버는 제공받지 않은 기능을 client가 구현한다고 가정하면 안 됩니다. 서버 도구의 allow-list도
 아닙니다. `tools`에 없는 이름으로 call을 emit해도 잘 형성된 stream입니다. agent가 스스로
 한 일을 보고하는 방법이 그것입니다. `docs/DESIGN.md`가 그 논거를 길게 폅니다. agent를
 쓰는 입장에서 무슨 뜻인지는 [tool call](/ag-ui-rust/ko/server/tools/)이 다룹니다.
@@ -172,7 +172,8 @@ renderer를 물어뜯는 세부가 둘 있습니다. 둘 다
 자기 출력을 감싸지 못하는 producer가 있습니다. provider adapter는 다음 message가
 시작되기 전까지 이전 message가 끝난 줄 모르는 일이 흔합니다. 그래서 protocol은
 `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_CHUNK`, `REASONING_MESSAGE_CHUNK`도 정의합니다.
-chunk는 연속된 것 중 **첫 번째에만** id를 싣습니다. 뒤의 것은 그 id를 물려받습니다.
+첫 chunk는 ID를 제공합니다. 이후에도 ID를 반복할 수 있고, 대상 stream이 분명할 때 생략할 수 있습니다.
+동시 출력에서는 ID나 subagent 출처를 명시합니다.
 chunk event 다섯 개가 message 하나일 수 있습니다.
 
 소비자는 다른 무엇이 stream을 보기 전에 chunk를 명시적인 start/content/end 세 짝으로
@@ -212,7 +213,7 @@ field 단위 판본은 [event reference](/ag-ui-rust/ko/reference/events/)에 �
 
 `Event`가 `#[non_exhaustive]`가 아니라 빠짐없는 enum인 것은 값을 치르는 결정입니다. 새
 protocol event가 생기면 event를 match하는 모든 사람에게 compile 오류가 납니다. 이 SDK의
-major version도 올라갑니다. 그 이유는
+호환성을 깨는 버전으로 올려야 합니다. `0.x`에서는 다음 minor 버전이 이에 해당합니다. 그 이유는
 [설계 원칙](/ag-ui-rust/ko/design/commitments/)에 있습니다. 빠뜨린 부분은 시끄러워야
 하는데, `_` arm이 바로 그것을 조용하게 만듭니다.
 

@@ -127,7 +127,7 @@ It cannot coexist with the guarantee above. `Drop` cannot be async in Rust, so a
 cannot `await` while emitting its terminator. Either the terminator is automatic and the
 emit path is synchronous, or the emit path is async and every agent has to remember to close
 its own messages. This SDK picks the first. Emitters push into an unbounded channel and the
-transport drains it; nothing blocks, and nothing is buffered waiting for a reader.
+transport drains it; emission does not wait for a reader, so queued output can grow when the consumer is slow.
 
 The practical consequence is a pleasant one: after calling an agent's code, everything it
 emitted is already queued, which is why the assertions above are plain `drain()` calls with
@@ -196,9 +196,8 @@ fn main() -> ag_ui::server::Result<()> {
 ```
 
 `message.emit(event)` is the general form, for the unordered families — `STATE_*`,
-`ACTIVITY_*`, `CUSTOM`, `RAW` — that may legally interleave with a message. Opening a second
-message through it is a protocol violation the
-[ordering verifier](/ag-ui-rust/server/errors/) rejects at the point of emission.
+`ACTIVITY_*`, `CUSTOM`, `RAW` — that may legally interleave with a message. Raw events may open another message with a different ID. Unlike typed handles, this path
+requires you to track IDs and close each stream; the [ordering verifier](/ag-ui-rust/server/errors/) checks those rules.
 
 What the handle cannot do is open another block: it holds no run context to open one with,
 and the context it came from stays borrowed until it drops.
@@ -273,10 +272,14 @@ the event for having no start.
 
 ## API
 
-- [`RunContext::say`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.say),
-  [`assistant_message`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.assistant_message),
-  [`message_with_id`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.message_with_id)
-- [`ag_ui::server::MessageHandle`](/ag-ui-rust/api/ag_ui/server/struct.MessageHandle.html)
-- [`ag_ui::server::ReasoningHandle`](/ag-ui-rust/api/ag_ui/server/struct.ReasoningHandle.html)
+- [`RunContext::say`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.say),
+  [`assistant_message`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.assistant_message),
+  [`message_with_id`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.message_with_id)
+- [`ag_ui::server::MessageHandle`](/ag-ui-rust/api/ag_ui/server/emit/struct.MessageHandle.html)
+- [`ag_ui::server::ReasoningHandle`](/ag-ui-rust/api/ag_ui/server/emit/struct.ReasoningHandle.html)
 - [`ag_ui::server::emit`](/ag-ui-rust/api/ag_ui/server/emit/index.html) — the module that
   explains the typestate design
+
+## Connect the other side
+
+[Server component overview](/ag-ui-rust/server/) · [Client guide for this output](/ag-ui-rust/client/rendering/)

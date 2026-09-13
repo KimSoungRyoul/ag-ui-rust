@@ -22,10 +22,7 @@ only executable proof of the typestate guarantee
 [Design commitments](/ag-ui-rust/design/commitments/) sells as a headline
 feature. Weaken the emitter API and nextest stays green.
 
-The gap is easy to see, and easy to mistake for coverage. When this page was
-written, `cargo nextest list --workspace --all-features` reported 672 test cases
-across 50 binaries — and not one of them was a doctest. Everything the second
-command reports is a test the first has nothing at all to say about.
+
 
 If you would rather have one command and can live without nextest's output,
 `cargo test --workspace --all-features` runs both kinds. CI runs both forms, and
@@ -50,8 +47,7 @@ compiled has to be left off it deliberately.
 
 ## Testing an agent you have written
 
-The emit path is synchronous, which makes an agent testable without a runtime,
-without a port and without a client. `RunContext::new` hands you a context and
+The emit path is synchronous, which makes an agent testable without a port or client; synchronous helpers also need no async runtime. `RunContext::new` hands you a context and
 the receiving end of its event stream; after calling your agent's code,
 everything it emitted is already queued, and `drain` takes it:
 
@@ -227,28 +223,18 @@ the list came to exist.
 
 ## What CI runs
 
-Ten jobs. Nine run on every push and pull request; the tenth runs on a weekly
-timer, and any of them can be triggered by hand.
-
-| Job | What it does |
+| Check | Scope |
 | --- | --- |
-| `hygiene (prek)` | The `.pre-commit-config.yaml` above, `--all-files`. This is where `cargo fmt --all -- --check` lives — one formatting gate, in the one place a contributor also runs it. |
-| `test` | `cargo clippy --workspace --all-targets --all-features -- -D warnings`, then `cargo test --workspace --all-features`, then `cargo test --doc --workspace --all-features` again on purpose. |
-| `doctest error codes (nightly)` | The doctests again on nightly, which is the only thing that enforces the error code on a `compile_fail,E0499` annotation. The only use of nightly in the build. |
-| `executor-agnostic` | Builds core, server, client and a2ui for `wasm32-unknown-unknown` (five `cargo check` invocations), then asserts tokio is absent from four dependency graphs. |
-| `feature matrix` | Fifteen `cargo check --all-targets` runs: every feature alone, and every crate with its defaults off. |
-| `MSRV 1.85` | `cargo check --workspace --all-features --all-targets` on 1.85 — the first compiler that understands edition 2024, so there is no slack in the promise. |
-| `docs` | `cargo doc --workspace --all-features --no-deps` with `RUSTDOCFLAGS: -D warnings`. The public API is the product, so a broken intra-doc link is a defect in the deliverable. |
-| `package manifest` | `cargo package --list` for the two crates that carry no `publish = false` — `ag-ui` and `ag-ui-a2ui`, as against `xtask`, the e2e suite and the examples — asserting each would package its `README.md` and `LICENSE`. Offline: it builds no archive and uploads nothing. |
-| `protocol drift vs upstream` | `cargo run -p xtask -- drift-check`. Offline and deterministic, which is what qualifies it as a required check. |
-| `upstream freshness (scheduled)` | `drift-check --upstream`, weekly. It needs the network, so it is a timer rather than a gate: a rate limit cannot fail it, only real upstream movement can. |
+| `hygiene` | File hygiene, typos and Rust formatting |
+| `test` | Clippy, workspace tests and doctests |
+| `doctest-error-codes` | Compile-fail error codes on nightly |
+| `executor-agnostic` | Wasm compilation and Tokio dependency isolation |
+| `features`, `doc-features` | Compilation and rustdoc for selected features |
+| `msrv` | All features and targets on Rust 1.85 |
+| `renderer-interop` | Data and component behavior against the official A2UI core |
+| `docs`, `package` | Rustdoc and package contents |
+| `drift`, `upstream-freshness` | Offline snapshot comparison and scheduled upstream freshness |
 
-The last two are [Verification](/ag-ui-rust/design/verification/).
-
-Two of these jobs are worth knowing the reasoning for before editing them. The
-`hygiene` job's Rust toolchain is load-bearing — its `cargo-fmt` hook shells out
-to `cargo fmt`, and without rustfmt installed it fails rather than skips — and
-deleting the job removes formatting from CI altogether. And clippy is
-deliberately *not* in `hygiene`: the config puts it on the pre-push stage, which
-`prek run` does not reach by default, so it stays in `test` where it shares that
-job's compilation cache instead of paying for its own.
+The Pages workflow checks the site build, types and links, then deploys it with rustdoc.
+Only changes merged into `main` deploy to the production documentation.
+Test counts and external model availability change; use current command output and workflow files as evidence.

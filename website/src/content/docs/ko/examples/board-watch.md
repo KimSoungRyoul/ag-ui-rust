@@ -50,7 +50,7 @@ scenario는 처음 친 단어로 고릅니다. 그래서 기록만 봐도 무엇
 
 provider adapter는 자기 출력을 감싸지 못하는 일이 흔합니다. upstream API가 다음
 message가 시작되기 전까지는 message가 끝났다고 말해 주지 않습니다. 그래서 `*_CHUNK`
-event를 보냅니다. start와 content와 end를 하나로 접고, id는 **첫 번째에만** 싣습니다.
+event를 보냅니다. 이 예제는 첫 chunk에 ID를 싣고 뒤에서는 생략합니다. 이후 chunk에서도 ID를 반복할 수 있습니다.
 event 다섯, message 하나입니다:
 
 ```text
@@ -297,9 +297,9 @@ crate가 아니라 JSON 모양입니다. surface는 A2UI component tree를 걸�
 
 ### `--tools`가 있는 이유
 
-AG-UI에서는 *client*가 tool을 제안하고 agent가 그중에서 고릅니다. discovery는 없습니다.
-agent가 받지 않은 tool을 달라고 할 방법이 없습니다. 하나도 받지 못한 agent는 그냥
-실패합니다.
+이 예제는 애플리케이션 정책으로 task-board 도구 설명을 요청에 요구합니다.
+AG-UI 자체는 빈 도구 목록과 서버 자체 도구의 호출 보고를 허용합니다.
+Client는 여기서 설명 데이터를 보내며, 실제 보드 변경은 task-board 서버가 수행합니다.
 
 ```text
 $ board-watch watch --url http://127.0.0.1:8080/agent      # no --tools

@@ -1,0 +1,19 @@
+---
+const prefix = Astro.locals.starlightRoute.locale === 'ko' ? 'ko/' : '';
+const href = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/${prefix}start/`;
+---
+
+<a class="sdk-title" href={href} aria-label="ag-ui-rust">
+	<svg width="25" height="29" viewBox="-3 -3 59 68" fill="none" stroke="currentColor" stroke-width="3.3125" aria-hidden="true">
+		<path d="M0,25.9335975 L16.5448881,0 C40.848296,5.37332138 53,8.05998207 53,8.05998207 L43.1229639,62 L0,25.9335975 Z" stroke-linejoin="round" />
+		<path d="M16.5828221,0 L43.2453988,62 M0,25.9335975 L53,8.48421053" />
+	</svg>
+	<span translate="no">AG-UI</span>
+	<span class="sdk-badge" translate="no">Rust SDK</span>
+</a>
+
+<style>
+	.sdk-title { display: inline-flex; align-items: center; gap: 0.6rem; color: var(--sl-color-white); text-decoration: none; white-space: nowrap; font-size: 1.15rem; font-weight: 650; letter-spacing: -0.025em; }
+	svg { flex-shrink: 0; }
+	.sdk-badge { border: 1px solid var(--sl-color-accent); border-radius: 0.35rem; padding: 0.15rem 0.4rem; color: var(--sl-color-text-accent); font-size: 0.7rem; font-weight: 600; letter-spacing: 0; }
+</style>

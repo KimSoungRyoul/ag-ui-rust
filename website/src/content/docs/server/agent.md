@@ -1,34 +1,15 @@
 ---
-title: The Agent trait
-description: Implementing the trait that is this SDK's only boundary, and what the run context hands an implementation.
+title: Agent and run context
+description: Connect request input and application logic to RunContext output.
 ---
 
-`Agent` is the whole extension point of `ag_ui::server`. There is one trait, it has one
-associated type and one method, and everything else on these pages is something the run
-context hands that method.
+`Agent::run` connects application logic to AG-UI output. Inject a model client or
+application service into your agent, then use each request's `RunContext` to read input
+and emit messages, tool calls and state changes. Return a `RunOutcome` to describe how the run ended.
 
-```rust
-// crates/ag-ui/src/server/agent.rs — the declaration, with the docs stripped.
-use ag_ui::RunOutcome;
-use ag_ui::server::{AgentState, Result, RunContext};
-use std::future::Future;
-
-pub trait Agent: Send + Sync {
-    type State: AgentState;
-
-    fn run(
-        &self,
-        ctx: &mut RunContext<Self::State>,
-    ) -> impl Future<Output = Result<RunOutcome>> + Send;
-}
-```
-
-The trait deliberately says nothing about models, prompts or providers. The .NET SDK builds
-on `Microsoft.Extensions.AI` because .NET has one blessed chat abstraction; Rust does not —
-the ecosystem is split across `async-openai`, `rig-core` and `genai` with no winner — so
-binding to any of them would make this crate useless to most of it. `ag_ui::server` therefore
-depends on no LLM crate at all. Bring your own client, call it inside `run`, and emit what it
-gives you. A framework integration is an `impl Agent for …` in its own crate.
+For example, a task-board agent reads task data and writes its state and response to the context.
+Your application implements model calls, actual tool execution, storage and authorization.
+The SDK turns the output into an event stream a client can consume.
 
 ## A complete agent
 
@@ -291,7 +272,7 @@ can end:
   `RUN_FINISHED`, carrying the pending interrupts. See
   [Human in the loop](/ag-ui-rust/server/interrupts/).
 - `Err(_)` — the run failed. The driver emits `RUN_ERROR` carrying the message and a code.
-  An agent error is never a panic and never a truncated stream. See
+  A returned error is distinct from a panic; failed transport or event emission may still truncate the stream. See
   [Errors and cancellation](/ag-ui-rust/server/errors/).
 
 :::caution
@@ -302,11 +283,11 @@ the `200` has already been sent. Return `Err(Error::agent(…))` for failures yo
 
 ## API
 
-- [`ag_ui::server::Agent`](/ag-ui-rust/api/ag_ui/server/trait.Agent.html)
-- [`ag_ui::server::AgentState`](/ag-ui-rust/api/ag_ui/server/trait.AgentState.html)
-- [`ag_ui::server::RunContext`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html)
-- [`ag_ui::server::run`](/ag-ui-rust/api/ag_ui/server/fn.run.html) and
-  [`Runner`](/ag-ui-rust/api/ag_ui/server/struct.Runner.html)
-- [`ag_ui::server::DynAgent`](/ag-ui-rust/api/ag_ui/server/trait.DynAgent.html) and
-  [`BoxAgent`](/ag-ui-rust/api/ag_ui/server/type.BoxAgent.html)
-- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/enum.RunOutcome.html)
+- [`ag_ui::server::Agent`](/ag-ui-rust/api/ag_ui/server/agent/trait.Agent.html)
+- [`ag_ui::server::AgentState`](/ag-ui-rust/api/ag_ui/server/agent/trait.AgentState.html)
+- [`ag_ui::server::RunContext`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html)
+- [`ag_ui::server::run`](/ag-ui-rust/api/ag_ui/server/run/fn.run.html) and
+  [`Runner`](/ag-ui-rust/api/ag_ui/server/run/struct.Runner.html)
+- [`ag_ui::server::DynAgent`](/ag-ui-rust/api/ag_ui/server/agent/trait.DynAgent.html) and
+  [`BoxAgent`](/ag-ui-rust/api/ag_ui/server/agent/type.BoxAgent.html)
+- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/outcome/enum.RunOutcome.html)

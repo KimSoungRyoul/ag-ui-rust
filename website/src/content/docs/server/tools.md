@@ -1,18 +1,23 @@
 ---
-title: Tool calls
-description: Emitting tool calls from an agent, answering them within the run, and reading the tool list a client offered.
+title: Tool calls and results
+description: Carry descriptions, calls and results for tools your application already implements.
 ---
 
-A tool call is bracketed like a message: `TOOL_CALL_START`, some number of `TOOL_CALL_ARGS`,
-then `TOOL_CALL_END`, all carrying the same call id. `ctx.tool_call(name)` emits the start
-and returns a handle that emits the end on `Drop`, exactly as
-[a message handle](/ag-ui-rust/server/text/) does.
+Assume executable tools already exist in your application or agent framework.
+The SDK does not choose or execute them. `ctx.tool_call(name)` opens protocol events for a call;
+`args_json()` sends its arguments, and `result_json()` sends a result the application obtained.
 
-What is different is the ending. A call can be *answered* — the agent runs the tool itself
-and reports what it got — or *left open for the client*, which runs it and sends the result
-back on the next request.
+## Tool descriptions and executable functions
 
-## A call the agent answers itself
+`ag_ui::Tool` contains a name, description and argument JSON Schema. It contains no function or credentials.
+Clients advertise their capabilities through `RunAgentInput.tools`. The server reads those descriptions with
+`ctx.tools()` or `ctx.tool(name)` and can adapt them to its model's tool format.
+The executing application owns function registration, argument validation, authorization and execution.
+
+For an existing weather tool, the framework decides to call it and executes the weather API.
+AG-UI carries the name, arguments and result to the UI. The weather result below is fixed example data.
+
+## Send a server-executed result
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
@@ -42,19 +47,12 @@ fn main() -> ag_ui::server::Result<()> {
 }
 ```
 
-`result` emits `TOOL_CALL_END` and then `TOOL_CALL_RESULT`, and returns the id of the tool
-message carrying the result — the id the conversation history will use for it. That id is
-allocated when the handle is created, not when the result is emitted, which is what lets the
-handle finish the call without reaching back into the run context. `result_message_id()`
-reads it early if you need it.
+The sequence is `TOOL_CALL_START` → `TOOL_CALL_ARGS` → `TOOL_CALL_END` → `TOOL_CALL_RESULT`.
+`TOOL_CALL_END` ends argument emission; it does not report successful business execution.
+`result_json` emits the end and result events and returns the result message ID.
+`result()` accepts an already serialized string.
 
-`result_json` serializes for you; `result` takes a `String` you already have.
-
-## A call the client executes
-
-Front-end tools — the ones the client offered because the client is what can run them — are
-closed with `end()` and nothing else. There is no result to report from here; it arrives as
-a tool message on the next request:
+## Send a client-executed call
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
@@ -81,12 +79,17 @@ fn main() -> ag_ui::server::Result<()> {
 }
 ```
 
-## Arguments stream as text
+Finish argument emission with `end()`. The client application checks that it offered the tool,
+executes it, and includes a result message with the same tool call ID in its next request.
+The SDK does not invoke UI functions or external APIs. A call whose result the server already supplied
+may be display-only; the client must not execute it again.
 
-`args` takes a fragment, not a value, because that is how providers emit them: a partial
-delta is usually not valid JSON, and the protocol keeps `TOOL_CALL_ARGS` unparsed for
-exactly that reason. The handle keeps everything it emitted, so `parse_args` can hand you
-the finished struct to execute against once the provider is done:
+`RunAgentInput.tools` is neither proof of authorization nor an allow-list of all server tools.
+A server may report calls and results for its own tools even when the client did not advertise them.
+The `task-board` example checks some names against the offered list as application policy;
+the example's application code also performs their execution.
+
+## Stream argument fragments
 
 ```rust
 use ag_ui::RunAgentInput;
@@ -114,76 +117,10 @@ fn main() -> ag_ui::server::Result<()> {
 }
 ```
 
-`parse_args` fails while the arguments are still partial, which is the point — call it once
-the stream has finished, not per fragment. `raw_args` is the same buffer unparsed.
+`args()` accepts fragments of JSON text. Call `parse_args()` once all fragments have arrived.
+Do not parse an individual fragment or execute a tool from incomplete arguments.
 
-## The offered tool list is a capability list
-
-`RunAgentInput.tools` says what the **client** can execute. It does not say what the agent
-may call, and nothing in this SDK treats it as an allow-list: emitting `TOOL_CALL_START` for
-a name absent from that list is a well-formed stream, and the
-[ordering verifier](/ag-ui-rust/server/errors/) says nothing about it.
-
-The case that settles it is a tool the agent answers itself. An A2UI agent emits
-`render_a2ui` to carry a surface to the frontend — the frontend draws it, and no client ever
-"offered" it because there is nothing for a client to execute. The same shape covers a
-server-side tool whose result the agent computes within the run, and a call emitted purely
-so the transcript shows what the agent did.
-
-What a client does with a call it does not recognise is the client's decision: ignore it,
-render it as an activity, or report it. What the protocol constrains is the *ordering* —
-args with no start, a result before the end — and that is what gets checked.
-
-An agent that wants the stricter rule can have it, because `ctx.tool(name)` returns `None`
-for anything unoffered:
-
-```rust
-use ag_ui::{RunAgentInput, RunOutcome, Tool};
-use ag_ui::server::{Agent, Error, Result, RunContext, ToolCallHandle};
-use serde_json::json;
-
-/// Opens a call only when the client offered the tool. A rule this agent
-/// adopts for the tools it expects the client to run — not one the protocol
-/// imposes.
-fn offered<'a>(ctx: &'a mut RunContext<()>, name: &str) -> Result<ToolCallHandle<'a, ()>> {
-    if ctx.tool(name).is_none() {
-        return Err(Error::agent(format!("the client offered no {name} tool")));
-    }
-    ctx.tool_call(name)
-}
-
-struct Board;
-
-impl Agent for Board {
-    type State = ();
-
-    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let mut call = offered(ctx, "add_task")?;
-        call.args_json(&json!({"title": "ship it"}))?;
-        call.result_json(&json!({"ok": true}))?;
-
-        Ok(RunOutcome::Success)
-    }
-}
-
-fn main() -> ag_ui::server::Result<()> {
-    let mut input = RunAgentInput::new("t", "r");
-    input.tools = vec![Tool::new("add_task", "Add a task to the board.", json!({}))];
-    let (mut ctx, _events) = RunContext::<()>::new(input)?;
-
-    assert!(offered(&mut ctx, "add_task").is_ok());
-    assert!(offered(&mut ctx, "delete_everything").is_err());
-    Ok(())
-}
-```
-
-`examples/task-board` does exactly this for the four tools that move its board on the
-client's behalf, and does *not* do it for `render_a2ui`.
-
-## Doing the work while the call is open
-
-A handle borrows the run's event sink and its state, not the run context, so a tool's own
-work belongs *between* the arguments and the result:
+## Publish state while work is in progress
 
 ```rust
 use ag_ui::RunAgentInput;
@@ -214,19 +151,10 @@ fn main() -> ag_ui::server::Result<()> {
 }
 ```
 
-That order — the call in flight, the state changing, the result closing it — is the reason
-to stream a call at all rather than announce it once it is already done.
-[Shared state](/ag-ui-rust/server/state/) covers why the protocol allows it and why the
-ordering is worth caring about.
+`state_mut()` and `publish_state()` expose progress; they do not perform database writes or tool execution.
+A state event's position alone does not associate it with a particular call.
 
-## Parallel calls
-
-Two open `ToolCallHandle`s at once is a borrow-check error, by design and for the same
-reason two messages are. A provider that streams `args(a) args(b) args(a) end(a) end(b)`
-therefore cannot be mirrored handle-for-call.
-
-The mapping that works is to accumulate each call and emit it whole once its arguments are
-complete. It is also the only one that cannot splice two calls' arguments into each other:
+## Concurrent call output
 
 ```rust
 use ag_ui::{Event, EventType, RunAgentInput};
@@ -263,17 +191,12 @@ fn main() -> ag_ui::server::Result<()> {
 }
 ```
 
-`e2e/src/llm.rs` maps a real provider's stream this way. If you genuinely need the
-interleaving on the wire — because a client is rendering both calls as they arrive — emit it
-yourself with `ctx.emit`: the verifier keys everything by id, so it accepts an interleaved
-stream. What it will not let you do is close a call you never opened.
+A single context cannot hold two tool handles at once. This example buffers by call ID and emits calls sequentially.
+For live interleaving, use `ctx.emit` with explicit IDs. Different call IDs may overlap.
+The SDK does not schedule parallel tool execution.
 
-## API
+## Next
 
-- [`RunContext::tool_call`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tool_call)
-  and [`tool_call_with_id`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tool_call_with_id)
-- [`RunContext::tools`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tools) and
-  [`tool`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.tool)
-- [`ag_ui::server::ToolCallHandle`](/ag-ui-rust/api/ag_ui/server/struct.ToolCallHandle.html)
-- [`ag_ui::Tool`](/ag-ui-rust/api/ag_ui/struct.Tool.html) and
-  [`ToolCall`](/ag-ui-rust/api/ag_ui/struct.ToolCall.html)
+- [Send tool results from a client](/ag-ui-rust/client/tools/)
+- [Shared state](/ag-ui-rust/server/state/) and [AG-UI integration overview](/ag-ui-rust/server/)
+- [`Tool`](/ag-ui-rust/api/ag_ui/tool/struct.Tool.html), [`ToolCallHandle`](/ag-ui-rust/api/ag_ui/server/emit/struct.ToolCallHandle.html)

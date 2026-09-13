@@ -1,13 +1,13 @@
 ---
-title: Serving over HTTP
+title: HTTP endpoint
 description: Mounting an agent on an axum router, and the request and response the resulting endpoint speaks.
 ---
 
 `ag_ui::server` turns an [`Agent`](/ag-ui-rust/server/agent/) into a stream of events and
 stops there, on purpose: it has no executor and no web framework, so it builds for wasm.
 `ag_ui::axum` is the other half — the POST endpoint, the `text/event-stream` body, content
-negotiation, and telling the agent when the client hangs up. It is the only crate in this
-workspace that depends on tokio, axum or tower.
+negotiation, and telling the agent when the client hangs up. The `axum` feature enables this Tokio-based HTTP binding; the optional
+`http` client feature also brings Tokio through reqwest.
 
 ## Mounting an agent
 
@@ -306,12 +306,19 @@ tower already ships, and they compose with this endpoint like any other route.
 
 ## API
 
-- [`ag_ui::axum::RouterExt`](/ag-ui-rust/api/ag_ui/axum/trait.RouterExt.html) and
-  [`AgentEndpoint`](/ag-ui-rust/api/ag_ui/axum/struct.AgentEndpoint.html)
-- [`ag_ui::axum::AgUiInput`](/ag-ui-rust/api/ag_ui/axum/struct.AgUiInput.html)
-- [`ag_ui::axum::SseResponse`](/ag-ui-rust/api/ag_ui/axum/struct.SseResponse.html) and
-  [`negotiate`](/ag-ui-rust/api/ag_ui/axum/fn.negotiate.html)
-- [`ag_ui::axum::Error`](/ag-ui-rust/api/ag_ui/axum/enum.Error.html)
-- [`ag_ui::server::Runner`](/ag-ui-rust/api/ag_ui/server/struct.Runner.html), for a transport
+- [`ag_ui::axum::RouterExt`](/ag-ui-rust/api/ag_ui/axum/router/trait.RouterExt.html) and
+  [`AgentEndpoint`](/ag-ui-rust/api/ag_ui/axum/router/struct.AgentEndpoint.html)
+- [`ag_ui::axum::AgUiInput`](/ag-ui-rust/api/ag_ui/axum/extract/struct.AgUiInput.html)
+- [`ag_ui::axum::SseResponse`](/ag-ui-rust/api/ag_ui/axum/respond/struct.SseResponse.html) and
+  [`negotiate`](/ag-ui-rust/api/ag_ui/axum/respond/fn.negotiate.html)
+- [`ag_ui::axum::Error`](/ag-ui-rust/api/ag_ui/axum/error/enum.Error.html)
+- [`ag_ui::server::Runner`](/ag-ui-rust/api/ag_ui/server/run/struct.Runner.html), for a transport
   of your own
 - The other end of the wire: [Transports](/ag-ui-rust/client/transports/)
+
+## Connect the other side
+
+[Server component overview](/ag-ui-rust/server/) · [Client guide for this output](/ag-ui-rust/client/transports/)
+
+A cancellation token is a cooperative signal. Independently spawned work must observe the same token or be connected to an application cancellation path.
+Completed external effects are not automatically rolled back, and remote termination requires separate confirmation.

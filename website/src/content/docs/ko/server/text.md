@@ -1,5 +1,5 @@
 ---
-title: text streaming
+title: 텍스트 스트리밍
 description: assistant message를 생성되는 대로 emit하는 법. 그리고 event ordering을 컴파일 타임의 문제로 만드는 handle.
 ---
 
@@ -128,8 +128,8 @@ fn main() -> ag_ui::server::Result<()> {
 자동이고 emit 경로가 동기이거나, emit 경로가 async이고 모든 agent가 자기 message를 직접 닫는
 것을 잊지 말아야 하거나. 이 SDK는 앞쪽을 골랐습니다.
 
-emitter는 unbounded channel에 밀어 넣고 transport가 그것을 비웁니다. 막히는 곳도 없고, 읽는
-쪽을 기다리며 쌓이는 것도 없습니다.
+emitter는 unbounded channel에 밀어 넣고 transport가 그것을 비웁니다. 읽는 쪽을 기다리지 않으므로
+소비자가 느리면 queue에 출력이 쌓일 수 있습니다.
 
 여기서 나오는 실질적 결과는 반갑습니다. agent code를 호출하고 나면 그것이 emit한 것은 이미
 전부 큐에 들어가 있습니다. 위의 단언들이 런타임 하나 없이 그냥 `drain()` 호출로 끝나는 이유가
@@ -198,9 +198,8 @@ fn main() -> ag_ui::server::Result<()> {
 ```
 
 `message.emit(event)`는 그 일반형입니다. message 사이에 적법하게 끼어들 수 있는 순서 없는
-계열 — `STATE_*`, `ACTIVITY_*`, `CUSTOM`, `RAW` — 을 위한 것입니다. 이것으로 두 번째 message를
-여는 것은 protocol 위반입니다. [ordering verifier](/ag-ui-rust/ko/server/errors/)가 emit
-시점에 거부합니다.
+계열 — `STATE_*`, `ACTIVITY_*`, `CUSTOM`, `RAW` — 을 위한 것입니다. 다른 ID의 message를 raw event로 열 수도 있습니다. 이 경우 호출자가 각 stream의 ID와 종료를
+관리해야 하며, [ordering verifier](/ag-ui-rust/ko/server/errors/)가 해당 규칙을 검사합니다.
 
 handle이 할 수 없는 일은 또 다른 블록을 여는 것입니다. 블록을 열 run context를 쥐고 있지
 않습니다. 그리고 handle이 나온 context는 handle이 드롭될 때까지 빌려진 채로 남습니다.
@@ -275,10 +274,14 @@ verifier는 chunk가 자기완결적이라는 것을 압니다. 그래서 시작
 
 ## API
 
-- [`RunContext::say`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.say),
-  [`assistant_message`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.assistant_message),
-  [`message_with_id`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.message_with_id)
-- [`ag_ui::server::MessageHandle`](/ag-ui-rust/api/ag_ui/server/struct.MessageHandle.html)
-- [`ag_ui::server::ReasoningHandle`](/ag-ui-rust/api/ag_ui/server/struct.ReasoningHandle.html)
+- [`RunContext::say`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.say),
+  [`assistant_message`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.assistant_message),
+  [`message_with_id`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.message_with_id)
+- [`ag_ui::server::MessageHandle`](/ag-ui-rust/api/ag_ui/server/emit/struct.MessageHandle.html)
+- [`ag_ui::server::ReasoningHandle`](/ag-ui-rust/api/ag_ui/server/emit/struct.ReasoningHandle.html)
 - [`ag_ui::server::emit`](/ag-ui-rust/api/ag_ui/server/emit/index.html) — typestate 설계를
   설명하는 모듈
+
+## 다음 연결 지점
+
+[서버 컴포넌트 전체 흐름](/ag-ui-rust/ko/server/) · [이 출력을 처리하는 client 가이드](/ag-ui-rust/ko/client/rendering/)

@@ -1,7 +1,10 @@
 ---
-title: Subagents
-description: Delegating part of a run to a child agent, attributing what it emits, and choosing what an older client gets to see of it.
+title: Subagent output and status
+description: Report output provenance and lifecycle for subagents executed by your framework.
 ---
+
+`ctx.subagent_events()` scopes event provenance. It does not create or execute a child agent.
+The framework owns execution, parallelism and graph routing; the examples below represent its output.
 
 Many agents delegate. A supervisor dispatches research to a child, a planner farms out
 subtasks, a tool call *is* a nested agent. To a frontend all of that arrives as one event
@@ -222,12 +225,15 @@ impl Agent for Janitor {
     type State = ();
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let approved = ctx.resume_for(APPROVE).is_some();
+        let decision = ctx.resume_for(APPROVE).map(|answer| {
+            matches!(answer.status, ag_ui::ResumeStatus::Resolved)
+                && answer.payload.as_ref() == Some(&json!(true))
+        });
 
         // The same id on both runs: a fresh one would draw a second subagent.
         let mut deleter = ctx.subagent_with(SubagentStartedEvent::new(DELETER, "deleter"))?;
-        if approved {
-            deleter.say("Deleted.")?;
+        if let Some(approved) = decision {
+            deleter.say(if approved { "Deleted." } else { "Not deleted." })?;
             deleter.finish()?;
             return Ok(RunOutcome::Success);
         }
@@ -265,6 +271,16 @@ async fn main() {
     let Event::SubagentStarted(again) = &resumed[1] else { unreachable!() };
     assert_eq!(again.subagent_run_id.as_str(), DELETER);
     assert_eq!(resumed.last().map(Event::event_type), Some(EventType::RunFinished));
+
+    for answer in [ResumeEntry::cancelled(APPROVE), ResumeEntry::resolved(APPROVE, json!(false))] {
+        let mut input = RunAgentInput::new("t", "run-denied");
+        input.resume = Some(vec![answer]);
+        let events: Vec<Event> = run(Janitor, input).map(Result::unwrap).collect().await;
+        assert!(events.iter().any(|event| matches!(event,
+            Event::TextMessageContent(content) if content.delta == "Not deleted.")));
+        assert!(!events.iter().any(|event| matches!(event,
+            Event::TextMessageContent(content) if content.delta == "Deleted.")));
+    }
 }
 ```
 
@@ -274,7 +290,7 @@ type both cases read through, and `interrupt_ids()` is empty for the ancestor.
 
 ## Concurrency by hand
 
-Two handles cannot be open at once — the second `subagent()` is a borrow-check error, as
+Two handles cannot be open at once — the second `subagent_events()` is a borrow-check error, as
 everything overlapping is in this SDK. Subagents that genuinely stream concurrently are the
 [parallel tool call](/ag-ui-rust/server/tools/) situation again: tag each subagent's events
 yourself with `Event::with_subagent_run_id` and emit them interleaved, bracketed by the
@@ -404,16 +420,23 @@ against. Flip it per endpoint when your consumers are older.
 
 ## API
 
-- [`RunContext::subagent`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.subagent),
-  [`subagent_with`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.subagent_with)
-  and [`new_subagent_run_id`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html#method.new_subagent_run_id)
-- [`ag_ui::server::SubagentHandle`](/ag-ui-rust/api/ag_ui/server/struct.SubagentHandle.html)
-- [`ag_ui::server::SubagentVisibility`](/ag-ui-rust/api/ag_ui/server/enum.SubagentVisibility.html)
-  and [`SubagentFilter`](/ag-ui-rust/api/ag_ui/server/struct.SubagentFilter.html)
-- [`ag_ui::SubagentStartedEvent`](/ag-ui-rust/api/ag_ui/struct.SubagentStartedEvent.html),
-  [`SubagentFinishedEvent`](/ag-ui-rust/api/ag_ui/struct.SubagentFinishedEvent.html),
-  [`SubagentErrorEvent`](/ag-ui-rust/api/ag_ui/struct.SubagentErrorEvent.html) and
-  [`SubagentOutcome`](/ag-ui-rust/api/ag_ui/enum.SubagentOutcome.html)
+- [`RunContext::subagent_events`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.subagent_events),
+  [`subagent_with`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.subagent_with)
+  and [`new_subagent_run_id`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html#method.new_subagent_run_id)
+- [`ag_ui::server::SubagentHandle`](/ag-ui-rust/api/ag_ui/server/emit/struct.SubagentHandle.html)
+- [`ag_ui::server::SubagentVisibility`](/ag-ui-rust/api/ag_ui/server/transform/enum.SubagentVisibility.html)
+  and [`SubagentFilter`](/ag-ui-rust/api/ag_ui/server/transform/struct.SubagentFilter.html)
+- [`ag_ui::SubagentStartedEvent`](/ag-ui-rust/api/ag_ui/event/subagent/struct.SubagentStartedEvent.html),
+  [`SubagentFinishedEvent`](/ag-ui-rust/api/ag_ui/event/subagent/struct.SubagentFinishedEvent.html),
+  [`SubagentErrorEvent`](/ag-ui-rust/api/ag_ui/event/subagent/struct.SubagentErrorEvent.html) and
+  [`SubagentOutcome`](/ag-ui-rust/api/ag_ui/event/subagent/enum.SubagentOutcome.html)
 - [`Event::subagent_run_id`](/ag-ui-rust/api/ag_ui/event/enum.Event.html#method.subagent_run_id)
   and [`EventType::is_attributable`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html#method.is_attributable)
 - The consuming half: [The update stream](/ag-ui-rust/client/updates/)
+
+## Connect the other side
+
+[Server component overview](/ag-ui-rust/server/) · [Client guide for this output](/ag-ui-rust/client/rendering/)
+
+Reuse a suspended invocation ID when the producer can correlate the resumed work. A new ID is valid when it cannot.
+Clients must support both a same-ID continuation and a new invocation.

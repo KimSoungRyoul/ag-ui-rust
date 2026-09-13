@@ -1,36 +1,15 @@
 ---
-title: Agent trait
-description: 이 SDK의 유일한 경계인 trait를 구현하는 법. 그리고 run context가 구현체에 건네주는 것들.
+title: Agent와 실행 컨텍스트
+description: 요청 입력과 애플리케이션 로직을 RunContext의 출력에 연결합니다.
 ---
 
-`Agent`는 `ag_ui::server`의 확장 지점 전부입니다. trait는 하나뿐입니다. 연관 타입 하나와
-메서드 하나를 가집니다. 이 문서의 나머지는 전부 run context가 그 메서드에 건네주는 것들입니다.
+`Agent::run`은 애플리케이션 로직을 AG-UI 출력에 연결하는 지점입니다.
+모델 client나 업무 서비스를 `Agent` 구현체에 주입하고, 요청마다 받는 `RunContext`로
+입력을 읽고 메시지·도구 호출·상태 변경을 내보냅니다. 반환하는 `RunOutcome`이 run의 종료 상태를 결정합니다.
 
-```rust
-// crates/ag-ui/src/server/agent.rs — 문서 주석을 걷어낸 선언부.
-use ag_ui::RunOutcome;
-use ag_ui::server::{AgentState, Result, RunContext};
-use std::future::Future;
-
-pub trait Agent: Send + Sync {
-    type State: AgentState;
-
-    fn run(
-        &self,
-        ctx: &mut RunContext<Self::State>,
-    ) -> impl Future<Output = Result<RunOutcome>> + Send;
-}
-```
-
-이 trait는 모델도 프롬프트도 provider도 말하지 않습니다. 일부러 그렇습니다.
-
-.NET SDK는 `Microsoft.Extensions.AI` 위에 섭니다. .NET에는 공인된 채팅 추상화가 하나 있기
-때문입니다. Rust에는 없습니다. 생태계가 `async-openai`, `rig-core`, `genai`로 갈라져 있고
-승자가 없습니다. 그중 하나에 묶으면 이 crate는 나머지 대부분에게 쓸모없어집니다.
-
-그래서 `ag_ui::server`는 LLM crate에 전혀 의존하지 않습니다. 쓰던 client를 그대로
-가져오십시오. `run` 안에서 호출하고, 나오는 것을 emit하면 됩니다. 프레임워크 연동은 별도
-crate에 있는 `impl Agent for …` 하나입니다.
+예를 들어 task-board는 업무 상태를 조회한 뒤 context에 그 상태와 응답을 기록합니다.
+모델 호출, 실제 도구 실행, 저장과 권한 확인은 애플리케이션에서 구현합니다.
+SDK는 그 결과를 client가 이해할 수 있는 event stream으로 전달합니다.
 
 ## 완전한 agent 하나
 
@@ -304,11 +283,11 @@ agent 안에서 난 *panic*은 잡히지 않습니다. 다른 future에서와 �
 
 ## API
 
-- [`ag_ui::server::Agent`](/ag-ui-rust/api/ag_ui/server/trait.Agent.html)
-- [`ag_ui::server::AgentState`](/ag-ui-rust/api/ag_ui/server/trait.AgentState.html)
-- [`ag_ui::server::RunContext`](/ag-ui-rust/api/ag_ui/server/struct.RunContext.html)
-- [`ag_ui::server::run`](/ag-ui-rust/api/ag_ui/server/fn.run.html)과
-  [`Runner`](/ag-ui-rust/api/ag_ui/server/struct.Runner.html)
-- [`ag_ui::server::DynAgent`](/ag-ui-rust/api/ag_ui/server/trait.DynAgent.html)과
-  [`BoxAgent`](/ag-ui-rust/api/ag_ui/server/type.BoxAgent.html)
-- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/enum.RunOutcome.html)
+- [`ag_ui::server::Agent`](/ag-ui-rust/api/ag_ui/server/agent/trait.Agent.html)
+- [`ag_ui::server::AgentState`](/ag-ui-rust/api/ag_ui/server/agent/trait.AgentState.html)
+- [`ag_ui::server::RunContext`](/ag-ui-rust/api/ag_ui/server/context/struct.RunContext.html)
+- [`ag_ui::server::run`](/ag-ui-rust/api/ag_ui/server/run/fn.run.html)과
+  [`Runner`](/ag-ui-rust/api/ag_ui/server/run/struct.Runner.html)
+- [`ag_ui::server::DynAgent`](/ag-ui-rust/api/ag_ui/server/agent/trait.DynAgent.html)과
+  [`BoxAgent`](/ag-ui-rust/api/ag_ui/server/agent/type.BoxAgent.html)
+- [`ag_ui::RunOutcome`](/ag-ui-rust/api/ag_ui/outcome/enum.RunOutcome.html)

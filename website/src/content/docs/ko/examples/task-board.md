@@ -219,7 +219,7 @@ you> research onboarding
 ```
 
 `⟂`는 subagent가 시작하거나 끝나는 것이고, `scope>`와 `· [scope]`는 그 subagent의 문장과
-tool call입니다. agent가 직접 tag를 붙이는 곳은 없습니다. `ctx.subagent("scope")`가
+tool call입니다. agent가 직접 tag를 붙이는 곳은 없습니다. `ctx.subagent_events("scope")`가
 돌려주는 handle은 run context로 deref되고, 그것을 통해 내보낸 모든 것 — 문장, call,
 publish한 board — 이 그 invocation의 `subagentRunId`를 달고 `SUBAGENT_STARTED`와
 `SUBAGENT_FINISHED` 사이에 나갑니다. wire 위에서 첫 delegate는 이렇습니다:

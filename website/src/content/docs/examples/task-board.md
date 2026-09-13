@@ -218,7 +218,7 @@ you> research onboarding
 ```
 
 `⟂` is a subagent starting or finishing, and `scope>` and `· [scope]` are its sentence and
-its tool call. The agent tags none of this itself: `ctx.subagent("scope")` returns a handle
+its tool call. The agent tags none of this itself: `ctx.subagent_events("scope")` returns a handle
 that dereferences to the run context, and everything emitted through it — the sentence, the
 call, the board it publishes — goes out with that invocation's `subagentRunId`, bracketed
 by `SUBAGENT_STARTED` and `SUBAGENT_FINISHED`. On the wire, the first delegate is:
