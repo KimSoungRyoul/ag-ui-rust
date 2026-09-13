@@ -7,6 +7,26 @@ description: 로컬 전체 스키마 검증, surface별 원자적 메시지 적�
 `SchemaValidator`와 `SurfaceValidator`는 고정된 공식 스키마의 Draft 2020-12 전체 검증을 추가합니다.
 `A2uiAuthor`는 항상 전체 검증을 사용하며 feature를 끈다고 약한 검사로 대체하지 않습니다.
 
+## SDK 안의 JSON 파일은 무엇인가
+
+`schemas/v0_9_1/`은 사용자 데이터나 화면 템플릿을 저장하는 곳이 아니라 공식 규칙집입니다.
+`server_to_client.json`은 메시지 형식, `common_types.json`은 바인딩·함수 호출 같은 공통 형식,
+`catalog.json`은 Text·Button 등 컴포넌트 속성을 정의합니다.
+
+SDK는 특정 upstream 버전을 원문 그대로 포함합니다. `include_str!`로 컴파일할 때 포함하므로
+실행 중 인터넷에서 내려받지 않습니다. `A2uiAuthor`는 같은 규칙을 모델 프롬프트와 결과 검증에
+사용합니다. 수동 템플릿도 이 규칙으로 검증할 수 있습니다.
+
+| 단계 | 하는 일 | 예시 |
+| --- | --- | --- |
+| JSON 파싱 | JSON 문법 확인 | 쉼표·괄호가 잘못된 문서 거부 |
+| JSON Schema 검증 | 규칙 파일에 맞는 필드·타입·구조 확인 | catalogId 누락, 숫자 surfaceId 거부 |
+| 의미·상태 검증 | 컴포넌트 연결과 순차 갱신 확인 | 없는 자식 참조, 중복 create 거부 |
+
+즉 JSON 스키마 파일은 검사 로직 자체가 아닙니다. `jsonschema` 라이브러리가 읽는 규칙이며,
+화면 수명과 관계는 SDK의 Rust 코드가 검사합니다. `generate()`에서는 모델이 UI JSON을 만들고
+SDK가 이를 검사합니다. 일반 날씨 데이터를 자동으로 화면으로 바꾸는 규칙은 아닙니다.
+
 ## 메시지 스트림 검증
 
 ```rust

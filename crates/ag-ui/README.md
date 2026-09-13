@@ -11,11 +11,17 @@ This independent SDK provides protocol types, server emitters and client convers
 It is not affiliated with or endorsed by the AG-UI protocol organisation. The upstream
 event baseline is checked in CI.
 
+To host an agent behind axum:
+
 ```toml
 [dependencies]
-# host an agent behind axum
 ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
-# or consume one over HTTP
+```
+
+To consume an agent over HTTP:
+
+```toml
+[dependencies]
 ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["http"] }
 ```
 

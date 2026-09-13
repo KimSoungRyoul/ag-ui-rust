@@ -91,6 +91,67 @@ not automatically resend a failed batch: earlier events may have been sent.
 This API validates the whole generated batch before sending; it does not combine
 partial rendering with generation retries.
 
+## Expose a template as a tool
+
+A developer can fix the layout and expose a tool whose arguments supply its content.
+This example uses the `author` feature but makes no model call. `validate_create()`
+checks code-generated messages against the official schema and returns a `ValidatedSurface`.
+
+```rust
+use ag_ui_a2ui::{A2uiAuthor, A2uiVersion, AgentMessage, Component, Result, ValidatedSurface};
+use ag_ui_a2ui::constants::OFFICIAL_BASIC_CATALOG_ID;
+use serde_json::json;
+
+fn summary_card(surface_id: &str, title: &str, description: &str) -> Result<ValidatedSurface> {
+    let author = A2uiAuthor::basic(A2uiVersion::V0_9_1)?;
+    let messages = [
+        AgentMessage::create_surface(surface_id, OFFICIAL_BASIC_CATALOG_ID),
+        AgentMessage::update_components(surface_id, vec![
+            Component::new("root", "Card").with("child", json!("body")),
+            Component::new("body", "Column").with("children", json!(["title", "description"])),
+            Component::new("title", "Text").with("text", json!({"path":"/title"})),
+            Component::new("description", "Text").with("text", json!({"path":"/description"})),
+        ]),
+        AgentMessage::update_data_model(surface_id, "/", json!({
+            "title": title, "description": description,
+        })),
+    ].into_iter()
+        .map(|message| serde_json::to_value(message.with_version(A2uiVersion::V0_9_1)))
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    author.validate_create(surface_id, &messages)
+}
+
+let card = summary_card("weather-1", "서울 날씨", "맑음 · 21도")?;
+assert_eq!(card.data_model().to_json()?["title"], "서울 날씨");
+# Ok::<(), ag_ui_a2ui::Error>(())
+```
+
+An agent application can connect this function behind tools such as:
+
+```text
+weather_get("Seoul")
+  → Clear, 21°C
+
+a2ui_get("summaryCard")
+  → The template requires title and description
+
+a2ui_render(template="summaryCard", data={title:"Seoul weather", description:"Clear, 21°C"})
+  → summary_card(...) → validated A2UI → renderer
+```
+
+`a2ui_search`, `a2ui_get` and `a2ui_render` are application-defined example names,
+not standard A2UI tools. Search helps when there are many templates; get provides
+instructions and input schemas. A small catalog can expose only a direct tool such
+as `a2ui_summarycard(title, description)`. Returning a tool description does not
+register a new callable tool automatically.
+
+Here summaryCard is an application template composed from Card, Column and Text.
+Sending a new `SummaryCard` component type would require its own catalog definition
+and renderer implementation. An AG-UI server can send the returned card through
+`ctx.send_a2ui(&card)?`. For the same existing surface, use `validate_edit()` and
+updates rather than creating it again. The application owns template selection and
+data retrieval; the SDK constructs, validates and transports protocol messages.
+
 ## Manual operations and incremental recovery
 
 Manual `AgentMessage`/`SurfaceSpec` builders and the low-level parser remain

@@ -84,6 +84,65 @@ fn send<S: AgentState>(ctx: &mut RunContext<S>, surface: &ValidatedSurface) -> R
 renderer의 수신·반영을 확인한 것은 아닙니다. 전송 오류가 나도 앞선 이벤트가 나갔을 수 있으므로 전체 batch를 자동 재전송하지 마세요.
 이 경로는 전체 생성·검증 후 전송하며, 부분 화면 전송과 생성 재시도를 한 API에 섞지 않습니다.
 
+## 템플릿을 도구로 제공하기
+
+개발자가 카드 틀을 고정하고 agent에게 입력값만 받는 도구를 제공할 수 있습니다.
+이 예제는 `author` feature를 쓰지만 모델을 호출하지 않습니다. `validate_create()`는
+코드가 만든 화면을 공식 스키마로 검사하여 `ValidatedSurface`를 반환합니다.
+
+```rust
+use ag_ui_a2ui::{A2uiAuthor, A2uiVersion, AgentMessage, Component, Result, ValidatedSurface};
+use ag_ui_a2ui::constants::OFFICIAL_BASIC_CATALOG_ID;
+use serde_json::json;
+
+fn summary_card(surface_id: &str, title: &str, description: &str) -> Result<ValidatedSurface> {
+    let author = A2uiAuthor::basic(A2uiVersion::V0_9_1)?;
+    let messages = [
+        AgentMessage::create_surface(surface_id, OFFICIAL_BASIC_CATALOG_ID),
+        AgentMessage::update_components(surface_id, vec![
+            Component::new("root", "Card").with("child", json!("body")),
+            Component::new("body", "Column").with("children", json!(["title", "description"])),
+            Component::new("title", "Text").with("text", json!({"path":"/title"})),
+            Component::new("description", "Text").with("text", json!({"path":"/description"})),
+        ]),
+        AgentMessage::update_data_model(surface_id, "/", json!({
+            "title": title, "description": description,
+        })),
+    ].into_iter()
+        .map(|message| serde_json::to_value(message.with_version(A2uiVersion::V0_9_1)))
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    author.validate_create(surface_id, &messages)
+}
+
+let card = summary_card("weather-1", "서울 날씨", "맑음 · 21도")?;
+assert_eq!(card.data_model().to_json()?["title"], "서울 날씨");
+# Ok::<(), ag_ui_a2ui::Error>(())
+```
+
+agent 애플리케이션은 이 함수를 다음과 같은 도구 뒤에 연결할 수 있습니다.
+
+```text
+weather_get("서울")
+  → 맑음, 21도
+
+a2ui_get("summaryCard")
+  → 이 템플릿에는 title과 description이 필요함
+
+a2ui_render(template="summaryCard", data={title:"서울 날씨", description:"맑음 · 21도"})
+  → summary_card(...) 호출 → 검증된 A2UI → renderer
+```
+
+`a2ui_search`, `a2ui_get`, `a2ui_render`는 애플리케이션이 정하는 예시 이름입니다.
+A2UI 표준에 정해진 도구가 아닙니다. 검색은 템플릿이 많을 때, get은 설명·입력 형식이
+필요할 때 추가합니다. 소수의 고정 템플릿이라면 `a2ui_summarycard(title, description)`
+같은 실행 도구만 등록해도 됩니다. get이 설명을 반환한다고 새 도구가 자동으로 등록되지는 않습니다.
+
+여기서 summaryCard는 기존 Card·Column·Text를 조합한 애플리케이션 템플릿입니다.
+새 `SummaryCard` 컴포넌트 타입을 wire에 넣으려면 별도 catalog 정의와 renderer 구현이 필요합니다.
+반환한 `card`는 AG-UI 서버에서 `ctx.send_a2ui(&card)?`로 보낼 수 있습니다.
+같은 surface를 다시 표시할 때는 또 create하지 않고 기존 검증 결과에 `validate_edit()`로
+데이터 갱신을 적용합니다. 템플릿 선택과 데이터 수집은 앱, 프로토콜 조립·검증·전송은 SDK가 맡습니다.
+
 ## 수동 작성과 이력 복원
 
 `AgentMessage`·`SurfaceSpec`과 저수준 parser는 계속 사용할 수 있습니다.

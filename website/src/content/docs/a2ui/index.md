@@ -12,6 +12,30 @@ AG-UI integration sends validated operations as a `render_a2ui` tool result with
 an `a2ui_operations` envelope. Other transports can use the protocol types
 directly. The MIME type is `application/a2ui+json`.
 
+## Understand A2UI through a weather card
+
+For “What is the weather in Seoul?”, a text answer might be “Clear, 21°C”. A2UI can
+instead send a JSON **UI description**: show a card, give it the title “Seoul weather”,
+and display “Clear, 21°C” inside. The application's renderer turns that description
+into visible components. These messages declare supported widgets, not executable HTML or JavaScript.
+
+| Participant | Responsibility |
+| --- | --- |
+| Model or application code | Choose the content and UI composition |
+| A2UI | Represent that composition in a common JSON format |
+| Renderer | Display the described UI |
+
+There are two ways to choose the composition.
+
+| Approach | Model output | SDK usage |
+| --- | --- | --- |
+| Model authors the UI | A2UI JSON containing Card, Text and other components | `A2uiAuthor.generate()` validates and requests corrections |
+| Developer authors a template | Ordinary domain data or template-tool arguments | Code constructs the components and data, then validates them |
+
+`generate()` is an SDK convenience method, not an A2UI wire message. It does not
+infer a layout from arbitrary domain data. A UI constructed without a model is
+also valid A2UI. See the [template tool example](/ag-ui-rust/a2ui/authoring/#expose-a-template-as-a-tool).
+
 ## Start with the task you need
 
 | Task | API |

@@ -9,6 +9,27 @@ relationships and basic property/envelope constraints. `SchemaValidator` and
 schemas. `A2uiAuthor` always uses full validation; disabling its schema feature
 does not substitute a weaker validator.
 
+## Why the SDK includes JSON files
+
+`schemas/v0_9_1/` contains official rules, not user data or UI templates.
+`server_to_client.json` defines message structure, `common_types.json` defines
+bindings and other shared types, and `catalog.json` defines component properties.
+
+The SDK vendors an unmodified upstream revision and embeds these resources through
+`include_str!`. Runtime execution does not download them. `A2uiAuthor` uses the same
+rules in model prompts and output validation; code-authored templates can use them too.
+
+| Stage | Responsibility | Example |
+| --- | --- | --- |
+| JSON parsing | Check JSON syntax | Reject broken commas or brackets |
+| JSON Schema validation | Check declared fields, types and structure | Reject missing catalogId or numeric surfaceId |
+| Semantic/state validation | Check component links and ordered updates | Reject unresolved children or duplicate creates |
+
+The JSON file is the rule definition, not executable validation logic. The `jsonschema`
+library interprets it, while Rust code checks state and relationships. With `generate()`,
+the model authors UI JSON and the SDK checks it. These rules do not automatically turn
+ordinary weather data into a layout.
+
 ## Validate a stream
 
 ```rust
