@@ -35,7 +35,7 @@ merge합니다. 마지막 쓰기가 이깁니다.
 
 | wire 이름 | Rust variant | family | 의미 |
 | --- | --- | --- | --- |
-| `TEXT_MESSAGE_START` | `TextMessageStart` | Text | `messageId` 아래에 text message를 엽니다. `role`의 기본값은 `assistant`이고, JSON `null`은 생략으로 읽힙니다. |
+| `TEXT_MESSAGE_START` | `TextMessageStart` | Text | `messageId` 아래에 text message를 엽니다. `role`을 생략하면 `assistant`가 되며, 명시적인 JSON `null`은 거절합니다. |
 | `TEXT_MESSAGE_CONTENT` | `TextMessageContent` | Text | 열린 message에 `delta`를 덧붙입니다. |
 | `TEXT_MESSAGE_END` | `TextMessageEnd` | Text | message를 닫습니다. |
 | `TEXT_MESSAGE_CHUNK` | `TextMessageChunk` | Text | start와 content와 end를 그 자체로 완결된 event 하나로 접은 것. |

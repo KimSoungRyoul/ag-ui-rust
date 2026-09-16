@@ -77,6 +77,22 @@ jobs:
       # doctests running instead of vanishing without a failing build.
       - run: cargo test --doc --workspace --all-features
 
+  semantic-interop:
+    name: official TypeScript schema semantics
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: e2e/interop/package-lock.json
+      - run: npm ci --prefix e2e/interop --ignore-scripts
+      - run: npm test --prefix e2e/interop
+
   # `compile_fail` doctests may name the error they expect
   # (```compile_fail,E0499```). Stable rustdoc parses that annotation and then
   # ignores it: the example need only fail to compile, for any reason at all.

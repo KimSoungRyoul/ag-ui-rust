@@ -1,5 +1,11 @@
 # QA strategy
 
+## Schema semantics
+
+The [official TypeScript interoperability suite](../e2e/interop/README.md) is a
+separate CI gate for acceptance and normalized values. It complements the
+event/field drift check and lists the typed representation differences explicitly.
+
 ## 0.4 implementation verification (2026-09-13)
 
 | Gate | Result |
