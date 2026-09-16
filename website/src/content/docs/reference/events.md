@@ -36,7 +36,7 @@ The order below is `EventType::ALL`'s order, which is upstream's.
 
 | Wire name | Rust variant | Family | What it means |
 | --- | --- | --- | --- |
-| `TEXT_MESSAGE_START` | `TextMessageStart` | Text | Opens a text message under a `messageId`. `role` defaults to `assistant`, and a JSON `null` reads as omitted. |
+| `TEXT_MESSAGE_START` | `TextMessageStart` | Text | Opens a text message under a `messageId`. `role` defaults to `assistant` when omitted; an explicit JSON `null` is rejected. |
 | `TEXT_MESSAGE_CONTENT` | `TextMessageContent` | Text | Appends `delta` to the open message. |
 | `TEXT_MESSAGE_END` | `TextMessageEnd` | Text | Closes the message. |
 | `TEXT_MESSAGE_CHUNK` | `TextMessageChunk` | Text | Start, content and end folded into one self-contained event. |

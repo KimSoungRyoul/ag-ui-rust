@@ -215,8 +215,7 @@ fn tokens(path: &str) -> Result<Vec<String>> {
         .collect()
 }
 fn is_numeric(token: &str) -> bool {
-    !token.is_empty()
-        && !(token.len() > 1 && token.starts_with('0'))
+    !(token.is_empty() || token.len() > 1 && token.starts_with('0'))
         && token.bytes().all(|b| b.is_ascii_digit())
 }
 fn index(token: &str, path: &str) -> Result<usize> {
