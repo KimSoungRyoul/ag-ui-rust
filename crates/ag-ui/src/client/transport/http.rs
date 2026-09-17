@@ -5,6 +5,7 @@
 //! crate that pulls in an HTTP client, and it sits behind the `http` feature so
 //! that a wasm or custom-transport build never sees it.
 
+use futures_util::StreamExt;
 use std::time::Duration;
 
 use crate::{RunAgentInput, SSE_MEDIA_TYPE};
@@ -15,7 +16,7 @@ use crate::client::error::{Error, Result};
 use crate::client::transport::sse::decode_events;
 use crate::client::transport::{EventStream, Transport, TransportFuture};
 
-/// How much of a failing response body is kept in the error.
+/// Maximum number of response bytes retained before decoding an HTTP error body.
 const MAX_ERROR_BODY: usize = 2048;
 
 /// POSTs a run to an HTTP endpoint and streams the response.
@@ -72,10 +73,18 @@ impl Transport for HttpTransport {
             let response = request.send().await.map_err(Error::transport)?;
             let status = response.status();
             if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
+                let mut stream = response.bytes_stream();
+                let mut body = Vec::with_capacity(MAX_ERROR_BODY);
+                while body.len() < MAX_ERROR_BODY {
+                    let Some(Ok(chunk)) = stream.next().await else {
+                        break;
+                    };
+                    let remaining = MAX_ERROR_BODY - body.len();
+                    body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                }
                 return Err(Error::Http {
                     status: status.as_u16(),
-                    body: body.chars().take(MAX_ERROR_BODY).collect(),
+                    body: String::from_utf8_lossy(&body).into_owned(),
                 });
             }
 
