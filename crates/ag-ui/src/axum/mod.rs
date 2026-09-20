@@ -112,5 +112,5 @@ pub mod router;
 
 pub use error::{Error, Result};
 pub use extract::AgUiInput;
-pub use respond::{SseResponse, negotiate};
+pub use respond::{SseFrame, SseResponse, negotiate};
 pub use router::{AgentEndpoint, RouterExt};

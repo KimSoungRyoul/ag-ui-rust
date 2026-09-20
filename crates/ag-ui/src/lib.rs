@@ -185,6 +185,7 @@ pub use capabilities::{
 };
 pub use context::Context;
 pub use error::{Error, Result};
+pub use event::EventEnvelope;
 pub use event::{
     ActivityDeltaEvent, ActivitySnapshotEvent, BaseEvent, CustomEvent, Event, EventType,
     MessagesSnapshotEvent, RawEvent, ReasoningEncryptedValueEvent, ReasoningEncryptedValueSubtype,

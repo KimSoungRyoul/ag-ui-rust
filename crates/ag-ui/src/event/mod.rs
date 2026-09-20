@@ -27,6 +27,7 @@
 #![allow(deprecated)]
 
 pub mod activity;
+pub mod envelope;
 pub mod factories;
 pub mod lifecycle;
 pub mod reasoning;
@@ -47,6 +48,7 @@ use crate::error::{Error, Result};
 use crate::ids::SubagentRunId;
 
 pub use activity::{ActivityDeltaEvent, ActivitySnapshotEvent};
+pub use envelope::EventEnvelope;
 pub use lifecycle::{
     RunErrorEvent, RunFinishedEvent, RunStartedEvent, StepFinishedEvent, StepStartedEvent,
 };

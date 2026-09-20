@@ -150,3 +150,7 @@ pub use toolkit::{StreamParser, wrap_as_operations_envelope, wrap_error_envelope
 
 #[cfg(feature = "ag-ui")]
 pub use agui::find_prior_surface_in;
+
+/// Typed component action properties.
+pub mod component_action;
+pub use component_action::{ActionEvent, ComponentAction};

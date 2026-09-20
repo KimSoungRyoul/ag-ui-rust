@@ -69,6 +69,16 @@ a snapshot or JSON Patch. Subagent event scopes attach output to an invocation;
 the application or agent framework owns the actual execution. Explicitly finish,
 fail or suspend a subagent scope: dropping it never reports success.
 
+For an externally owned execution, pass its event subscription to
+`SseResponse::stream_frames`. The SDK handles framing, headers, comments and
+keep-alive; persistence and replay ordering stay with the host. Leave
+`cancellation` unset when a disconnected subscriber must not cancel execution.
+Use `EventEnvelope` to add top-level host fields without cloning the standard
+`Event` union; `protocol()` exposes the exact event to the SDK verifier, and
+extension fields cannot shadow standard fields. Commit durable events before
+publishing them to the subscription. A successful serialization is not a
+persistence acknowledgement.
+
 ## Talk to an agent
 
 ```rust,no_run

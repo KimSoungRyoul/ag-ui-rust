@@ -111,6 +111,21 @@ pub struct ReasoningMessageContentEvent {
 }
 
 impl ReasoningMessageContentEvent {
+    /// Builds non-empty content without including private text in errors.
+    pub fn try_new(
+        message_id: impl Into<MessageId>,
+        delta: impl Into<String>,
+    ) -> crate::Result<Self> {
+        let message_id = message_id.into();
+        let delta = delta.into();
+        if delta.is_empty() {
+            return Err(crate::Error::Protocol(format!(
+                "content delta must not be empty (messageId={message_id})"
+            )));
+        }
+        Ok(Self::new(message_id, delta))
+    }
+
     /// Appends `delta` to the reasoning message.
     pub fn new(message_id: impl Into<MessageId>, delta: impl Into<String>) -> Self {
         Self {

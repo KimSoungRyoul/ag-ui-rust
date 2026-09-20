@@ -7,12 +7,16 @@
 //! request when the answer is "nothing" — a client that asked for
 //! `application/xml` gets a `406`, not an SSE stream it cannot read.
 //!
-//! **The body owns the run.** Polling the stream *is* running the agent
+//! **The body owns its input stream.** For [`crate::server::Runner`], polling
+//! that stream *is* running the agent
 //! ([`crate::server::run()`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/run/fn.run.html) has no executor of its own), so the response body and
 //! the run have exactly the same lifetime. That is what makes disconnect
 //! handling work: when the client goes away hyper drops the body, and the body
 //! drops a guard that trips the run's [`CancellationToken`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/cancel/struct.CancellationToken.html). See
-//! [`SseResponse::cancellation`].
+//! [`SseResponse::cancellation`]. An externally owned durable run can instead
+//! pass a subscription to [`SseResponse::stream_frames`] and omit cancellation;
+//! dropping the response then detaches the subscription, leaving execution to
+//! its owner.
 
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -21,11 +25,12 @@ use std::time::Duration;
 
 use crate::encode::sse;
 use crate::server::CancellationToken;
-use crate::{Event, EventStreamFormatter, RunErrorEvent, SSE_MEDIA_TYPE, SseFormatter, media_type};
+use crate::{Event, RunErrorEvent, SSE_MEDIA_TYPE, SseFormatter, media_type};
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderValue, header};
 use axum::response::Response;
-use futures_util::stream::Stream;
+use futures_util::stream::{Stream, StreamExt};
+use serde::Serialize;
 use tokio::time::{Instant, Sleep, sleep_until};
 
 use crate::axum::error::{Error, Result};
@@ -58,6 +63,30 @@ pub fn negotiate(accept: Option<&str>) -> Result<SseFormatter> {
         // taught this function to build. Refusing beats answering with a
         // content type whose body would be SSE.
         _ => Err(refuse()),
+    }
+}
+
+/// A data event or an SSE transport comment.
+///
+/// Comments are independent of the AG-UI event lifecycle. They can carry
+/// replay boundaries without manufacturing a protocol event. Each line is
+/// escaped as a comment by the SDK, so input cannot inject a data frame.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SseFrame<E = Event> {
+    /// One serializable event. Prefer `Event` or `EventEnvelope` for live data.
+    Event(E),
+    /// A comment ignored by standard SSE event consumers.
+    Comment(String),
+}
+
+impl<E> SseFrame<E> {
+    /// Creates a data frame without serializing it yet.
+    pub fn event(event: E) -> Self {
+        Self::Event(event)
+    }
+    /// Creates an SSE comment; the SDK handles multiline framing.
+    pub fn comment(comment: impl Into<String>) -> Self {
+        Self::Comment(comment.into())
     }
 }
 
@@ -144,6 +173,26 @@ impl SseResponse {
     where
         S: Stream<Item = crate::server::Result<Event>> + Send + 'static,
     {
+        self.stream_frames(events.map(|event| event.map(SseFrame::Event)))
+    }
+
+    /// Streams typed event envelopes and transport comments using this SDK's
+    /// SSE encoder, headers, keep-alive and optional cancellation policy.
+    ///
+    /// The values are serialized as supplied. Protocol ordering validation
+    /// belongs to the producer; new extended events can use `EventEnvelope`
+    /// and verify its `protocol()` value directly. This separate entry point
+    /// also permits explicit legacy replay envelopes without claiming their
+    /// historical fields have passed today's protocol validation.
+    ///
+    /// For externally owned runs, pass their subscription here and do not set
+    /// `cancellation`: disconnect then drops only the subscription. The SDK
+    /// never spawns or aborts the externally owned execution.
+    pub fn stream_frames<S, E>(self, frames: S) -> Response
+    where
+        S: Stream<Item = crate::server::Result<SseFrame<E>>> + Send + 'static,
+        E: Serialize + Send + 'static,
+    {
         let body = EventBody {
             // Cancel first, then drop the run: an agent whose own `Drop` looks
             // at the token sees the truth.
@@ -151,7 +200,7 @@ impl SseResponse {
                 token: self.cancellation,
                 armed: true,
             },
-            events: Box::pin(events),
+            events: Box::pin(frames),
             formatter: self.formatter,
             keep_alive: self.keep_alive.map(KeepAlive::new),
             done: false,
@@ -183,34 +232,31 @@ impl SseResponse {
 }
 
 /// The response body: SSE frames, and the run that produces them.
-struct EventBody {
+struct EventBody<E> {
     /// Declared first so it drops first — see [`SseResponse::stream`].
     guard: DisconnectGuard,
-    events: Pin<Box<dyn Stream<Item = crate::server::Result<Event>> + Send>>,
+    events: Pin<Box<dyn Stream<Item = crate::server::Result<SseFrame<E>>> + Send>>,
     formatter: SseFormatter,
     keep_alive: Option<KeepAlive>,
     done: bool,
 }
 
-impl EventBody {
-    /// Encodes one event, or — if that somehow fails — an in-band report of
-    /// why.
-    ///
-    /// Serializing an [`Event`] cannot fail today: every payload is derived
-    /// `Serialize` over owned data. If a future one can, a client that receives
-    /// a `RUN_ERROR` is in far better shape than one whose stream simply
-    /// stopped.
-    fn encode(&self, event: &Event) -> Bytes {
-        match self.formatter.encode(event) {
-            Ok(bytes) => Bytes::from(bytes),
-            Err(error) => Bytes::from(sse::frame(
-                &serde_json::json!({
-                    "type": "RUN_ERROR",
-                    "message": error.to_string(),
-                    "code": "SERIALIZATION",
-                })
-                .to_string(),
-            )),
+impl<E: Serialize> EventBody<E> {
+    /// Encodes one value, ending the subscription on serialization failure.
+    fn encode(&mut self, event: &impl Serialize) -> Bytes {
+        match self.formatter.encode_serializable(event) {
+            Ok(frame) => Bytes::from(frame),
+            Err(_error) => {
+                self.fail();
+                Bytes::from(sse::frame(
+                    &serde_json::json!({
+                        "type": "RUN_ERROR",
+                        "message": "event serialization failed",
+                        "code": "SERIALIZATION",
+                    })
+                    .to_string(),
+                ))
+            }
         }
     }
 
@@ -218,6 +264,16 @@ impl EventBody {
     fn finish(&mut self) {
         self.done = true;
         self.guard.disarm();
+    }
+
+    /// A transport failure ends polling before the producer has completed.
+    /// Cancel request-owned side effects before disarming the drop guard.
+    /// Externally owned subscriptions omit the token and remain detached.
+    fn fail(&mut self) {
+        if let Some(token) = &self.guard.token {
+            token.cancel();
+        }
+        self.finish();
     }
 
     fn reset_keep_alive(&mut self) {
@@ -236,7 +292,7 @@ impl EventBody {
     }
 }
 
-impl Stream for EventBody {
+impl<E: Serialize> Stream for EventBody<E> {
     type Item = Result<Bytes, Infallible>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -246,16 +302,20 @@ impl Stream for EventBody {
         }
 
         match this.events.as_mut().poll_next(cx) {
-            Poll::Ready(Some(Ok(event))) => {
+            Poll::Ready(Some(Ok(frame))) => {
                 this.reset_keep_alive();
-                Poll::Ready(Some(Ok(this.encode(&event))))
+                let bytes = match frame {
+                    SseFrame::Event(event) => this.encode(&event),
+                    SseFrame::Comment(comment) => Bytes::from(sse::comment(&comment)),
+                };
+                Poll::Ready(Some(Ok(bytes)))
             }
             // The run driver reports agent failures as `RUN_ERROR` events
             // itself, so this is the event *channel* failing. Say so in the
             // stream and end it there — the alternative is a body that stops
             // with no terminal event, which reads as a network fault.
             Poll::Ready(Some(Err(error))) => {
-                this.finish();
+                this.fail();
                 let event =
                     Event::from(RunErrorEvent::new(error.to_string()).with_code(error.code()));
                 Poll::Ready(Some(Ok(this.encode(&event))))

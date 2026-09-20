@@ -74,8 +74,8 @@
 #[cfg(feature = "verify")]
 pub(crate) use enabled::Verifier;
 
-/// Standalone protocol ordering and attribution checks, without an event queue.
-/// Disabling verification does not expose a permissive no-op version of this API.
+/// Standalone protocol ordering and ownership verifier. Requires `verify`.
+/// It validates supplied events without creating events, tasks or transport queues.
 #[cfg(feature = "verify")]
 pub use enabled::Verifier as EventVerifier;
 
@@ -147,7 +147,7 @@ mod enabled {
         /// runs the same graph shape as its parent, and neither may close the
         /// other's step.
         steps: HashSet<(Owner, StepName)>,
-        active_subagents: HashSet<SubagentRunId>,
+        active_subagents: HashMap<SubagentRunId, usize>,
         /// Ids closed in this run. An id names one invocation, so a second
         /// `SUBAGENT_STARTED` for a closed one is a producer bug — but
         /// attribution-only producers, which tag events and never announce,
@@ -156,7 +156,47 @@ mod enabled {
     }
 
     impl Verifier {
-        /// Creates the ordering state for one run.
+        /// Returns one open text, reasoning or tool argument stream label.
+        pub fn primary_open(&self) -> Option<String> {
+            self.messages
+                .keys()
+                .next()
+                .map(|id| format!("TEXT_MESSAGE({id})"))
+                .or_else(|| {
+                    self.reasoning
+                        .keys()
+                        .next()
+                        .map(|id| format!("REASONING({id})"))
+                })
+                .or_else(|| {
+                    self.tool_calls
+                        .keys()
+                        .next()
+                        .map(|id| format!("TOOL_CALL({id})"))
+                })
+        }
+        /// Returns one open nested reasoning message label.
+        pub fn reasoning_message_open(&self) -> Option<String> {
+            self.reasoning_messages
+                .keys()
+                .next()
+                .map(|id| format!("REASONING_MESSAGE({id})"))
+        }
+        /// Whether the invocation has started and has no terminal event.
+        pub fn subagent_open(&self, id: &str) -> bool {
+            self.active_subagents.contains_key(&SubagentRunId::new(id))
+        }
+        /// Whether this invocation already has a terminal event.
+        pub fn subagent_closed(&self, id: &str) -> bool {
+            self.closed_subagents.contains(&SubagentRunId::new(id))
+        }
+        /// Returns active invocation IDs in announcement order.
+        pub fn ordered_subagents(&self) -> Vec<SubagentRunId> {
+            let mut open: Vec<_> = self.active_subagents.iter().collect();
+            open.sort_unstable_by_key(|(_, order)| *order);
+            open.into_iter().map(|(id, _)| id.clone()).collect()
+        }
+        /// Creates an empty verifier for one run.
         pub fn new() -> Self {
             Self::default()
         }
@@ -437,7 +477,7 @@ mod enabled {
 
                 Event::SubagentStarted(payload) => {
                     let id = &payload.subagent_run_id;
-                    if self.active_subagents.contains(id) {
+                    if self.active_subagents.contains_key(id) {
                         return Err(self.fail(
                             event,
                             Rule::DuplicateStart,
@@ -454,7 +494,7 @@ mod enabled {
                         ));
                     }
                     if let Some(parent) = &payload.parent_subagent_run_id {
-                        if !self.active_subagents.contains(parent)
+                        if !self.active_subagents.contains_key(parent)
                             && !self.closed_subagents.contains(parent)
                         {
                             return Err(self.fail(
@@ -464,7 +504,10 @@ mod enabled {
                             ));
                         }
                     }
-                    self.active_subagents.insert(id.clone());
+                    self.active_subagents.insert(
+                        id.clone(),
+                        self.active_subagents.len() + self.closed_subagents.len(),
+                    );
                 }
                 Event::SubagentFinished(payload) => {
                     self.close_subagent(event, &payload.subagent_run_id)?;
@@ -644,7 +687,7 @@ mod enabled {
             event: &Event,
             id: &SubagentRunId,
         ) -> Result<(), VerificationError> {
-            if !self.active_subagents.remove(id) {
+            if self.active_subagents.remove(id).is_none() {
                 return Err(self.fail(
                     event,
                     Rule::NotOpen,
@@ -761,7 +804,7 @@ mod enabled {
                     describe(owner)
                 ));
             }
-            if let Some(id) = self.active_subagents.iter().next() {
+            if let Some(id) = self.active_subagents.keys().next() {
                 return Some(format!("subagent {id:?} is still active"));
             }
             None
@@ -789,7 +832,7 @@ mod enabled {
                     Some(id) => format!("{id}/{name}"),
                 })),
             );
-            push("subagents", strings(self.active_subagents.iter()));
+            push("subagents", strings(self.active_subagents.keys()));
             if out.is_empty() {
                 " [nothing open]".to_owned()
             } else {

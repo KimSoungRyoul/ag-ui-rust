@@ -22,9 +22,17 @@ impl SseFormatter {
         Self
     }
 
+    /// Encodes a host event envelope or legacy replay value as an SSE frame.
+    ///
+    /// This method serializes the value as supplied; protocol validation is
+    /// separate. Prefer [`crate::EventEnvelope`] for new extended events.
+    pub fn encode_serializable(&self, event: &impl serde::Serialize) -> Result<String> {
+        Ok(frame(&serde_json::to_string(event)?))
+    }
+
     /// Encodes one event as an SSE frame.
     pub fn encode_to_string(&self, event: &Event) -> Result<String> {
-        Ok(frame(&serde_json::to_string(event)?))
+        self.encode_serializable(event)
     }
 }
 
@@ -79,4 +87,31 @@ pub fn frame(payload: &str) -> String {
 
     out.push('\n');
     out
+}
+
+/// Encodes an SSE comment, prefixing every line to prevent frame injection.
+pub fn comment(payload: &str) -> String {
+    let mut output = String::with_capacity(payload.len() + 4);
+    let mut rest = payload;
+    loop {
+        match rest.find(['\r', '\n']) {
+            Some(index) => {
+                output.push_str(": ");
+                output.push_str(&rest[..index]);
+                output.push('\n');
+                let width = if rest[index..].starts_with("\r\n") {
+                    2
+                } else {
+                    1
+                };
+                rest = &rest[index + width..];
+            }
+            None => {
+                output.push_str(": ");
+                output.push_str(rest);
+                output.push_str("\n\n");
+                return output;
+            }
+        }
+    }
 }
