@@ -69,6 +69,11 @@ a snapshot or JSON Patch. Subagent event scopes attach output to an invocation;
 the application or agent framework owns the actual execution. Explicitly finish,
 fail or suspend a subagent scope: dropping it never reports success.
 
+The framework-independent `SseFormatter` encodes events and
+`encode::sse::SseFrame` comments without a server runtime. The optional Axum
+`SseResponse` adapter uses the same JSON encoding with Axum SSE framing and
+keep-alive; it never wraps already-framed bytes in another SSE data field.
+
 For an externally owned execution, `SseResponse::stream_frames` is an optional
 lower-level SSE adapter. It serializes supplied events and transport comments;
 it does not extend the AG-UI schema or decide an execution's outcome. Use the
@@ -76,6 +81,9 @@ standard event `metadata` object for application metadata. Source or encoding
 failure ends this response with a body error; the producer alone emits lifecycle
 events such as `RUN_ERROR`. Leave `cancellation` unset when a disconnected
 subscriber must not cancel execution. Persistence and replay remain host-owned.
+The stream error type is generic; an infallible source can use
+`Ok::<_, std::convert::Infallible>(frame)`. The existing `stream` method retains
+its run-owned error mapping through the server adapter.
 
 ## Talk to an agent
 

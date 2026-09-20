@@ -322,3 +322,43 @@ tower already ships, and they compose with this endpoint like any other route.
 
 A cancellation token is a cooperative signal. Independently spawned work must observe the same token or be connected to an application cancellation path.
 Completed external effects are not automatically rolled back, and remote termination requires separate confirmation.
+
+## Encoding and HTTP ownership
+
+`SseFormatter` is usable with only the `sse` feature. `SseFrame` lives in
+`ag_ui::encode::sse`; the Axum module reexports the same type for compatibility.
+It represents either an event value or a transport comment, not a new AG-UI event.
+
+```rust
+use ag_ui::{Event, SseFormatter};
+use ag_ui::encode::sse::SseFrame;
+
+let encoder = SseFormatter::new();
+let event = SseFrame::Event(Event::run_started("thread", "run"));
+let bytes = encoder.encode_frame(&event).unwrap();
+assert!(bytes.starts_with("data: {"));
+assert_eq!(encoder.encode_frame(&SseFrame::<Event>::comment("boundary")).unwrap(), ": boundary\n\n");
+```
+
+These strings already contain SSE framing. Send them as raw response-body bytes;
+do not put them inside another framework's SSE data field. The optional
+`SseResponse` adapter instead gives the SDK's JSON serialization to Axum's SSE
+items. Axum owns their framing and keep-alive. Both paths produce the same bytes.
+
+### Subscribing to an externally owned execution
+
+Use `stream_frames` for an application-owned event subscription. It accepts any
+sendable source error type, including `std::io::Error` or `Infallible`.
+For `stream::iter` with only successful values, annotate one value as
+`Ok::<_, std::convert::Infallible>(frame)` so Rust can infer the error type.
+
+Source and serialization failures close the body without manufacturing
+`RUN_ERROR`. The application owns execution outcomes, persistence and replay.
+Omit `cancellation` when a disconnected viewer must leave execution running.
+If a token is explicitly supplied, disconnect or delivery failure cancels it;
+clean EOF disarms it. Building the response does not create a timer: keep-alive
+starts when its body is polled inside the HTTP runtime.
+
+The existing `stream` method is for run-owned SDK streams. Its server-side adapter
+maps a source error to a final `RUN_ERROR` and stops polling. This compatibility
+contract does not apply to `stream_frames` observations.

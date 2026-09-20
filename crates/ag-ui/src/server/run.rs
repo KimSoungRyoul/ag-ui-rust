@@ -310,3 +310,34 @@ impl<F: Future<Output = ()>> Stream for RunStream<F> {
         }
     }
 }
+
+/// Compatibility for run-owned streams whose channel error terminates execution.
+/// External observations must leave transport failures outside the run lifecycle.
+#[cfg(feature = "axum")]
+pub(crate) fn terminal_error_events<S>(
+    events: S,
+    cancellation: Option<CancellationToken>,
+) -> impl Stream<Item = Result<Event>> + Send
+where
+    S: Stream<Item = Result<Event>> + Send + 'static,
+{
+    futures_util::stream::unfold(Some(Box::pin(events)), move |events| {
+        let cancellation = cancellation.clone();
+        async move {
+            let mut events = events?;
+            match events.next().await {
+                Some(Ok(event)) => Some((Ok(event), Some(events))),
+                Some(Err(error)) => {
+                    if let Some(token) = cancellation {
+                        token.cancel();
+                    }
+                    drop(events);
+                    let event =
+                        Event::from(RunErrorEvent::new(error.to_string()).with_code(error.code()));
+                    Some((Ok(event), None))
+                }
+                None => None,
+            }
+        }
+    })
+}

@@ -174,3 +174,28 @@ mod binary {
         assert!(!is_covered(EventType::ThinkingStart));
     }
 }
+
+#[test]
+fn typed_frames_encode_without_a_server_or_web_framework() {
+    use ag_ui::encode::sse::SseFrame;
+    let encoder = SseFormatter::new();
+    let event = Event::run_started("thread", "run");
+    assert_eq!(
+        encoder
+            .encode_frame(&SseFrame::Event(event.clone()))
+            .unwrap(),
+        encoder.encode_to_string(&event).unwrap()
+    );
+    for (input, expected) in [
+        ("", ": \n\n"),
+        ("a\rb\nc\r\nd", ": a\n: b\n: c\n: d\n\n"),
+        ("\ndata: injected\n\n", ": \n: data: injected\n: \n: \n\n"),
+    ] {
+        assert_eq!(
+            encoder
+                .encode_frame(&SseFrame::<Event>::Comment(input.into()))
+                .unwrap(),
+            expected
+        );
+    }
+}

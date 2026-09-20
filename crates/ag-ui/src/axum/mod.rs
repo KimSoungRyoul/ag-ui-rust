@@ -4,8 +4,8 @@
 //! stream of events and stops there, on purpose: it has no executor and no web
 //! framework, so it builds for wasm. This crate is the other half — the POST
 //! endpoint, the `text/event-stream` body, content negotiation, and telling the
-//! agent when the client hangs up. It is the only crate in the workspace that
-//! depends on tokio, axum or tower.
+//! agent when the client hangs up. The `axum` feature brings Axum and its Tokio
+//! runtime; protocol encoding and server event production do not require them.
 //!
 //! Mounting an agent is one line, and the router is still an ordinary router:
 //!

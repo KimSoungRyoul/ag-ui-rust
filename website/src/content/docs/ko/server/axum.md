@@ -322,3 +322,42 @@ tower layer는 `Service`를 감쌉니다. 그래서 `Request`와 `Response`를 �
 
 Cancellation token은 협력적 신호입니다. 별도로 실행한 작업도 같은 token을 관찰하거나 애플리케이션의 취소 경로에 연결해야 합니다.
 이미 실행한 외부 작업은 자동으로 rollback되지 않으며, 원격 작업이 실제로 중단됐는지는 별도 확인이 필요합니다.
+
+## 인코딩과 HTTP의 책임
+
+`SseFormatter`는 `sse` feature만으로 사용할 수 있습니다. `SseFrame`은
+`ag_ui::encode::sse`에 있으며 Axum 모듈은 같은 타입을 호환 경로로 재수출합니다.
+이 타입은 이벤트 값 또는 전송 comment를 나타내며 새로운 AG-UI 이벤트가 아닙니다.
+
+```rust
+use ag_ui::{Event, SseFormatter};
+use ag_ui::encode::sse::SseFrame;
+
+let encoder = SseFormatter::new();
+let event = SseFrame::Event(Event::run_started("thread", "run"));
+let bytes = encoder.encode_frame(&event).unwrap();
+assert!(bytes.starts_with("data: {"));
+assert_eq!(encoder.encode_frame(&SseFrame::<Event>::comment("boundary")).unwrap(), ": boundary\n\n");
+```
+
+반환 문자열에는 SSE framing이 이미 포함됩니다. HTTP body bytes로 전송하고,
+다른 프레임워크의 SSE data 필드에 다시 넣지 마세요. 선택적 `SseResponse` adapter는
+SDK의 JSON 직렬화 결과를 Axum SSE item에 전달합니다. framing과 keep-alive는
+Axum이 담당하며, 독립 인코더와 HTTP 경로의 출력 bytes는 동일합니다.
+
+### 외부 실행의 구독
+
+애플리케이션이 실행을 소유하면 `stream_frames`에 관측 구독을 전달합니다.
+오류 타입은 `std::io::Error`나 `Infallible` 등 전송 가능한 타입을 사용할 수 있습니다.
+성공 값만 있는 `stream::iter`는 Rust가 오류 타입을 추론하도록
+`Ok::<_, std::convert::Infallible>(frame)`으로 명시합니다.
+
+source 또는 직렬화 오류는 HTTP body를 닫으며 `RUN_ERROR`를 만들지 않습니다.
+실행 결과·저장·재생의 소유자는 애플리케이션입니다. 관측 연결 해제가 실행을 중지하면
+안 되는 경우 `cancellation`을 생략합니다. token을 명시한 경우 연결 해제·전송 오류는
+이를 취소하지만 정상 EOF는 취소하지 않습니다. 응답 생성 시에는 타이머를 만들지 않고,
+HTTP runtime에서 body를 polling할 때 keep-alive를 시작합니다.
+
+기존 `stream`은 SDK 실행이 소유한 스트림용입니다. 서버 측 adapter가 source 오류를
+마지막 `RUN_ERROR`로 변환하고 추가 polling을 중지합니다. 이 호환 계약은
+`stream_frames` 관측 구독에 적용되지 않습니다.
