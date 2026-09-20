@@ -1,15 +1,17 @@
 #![cfg(feature = "axum")]
 
+use ag_ui::Event;
 use ag_ui::axum::{SseFrame, SseResponse};
-use ag_ui::{Event, EventEnvelope};
 use axum::body::to_bytes;
-use futures_util::{StreamExt, stream};
+use futures_util::{Stream, StreamExt, stream};
 use serde::Serialize;
 use serde_json::json;
+use std::pin::Pin;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use std::task::{Context, Poll};
 
 async fn body(response: axum::response::Response) -> String {
     String::from_utf8(
@@ -21,15 +23,34 @@ async fn body(response: axum::response::Response) -> String {
     .unwrap()
 }
 
+// Inspect the bytes already sent as well as the HTTP body error. Collecting
+// only with `to_bytes` would discard a false RUN_ERROR before the failure.
+async fn failed_body(response: axum::response::Response) -> (String, String) {
+    let mut stream = response.into_body().into_data_stream();
+    let mut received = Vec::new();
+    while let Some(frame) = stream.next().await {
+        match frame {
+            Ok(bytes) => received.extend_from_slice(&bytes),
+            Err(error) => {
+                assert!(
+                    stream.next().await.is_none(),
+                    "body must stop after failure"
+                );
+                return (String::from_utf8(received).unwrap(), error.to_string());
+            }
+        }
+    }
+    panic!("expected transport body failure");
+}
+
 #[tokio::test]
-async fn frames_send_extensions_and_safe_multiline_comments_with_sdk_headers() {
-    let envelope = EventEnvelope::new(Event::run_started("thread", "run"))
-        .with_extensions(json!({"hostProof":true}).as_object().unwrap().clone())
-        .unwrap();
+async fn frames_send_standard_metadata_and_safe_comments_with_sdk_headers() {
+    let mut event = Event::run_started("thread", "run");
+    event.base_mut().metadata = Some(json!({"host":{"proof":true}}).as_object().unwrap().clone());
     let response = SseResponse::negotiate(None)
         .unwrap()
         .stream_frames(stream::iter([
-            Ok(SseFrame::Event(envelope)),
+            Ok(SseFrame::Event(event)),
             Ok(SseFrame::Comment(
                 "replay\r\ndata: injected\r\nboundary".into(),
             )),
@@ -42,8 +63,15 @@ async fn frames_send_extensions_and_safe_multiline_comments_with_sdk_headers() {
     assert_eq!(response.headers()["x-accel-buffering"], "no");
     assert_eq!(response.headers()["vary"], "accept");
     let actual = body(response).await;
-    assert!(actual.starts_with("data: {"));
-    assert!(actual.contains("\"hostProof\":true"));
+    let first = actual
+        .lines()
+        .next()
+        .unwrap()
+        .strip_prefix("data: ")
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(first).unwrap();
+    assert_eq!(payload["metadata"]["host"]["proof"], true);
+    assert!(payload.get("host").is_none());
     assert!(actual.ends_with(": replay\n: data: injected\n: boundary\n\n"));
     assert_eq!(actual.matches("\ndata:").count(), 0);
 }
@@ -61,8 +89,10 @@ async fn native_and_framed_event_paths_produce_identical_bytes() {
 }
 
 #[tokio::test]
-async fn explicit_legacy_value_does_not_normalize_omissions_or_extra_fields() {
-    let stored = json!({"type":"ACTIVITY_SNAPSHOT","messageId":"m","activityType":"surface","content":{"legacy":null},"hostProof":false});
+async fn explicit_host_compatibility_value_preserves_legacy_wire_shape() {
+    // Supplying arbitrary Serialize is a compatibility facility, not a claim
+    // that undeclared fields are part of the current standard event schema.
+    let stored = json!({"type":"ACTIVITY_SNAPSHOT","messageId":"m","activityType":"surface","content":{"legacy":null},"legacyHostProof":false});
     let response = SseResponse::negotiate(None)
         .unwrap()
         .stream_frames(stream::iter([Ok(SseFrame::Event(stored.clone()))]));
@@ -81,42 +111,70 @@ impl Serialize for Bad {
     }
 }
 
-#[tokio::test]
-async fn serialization_error_ends_the_stream_before_next_frame() {
-    let polled = Arc::new(AtomicUsize::new(0));
-    let counter = polled.clone();
-    let source = stream::iter([
-        Ok(SseFrame::Event(Bad)),
-        Ok(SseFrame::Comment("must not be sent".into())),
-    ])
-    .inspect(move |_| {
-        counter.fetch_add(1, Ordering::Relaxed);
-    });
-    let response = SseResponse::negotiate(None).unwrap().stream_frames(source);
-    let actual = body(response).await;
-    assert_eq!(actual.matches("RUN_ERROR").count(), 1);
-    assert!(actual.contains("SERIALIZATION"));
-    assert!(!actual.contains("must not be sent"));
-    assert!(!actual.contains("secret-provider-payload"));
-    assert_eq!(polled.load(Ordering::Relaxed), 1);
-}
-
-struct OwnedSubscription {
+struct DropProbe<S> {
+    inner: S,
     dropped: Arc<AtomicUsize>,
 }
-impl Drop for OwnedSubscription {
+impl<S> Drop for DropProbe<S> {
     fn drop(&mut self) {
         self.dropped.fetch_add(1, Ordering::Relaxed);
     }
 }
-impl futures_util::Stream for OwnedSubscription {
-    type Item = ag_ui::server::Result<SseFrame<Event>>;
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        std::task::Poll::Pending
+impl<S: Stream + Unpin> Stream for DropProbe<S> {
+    type Item = S::Item;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
     }
+}
+
+#[tokio::test]
+async fn serialization_failure_does_not_invent_a_run_error_or_poll_again() {
+    let polled = Arc::new(AtomicUsize::new(0));
+    let counter = polled.clone();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let source = DropProbe {
+        inner: stream::iter([
+            Ok(SseFrame::Event(Bad)),
+            Ok(SseFrame::Comment("must not be sent".into())),
+        ])
+        .inspect(move |_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }),
+        dropped: dropped.clone(),
+    };
+    let response = SseResponse::negotiate(None).unwrap().stream_frames(source);
+    let (actual, error) = failed_body(response).await;
+    assert!(actual.is_empty(), "no fabricated protocol event: {actual}");
+    assert!(!error.contains("secret-provider-payload"));
+    assert_eq!(polled.load(Ordering::Relaxed), 1);
+    assert_eq!(dropped.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn source_failure_is_a_body_error_while_the_external_run_can_continue() {
+    let polled = Arc::new(AtomicUsize::new(0));
+    let counter = polled.clone();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let execution = ag_ui::server::CancellationToken::new();
+    let source = DropProbe {
+        inner: stream::iter([
+            Ok(SseFrame::Event(Event::run_started("thread", "run"))),
+            Err(ag_ui::server::Error::agent("source unavailable")),
+            Ok(SseFrame::Event(Event::run_finished("thread", "run"))),
+        ])
+        .inspect(move |_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }),
+        dropped: dropped.clone(),
+    };
+    let response = SseResponse::negotiate(None).unwrap().stream_frames(source);
+    let (actual, _) = failed_body(response).await;
+    assert!(actual.contains("RUN_STARTED"));
+    assert!(!actual.contains("RUN_ERROR"));
+    assert!(!actual.contains("RUN_FINISHED"));
+    assert_eq!(polled.load(Ordering::Relaxed), 2);
+    assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    assert!(!execution.is_cancelled());
 }
 
 #[tokio::test]
@@ -125,29 +183,13 @@ async fn dropping_external_subscription_cleans_up_only_the_subscription() {
     let dropped = Arc::new(AtomicUsize::new(0));
     let response = SseResponse::negotiate(None)
         .unwrap()
-        .stream_frames(OwnedSubscription {
+        .stream_frames(DropProbe {
+            inner: stream::pending::<ag_ui::server::Result<SseFrame<Event>>>(),
             dropped: dropped.clone(),
         });
     drop(response);
     assert_eq!(dropped.load(Ordering::Relaxed), 1);
     assert!(!execution.is_cancelled());
-}
-
-#[tokio::test]
-async fn channel_failure_stops_polling_after_one_terminal() {
-    let polled = Arc::new(AtomicUsize::new(0));
-    let counter = polled.clone();
-    let source = stream::iter([
-        Err(ag_ui::server::Error::agent("channel unavailable")),
-        Ok(SseFrame::<Event>::Comment("must not poll".into())),
-    ])
-    .inspect(move |_| {
-        counter.fetch_add(1, Ordering::Relaxed);
-    });
-    let response = SseResponse::negotiate(None).unwrap().stream_frames(source);
-    let actual = body(response).await;
-    assert_eq!(actual.matches("RUN_ERROR").count(), 1);
-    assert_eq!(polled.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -180,22 +222,22 @@ async fn serialization_failure_cancels_explicitly_owned_request_work() {
         .unwrap()
         .cancellation(token.clone())
         .stream_frames(stream::iter([Ok(SseFrame::Event(Bad))]));
-    let actual = body(response).await;
-    assert_eq!(actual.matches("RUN_ERROR").count(), 1);
+    let (actual, _) = failed_body(response).await;
+    assert!(!actual.contains("RUN_ERROR"));
     assert!(token.is_cancelled());
 }
 
 #[tokio::test]
-async fn channel_failure_cancels_explicitly_owned_request_work() {
+async fn source_failure_cancels_explicitly_owned_request_work() {
     let token = ag_ui::server::CancellationToken::new();
     let response = SseResponse::negotiate(None)
         .unwrap()
         .cancellation(token.clone())
         .stream_frames(stream::iter([Err::<SseFrame<Event>, _>(
-            ag_ui::server::Error::agent("channel unavailable"),
+            ag_ui::server::Error::agent("source unavailable"),
         )]));
-    let actual = body(response).await;
-    assert_eq!(actual.matches("RUN_ERROR").count(), 1);
+    let (actual, _) = failed_body(response).await;
+    assert!(!actual.contains("RUN_ERROR"));
     assert!(token.is_cancelled());
 }
 
@@ -211,4 +253,26 @@ async fn clean_framed_eof_does_not_cancel_completed_request_work() {
     let actual = body(response).await;
     assert!(actual.contains("RUN_FINISHED"));
     assert!(!token.is_cancelled());
+}
+
+#[tokio::test]
+async fn producer_supplied_run_failure_is_transmitted_without_reinterpretation() {
+    let event = Event::from(ag_ui::RunErrorEvent::new("execution failed").with_code("EXECUTION"));
+    let response = SseResponse::negotiate(None)
+        .unwrap()
+        .stream_frames(stream::iter([Ok(SseFrame::Event(event))]));
+    let actual = body(response).await;
+    assert_eq!(actual.matches("RUN_ERROR").count(), 1);
+    assert!(actual.contains("EXECUTION"));
+}
+
+#[tokio::test]
+async fn native_run_owned_stream_preserves_run_failure_mapping() {
+    let response = SseResponse::negotiate(None)
+        .unwrap()
+        .stream(stream::iter([Err(ag_ui::server::Error::agent(
+            "run failed",
+        ))]));
+    let actual = body(response).await;
+    assert_eq!(actual.matches("RUN_ERROR").count(), 1);
 }

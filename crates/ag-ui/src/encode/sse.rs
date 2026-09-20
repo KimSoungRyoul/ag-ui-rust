@@ -22,10 +22,11 @@ impl SseFormatter {
         Self
     }
 
-    /// Encodes a host event envelope or legacy replay value as an SSE frame.
+    /// Lower-level encoding for supplied serializable values, including
+    /// compatibility replay representations.
     ///
-    /// This method serializes the value as supplied; protocol validation is
-    /// separate. Prefer [`crate::EventEnvelope`] for new extended events.
+    /// This does not validate or extend the AG-UI schema. Standard producers
+    /// use [`Event`] and its `metadata` field for application metadata.
     pub fn encode_serializable(&self, event: &impl serde::Serialize) -> Result<String> {
         Ok(frame(&serde_json::to_string(event)?))
     }

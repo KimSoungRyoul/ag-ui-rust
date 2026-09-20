@@ -262,19 +262,6 @@ pub struct SubagentFinishedEvent {
 }
 
 impl SubagentFinishedEvent {
-    /// Finishes successfully, preserving absence of an application result.
-    pub fn success(id: impl Into<SubagentRunId>, result: Option<Value>) -> Self {
-        let mut event = Self::new(id).with_outcome(SubagentOutcome::Success);
-        event.result = result;
-        event
-    }
-    /// Suspends an invocation without disclosing interrupt identifiers.
-    pub fn suspended(id: impl Into<SubagentRunId>) -> Self {
-        Self::new(id).with_outcome(SubagentOutcome::Suspended {
-            interrupt_ids: None,
-        })
-    }
-
     /// Closes a subagent invocation without declaring an outcome (legacy
     /// shape, read as success).
     pub fn new(subagent_run_id: impl Into<SubagentRunId>) -> Self {
@@ -324,17 +311,6 @@ pub struct SubagentErrorEvent {
 }
 
 impl SubagentErrorEvent {
-    /// Builds an error with an optional upstream machine-readable code.
-    pub fn coded(
-        id: impl Into<SubagentRunId>,
-        message: impl Into<String>,
-        code: Option<String>,
-    ) -> Self {
-        let mut event = Self::new(id, message);
-        event.code = code;
-        event
-    }
-
     /// Fails a subagent invocation with a message.
     pub fn new(subagent_run_id: impl Into<SubagentRunId>, message: impl Into<String>) -> Self {
         Self {

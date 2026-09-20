@@ -18,7 +18,7 @@
 //! dropping the response then detaches the subscription, leaving execution to
 //! its owner.
 
-use std::convert::Infallible;
+use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
@@ -73,7 +73,9 @@ pub fn negotiate(accept: Option<&str>) -> Result<SseFormatter> {
 /// escaped as a comment by the SDK, so input cannot inject a data frame.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SseFrame<E = Event> {
-    /// One serializable event. Prefer `Event` or `EventEnvelope` for live data.
+    /// One serializable value. Standard live producers use `Event` and its
+    /// `metadata` field. Other representations are a host compatibility choice,
+    /// not an extension of the protocol schema.
     Event(E),
     /// A comment ignored by standard SSE event consumers.
     Comment(String),
@@ -168,27 +170,43 @@ impl SseResponse {
         self
     }
 
-    /// Attaches the run's events and builds the response.
+    /// Attaches a run-owned event stream and builds the response.
+    ///
+    /// Preserves the native runner contract: a source error terminates this run
+    /// and is reported as `RUN_ERROR`. For a subscription whose transport can
+    /// fail independently of execution, use [`Self::stream_frames`] instead.
     pub fn stream<S>(self, events: S) -> Response
     where
         S: Stream<Item = crate::server::Result<Event>> + Send + 'static,
     {
-        self.stream_frames(events.map(|event| event.map(SseFrame::Event)))
+        self.respond(
+            events.map(|event| event.map(SseFrame::Event)),
+            SourceErrorMode::RunError,
+        )
     }
 
-    /// Streams typed event envelopes and transport comments using this SDK's
-    /// SSE encoder, headers, keep-alive and optional cancellation policy.
+    /// Optional lower-level SSE transport for supplied values and comments.
     ///
-    /// The values are serialized as supplied. Protocol ordering validation
-    /// belongs to the producer; new extended events can use `EventEnvelope`
-    /// and verify its `protocol()` value directly. This separate entry point
-    /// also permits explicit legacy replay envelopes without claiming their
-    /// historical fields have passed today's protocol validation.
+    /// Serialization is not protocol validation or a schema extension. New
+    /// producers use standard `Event` values and `metadata`; a host can supply
+    /// its own compatibility representation when replaying older data.
     ///
-    /// For externally owned runs, pass their subscription here and do not set
-    /// `cancellation`: disconnect then drops only the subscription. The SDK
-    /// never spawns or aborts the externally owned execution.
+    /// Source and serialization failures become response-body errors and stop
+    /// polling. They never manufacture `RUN_ERROR`: the producer owns the run
+    /// lifecycle, which may outlive this subscription.
+    ///
+    /// For externally owned runs, omit `cancellation`: dropping this response
+    /// detaches its subscription. An explicitly supplied token is cancelled
+    /// on disconnect or transport failure, never on clean EOF.
     pub fn stream_frames<S, E>(self, frames: S) -> Response
+    where
+        S: Stream<Item = crate::server::Result<SseFrame<E>>> + Send + 'static,
+        E: Serialize + Send + 'static,
+    {
+        self.respond(frames, SourceErrorMode::BodyError)
+    }
+
+    fn respond<S, E>(self, frames: S, source_error_mode: SourceErrorMode) -> Response
     where
         S: Stream<Item = crate::server::Result<SseFrame<E>>> + Send + 'static,
         E: Serialize + Send + 'static,
@@ -200,7 +218,8 @@ impl SseResponse {
                 token: self.cancellation,
                 armed: true,
             },
-            events: Box::pin(frames),
+            events: Some(Box::pin(frames)),
+            source_error_mode,
             formatter: self.formatter,
             keep_alive: self.keep_alive.map(KeepAlive::new),
             done: false,
@@ -231,31 +250,35 @@ impl SseResponse {
     }
 }
 
-/// The response body: SSE frames, and the run that produces them.
+/// Native run streams retain their run-scoped error contract. Generic framed
+/// subscriptions report transport failure without making an execution claim.
+#[derive(Clone, Copy)]
+enum SourceErrorMode {
+    RunError,
+    BodyError,
+}
+
+type EventFrames<E> = Pin<Box<dyn Stream<Item = crate::server::Result<SseFrame<E>>> + Send>>;
+
+/// The response body and its input stream.
 struct EventBody<E> {
     /// Declared first so it drops first — see [`SseResponse::stream`].
     guard: DisconnectGuard,
-    events: Pin<Box<dyn Stream<Item = crate::server::Result<SseFrame<E>>> + Send>>,
+    events: Option<EventFrames<E>>,
+    source_error_mode: SourceErrorMode,
     formatter: SseFormatter,
     keep_alive: Option<KeepAlive>,
     done: bool,
 }
 
 impl<E: Serialize> EventBody<E> {
-    /// Encodes one value, ending the subscription on serialization failure.
-    fn encode(&mut self, event: &impl Serialize) -> Bytes {
+    /// Encoding failure is a transport error, never a claim about the run.
+    fn encode(&mut self, event: &impl Serialize) -> Result<Bytes, io::Error> {
         match self.formatter.encode_serializable(event) {
-            Ok(frame) => Bytes::from(frame),
-            Err(_error) => {
+            Ok(frame) => Ok(Bytes::from(frame)),
+            Err(_) => {
                 self.fail();
-                Bytes::from(sse::frame(
-                    &serde_json::json!({
-                        "type": "RUN_ERROR",
-                        "message": "event serialization failed",
-                        "code": "SERIALIZATION",
-                    })
-                    .to_string(),
-                ))
+                Err(io::Error::other("SSE event serialization failed"))
             }
         }
     }
@@ -264,6 +287,7 @@ impl<E: Serialize> EventBody<E> {
     fn finish(&mut self) {
         self.done = true;
         self.guard.disarm();
+        self.events = None;
     }
 
     /// A transport failure ends polling before the producer has completed.
@@ -283,7 +307,7 @@ impl<E: Serialize> EventBody<E> {
     }
 
     /// What to return when the agent has nothing yet.
-    fn poll_idle(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, Infallible>>> {
+    fn poll_idle(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, io::Error>>> {
         let Some(keep_alive) = self.keep_alive.as_mut() else {
             return Poll::Pending;
         };
@@ -293,7 +317,7 @@ impl<E: Serialize> EventBody<E> {
 }
 
 impl<E: Serialize> Stream for EventBody<E> {
-    type Item = Result<Bytes, Infallible>;
+    type Item = Result<Bytes, io::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
@@ -301,24 +325,30 @@ impl<E: Serialize> Stream for EventBody<E> {
             return Poll::Ready(None);
         }
 
-        match this.events.as_mut().poll_next(cx) {
+        let Some(events) = this.events.as_mut() else {
+            return Poll::Ready(None);
+        };
+        match events.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 this.reset_keep_alive();
                 let bytes = match frame {
                     SseFrame::Event(event) => this.encode(&event),
-                    SseFrame::Comment(comment) => Bytes::from(sse::comment(&comment)),
+                    SseFrame::Comment(comment) => Ok(Bytes::from(sse::comment(&comment))),
                 };
-                Poll::Ready(Some(Ok(bytes)))
+                Poll::Ready(Some(bytes))
             }
-            // The run driver reports agent failures as `RUN_ERROR` events
-            // itself, so this is the event *channel* failing. Say so in the
-            // stream and end it there — the alternative is a body that stops
-            // with no terminal event, which reads as a network fault.
             Poll::Ready(Some(Err(error))) => {
                 this.fail();
-                let event =
-                    Event::from(RunErrorEvent::new(error.to_string()).with_code(error.code()));
-                Poll::Ready(Some(Ok(this.encode(&event))))
+                let output = match this.source_error_mode {
+                    SourceErrorMode::RunError => {
+                        let event = Event::from(
+                            RunErrorEvent::new(error.to_string()).with_code(error.code()),
+                        );
+                        this.encode(&event)
+                    }
+                    SourceErrorMode::BodyError => Err(io::Error::other("SSE source stream failed")),
+                };
+                Poll::Ready(Some(output))
             }
             Poll::Ready(None) => {
                 this.finish();

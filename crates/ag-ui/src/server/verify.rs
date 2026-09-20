@@ -156,7 +156,9 @@ mod enabled {
     }
 
     impl Verifier {
-        /// Returns one open text, reasoning or tool argument stream label.
+        /// Diagnostic query for one open text, reasoning or tool argument
+        /// stream. Multiple concurrent streams remain protocol-valid; this
+        /// query does not impose a single-stream policy.
         pub fn primary_open(&self) -> Option<String> {
             self.messages
                 .keys()
@@ -190,7 +192,8 @@ mod enabled {
         pub fn subagent_closed(&self, id: &str) -> bool {
             self.closed_subagents.contains(&SubagentRunId::new(id))
         }
-        /// Returns active invocation IDs in announcement order.
+        /// Optional host introspection: active IDs in announcement order.
+        /// This query neither suspends subagents nor prescribes a close order.
         pub fn ordered_subagents(&self) -> Vec<SubagentRunId> {
             let mut open: Vec<_> = self.active_subagents.iter().collect();
             open.sort_unstable_by_key(|(_, order)| *order);

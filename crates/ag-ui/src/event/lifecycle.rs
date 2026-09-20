@@ -77,15 +77,6 @@ pub struct RunFinishedEvent {
 }
 
 impl RunFinishedEvent {
-    /// Finishes with an interrupt outcome. The publisher validates non-empty interrupts.
-    pub fn interrupted(
-        thread_id: impl Into<ThreadId>,
-        run_id: impl Into<RunId>,
-        interrupts: Vec<crate::Interrupt>,
-    ) -> Self {
-        Self::new(thread_id, run_id).with_outcome(RunOutcome::interrupt(interrupts))
-    }
-
     /// Finishes a run without declaring an outcome (legacy shape).
     pub fn new(thread_id: impl Into<ThreadId>, run_id: impl Into<RunId>) -> Self {
         Self {
