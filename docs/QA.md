@@ -6,6 +6,24 @@ The [official TypeScript interoperability suite](../e2e/interop/README.md) is a
 separate CI gate for acceptance and normalized values. It complements the
 event/field drift check and lists the typed representation differences explicitly.
 
+## 0.5 alpha.2 MSRV verification (2026-09-27)
+
+The published `0.5.0-alpha.1` packages passed a fresh registry consumer on the
+current Rust toolchain, but a newly generated Rust 1.85 lockfile selected
+`yoke-derive 0.8.3` and failed to compile. Its `str::from_utf8` call needs
+Rust 1.87, while the crate declares no minimum Rust version. The repository
+lockfile had selected 0.8.2 and masked the fresh-resolution problem. See
+[ICU4X issue #8506](https://github.com/unicode-org/icu4x/issues/8506).
+
+`0.5.0-alpha.2` adds an exact, optional `yoke-derive 0.8.2` constraint to the
+two features that reach this dependency: `ag-ui/http` and
+`ag-ui-a2ui/schema-validation`. A new independent consumer with local alpha.2
+crate paths and **no consumer-side pin** resolved 0.8.2 and passed Rust 1.85
+checks. The alpha.2 workspace passed Rust 1.85 all-feature tests and doctests,
+Clippy on the installed toolchain, formatting, and the core package dry run.
+After registry publication, repeat the consumer test with fresh Cargo cache
+and registry-only dependencies before treating alpha.2 as verified for download.
+
 ## 0.5 candidate verification (2026-09-27)
 
 [QA PR #14](https://github.com/KimSoungRyoul/ag-ui-rust/pull/14) stages

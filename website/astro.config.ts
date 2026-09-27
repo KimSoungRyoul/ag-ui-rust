@@ -6,7 +6,8 @@ import starlightLinksValidator from 'starlight-links-validator';
 const site = 'https://kimsoungryoul.github.io';
 const base = '/ag-ui-rust';
 
-const latestVersion = 'v0.5.0-alpha.1';
+const latestVersion = 'v0.5.0-alpha.2';
+const previousAlphaVersion = 'v0.5.0-alpha.1';
 const stableVersion = 'v0.4.5';
 
 // Keep labels and page order in one place for both published guide trees.
@@ -181,6 +182,7 @@ export default defineConfig({
 			},
 			components: {
 				SiteTitle: './src/components/SiteTitle.astro',
+				Banner: './src/components/VersionBanner.astro',
 				LanguageSelect: './src/components/LanguageSelect.astro',
 				ThemeSelect: './src/components/ThemeSelect.astro',
 			},
@@ -224,14 +226,15 @@ export default defineConfig({
 					// The plugin derives IDs with a slugger that removes dots from the
 					// version directories. The built-page verifier checks these links.
 					exclude: ({ file, link }) => {
-						const versioned = /(?:^|\/)(?:ko\/)?v0\.(?:4\.5|5\.0-alpha\.1)\//;
+						const versioned = /(?:^|\/)(?:ko\/)?v0\.(?:4\.5|5\.0-alpha\.[12])\//;
 						return link.startsWith(`${base}/api/`) || versioned.test(file) || versioned.test(link);
 					},
 				}),
 			],
 			sidebar: [
 				{ label: 'Versions', translations: { ko: '버전 선택' }, link: '/versions/' },
-				{ label: '0.5.0-alpha.1 (preview)', collapsed: true, items: versionedSections(latestVersion) },
+				{ label: '0.5.0-alpha.2 (preview)', collapsed: true, items: versionedSections(latestVersion) },
+				{ label: '0.5.0-alpha.1 (superseded)', collapsed: true, items: versionedSections(previousAlphaVersion) },
 				{ label: '0.4.5 (stable)', collapsed: true, items: versionedSections(stableVersion) },
 			],
 		}),

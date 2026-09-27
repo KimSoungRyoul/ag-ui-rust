@@ -2,12 +2,13 @@
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const locale = Astro.locals.starlightRoute.locale === 'ko' ? 'ko/' : '';
 const relativePath = Astro.url.pathname.slice(`${base}/`.length).replace(/^ko\//, '');
-const match = relativePath.match(/^(v0\.4\.5|v0\.5\.0-alpha\.1)\/(.*)$/);
+const match = relativePath.match(/^(v0\.4\.5|v0\.5\.0-alpha\.[12])\/(.*)$/);
 const currentVersion = match?.[1];
 const page = match?.[2] || 'start/';
 const versions = [
 	{ id: 'v0.4.5', label: '0.4.5', shortLabel: '0.4.5' },
 	{ id: 'v0.5.0-alpha.1', label: '0.5.0-alpha.1', shortLabel: '0.5 α1' },
+	{ id: 'v0.5.0-alpha.2', label: '0.5.0-alpha.2', shortLabel: '0.5 α2' },
 ];
 ---
 

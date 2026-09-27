@@ -20,7 +20,7 @@ default = ["ag-ui", "toolkit"]
 # Agent-side authoring: op builders, prompt assembly, recovery loop.
 toolkit = []
 # Full Draft 2020-12 validation with local resources only.
-schema-validation = ["toolkit", "dep:jsonschema", "dep:schema-getrandom"]
+schema-validation = ["toolkit", "dep:jsonschema", "dep:schema-getrandom", "dep:yoke-derive"]
 # Provider-neutral async generation with full validation.
 author = ["toolkit", "schema-validation"]
 # AG-UI event emission; does not enable HTTP, axum, or Tokio.
@@ -39,6 +39,8 @@ thiserror.workspace = true
 jsonptr.workspace = true
 jsonschema = { version = "=0.29.1", default-features = false, optional = true }
 ag-ui = { workspace = true, optional = true }
+# yoke-derive 0.8.3 uses Rust 1.87 APIs without declaring that MSRV.
+yoke-derive = { version = "=0.8.2", optional = true }
 
 # jsonschema's randomized hash maps require browser entropy on wasm. Kept
 # target- and feature-specific, so standalone protocol users do not acquire it.

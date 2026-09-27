@@ -1,0 +1,35 @@
+---
+import DefaultBanner from '@astrojs/starlight/components/Banner.astro';
+
+const superseded = Astro.url.pathname.includes('/v0.5.0-alpha.1/');
+const replacement = Astro.url.pathname.replace('/v0.5.0-alpha.1/', '/v0.5.0-alpha.2/');
+const korean = Astro.locals.starlightRoute.locale === 'ko';
+---
+
+<DefaultBanner />
+{superseded && (
+	<div class="superseded-banner" role="note" data-superseded-version="0.5.0-alpha.1">
+		{korean ? (
+			<>
+				<strong>0.5.0-alpha.1은 교체되었습니다.</strong> Rust 1.85에서 새 의존성을 해석하면 빌드가 실패할 수 있습니다.
+				 <a href={replacement}>0.5.0-alpha.2 가이드</a>를 사용하세요.
+			</>
+		) : (
+			<>
+				<strong>0.5.0-alpha.1 is superseded.</strong> Fresh dependency resolution can fail on Rust 1.85.
+				 Use the <a href={replacement}>0.5.0-alpha.2 guide</a>.
+			</>
+		)}
+	</div>
+)}
+
+<style>
+	.superseded-banner {
+		padding: 0.75rem 1rem;
+		border-bottom: 1px solid var(--sl-color-accent);
+		background: var(--sl-color-accent-low);
+		color: var(--sl-color-text);
+		text-align: center;
+	}
+	a { color: var(--sl-color-text-accent); font-weight: 600; }
+</style>
