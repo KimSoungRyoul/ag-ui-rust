@@ -166,8 +166,8 @@ export default defineConfig({
 	site,
 	base,
 	redirects: {
-		'/': `${base}/versions/`,
-		'/ko/': `${base}/ko/versions/`,
+		'/': `${base}/${latestVersion}/start/`,
+		'/ko/': `${base}/ko/${latestVersion}/start/`,
 		...legacyRedirects,
 	},
 	integrations: [
@@ -186,6 +186,7 @@ export default defineConfig({
 				LanguageSelect: './src/components/LanguageSelect.astro',
 				ThemeSelect: './src/components/ThemeSelect.astro',
 			},
+			routeMiddleware: './src/routeData.ts',
 			favicon: '/favicon.svg',
 			social: [
 				{
@@ -232,7 +233,6 @@ export default defineConfig({
 				}),
 			],
 			sidebar: [
-				{ label: 'Versions', translations: { ko: '버전 선택' }, link: '/versions/' },
 				{ label: '0.5.0-alpha.2 (preview)', collapsed: true, items: versionedSections(latestVersion) },
 				{ label: '0.5.0-alpha.1 (superseded)', collapsed: true, items: versionedSections(previousAlphaVersion) },
 				{ label: '0.4.5 (stable)', collapsed: true, items: versionedSections(stableVersion) },

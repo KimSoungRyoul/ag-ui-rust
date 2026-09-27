@@ -61,6 +61,13 @@ for (const source of pages) {
   if (/^(?:ko\/)?v0\.(?:4\.5|5\.0-alpha\.[12])\//.test(route)) {
     assert(html.includes('aria-label="Documentation version"') || html.includes('aria-label="문서 버전"'),
       `Missing version navigation: ${slug}`);
+    const selectedVersion = route.match(/(?:^|\/)(v0\.(?:4\.5|5\.0-alpha\.[12]))\//)?.[1];
+    const sidebar = html.slice(html.indexOf('id="starlight__sidebar"'), html.indexOf('</sl-sidebar-state-persist>'));
+    assert(sidebar.includes(`href="${base}${route.startsWith('ko/') ? 'ko/' : ''}${selectedVersion}/start/"`),
+      `Missing current version in sidebar: ${slug}`);
+    for (const otherVersion of versions.filter((version) => version !== selectedVersion)) {
+      assert(!sidebar.includes(`/${otherVersion}/`), `Other version leaked into sidebar: ${slug}`);
+    }
   }
   if (/^(?:ko\/)?v0\.5\.0-alpha\.1\//.test(route)) {
     assert(html.includes('data-superseded-version="0.5.0-alpha.1"'),
@@ -90,7 +97,7 @@ for (const source of pages) {
 }
 for (const locale of ['', 'ko/']) {
   const html = await readFile(join(dist, locale, 'index.html'), 'utf8');
-  assert(html.includes(`content="0;url=${base}${locale}versions/"`), `Wrong home redirect: ${locale || 'root'}`);
+  assert(html.includes(`content="0;url=${base}${locale}${latestVersion}/start/"`), `Wrong home redirect: ${locale || 'root'}`);
 
   for (const slug of pageSlugs.filter((slug) => slug.startsWith(`${locale}${latestVersion}/`))) {
     const route = slug.slice(`${locale}${latestVersion}/`.length).replace(/(?:\/index)?\.mdx?$/, '');
