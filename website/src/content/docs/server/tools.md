@@ -52,6 +52,39 @@ The sequence is `TOOL_CALL_START` → `TOOL_CALL_ARGS` → `TOOL_CALL_END` → `
 `result_json` emits the end and result events and returns the result message ID.
 `result()` accepts an already serialized string.
 
+## Preserve structured tool output
+
+`TOOL_CALL_RESULT.content` can be text or ordered `InputContent` parts. The
+handle's `result()` and `result_json()` methods emit text. To send parts, close
+the handle and emit the result with its IDs:
+
+```rust
+use ag_ui::{Event, InputContent, RunAgentInput, ToolContent};
+use ag_ui::server::RunContext;
+
+fn main() -> ag_ui::server::Result<()> {
+    let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
+    let mut call = ctx.tool_call("read_document")?;
+    call.args("{}")?;
+    let result_id = call.result_message_id().clone();
+    let call_id = call.id().clone();
+    call.end()?;
+    ctx.emit(Event::tool_call_result(
+        result_id, call_id, vec![InputContent::text("Document summary")],
+    ))?;
+
+    let result = events.drain().into_iter().find_map(|event| match event {
+        Event::ToolCallResult(result) => Some(result),
+        _ => None,
+    }).unwrap();
+    assert!(matches!(result.content, ToolContent::Parts(_)));
+    Ok(())
+}
+```
+
+Keep media parts in their original order when forwarding a result. Flattening
+to text drops them.
+
 ## Send a client-executed call
 
 ```rust

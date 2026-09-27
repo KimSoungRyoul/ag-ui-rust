@@ -1,7 +1,7 @@
 name: Release
 
-# A tag is the only thing that starts this. `workflow_dispatch` is here for a
-# dry run against a branch, and skips the release note.
+# A tag push verifies and creates a GitHub Release. `workflow_dispatch` runs
+# the same validation against a branch without creating a release.
 #
 # What it does NOT do is upload to crates.io. The registry has no undo — a
 # published version can be yanked but never replaced — so the last step stays a
@@ -99,19 +99,23 @@ jobs:
             echo
             echo 'Verified on this commit: clippy, workspace tests, doctests, protocol drift,'
             echo 'ag-ui publish dry run, and the ag-ui-a2ui package list. The latter gets its'
-            echo 'registry dry run after ag-ui is published, immediately before upload. Upload is'
-            echo 'manual — the registry has no undo:'
+            echo 'registry dry run after ag-ui is published, immediately before upload. Registry'
+            echo 'publication requires a separate workflow dispatch from this exact tag:'
             echo
             echo '```sh'
-            echo "git checkout ${GITHUB_REF_NAME}"
-            echo 'cargo publish -p ag-ui'
-            echo 'cargo publish --dry-run -p ag-ui-a2ui   # after ag-ui appears on crates.io'
-            echo 'cargo publish -p ag-ui-a2ui   # once ag-ui is on crates.io'
+            echo "gh workflow run publish.yml --ref ${GITHUB_REF_NAME} -f dry_run=true"
+            echo '# After reviewing the dry run and explicitly approving publication:'
+            echo "gh workflow run publish.yml --ref ${GITHUB_REF_NAME} -f dry_run=false"
             echo '```'
           } > release-note.md
+          release_flags=()
+          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
+            release_flags+=(--prerelease --latest=false)
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-file release-note.md \
+            "${release_flags[@]}" \
             --verify-tag
         env:
           GH_TOKEN: ${{ github.token }}

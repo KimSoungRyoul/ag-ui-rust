@@ -110,6 +110,9 @@ which arrives at the client as a truncated run. A long-running agent wants
 `connect_timeout`, which bounds only the setup and leaves the stream unbounded.
 :::
 
+SSE delivery has no `Last-Event-ID` offset recovery. After a truncated run,
+check server state for any uncertain external effect before starting another run.
+
 `client(…)` takes a pre-configured `reqwest::Client` for proxies, custom TLS
 roots, or a connection pool shared with the rest of an application.
 
@@ -329,10 +332,13 @@ bring your own `Transport`.
 
 ```toml
 [dependencies.ag-ui]
-version = "0.4"
+path = "../ag-ui-rust/crates/ag-ui"
 default-features = false
 features = ["client", "sse"]
 ```
+
+This path uses the unpublished `0.5.0-alpha.1` source candidate. Adjust it to
+the location of your checkout.
 
 CI enforces both halves of that claim. `cargo check -p ag-ui
 --no-default-features --features client --target wasm32-unknown-unknown` fails if anything outside

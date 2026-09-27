@@ -6,6 +6,36 @@ The [official TypeScript interoperability suite](../e2e/interop/README.md) is a
 separate CI gate for acceptance and normalized values. It complements the
 event/field drift check and lists the typed representation differences explicitly.
 
+## 0.5 candidate verification (2026-09-27)
+
+[QA PR #14](https://github.com/KimSoungRyoul/ag-ui-rust/pull/14) stages
+`0.5.0-alpha.1` from [upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778)
+at `a459eace`. Its `ag-ui` source is identical to that upstream head; the
+standalone workspace retains `ag-ui-a2ui` and independent applications.
+
+| Gate | Observed result |
+| --- | --- |
+| Rust workspace tests and doctests | Passed; CI `test` and nightly doctest jobs succeeded |
+| Clippy, formatting, audit, MSRV 1.85, wasm and feature matrix | Passed locally and in PR CI |
+| AG-UI 1.0 drift | Vendored schema and 31 normative event types match; upstream freshness check passed locally |
+| Official TypeScript `@ag-ui/core@0.0.59` comparison | 44 cases passed |
+| Official A2UI `@a2ui/web_core@0.11.0` comparison | 13 renderer steps passed |
+| Independent Review Desk | `cargo run --locked -p review-desk -- demo` passed over loopback HTTP |
+| QWENCLOUD `qwen3.8-max` | Four actual model runs passed: text stream, tool round trip, subagent attribution and Board Watch client |
+| Package rehearsal | `ag-ui` publish dry run passed; `ag-ui-a2ui` package listing passed |
+
+An isolated HCX consumer copy compiled against both local candidate crates
+after its exhaustive `RunEnd` match was extended. Its adapter tests passed
+24/24 and Travel Desk deterministic scenarios passed 17/17 (one MySQL scenario
+remained opt-in). This temporary compile bridge classifies the new outcomes as
+unconfirmed; it does **not** establish HCX's final cancellation or pending
+frontend tool policy.
+
+The alpha version is **not published**. The A2UI registry dry run cannot resolve
+its `ag-ui` dependency until the same version of `ag-ui` is on crates.io. The
+publish workflow checks A2UI immediately before its eventual upload. A green
+source/CI run is evidence of the candidate, not of registry publication.
+
 ## 0.4 implementation verification (2026-09-13)
 
 | Gate | Result |

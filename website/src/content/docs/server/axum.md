@@ -179,6 +179,7 @@ use ag_ui::axum::{AgentEndpoint, RouterExt};
 use ag_ui::RunOutcome;
 use ag_ui::server::{Agent, FilterToolCalls, Result, RunContext};
 use axum::Router;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 struct CartAgent;
@@ -195,6 +196,7 @@ fn main() {
     let endpoint = AgentEndpoint::new(CartAgent)
         .transformer(|| FilterToolCalls::deny(["internal_debug"]))
         .keep_alive(Duration::from_secs(15))
+        .event_buffer_capacity(NonZeroUsize::new(256).unwrap())
         .echo_input(false);
 
     let app: Router = Router::new().route_agui_with("/agent", endpoint);
@@ -206,10 +208,12 @@ fn main() {
   small state machine — `FilterToolCalls` remembers which call ids it dropped — so one
   instance shared across concurrent runs would leak one run's state into another. The
   endpoint stores the recipe and builds a fresh chain per request.
-- **`keep_alive`** sends an SSE comment whenever a run produces nothing for the interval. Off
-  by default; turn it on when something between the agent and the browser closes idle
-  connections. Most reverse proxies do, at 30 to 60 seconds, which is well inside the time a
-  slow first token can take.
+- **`keep_alive`** sends an SSE comment whenever a run produces nothing for the interval.
+  `AgentEndpoint` defaults to 15 seconds; use `keep_alive` to change the interval or
+  `without_keep_alive` to disable comments. These comments are not AG-UI events.
+- **`event_buffer_capacity`** bounds queued events for a slow reader. It is unbounded
+  by default. Overflow sends `RUN_ERROR` with code `EVENT_BUFFER_FULL`; the SDK does
+  not replay a truncated run. Reconcile any uncertain external effect before retrying.
 - **`echo_input`** echoes the request back on `RUN_STARTED`, so a recorded stream replays
   without the original HTTP body. Off by default — it is the largest payload in the protocol.
 

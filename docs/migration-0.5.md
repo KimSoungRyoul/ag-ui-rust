@@ -37,6 +37,40 @@ abortion remains a separate client decision. A successful outcome can name
   `AgentEndpoint::keep_alive` configures this separately from the optional
   `event_buffer_capacity` bound for slow readers.
 
+For example, code that previously treated every tool result as a `String`
+should now choose whether text is sufficient:
+
+```rust
+use ag_ui::{InputContent, Message, ToolContent};
+
+let result = Message::tool(
+    "result-1",
+    "call-1",
+    vec![InputContent::text("first"), InputContent::text("second")],
+);
+let Message::Tool(tool) = result else { unreachable!() };
+assert_eq!(tool.content.to_text(), "first\nsecond");
+assert!(matches!(tool.content, ToolContent::Parts(_)));
+```
+
+Keep the new end states explicit when deciding whether application work remains:
+
+```rust
+use ag_ui::client::RunEnd;
+
+fn needs_application_input(end: &RunEnd) -> bool {
+    match end {
+        RunEnd::SuccessWithPendingToolCalls { .. } | RunEnd::Interrupted { .. } => true,
+        RunEnd::Success { .. }
+        | RunEnd::Failed { .. }
+        | RunEnd::Cancelled
+        | RunEnd::Aborted => false,
+    }
+}
+
+assert!(!needs_application_input(&RunEnd::Cancelled));
+```
+
 The standalone `ag-ui-a2ui` crate stays separate. Its AG-UI adapter has been
 updated to read text from `ToolContent`, including ordered parts; A2UI protocol
 authoring and validation remain in that crate. The A2UI source proposed for
@@ -57,4 +91,6 @@ cargo run --locked -p xtask -- drift-check --local
 ```
 
 The TypeScript and A2UI renderer comparisons live in `e2e/interop` and
-`examples/review-desk/interop`. `cargo publish` is outside this QA stage.
+`examples/review-desk/interop`. The [QA record](QA.md#05-candidate-verification-2026-09-27)
+distinguishes verified source from publication. No alpha tag or crate upload is
+part of this candidate migration.

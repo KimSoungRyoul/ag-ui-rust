@@ -7,9 +7,9 @@ AG-UI는 작습니다. request 하나가 run을 시작합니다. 답은 type이 
 run이 끝날 때까지 agent가 하는 모든 일을 서술합니다. 두 번째 endpoint도 없고, polling
 channel도 없고, 협상 단계도 없습니다.
 
-이 page는 wire 이야기이지 이 SDK의 API 이야기가 아닙니다. 여기 나오는 type은
-`ag-ui`에 삽니다. 이 crate는 일부러 어휘일 뿐입니다. runtime도 I/O도 async도
-없습니다.
+이 페이지는 SDK의 고수준 API보다 wire 형식에 집중합니다. 여기 나오는 protocol type은
+`ag-ui` crate의 기본 기능입니다. 같은 crate에서 `server`, `client`, `axum`, `http`
+feature를 켜면 실행 및 I/O API도 사용할 수 있습니다.
 
 ## request 하나, run 하나
 
@@ -100,6 +100,11 @@ assert_eq!(body.matches("\n\n").count(), 6);
 `RUN_STARTED`의 버전은 producer가 실제 내보내는 protocol의 선언입니다. request의
 `protocolVersion`을 그대로 되돌리는 값은 아닙니다. 구버전 peer를 읽을 때는 어느 쪽
 선언이든 빠져 있을 수 있습니다.
+
+새 `Thread` 요청은 기본으로 `1.0`을 선언합니다. **필드를 해석하지 못하는 것으로 확인된**
+구버전 서버에 연결할 때만 `ThreadBuilder::protocol_version(None)` 또는 저수준
+`RunParams::protocol_version(None)`으로 요청 필드를 생략하세요. 상대가 이 필드를
+보내지 않았다는 이유만으로 구버전이라고 추정하지 않습니다.
 
 SSE는 상호운용의 기본값입니다. 이 SDK가 온전히 구현하는 유일한 transport이기도 합니다.
 protocol은 binary media type `application/vnd.ag-ui.event+proto`도 정의하고

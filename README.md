@@ -4,12 +4,12 @@ A Rust SDK for [AG-UI](https://docs.ag-ui.com) and
 [A2UI](https://a2ui.org): host an agent, connect to it, and generate declarative UI.
 This is an independent project, not an official AG-UI SDK.
 
-This checkout stages an **unpublished** `0.5.0-alpha.1` QA candidate based on
+This tree stages an **unpublished** `0.5.0-alpha.1` QA candidate based on
 [upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778) at
 `a459eace56b3aae72d0927bf1cdabda05de75c0f`. The latest published
-`ag-ui` and `ag-ui-a2ui` remain `0.4.5`. To test this candidate before its
-review is complete, depend on this checkout by path; an unqualified Git
-dependency still follows the repository's default branch.
+`ag-ui` and `ag-ui-a2ui` remain `0.4.5`. To test this candidate before registry
+publication, depend on the checked-out source by path. The package version in
+`Cargo.toml` alone does not mean that crates.io carries it.
 
 ## Packages
 
@@ -128,6 +128,10 @@ The [0.5 candidate migration notes](docs/migration-0.5.md) cover AG-UI 1.0
 wire behavior and API changes from 0.4.5. Version 0.4 changed the conversation
 API and A2UI data-update semantics; see [that migration guide](docs/migration-0.4.md) and
 [the reviewed design](docs/sdk-api-improvement-proposal.ko.md).
+
+The [0.5 QA record](docs/QA.md#05-candidate-verification-2026-09-27) records
+the independent consumers, QWENCLOUD run, and release gates. It separates
+validated source from crates.io publication.
 
 The [documentation site](https://kimsoungryoul.github.io/ag-ui-rust/) includes
 English and Korean guides. Rust examples in the README, site and repository

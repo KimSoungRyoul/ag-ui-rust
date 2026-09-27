@@ -56,4 +56,10 @@ Supply a new unique `message_id` and the received `tool_call_id`.
 This function only records an existing result. Function selection, execution, retry policy and success/error result formats belong to the application.
 `Thread` supplies neither a tool executor nor an automatic model loop.
 
+`Message::tool` accepts either text or ordered `InputContent` parts. Its
+`ToolMessage.content` and a streamed `ToolCallResultEvent.content` are
+`ToolContent::Text` or `ToolContent::Parts`. Use `as_text()` when the result must
+be a string. `to_text()` deliberately discards media parts, so preserve `Parts`
+when forwarding a multimodal result.
+
 [Send calls from the server](/ag-ui-rust/server/tools/) · [Manage conversations](/ag-ui-rust/client/thread/)

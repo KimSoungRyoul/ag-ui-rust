@@ -263,16 +263,22 @@ step은 선택입니다. protocol은 step을 요구하지 않습니다. message 
 
 ## run이 끝나는 방식
 
-`run`은 `Result<RunOutcome>`을 반환합니다. 반환될 수 있는 세 가지가 곧 run이 끝날 수 있는 세
-가지입니다.
+`run`은 `Result<RunOutcome>`을 반환합니다. `RunOutcome`의 네 가지 결과와 실행 오류를
+구분해야 합니다.
 
 - `Ok(RunOutcome::Success)` — run이 완료되었습니다. driver는 `success` outcome을 담아
   `RUN_FINISHED`를 emit합니다.
+- `Ok(RunOutcome::SuccessWithPendingToolCalls { .. })` — run은 완료됐지만 나열된 프런트엔드
+  도구 호출의 결과를 애플리케이션이 아직 보내야 합니다. 도구 실행 성공을 뜻하지 않습니다.
+  다음 요청에 같은 tool call ID의 결과 메시지를 담습니다.
 - `Ok(RunOutcome::Interrupt { .. })` — run이 멈춘 채 사람을 기다립니다. 이것도
   `RUN_FINISHED`입니다. 대기 중인 interrupt를 싣고 나갑니다.
   [human in the loop](/ag-ui-rust/ko/server/interrupts/)를 보십시오.
-- `Err(_)` — run이 실패했습니다. driver는 오류 문구와 code를 담아 `RUN_ERROR`를 emit합니다. agent
-  오류는 panic도 아니고 잘린 stream도 아닙니다.
+- `Ok(RunOutcome::Cancelled)` 또는 `Err(Error::Cancelled)` — producer가 완료 전에 의도적으로
+  중단했습니다. 정상적으로 닫을 수 있으면 `cancelled` outcome을 담은 `RUN_FINISHED`를 보냅니다.
+  이미 진행한 외부 작업의 취소나 rollback이 확인됐다는 뜻은 아닙니다.
+- 그 밖의 `Err(_)` — run이 실패했습니다. driver는 오류 문구와 code를 담아 `RUN_ERROR`
+  전송을 시도합니다. 전송 실패나 연결 해제가 있으면 stream이 잘릴 수 있습니다.
   [error와 cancellation](/ag-ui-rust/ko/server/errors/)를 보십시오.
 
 :::caution

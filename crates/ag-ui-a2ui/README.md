@@ -124,6 +124,11 @@ The AG-UI integration carries a batch in an `a2ui_operations` tool result.
 That envelope is an integration convention, not a mandatory A2UI transport.
 The MIME type remains `application/a2ui+json`.
 
+In the unpublished `0.5.0-alpha.1` candidate, the AG-UI adapter reads text
+parts from the new `ToolContent` representation when recovering a surface.
+The A2UI wire format and independent authoring API remain separate from the
+AG-UI 1.0 migration.
+
 ## Verification
 
 `tests/author.rs` exercises the official schema engine, local refs, targeted

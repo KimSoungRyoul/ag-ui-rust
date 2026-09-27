@@ -346,10 +346,12 @@ crate를 wasm에서 쓸 수 있게 유지하는 방법입니다. 끄면 `HttpTra
 
 ```toml
 [dependencies.ag-ui]
-version = "0.4"
+path = "../ag-ui-rust/crates/ag-ui"
 default-features = false
 features = ["client", "sse"]
 ```
+
+이 경로는 미게시 `0.5.0-alpha.1` 후보의 로컬 checkout을 가리킵니다. 실제 위치에 맞춰 조정하세요.
 
 CI는 이 주장의 양쪽 절반을 모두 강제합니다. feature flag 밖의 무언가가
 `reqwest`에 손을 뻗으면 `cargo check -p ag-ui

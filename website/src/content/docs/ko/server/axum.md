@@ -179,6 +179,7 @@ use ag_ui::axum::{AgentEndpoint, RouterExt};
 use ag_ui::RunOutcome;
 use ag_ui::server::{Agent, FilterToolCalls, Result, RunContext};
 use axum::Router;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 struct CartAgent;
@@ -194,7 +195,8 @@ impl Agent for CartAgent {
 fn main() {
     let endpoint = AgentEndpoint::new(CartAgent)
         .transformer(|| FilterToolCalls::deny(["internal_debug"]))
-        .keep_alive(Duration::from_secs(15))
+        .keep_alive(Duration::from_secs(10))
+        .event_buffer_capacity(NonZeroUsize::new(128).unwrap())
         .echo_input(false);
 
     let app: Router = Router::new().route_agui_with("/agent", endpoint);
@@ -206,9 +208,14 @@ fn main() {
   `StreamTransformer`는 모두 작은 상태 기계입니다. `FilterToolCalls`는 자기가 걸러 낸 call id를
   기억합니다. 인스턴스 하나를 동시에 도는 여러 run이 나눠 쓰면 한 run의 상태가 다른 run으로
   새어 나갑니다. endpoint는 만드는 방법만 저장해 두고 요청마다 새 chain을 세웁니다.
-- **`keep_alive`**는 run이 그 시간 동안 아무것도 내놓지 않으면 SSE 주석을 보냅니다. 기본은
-  꺼짐입니다. agent와 브라우저 사이의 무언가가 유휴 연결을 닫을 때 켜십시오. 대부분의 리버스
-  프록시가 30~60초에 그렇게 합니다. 느린 첫 token이 걸릴 수 있는 시간 안쪽입니다.
+- **`keep_alive`**는 유휴 연결에 SSE 주석을 주기적으로 보냅니다. 기본 간격은 15초입니다.
+  위 예제는 10초로 바꿉니다. 필요 없으면 `without_keep_alive()`로 끕니다. 주석은
+  AG-UI event가 아니며 agent의 진행 상태를 뜻하지 않습니다.
+- **`event_buffer_capacity`**는 느린 수신자를 위해 변환 후 대기 중인 event 수를 제한합니다.
+  기본값은 제한 없음입니다. 가득 차면 새 event를 거절하고 `EVENT_BUFFER_FULL` 코드의
+  `RUN_ERROR`로 stream을 닫습니다. 이 한도는 event 개수에 대한 것이며 payload 크기나
+  외부 작업의 성공 여부를 제한·판정하지 않습니다. 외부 효과가 불확실하면 재시도 전에
+  원래 작업의 결과를 확인하세요.
 - **`echo_input`**은 `RUN_STARTED`에 요청을 되비춰 싣습니다. 그러면 기록한 stream을 원래 HTTP
   본문 없이도 재생할 수 있습니다. 기본은 꺼짐입니다. protocol에서 가장 큰 페이로드이기
   때문입니다.

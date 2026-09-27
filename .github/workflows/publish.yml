@@ -27,8 +27,8 @@ on:
     types: [published]
   # For a rehearsal, or to finish a release whose upload failed halfway. The
   # default is a dry run: the box has to be unticked to reach crates.io. The
-  # authentication happens either way, so a rehearsal also proves the Trusted
-  # Publisher entries are still right.
+  # authentication happens either way. A rehearsal proves the ag-ui publishing
+  # credential; ag-ui-a2ui's registry dry run waits for this ag-ui version.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -80,7 +80,15 @@ jobs:
               exit 1
             fi
           else
-            echo "no tag (manual run); publishing whatever the checkout declares: $declared"
+            echo "no tag (manual dry run); validating checkout version $declared"
+          fi
+
+      - name: real publication requires a tag
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+        run: |
+          if [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
+            echo "::error title=Tag required::real publication must run from a version tag"
+            exit 1
           fi
 
       # The release workflow already ran these on the tag. They run again here

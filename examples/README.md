@@ -31,4 +31,4 @@ cargo run --locked -p review-desk -- demo
 - 정상 replay fixture는 `ReplayTransport::matching_requests()`로 새 요청 ID에 대응시킨다. 잘못된 protocol ID를 검사하는 fixture는 원본 ID를 유지한다.
 - 실제 HTTP 테스트는 운영 서비스에 연결하지 않고 임시 loopback 포트를 사용한다. 대기 취소 테스트는 event를 확인한 뒤 취소하며, 임의 sleep으로 성공을 추정하지 않는다.
 
-SDK의 feature 경계와 breaking migration은 [마이그레이션 문서](../docs/migration-0.4.md)를 참고한다.
+SDK의 0.5 후보 feature 경계와 breaking migration은 [0.5 마이그레이션 문서](../docs/migration-0.5.md)를 참고한다. 0.4 시리즈에서 처음 `Thread`로 옮기는 경우에는 [0.4 마이그레이션 문서](../docs/migration-0.4.md)도 함께 본다.

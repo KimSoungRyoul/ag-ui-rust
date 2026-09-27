@@ -26,6 +26,10 @@ mod workspace_readme {}
 #[doc = include_str!("../../docs/migration-0.4.md")]
 mod migration {}
 
+#[cfg(doctest)]
+#[doc = include_str!("../../docs/migration-0.5.md")]
+mod migration_0_5 {}
+
 pub mod llm;
 
 // The documentation site's Rust snippets, held to the same standard as the

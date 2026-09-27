@@ -7,8 +7,8 @@ AG-UI is small. One request starts a run; the answer is a stream of typed events
 describes everything the agent does until the run ends. There is no second endpoint, no
 polling channel and no negotiation step.
 
-This page is about the wire, not about this SDK's API. The types named here live in
-`ag-ui`, which is deliberately just the vocabulary: no runtime, no I/O, no async.
+This page is about the wire. The types named here live in the feature-independent
+core of `ag-ui`; its server, client and HTTP runtimes are enabled separately.
 
 ## One request, one run
 
@@ -170,6 +170,11 @@ TOOL_CALL_ARGS    toolCallId=call-1  delta="\"write it down\"}"
 TOOL_CALL_END     toolCallId=call-1
 TOOL_CALL_RESULT  toolCallId=call-1  content="{\"id\":1}"
 ```
+
+`TOOL_CALL_RESULT.content` and a tool result in a later request can also be an
+ordered array of text and media parts. String-only consumers can use
+`ToolContent::as_text()` to detect text; `to_text()` extracts text while dropping
+media parts.
 
 Two details bite renderers, and both are demonstrated by the
 [board-watch example](/ag-ui-rust/examples/board-watch/). Argument fragments are JSON split

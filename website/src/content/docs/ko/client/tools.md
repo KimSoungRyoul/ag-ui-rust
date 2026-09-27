@@ -56,4 +56,24 @@ fn record_result<T: Transport>(
 이 함수는 이미 얻은 결과를 대화에 기록할 뿐입니다. 함수 선택·실행·재시도와 결과의 성공·실패 표현은 애플리케이션이 정합니다.
 `Thread`는 tool executor나 자동 model loop를 제공하지 않습니다.
 
+`Message::tool`은 문자열과 `Vec<InputContent>`를 모두 받습니다. `ToolMessage.content`와
+서버의 `ToolCallResultEvent.content`는 `ToolContent::Text` 또는 원래 순서를 보존하는
+`ToolContent::Parts`입니다. 문자열 결과에는 `as_text()`를 사용하세요. `to_text()`는
+텍스트 부분만 줄바꿈으로 합치고 이미지·오디오 등은 버리므로, 표시용 요약을 의도할 때만
+사용합니다. 다른 서비스로 결과를 전달할 때는 `Parts`를 그대로 보존합니다.
+
+```rust
+use ag_ui::{InputContent, Message, ToolContent};
+
+let result = Message::tool(
+    "result-2",
+    "call-1",
+    vec![InputContent::text("검사 완료")],
+);
+let Message::Tool(tool) = result else { unreachable!() };
+assert!(matches!(&tool.content, ToolContent::Parts(_)));
+assert_eq!(tool.content.as_text(), None);
+assert_eq!(tool.content.to_text(), "검사 완료");
+```
+
 [서버에서 호출 보내기](/ag-ui-rust/ko/server/tools/) · [대화 관리](/ag-ui-rust/ko/client/thread/)
