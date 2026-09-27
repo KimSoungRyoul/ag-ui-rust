@@ -4,14 +4,17 @@ A Rust SDK for [AG-UI](https://docs.ag-ui.com) and
 [A2UI](https://a2ui.org): host an agent, connect to it, and generate declarative UI.
 This is an independent project, not an official AG-UI SDK.
 
-This source targets the `0.5.0-alpha.1` prerelease based on
+This source targets the `0.5.0-alpha.2` prerelease based on
 [upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778) at
 `a459eace56b3aae72d0927bf1cdabda05de75c0f`. The previous stable release
 is `0.4.5`. Choose the guide that matches your dependency:
-[0.5.0-alpha.1](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.1/start/)
+[0.5.0-alpha.2](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.2/start/)
 or [0.4.5](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/start/).
 Both guides are also available in
 [Korean](https://kimsoungryoul.github.io/ag-ui-rust/ko/versions/).
+
+`0.5.0-alpha.2` replaces alpha.1 for new consumers. It constrains a transitive
+derive dependency that otherwise breaks a fresh Rust 1.85 build of alpha.1.
 
 ## Packages
 
@@ -32,15 +35,15 @@ Install both prerelease packages from crates.io at the same exact version:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.1", features = ["http"] }
-ag-ui-a2ui = "=0.5.0-alpha.1"
+ag-ui = { version = "=0.5.0-alpha.2", features = ["http"] }
+ag-ui-a2ui = "=0.5.0-alpha.2"
 ```
 
 For a server, enable `axum` instead of `http`:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.1", features = ["axum"] }
+ag-ui = { version = "=0.5.0-alpha.2", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 ```
@@ -49,7 +52,7 @@ For a client:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.1", features = ["http"] }
+ag-ui = { version = "=0.5.0-alpha.2", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
@@ -140,7 +143,7 @@ wire behavior and API changes from 0.4.5. Version 0.4 changed the conversation
 API and A2UI data-update semantics; see [that migration guide](docs/migration-0.4.md) and
 [the reviewed design](docs/sdk-api-improvement-proposal.ko.md).
 
-The [0.5 QA record](docs/QA.md#05-candidate-verification-2026-09-27) records
+The [0.5 QA record](docs/QA.md#05-alpha2-msrv-verification-2026-09-27) records
 the independent consumers, QWENCLOUD run, and release gates. Check
 [crates.io](https://crates.io/crates/ag-ui) for registry availability.
 

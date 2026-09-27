@@ -11,23 +11,24 @@ This independent SDK provides protocol types, server emitters and client convers
 It is not affiliated with or endorsed by the AG-UI protocol organisation. The
 AG-UI 1.0 schema and event baseline are checked in CI.
 
-For `0.5.0-alpha.1`, use an exact prerelease requirement. The
-[0.5.0-alpha.1 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.1/start/)
+For `0.5.0-alpha.2`, use an exact prerelease requirement. The
+[0.5.0-alpha.2 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.2/start/)
 covers this API; the [0.4.5 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/start/)
 covers the previous stable version.
+Alpha.2 supersedes alpha.1 for fresh Rust 1.85 dependency resolution.
 
 To host an agent behind axum:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.1", features = ["axum"] }
+ag-ui = { version = "=0.5.0-alpha.2", features = ["axum"] }
 ```
 
 To consume an agent over HTTP:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.1", features = ["http"] }
+ag-ui = { version = "=0.5.0-alpha.2", features = ["http"] }
 ```
 
 For local source development, clone the repository and use
@@ -104,7 +105,7 @@ See the [repository](https://github.com/KimSoungRyoul/ag-ui-rust) for the design
 
 MIT
 
-## Conversations in 0.5.0-alpha.1
+## Conversations in 0.5.0-alpha.2
 
 `HttpAgent::new(url)` configures a connection. `agent.thread(id)` creates a local
 conversation; `thread.send(text)?` returns a run stream. `collect_report().await`

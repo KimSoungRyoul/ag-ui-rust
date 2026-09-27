@@ -4,19 +4,21 @@ A2UI v0.9/v0.9.1 protocol types, lossless data-model replay, semantic and JSON
 Schema validation, and provider-neutral async authoring. The crate produces and
 checks UI descriptions; the application supplies the model and renderer.
 
-For `0.5.0-alpha.1`, use an exact prerelease requirement:
+For `0.5.0-alpha.2`, use an exact prerelease requirement:
 
 ```toml
 [dependencies]
-ag-ui-a2ui = "=0.5.0-alpha.1"
+ag-ui-a2ui = "=0.5.0-alpha.2"
 ```
 
-The [0.5.0-alpha.1 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.1/a2ui/)
+The [0.5.0-alpha.2 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.2/a2ui/)
 covers this crate; the [0.4.5 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/a2ui/)
 covers the previous stable version. For local source development,
 clone the repository and use
 `ag-ui-a2ui = { path = "/absolute/path/to/ag-ui-rust/crates/ag-ui-a2ui" }`
 to test the same source.
+
+Alpha.2 supersedes alpha.1 for fresh Rust 1.85 dependency resolution.
 
 ## Minimal component validation
 
@@ -138,7 +140,7 @@ The AG-UI integration carries a batch in an `a2ui_operations` tool result.
 That envelope is an integration convention, not a mandatory A2UI transport.
 The MIME type remains `application/a2ui+json`.
 
-In `0.5.0-alpha.1`, the AG-UI adapter reads text
+In `0.5.0-alpha.2`, the AG-UI adapter reads text
 parts from the new `ToolContent` representation when recovering a surface.
 The A2UI wire format and independent authoring API remain separate from the
 AG-UI 1.0 migration.
