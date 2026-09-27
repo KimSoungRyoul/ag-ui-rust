@@ -56,7 +56,7 @@ client = ["dep:futures-core", "dep:futures-util", "dep:json-patch", "dep:getrand
 http = ["client", "sse", "dep:reqwest"]
 
 # ---- axum: mount a hosted agent on a router ----
-axum = ["server", "sse", "dep:axum", "dep:tokio", "dep:futures-util"]
+axum = ["server", "sse", "dep:axum", "dep:futures-util"]
 
 [dependencies]
 serde.workspace = true
@@ -73,8 +73,6 @@ json-patch = { workspace = true, optional = true }
 chrono = { version = "0.4.45", default-features = false, features = ["std"], optional = true }
 reqwest = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
-# `time` is for the optional SSE keep-alive on the axum binding.
-tokio = { workspace = true, features = ["time"], optional = true }
 
 [dev-dependencies]
 insta.workspace = true

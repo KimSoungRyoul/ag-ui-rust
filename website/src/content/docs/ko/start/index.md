@@ -9,6 +9,11 @@ AG-UI로 agent의 응답을 UI에 연결합니다. 이 SDK는 agent application(
 이 문서는 독립 Rust SDK인 `ag-ui-rust`의 구현 가이드입니다.
 protocol의 개념과 명세는 [AG-UI 공식 문서](https://docs.ag-ui.com/introduction)에서 확인합니다.
 
+이 checkout은 AG-UI 1.0 동작을 반영한 **`0.5.0-alpha.1` 게시 전 후보**입니다.
+현재 crates.io의 `ag-ui`와 `ag-ui-a2ui` 0.4.5와 API가 다릅니다. 후보를 시험할 때는
+[로컬 경로나 Git 의존성](/ag-ui-rust/ko/start/crates/)을 사용하고, 실제 게시 후에만
+crates.io의 alpha 버전을 선택하세요.
+
 ## 무엇을 만드나요?
 
 | 만들 대상 | 시작할 가이드 | 완성되는 것 |

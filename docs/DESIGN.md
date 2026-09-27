@@ -9,11 +9,14 @@ no CODEOWNERS entry for it, so nobody has merge authority. As of August 2026 fou
 with zero reviews, including a server crate (#972, +5,916 lines) open since January. The core
 team acknowledged the situation on issue #2256.
 
-The concrete result: `ag-ui-core 0.1.0` declares 24 event variants against a spec with 33 at the time of writing — 36 today —
-missing nine, the whole `REASONING_*` family and both `ACTIVITY_*` events — and has no
+The concrete result: `ag-ui-core 0.1.0` declares 24 event variants against a spec
+with 33 at the time of writing — missing nine, the whole `REASONING_*` family and
+both `ACTIVITY_*` events — and has no
 `RunFinished.outcome` field, which means human-in-the-loop is not expressible at all. An
 unknown `type` does not degrade to "ignore it": the enum is `#[serde(tag = "type")]` with no
 fallback, so the event fails to deserialize and the run stops there.
+The current SDK can decode 36 variants, including five retired `THINKING_*`
+inputs; AG-UI 1.0 defines 31 normative types.
 
 That vacuum has since drawn other answers. As of August 2026 crates.io carries several
 independent Rust takes on AG-UI, and more than one of them can host an agent. An earlier draft
@@ -64,7 +67,8 @@ and that asymmetry is deliberate rather than an oversight — the protocol *has*
 in the last year (`REASONING_*`, `ACTIVITY_*`), so this will be tested.
 
 The failure this SDK exists to correct is silent under-coverage. `ag-ui-core 0.1.0` declares
-24 variants against the 32 the spec had then — 36 today — and nobody noticed, because nothing
+24 variants against the 32 the spec had then — 31 normative types in 1.0 — and
+nobody noticed, because nothing
 anywhere forced the question. `#[non_exhaustive]` institutionalises that: it obliges every
 consumer to write a `_` arm, and a `_` arm is precisely the construct that turns "event 37
 arrived" into no diagnostic at all. It does not remove the work of handling a new event; it
@@ -205,8 +209,9 @@ state machine, on by default, so it surfaces where it was caused.
 
 ## Subagent attribution is a sink scope
 
-The protocol attributes events to subagents with an optional `subagentRunId` on 24 of the 36
-types. The obvious port is a tag on every handle: a `MessageHandle` that knows which subagent
+The protocol attributes events to subagents with an optional `subagentRunId` on
+24 of the 31 normative 1.0 types. The obvious port is a tag on every handle: a
+`MessageHandle` that knows which subagent
 it belongs to and writes the field on each event it emits. That doubles every emitter — a
 subagent-aware and a plain variant of each — and still misses `ctx.emit`, which is the path
 every hand-built event takes.

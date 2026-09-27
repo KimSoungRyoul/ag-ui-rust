@@ -5,24 +5,27 @@ agent and consuming one.
 
 AG-UI is the protocol between a user-facing application and an agent backend. A run is a
 stream of events: the agent opens messages, streams text and reasoning, calls tools,
-publishes state, delegates to subagents, and finishes — or pauses for human input.
+publishes state, reports subagent activity, and finishes — or pauses for human input.
 
 This independent SDK provides protocol types, server emitters and client conversations.
-It is not affiliated with or endorsed by the AG-UI protocol organisation. The upstream
-event baseline is checked in CI.
+It is not affiliated with or endorsed by the AG-UI protocol organisation. The
+AG-UI 1.0 schema and event baseline are checked in CI.
 
 To host an agent behind axum:
 
+Replace `/path/to/qa-checkout` with the absolute path to this unpublished
+candidate checkout.
+
 ```toml
 [dependencies]
-ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
+ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["axum"] }
 ```
 
 To consume an agent over HTTP:
 
 ```toml
 [dependencies]
-ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["http"] }
+ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["http"] }
 ```
 
 ## What is in the box
@@ -74,7 +77,7 @@ valid traffic.
 | `client` | no | Consume a remote agent, transport-agnostic. |
 | `http` | no | Adds the reqwest-backed transport to `client`. What most consumers want; leave it off for wasm. |
 | `axum` | no | Mount a hosted agent on an axum router. Implies `server` and `sse`, and is the one feature that pulls in tokio. |
-| `protobuf` | no | The binary transport's media type and a documented stub. `events.proto` covers only 21 of the 36 event types, so there is no encoder. |
+| `protobuf` | no | The binary transport's media type and a documented stub. `events.proto` covers only 21 of the 36 decodable variants, including legacy input, and omits current 1.0 events, so there is no encoder. |
 | `schemars` | no | Derives `schemars::JsonSchema` on the public types. |
 | `utoipa` | no | Derives `utoipa::ToSchema` on the public types. |
 
@@ -95,7 +98,7 @@ See the [repository](https://github.com/KimSoungRyoul/ag-ui-rust) for the design
 
 MIT
 
-## Conversations in 0.4
+## Conversations in the 0.5 candidate
 
 `HttpAgent::new(url)` configures a connection. `agent.thread(id)` creates a local
 conversation; `thread.send(text)?` returns a run stream. `collect_report().await`
@@ -104,6 +107,14 @@ for the current typed view; `raw_state()` always exposes current raw JSON.
 
 A subagent event scope records work executed by the application. Finish, fail or
 suspend it explicitly. Drop restores attribution without inventing success.
+
+New requests declare AG-UI protocol `1.0`. A successful run can still have
+frontend tool calls awaiting answers; `RunEnd::SuccessWithPendingToolCalls`
+preserves their IDs. Remote cancellation is `RunEnd::Cancelled`, distinct from
+local `RunEnd::Aborted`. Tool results now use `ToolContent::Text` or ordered
+`ToolContent::Parts`; use `as_text()` when text is required, or preserve the
+parts when forwarding multimodal results. See the repository's
+[0.5 migration notes](../../docs/migration-0.5.md).
 
 ## Validate events from another runtime
 

@@ -13,17 +13,25 @@ description: Agent 구현부터 HTTP endpoint까지 만들고 컴포넌트별 �
 ## 1. 프로젝트와 의존성
 
 ```sh
+git clone https://github.com/KimSoungRyoul/ag-ui-rust.git
 cargo new agent-server
 cd agent-server
 ```
 
+이미 저장소를 clone했다면 첫 줄은 생략합니다. 아래 상대 경로는 두 디렉터리가 나란히
+있다고 가정합니다.
+
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
+ag-ui = { path = "../ag-ui-rust/crates/ag-ui", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
+
+이 의존성은 미게시 `0.5.0-alpha.1` 후보의 로컬 소스를 사용합니다. 함께 검증한 서버와
+클라이언트는 같은 SDK 커밋을 사용하세요. 게시 이후의 레지스트리 의존성은
+[crate 선택 가이드](/ag-ui-rust/ko/start/crates/)에 따로 나와 있습니다.
 
 ## 2. Agent 구현과 HTTP 연결
 

@@ -10,17 +10,25 @@ Rust 1.85 이상과 HTTP client의 TLS 의존성을 빌드할 C toolchain이 필
 ## 1. 프로젝트와 의존성
 
 ```sh
+git clone https://github.com/KimSoungRyoul/ag-ui-rust.git
 cargo new agent-client
 cd agent-client
 ```
 
+이미 저장소를 clone했다면 첫 줄은 생략합니다. 아래 상대 경로는 두 디렉터리가 나란히
+있다고 가정합니다.
+
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["http"] }
+ag-ui = { path = "../ag-ui-rust/crates/ag-ui", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
+
+이 의존성은 미게시 `0.5.0-alpha.1` 후보의 로컬 소스를 사용합니다. 함께 검증한 서버와
+클라이언트는 같은 SDK 커밋을 사용하세요. 게시 이후의 레지스트리 의존성은
+[crate 선택 가이드](/ag-ui-rust/ko/start/crates/)에 따로 나와 있습니다.
 
 ## 2. 연결하고 업데이트 소비하기
 

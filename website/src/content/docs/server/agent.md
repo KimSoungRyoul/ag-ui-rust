@@ -263,15 +263,20 @@ message is clearer without.
 
 ## How a run ends
 
-`run` returns `Result<RunOutcome>`, and the three ways it can return are the three ways a run
-can end:
+`run` returns `Result<RunOutcome>`. The driver turns its result into one terminal event:
 
 - `Ok(RunOutcome::Success)` — the run completed. The driver emits `RUN_FINISHED` with a
   `success` outcome.
+- `Ok(RunOutcome::SuccessWithPendingToolCalls { .. })` — the run completed with
+  frontend tool calls still awaiting application results. The `RUN_FINISHED`
+  success outcome carries their IDs; it does not mean those tools ran.
 - `Ok(RunOutcome::Interrupt { .. })` — the run is paused, waiting on a person. Still a
   `RUN_FINISHED`, carrying the pending interrupts. See
   [Human in the loop](/ag-ui-rust/server/interrupts/).
-- `Err(_)` — the run failed. The driver emits `RUN_ERROR` carrying the message and a code.
+- `Ok(RunOutcome::Cancelled)` or `Err(Error::Cancelled)` — the run stopped before
+  completion. The driver emits `RUN_FINISHED` with a `cancelled` outcome. A client
+  abort alone does not confirm that the server reached this outcome.
+- Any other `Err(_)` — the run failed. The driver emits `RUN_ERROR` carrying the message and a code.
   A returned error is distinct from a panic; failed transport or event emission may still truncate the stream. See
   [Errors and cancellation](/ag-ui-rust/server/errors/).
 

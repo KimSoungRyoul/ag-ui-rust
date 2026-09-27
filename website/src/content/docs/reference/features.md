@@ -14,9 +14,9 @@ Dependencies of included features are enabled transitively.
 | `ag-ui` | `utoipa` | off | `dep:utoipa` | OpenAPI schema derives |
 | `ag-ui` | `server` | off | `dep:futures-core`, `dep:futures-channel`, `dep:futures-util`, `dep:json-patch` | Agent adapter and event emitters |
 | `ag-ui` | `verify` | on | — | Server event ordering checks |
-| `ag-ui` | `client` | off | `dep:futures-core`, `dep:futures-util`, `dep:json-patch`, `dep:getrandom`, `dep:time`, `dep:js-sys` | Thread, Update and custom transports |
+| `ag-ui` | `client` | off | `dep:futures-core`, `dep:futures-util`, `dep:json-patch`, `dep:getrandom`, `dep:chrono`, `dep:js-sys` | Thread, Update and custom transports |
 | `ag-ui` | `http` | off | `client`, `sse`, `dep:reqwest` | HttpAgent and reqwest transport |
-| `ag-ui` | `axum` | off | `server`, `sse`, `dep:axum`, `dep:tokio`, `dep:futures-util` | Axum HTTP endpoint |
+| `ag-ui` | `axum` | off | `server`, `sse`, `dep:axum`, `dep:futures-util` | Axum HTTP endpoint |
 | `ag-ui-a2ui` | `toolkit` | on | — | Manual A2UI operations and recovery helpers |
 | `ag-ui-a2ui` | `schema-validation` | off | `toolkit`, `dep:jsonschema`, `dep:schema-getrandom` | Full schema validation with local resources |
 | `ag-ui-a2ui` | `author` | off | `toolkit`, `schema-validation` | Validated A2UI authoring |

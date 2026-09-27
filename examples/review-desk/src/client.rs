@@ -179,7 +179,7 @@ pub async fn workflow_observed(
             let Message::Tool(tool) = message else {
                 return false;
             };
-            serde_json::from_str(&tool.content)
+            serde_json::from_str(&tool.content.to_text())
                 .is_ok_and(|value| ag_ui_a2ui::toolkit::envelope::is_operations_envelope(&value))
         })
         .count();

@@ -10,6 +10,11 @@ Connect an agent's output to a user interface with AG-UI. This SDK lets an
 This is the implementation guide for `ag-ui-rust`, an independent Rust SDK.
 See the [official AG-UI documentation](https://docs.ag-ui.com/introduction) for protocol concepts and specifications.
 
+The source in this repository declares `0.5.0-alpha.1` as a QA candidate for
+AG-UI 1.0. It has not been published to crates.io; the latest published `ag-ui`
+and `ag-ui-a2ui` versions are `0.4.5`. To test this candidate, use a local
+checkout as described in [Crates and features](/ag-ui-rust/start/crates/).
+
 ## What are you building?
 
 | Your application | Start with | What you will build |

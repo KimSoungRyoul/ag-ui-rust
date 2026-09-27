@@ -25,6 +25,29 @@ Protocol types such as `Message`, `Tool`, `Event` and `RunAgentInput` live at th
 This project uses `ag-ui` and `ag-ui-a2ui`. The crates.io names `ag-ui-core`,
 `ag-ui-server` and `ag-ui-client` belong to a separate community SDK.
 
+The `0.5.0-alpha.1` source is an **unpublished QA candidate**. crates.io still
+serves `0.4.5` for both crates, so use a checkout of this repository to test the
+new APIs. For example, if your application and `ag-ui-rust` are sibling directories:
+
+```toml
+[dependencies]
+ag-ui = { path = "../ag-ui-rust/crates/ag-ui", features = ["http"] }
+# Add this only if your application uses A2UI:
+ag-ui-a2ui = { path = "../ag-ui-rust/crates/ag-ui-a2ui" }
+```
+
+The server and client quickstarts use the same checkout layout. You can also
+depend on the repository's `main` branch after the candidate is merged; pin a
+tested commit in your application when you need a stable source revision.
+After both packages are published, opt in to the exact alpha version. These
+requirements cannot resolve before publication:
+
+```toml
+[dependencies]
+ag-ui = { version = "=0.5.0-alpha.1", features = ["http"] }
+ag-ui-a2ui = { version = "=0.5.0-alpha.1", features = ["author"] }
+```
+
 [Build a server](/ag-ui-rust/server/) and [Build a client](/ag-ui-rust/client/) include the relevant
 `Cargo.toml` and runnable code. Separate programs only need their own dependencies.
 

@@ -10,14 +10,18 @@ Requires Rust 1.85 or newer and a C toolchain for the HTTP client's TLS dependen
 ## 1. Create the project
 
 ```sh
+git clone https://github.com/KimSoungRyoul/ag-ui-rust.git
 cargo new agent-client
 cd agent-client
 ```
 
+Keep the `ag-ui-rust` checkout beside `agent-client` for the path dependency below.
+Use the `0.5.0-alpha.1` candidate source, which is not yet on crates.io.
+
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["http"] }
+ag-ui = { path = "../ag-ui-rust/crates/ag-ui", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```

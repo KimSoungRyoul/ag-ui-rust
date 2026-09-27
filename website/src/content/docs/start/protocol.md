@@ -7,8 +7,8 @@ AG-UI is small. One request starts a run; the answer is a stream of typed events
 describes everything the agent does until the run ends. There is no second endpoint, no
 polling channel and no negotiation step.
 
-This page is about the wire, not about this SDK's API. The types named here live in
-`ag-ui`, which is deliberately just the vocabulary: no runtime, no I/O, no async.
+This page is about the wire. The types named here live in the feature-independent
+core of `ag-ui`; its server, client and HTTP runtimes are enabled separately.
 
 ## One request, one run
 
@@ -19,6 +19,7 @@ conversation arrives in it, because the agent is not assumed to remember anythin
 | --- | --- |
 | `threadId` | The conversation this run belongs to. |
 | `runId` | This run's id, echoed on every lifecycle event. |
+| `protocolVersion` | The protocol version the client speaks (`1.0` in this SDK); an older peer may omit it. |
 | `parentRunId` | The run that spawned this one, for nested or delegated agents. |
 | `state` | Shared application state, as free-form JSON. Opaque to the protocol. |
 | `messages` | Conversation history, oldest first. |
@@ -33,6 +34,7 @@ use ag_ui::RunAgentInput;
 let body = r#"{
     "threadId": "thread-1",
     "runId": "run-1",
+    "protocolVersion": "1.0",
     "state": { "tasks": [] },
     "messages": [{ "id": "m1", "role": "user", "content": "add a task" }],
     "tools": [],
@@ -42,6 +44,7 @@ let body = r#"{
 let input: RunAgentInput = serde_json::from_str(body).unwrap();
 
 assert_eq!(input.thread_id.as_str(), "thread-1");
+assert_eq!(input.protocol_version.as_deref(), Some("1.0"));
 assert_eq!(input.messages.len(), 1);
 assert_eq!(input.state["tasks"], serde_json::json!([]));
 assert!(!input.is_resume());
@@ -87,17 +90,21 @@ let body: String = run
 
 assert_eq!(
     body.lines().next(),
-    Some(r#"data: {"type":"RUN_STARTED","threadId":"thread-1","runId":"run-1"}"#),
+    Some(r#"data: {"type":"RUN_STARTED","threadId":"thread-1","runId":"run-1","protocolVersion":"1.0"}"#),
 );
 // One frame is one `data:` line and a blank line. Serialized JSON never
 // contains a raw newline, so an event is never split across frames.
 assert_eq!(body.matches("\n\n").count(), 6);
 ```
 
+`RUN_STARTED` declares the version emitted by the producer. It does not merely echo the
+request's `protocolVersion`; either declaration can be absent when reading a legacy peer.
+
 SSE is the interoperable default and the only transport this SDK fully implements. The
 protocol also defines a binary media type, `application/vnd.ag-ui.event+proto`, and
-`ag-ui` will negotiate it — but upstream's `events.proto` covers 21 of the protocol's
-36 event types, so encoding to it would silently drop events, and there is no encoder
+`ag-ui` will negotiate it — but upstream's `events.proto` covers only 21 of the 36
+event variants this SDK can decode and omits current 1.0 events. Encoding to it
+would silently drop events, so there is no encoder
 here. [Feature flags](/ag-ui-rust/reference/features/) has the details.
 
 Content negotiation is by `Accept`. A missing or empty header is read as `*/*` and answers
@@ -115,12 +122,16 @@ RUN_STARTED
 RUN_FINISHED   or   RUN_ERROR
 ```
 
-`RUN_FINISHED` carries an `outcome`, and "finished" includes *paused*:
+`RUN_FINISHED` carries an `outcome`, and "finished" includes *paused* or *cancelled*:
 
 - `{"type":"success"}` — the run completed.
+- `{"type":"success","pendingToolCallIds":[…]}` — the run completed with frontend tool
+  calls still awaiting application results. Their presence does not prove those tools ran.
 - `{"type":"interrupt","interrupts":[…]}` — the agent is waiting on a human. The client
   collects the answers and sends them back on the *next* request, in `resume`, and the run
   continues there. See [Human in the loop](/ag-ui-rust/server/interrupts/).
+- `{"type":"cancelled"}` — the producer stopped the run before completion without an
+  execution error. A client's local abort alone does not confirm this remote outcome.
 
 The field is optional: producers that predate the interrupt protocol omit it, and a
 consumer must read that as success.
@@ -160,6 +171,11 @@ TOOL_CALL_END     toolCallId=call-1
 TOOL_CALL_RESULT  toolCallId=call-1  content="{\"id\":1}"
 ```
 
+`TOOL_CALL_RESULT.content` and a tool result in a later request can also be an
+ordered array of text and media parts. String-only consumers can use
+`ToolContent::as_text()` to detect text; `to_text()` extracts text while dropping
+media parts.
+
 Two details bite renderers, and both are demonstrated by the
 [board-watch example](/ag-ui-rust/examples/board-watch/). Argument fragments are JSON split
 at arbitrary byte offsets — a `\` and the `n` it escapes can arrive in different events —
@@ -182,8 +198,10 @@ else looks at them — `ag_ui::client` does that in its `chunks` stage, and
 
 ## The event families
 
-There are **36 event types**, and `ag-ui` models them as one exhaustive `Event` enum
-plus an `EventType` discriminator:
+The AG-UI 1.0 schema defines **31 normative event types**. The SDK can also
+decode five retired `THINKING_*` events from older streams, so `EventType::ALL`
+contains 36 variants. `ag-ui` models them as one exhaustive `Event` enum plus
+an `EventType` discriminator:
 
 ```rust
 use ag_ui::{Event, EventType};
@@ -202,7 +220,7 @@ They group into nine families:
 | Text message | `TEXT_MESSAGE_START` / `_CONTENT` / `_END` / `_CHUNK` | The reply the user reads. |
 | Tool call | `TOOL_CALL_START` / `_ARGS` / `_END` / `_CHUNK` / `_RESULT` | A call, its argument JSON, and its result. |
 | Reasoning | `REASONING_START` / `_END`, `REASONING_MESSAGE_START` / `_CONTENT` / `_END` / `_CHUNK`, `REASONING_ENCRYPTED_VALUE` | Thinking, kept separate from the reply. A block wraps one or more messages. |
-| Thinking | `THINKING_START` / `_END`, `THINKING_TEXT_MESSAGE_START` / `_CONTENT` / `_END` | The reasoning family's deprecated predecessor. Still on the wire, still modelled. |
+| Thinking | `THINKING_START` / `_END`, `THINKING_TEXT_MESSAGE_START` / `_CONTENT` / `_END` | Legacy input compatibility. New 1.0 producers emit `REASONING_*` instead. |
 | State | `STATE_SNAPSHOT`, `STATE_DELTA`, `MESSAGES_SNAPSHOT` | The shared state, and a wholesale replacement of the history. |
 | Activity | `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA` | What the agent is *doing* — searching, reading, waiting — in a shape the client renders. |
 | Run and step | `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`, `STEP_FINISHED` | The lifecycle above. |
@@ -240,7 +258,7 @@ none either.
 
 Many agents delegate — a supervisor dispatching research, a tool call that is itself an
 agent — and to a frontend that arrives as one stream. The protocol's answer is small: an
-optional `subagentRunId` on 24 of the 36 event types, naming the subagent that produced
+optional `subagentRunId` on 24 of the 31 normative 1.0 event types, naming the subagent that produced
 each one, and three lifecycle events that say when a subagent starts, finishes or fails.
 An event without the field belongs to the parent, so a stream that never sets it is exactly
 what there was before.

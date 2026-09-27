@@ -52,6 +52,33 @@ fn main() -> ag_ui::server::Result<()> {
 `result_json`은 end와 result event를 보내고 결과 message ID를 반환합니다.
 `result()`는 이미 직렬화한 문자열을 받습니다.
 
+`ToolCallResultEvent.content`는 문자열이나 순서가 있는 `InputContent` 부분들을 담습니다.
+`result()`와 `result_json()`은 문자열 결과용입니다. 도구가 이미지 등 멀티모달 결과를
+반환하면 호출을 닫은 뒤 `TOOL_CALL_RESULT`를 직접 보냅니다.
+
+```rust
+use ag_ui::{Event, InputContent, RunAgentInput};
+use ag_ui::server::RunContext;
+
+fn main() -> ag_ui::server::Result<()> {
+    let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
+    let call = ctx.tool_call("inspect_image")?;
+    let call_id = call.id().clone();
+    let result_id = call.result_message_id().clone();
+    call.end()?;
+    ctx.emit(Event::tool_call_result(
+        result_id,
+        call_id,
+        vec![InputContent::text("이미지 검사 결과")],
+    ))?;
+    assert_eq!(events.drain().len(), 3);
+    Ok(())
+}
+```
+
+실제 이미지·오디오 부분은 `InputContent::Image`나 `InputContent::Audio`로 구성합니다.
+부분을 문자열로 평탄화하면 미디어와 순서 정보가 사라집니다.
+
 ## Client에서 실행할 호출 전달
 
 ```rust

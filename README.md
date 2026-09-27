@@ -4,6 +4,13 @@ A Rust SDK for [AG-UI](https://docs.ag-ui.com) and
 [A2UI](https://a2ui.org): host an agent, connect to it, and generate declarative UI.
 This is an independent project, not an official AG-UI SDK.
 
+This tree stages an **unpublished** `0.5.0-alpha.1` QA candidate based on
+[upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778) at
+`a459eace56b3aae72d0927bf1cdabda05de75c0f`. The latest published
+`ag-ui` and `ag-ui-a2ui` remain `0.4.5`. To test this candidate before registry
+publication, depend on the checked-out source by path. The package version in
+`Cargo.toml` alone does not mean that crates.io carries it.
+
 ## Packages
 
 | Package / feature | Use it for |
@@ -16,14 +23,22 @@ This is an independent project, not an official AG-UI SDK.
 | `ag-ui-a2ui/author` | Schema-validated A2UI generation with an async model callback |
 | `ag-ui-a2ui/ag-ui-server` | Sending generated A2UI from an AG-UI server |
 
-Use this repository as the dependency source. Similarly named community crates
-on crates.io are separate projects.
+The existing `ag-ui-core` and `ag-ui-client` community crates on crates.io
+are separate packages.
+
+For candidate QA, replace `/path/to/qa-checkout` with this checkout's absolute
+path:
+
+```toml
+ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["http"] }
+ag-ui-a2ui = { path = "/path/to/qa-checkout/crates/ag-ui-a2ui" }
+```
 
 For a server:
 
 ```toml
 [dependencies]
-ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
+ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 ```
@@ -32,7 +47,7 @@ For a client:
 
 ```toml
 [dependencies]
-ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["http"] }
+ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
@@ -109,9 +124,14 @@ loading server history and storing thread snapshots belong to the application.
 See [examples/](examples/README.md) for runnable applications and their regression
 commands. Each project consumes the public SDK rather than copying its reducers.
 
-Version 0.4 changes the conversation API and A2UI data-update semantics. See
-[the migration guide](docs/migration-0.4.md) and
+The [0.5 candidate migration notes](docs/migration-0.5.md) cover AG-UI 1.0
+wire behavior and API changes from 0.4.5. Version 0.4 changed the conversation
+API and A2UI data-update semantics; see [that migration guide](docs/migration-0.4.md) and
 [the reviewed design](docs/sdk-api-improvement-proposal.ko.md).
+
+The [0.5 QA record](docs/QA.md#05-candidate-verification-2026-09-27) records
+the independent consumers, QWENCLOUD run, and release gates. It separates
+validated source from crates.io publication.
 
 The [documentation site](https://kimsoungryoul.github.io/ag-ui-rust/) includes
 English and Korean guides. Rust examples in the README, site and repository
@@ -123,12 +143,14 @@ skills are compiled as doctests.
 cargo nextest run --workspace --all-features
 cargo test --doc --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo run --locked -p xtask -- drift-check
+cargo run --locked -p xtask -- drift-check --local
 prek run --all-files
 ```
 
 The client and server runtimes use executor-neutral futures. HTTP and axum are
 optional. CI checks Rust 1.85, wasm feature builds, dependency boundaries, docs,
-and the vendored upstream event baseline.
+and the vendored AG-UI 1.0 schema and event baseline.
 
 ## License
 

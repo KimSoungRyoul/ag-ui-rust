@@ -11,7 +11,7 @@
 //!   definitions can be offered on a run.
 //!
 //! Turn the feature off to use A2UI standalone over A2A or MCP; the dependency
-//! on `ag-ui-core` goes with it.
+//! on `ag-ui` goes with it.
 
 use ag_ui::{Message, Tool};
 use serde_json::Value;
@@ -23,7 +23,8 @@ use crate::toolkit::tools::ToolDefinition;
 ///
 /// Text goes to `content` and structured payloads to `data`, which is the split
 /// [`crate::toolkit::history`] scans on. A user's multimodal parts are flattened
-/// to their text: an A2UI envelope is never an image.
+/// to their text: an A2UI envelope is never an image. Tool results may also
+/// carry media parts, so only their text contributes to surface recovery.
 impl From<&Message> for HistoryMessage {
     fn from(message: &Message) -> Self {
         let role = message.role().as_str();
@@ -32,7 +33,7 @@ impl From<&Message> for HistoryMessage {
             Message::System(m) => Self::text(role, m.content.clone()),
             Message::Assistant(m) => Self::text(role, m.content.clone().unwrap_or_default()),
             Message::User(m) => Self::text(role, m.content.to_text()),
-            Message::Tool(m) => Self::text(role, m.content.clone()),
+            Message::Tool(m) => Self::text(role, m.content.to_text()),
             Message::Reasoning(m) => Self::text(role, m.content.clone()),
             Message::Activity(m) => Self::data(role, Value::Object(m.content.clone())),
         }
@@ -206,6 +207,27 @@ mod tests {
         let thread = [Message::tool("m-1", "call-1", envelope)];
         let prior = find_prior_surface_in(&thread).expect("the surface was rendered");
         assert!(prior.deleted);
+    }
+
+    #[test]
+    fn a_surface_in_structured_tool_content_is_recovered() {
+        let envelope = wrap_as_operations_envelope(&[
+            AgentMessage::create_surface("board", "basic"),
+            AgentMessage::update_components(
+                "board",
+                vec![Component::new("root", "Text").with("text", json!("hi"))],
+            ),
+        ])
+        .expect("operations serialize");
+        let thread = [Message::tool(
+            "m-1",
+            "call-1",
+            vec![InputContent::text(envelope)],
+        )];
+
+        let prior = find_prior_surface_in(&thread).expect("the surface was rendered");
+        assert_eq!(prior.surface_id, "board");
+        assert_eq!(prior.components[0].id, "root");
     }
 
     #[test]

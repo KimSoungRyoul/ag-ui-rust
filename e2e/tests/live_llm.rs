@@ -274,7 +274,10 @@ async fn a_tool_call_round_trips_through_the_protocol() {
             _ => None,
         })
         .expect("the result was asserted above");
-    assert!(result.contains("21"), "the tool's own reading: {result}");
+    assert!(
+        result.to_text().contains("21"),
+        "the tool's own reading: {result:?}"
+    );
 
     // The second request fed the tool message back, so the final answer should
     // be about what the tool actually returned.
@@ -642,7 +645,9 @@ fn summary(events: &[Event]) -> String {
                 format!("  TOOL_CALL_START {}", payload.tool_call_name)
             }
             Event::ToolCallArgs(payload) => format!("  TOOL_CALL_ARGS {}", payload.delta),
-            Event::ToolCallResult(payload) => format!("  TOOL_CALL_RESULT {}", payload.content),
+            Event::ToolCallResult(payload) => {
+                format!("  TOOL_CALL_RESULT {:?}", payload.content)
+            }
             Event::RunError(payload) => format!("  RUN_ERROR {}", payload.message),
             other => format!("  {}", other.event_type()),
         })
@@ -683,6 +688,12 @@ impl Agent for Delegating {
                 let ids: Vec<String> = interrupts.iter().map(|i| i.id.clone()).collect();
                 researcher.suspend(ids)?;
                 return Ok(RunOutcome::interrupt(interrupts));
+            }
+            RunOutcome::SuccessWithPendingToolCalls { .. } | RunOutcome::Cancelled => {
+                researcher.fail(format!("unexpected delegated live outcome: {outcome:?}"))?;
+                return Err(ag_ui::server::Error::agent(
+                    "delegated live run did not complete or interrupt",
+                ));
             }
         }
         ctx.say("Delegated.")?;

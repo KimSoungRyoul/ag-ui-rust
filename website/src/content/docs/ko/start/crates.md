@@ -25,6 +25,34 @@ description: 만들 애플리케이션에 필요한 crate와 feature를 선택�
 이 프로젝트는 `ag-ui`와 `ag-ui-a2ui`를 사용합니다. crates.io의 `ag-ui-core`,
 `ag-ui-server`, `ag-ui-client`는 별개 community SDK의 이름입니다.
 
+이 문서의 `0.5.0-alpha.1` 코드는 아직 crates.io에 게시되지 않았습니다. 후보를 로컬에서
+검증하려면 이 저장소를 clone한 뒤 애플리케이션의 `Cargo.toml`에서 두 crate를 경로로 지정합니다.
+아래 상대 경로는 애플리케이션과 `ag-ui-rust`가 나란히 있을 때의 예입니다.
+
+```toml
+[dependencies]
+ag-ui = { path = "../ag-ui-rust/crates/ag-ui", features = ["axum"] }
+# A2UI를 사용할 때만 추가합니다.
+ag-ui-a2ui = { path = "../ag-ui-rust/crates/ag-ui-a2ui", features = ["author"] }
+```
+
+Git `main` 후보를 사용할 수도 있습니다. Cargo는 가져온 커밋을 `Cargo.lock`에 기록하므로,
+검증 결과를 공유할 때는 그 lockfile 또는 정확한 Git 커밋을 함께 보관하세요.
+
+```toml
+[dependencies]
+ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", branch = "main", features = ["axum"] }
+```
+
+두 crate가 **실제로 게시된 후** crates.io의 alpha를 선택할 때는 정확한 버전을 지정합니다.
+게시 전에는 아래 설정으로 빌드할 수 없습니다.
+
+```toml
+[dependencies]
+ag-ui = { version = "=0.5.0-alpha.1", features = ["axum"] }
+ag-ui-a2ui = { version = "=0.5.0-alpha.1", features = ["author"] }
+```
+
 [서버 구축 시작](/ag-ui-rust/ko/server/)과 [클라이언트 구축 시작](/ag-ui-rust/ko/client/)에
 각 역할의 `Cargo.toml`과 실행 코드가 있습니다. 두 프로그램을 따로 만들면 각자의 의존성만 추가합니다.
 

@@ -1,11 +1,11 @@
 ---
 name: ag-ui-rust-client
-description: "Use when writing Rust consumers of AG-UI agents. The client is ag_ui::client in crate ag-ui with client/http features. HttpAgent creates owned Thread conversations; send/resume return Result<RunStream>, state returns Result<&S>, and RunEnd has Success, Interrupted, Failed, Aborted. Covers current typed state, observers, cancellation, reports, snapshots, safe approval resumption, custom transports and subagent rendering."
+description: "Use when writing Rust consumers of AG-UI agents. The client is ag_ui::client in crate ag-ui with client/http features. HttpAgent creates owned Thread conversations; send/resume return Result<RunStream>, state returns Result<&S>, and RunEnd distinguishes completed, pending frontend tools, interrupted, failed, remotely cancelled and locally aborted runs. Covers typed state, observers, reports, snapshots, safe approval resumption, custom transports and subagent rendering."
 ---
 
 # Consuming an AG-UI agent from Rust
 
-This skill targets workspace version **0.4.1**. Check the actual checkout before copying
+This skill targets workspace version **0.5.0-alpha.1**. Check the actual checkout before copying
 APIs into an older released consumer. One crate, `ag-ui`, contains protocol/server/client
 features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 
@@ -13,12 +13,13 @@ features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 
 ```toml
 [dependencies]
-ag-ui = { version = "0.4", features = ["http"] }
+ag-ui = { path = "/path/to/ag-ui-rust/crates/ag-ui", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-`http` is opt-in. `client` alone accepts custom transports and supports wasm without
+The path selects this unpublished candidate during pre-merge QA. `http` is opt-in.
+`client` alone accepts custom transports and supports wasm without
 Tokio or reqwest. The public relationship is endpoint → conversation → run:
 
 ```rust,no_run
@@ -34,8 +35,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let report = thread.send("Check my order")?.collect_report().await;
     match report.end {
         RunEnd::Success { .. } => println!("completed"),
+        RunEnd::SuccessWithPendingToolCalls { pending_tool_call_ids, .. } => {
+            println!("waiting for frontend tool results: {pending_tool_call_ids:?}")
+        }
         RunEnd::Interrupted { .. } => println!("waiting for answers"),
         RunEnd::Failed { .. } => println!("failed"),
+        RunEnd::Cancelled => println!("stopped by the server"),
         RunEnd::Aborted => println!("stopped locally"),
     }
     println!("diagnostics: {:?}", report.diagnostics);
@@ -100,7 +105,9 @@ AG-UI has no tool discovery. Configure tools yourself through builder `.tools` o
 - `Reasoning` is separate from the transcript; `Subagent` carries lifecycle only.
 - `Interrupt` announces a pending question.
 - `Error` is a diagnostic; keep consuming until `Done`.
-- `Done` contains `RunEnd::{Success, Interrupted, Failed, Aborted}`. Match all four.
+- `Done` contains `RunEnd::{Success, SuccessWithPendingToolCalls, Interrupted, Failed, Cancelled, Aborted}`.
+  Pending frontend tool calls still need application results. `Cancelled` is a server-confirmed
+  stop; `Aborted` only means local consumption stopped. Match all six.
 
 `Update` is non-exhaustive. `RunEnd` is exhaustive. A successful terminal can coexist with
 local patch/validation diagnostics. `collect_report()` returns `end`, `new_messages`,

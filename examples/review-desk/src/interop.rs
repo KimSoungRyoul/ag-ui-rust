@@ -64,7 +64,7 @@ pub async fn fixture() -> AppResult<Value> {
         let Event::ToolCallResult(result) = event else {
             return None;
         };
-        Some(serde_json::from_str::<Value>(&result.content))
+        Some(serde_json::from_str::<Value>(&result.content.to_text()))
     });
     let create = ag_ui_a2ui::toolkit::envelope::unwrap_operations_envelope(
         &batches.next().ok_or("missing create batch")??,

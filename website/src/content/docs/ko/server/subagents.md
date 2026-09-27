@@ -12,7 +12,7 @@ event stream 하나로 도착합니다. 정보가 더 없으면 동시에 도는
 하나로 그려집니다.
 
 protocol의 답은 일부러 작습니다. event 하나하나에 그것을 만든 subagent를 **attribute**합니다.
-36개 event type 중 24개에 있는 optional `subagentRunId`가 그것입니다. 그리고 subagent가
+현재 AG-UI 1.0 event type 31개 중 24개에 있는 optional `subagentRunId`가 그것입니다. 그리고 subagent가
 언제 시작하고 멈추는지를 `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR`로
 알립니다. subagent를 orchestrate하거나 schedule하거나 정의하지는 않습니다. 그것은 여러분의
 몫으로 남습니다.
@@ -31,6 +31,7 @@ subagent는 재개하는 run에서 자기 id를 다시 쓸 수 있습니다.
 stream은 subagent가 생기기 전과 똑같이 동작합니다. `RUN_STARTED`, `RUN_FINISHED`,
 `RUN_ERROR`는 이 field를 실을 수 없습니다. run 전체를 서술하는 event이기 때문입니다.
 `MESSAGES_SNAPSHOT`도 실을 수 없습니다. 그 안의 message가 각자 자기 것을 싣습니다.
+과거 stream을 읽기 위해 남겨 둔 `THINKING_*` variant 5개에도 이 field가 없습니다.
 `EventType::is_attributable`이 type마다 답해 줍니다.
 
 ## subagent는 scope입니다

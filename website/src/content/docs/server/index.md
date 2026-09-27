@@ -13,14 +13,18 @@ Start with a small `Agent`, then add the components your application needs. Requ
 ## 1. Create the project
 
 ```sh
+git clone https://github.com/KimSoungRyoul/ag-ui-rust.git
 cargo new agent-server
 cd agent-server
 ```
 
+Keep the `ag-ui-rust` checkout beside `agent-server` for the path dependency below.
+Use the `0.5.0-alpha.1` candidate source, which is not yet on crates.io.
+
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
+ag-ui = { path = "../ag-ui-rust/crates/ag-ui", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
@@ -69,7 +73,7 @@ Start the server with `cargo run`, then send a request from another terminal.
 ```sh
 curl -N -X POST http://127.0.0.1:3000/agent \
   -H 'content-type: application/json' \
-  -d '{"threadId":"thread-1","runId":"run-1","messages":[],"tools":[],"context":[]}'
+  -d '{"threadId":"thread-1","runId":"run-1","protocolVersion":"1.0","messages":[],"tools":[],"context":[]}'
 ```
 
 Expect `RUN_STARTED` → `TEXT_MESSAGE_START` → `TEXT_MESSAGE_CONTENT` → `TEXT_MESSAGE_END`
