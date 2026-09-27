@@ -4,12 +4,14 @@ A Rust SDK for [AG-UI](https://docs.ag-ui.com) and
 [A2UI](https://a2ui.org): host an agent, connect to it, and generate declarative UI.
 This is an independent project, not an official AG-UI SDK.
 
-This tree stages an **unpublished** `0.5.0-alpha.1` QA candidate based on
+This source targets the `0.5.0-alpha.1` prerelease based on
 [upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778) at
-`a459eace56b3aae72d0927bf1cdabda05de75c0f`. The latest published
-`ag-ui` and `ag-ui-a2ui` remain `0.4.5`. To test this candidate before registry
-publication, depend on the checked-out source by path. The package version in
-`Cargo.toml` alone does not mean that crates.io carries it.
+`a459eace56b3aae72d0927bf1cdabda05de75c0f`. The previous stable release
+is `0.4.5`. Choose the guide that matches your dependency:
+[0.5.0-alpha.1](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.1/start/)
+or [0.4.5](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/start/).
+Both guides are also available in
+[Korean](https://kimsoungryoul.github.io/ag-ui-rust/ko/versions/).
 
 ## Packages
 
@@ -26,19 +28,19 @@ publication, depend on the checked-out source by path. The package version in
 The existing `ag-ui-core` and `ag-ui-client` community crates on crates.io
 are separate packages.
 
-For candidate QA, replace `/path/to/qa-checkout` with this checkout's absolute
-path:
-
-```toml
-ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["http"] }
-ag-ui-a2ui = { path = "/path/to/qa-checkout/crates/ag-ui-a2ui" }
-```
-
-For a server:
+Install both prerelease packages from crates.io at the same exact version:
 
 ```toml
 [dependencies]
-ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["axum"] }
+ag-ui = { version = "=0.5.0-alpha.1", features = ["http"] }
+ag-ui-a2ui = "=0.5.0-alpha.1"
+```
+
+For a server, enable `axum` instead of `http`:
+
+```toml
+[dependencies]
+ag-ui = { version = "=0.5.0-alpha.1", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 ```
@@ -47,9 +49,18 @@ For a client:
 
 ```toml
 [dependencies]
-ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["http"] }
+ag-ui = { version = "=0.5.0-alpha.1", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+For local development against a source checkout, replace each registry
+dependency with a path to its crate. For example:
+
+```toml
+[dependencies]
+ag-ui = { path = "/absolute/path/to/ag-ui-rust/crates/ag-ui", features = ["http"] }
+ag-ui-a2ui = { path = "/absolute/path/to/ag-ui-rust/crates/ag-ui-a2ui" }
 ```
 
 ## Host an agent
@@ -124,14 +135,14 @@ loading server history and storing thread snapshots belong to the application.
 See [examples/](examples/README.md) for runnable applications and their regression
 commands. Each project consumes the public SDK rather than copying its reducers.
 
-The [0.5 candidate migration notes](docs/migration-0.5.md) cover AG-UI 1.0
+The [0.5 migration notes](docs/migration-0.5.md) cover AG-UI 1.0
 wire behavior and API changes from 0.4.5. Version 0.4 changed the conversation
 API and A2UI data-update semantics; see [that migration guide](docs/migration-0.4.md) and
 [the reviewed design](docs/sdk-api-improvement-proposal.ko.md).
 
 The [0.5 QA record](docs/QA.md#05-candidate-verification-2026-09-27) records
-the independent consumers, QWENCLOUD run, and release gates. It separates
-validated source from crates.io publication.
+the independent consumers, QWENCLOUD run, and release gates. Check
+[crates.io](https://crates.io/crates/ag-ui) for registry availability.
 
 The [documentation site](https://kimsoungryoul.github.io/ag-ui-rust/) includes
 English and Korean guides. Rust examples in the README, site and repository

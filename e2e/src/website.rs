@@ -1,45 +1,12 @@
-//! The documentation site's Rust snippets, compiled.
+//! Compiles Rust snippets in the current, versioned English and Korean guides.
 //!
-//! `website/` is an Astro site, so nothing in the Rust build would otherwise
-//! look at it, and a snippet there could go stale the moment an API changed —
-//! silently, and on the page a newcomer reads first. Every page that carries
-//! Rust is therefore included here as module documentation, which makes
-//! rustdoc extract its ```rust blocks and compile them exactly as it does the
-//! ones in `lib.rs`.
+//! The website is outside Cargo's source tree, so this unpublished E2E crate
+//! includes each 0.5.0-alpha.1 page as rustdoc input. Its Rust fences are
+//! checked by `cargo test --doc`. The frozen 0.4.5 archive belongs to the
+//! v0.4.5 tag and is not compiled against the newer Rust API.
 //!
-//! This is the same trick the workspace README already uses, and for the same
-//! reason: `include_str!` reaching outside the package directory would break
-//! `cargo package`, and this crate is the one that is never published.
-//!
-//! Everything around the code blocks — YAML frontmatter, `import` statements,
-//! `:::note` directives, JSX components — is prose to rustdoc and passes
-//! through untouched. Only the fenced Rust blocks are compiled. A block that
-//! must not be run (it binds a port, or reaches the network) is marked
-//! ```rust,no_run and is still type-checked; `ignore` is a last resort,
-//! because an ignored block is a snippet with no gate at all.
-//!
-//! Adding a page to the site does not add it here. That is deliberate: the
-//! list is what a reader can trust, so it is written out rather than globbed,
-//! and a page whose snippets are not compiled has to be left off it on
-//! purpose.
-//!
-//! The Korean pages are held to the same standard, for a sharper reason than
-//! the English ones. A snippet in a translation is a copy, and a copy can drift
-//! from its original without anyone reading the two files side by side.
-//! Compiling it is the only check on that which stays honest.
-//!
-//! Those pages are listed here before they are written, and the stubs that make
-//! that possible are a deliberate trade rather than a shortcut. `include_str!`
-//! on a missing path is a compile error, so the alternative was to add the
-//! Korean half of this list only once the translations landed — and an entry
-//! that has to be added later is exactly the entry nobody notices is missing,
-//! which is 26 pages of Rust with no gate at all, in the language least likely
-//! to be re-read. The stub costs nothing on the other side of the trade:
-//! Starlight drops `draft` pages from the content collection *before* it works
-//! out which fallback routes a locale needs, so /ko/ serves the English page
-//! either way. That was checked rather than reasoned about — the built page
-//! list is identical with the stubs present and with them deleted, and none of
-//! their text appears anywhere in `dist/`.
+//! Keep this explicit list aligned with the current guide tree. The website
+//! build verifies that every current page with Rust snippets appears here.
 
 /// Compiles one documentation page's Rust blocks under `cargo test --doc`.
 ///
@@ -55,86 +22,113 @@ macro_rules! doc_page {
     };
 }
 
-doc_page!(start_index, "start/index.md");
-doc_page!(start_protocol, "start/protocol.md");
-doc_page!(start_crates, "start/crates.md");
+doc_page!(start_index, "v0.5.0-alpha.1/start/index.md");
+doc_page!(start_protocol, "v0.5.0-alpha.1/start/protocol.md");
+doc_page!(start_crates, "v0.5.0-alpha.1/start/crates.md");
 
-doc_page!(server_index, "server/index.md");
+doc_page!(server_index, "v0.5.0-alpha.1/server/index.md");
 
-doc_page!(server_agent, "server/agent.md");
-doc_page!(server_text, "server/text.md");
-doc_page!(server_tools, "server/tools.md");
-doc_page!(server_state, "server/state.md");
-doc_page!(server_interrupts, "server/interrupts.md");
-doc_page!(server_subagents, "server/subagents.md");
-doc_page!(server_errors, "server/errors.md");
-doc_page!(server_axum, "server/axum.md");
+doc_page!(server_agent, "v0.5.0-alpha.1/server/agent.md");
+doc_page!(server_text, "v0.5.0-alpha.1/server/text.md");
+doc_page!(server_tools, "v0.5.0-alpha.1/server/tools.md");
+doc_page!(server_state, "v0.5.0-alpha.1/server/state.md");
+doc_page!(server_interrupts, "v0.5.0-alpha.1/server/interrupts.md");
+doc_page!(server_subagents, "v0.5.0-alpha.1/server/subagents.md");
+doc_page!(server_errors, "v0.5.0-alpha.1/server/errors.md");
+doc_page!(server_axum, "v0.5.0-alpha.1/server/axum.md");
 
-doc_page!(client_index, "client/index.md");
-doc_page!(client_tools, "client/tools.md");
-doc_page!(client_state, "client/state.md");
-doc_page!(client_interrupts, "client/interrupts.md");
+doc_page!(client_index, "v0.5.0-alpha.1/client/index.md");
+doc_page!(client_tools, "v0.5.0-alpha.1/client/tools.md");
+doc_page!(client_state, "v0.5.0-alpha.1/client/state.md");
+doc_page!(client_interrupts, "v0.5.0-alpha.1/client/interrupts.md");
 
-doc_page!(client_thread, "client/thread.md");
-doc_page!(client_updates, "client/updates.md");
-doc_page!(client_rendering, "client/rendering.md");
-doc_page!(client_transports, "client/transports.md");
+doc_page!(client_thread, "v0.5.0-alpha.1/client/thread.md");
+doc_page!(client_updates, "v0.5.0-alpha.1/client/updates.md");
+doc_page!(client_rendering, "v0.5.0-alpha.1/client/rendering.md");
+doc_page!(client_transports, "v0.5.0-alpha.1/client/transports.md");
 
-doc_page!(a2ui_index, "a2ui/index.md");
-doc_page!(a2ui_authoring, "a2ui/authoring.md");
-doc_page!(a2ui_validation, "a2ui/validation.md");
+doc_page!(a2ui_index, "v0.5.0-alpha.1/a2ui/index.md");
+doc_page!(a2ui_authoring, "v0.5.0-alpha.1/a2ui/authoring.md");
+doc_page!(a2ui_validation, "v0.5.0-alpha.1/a2ui/validation.md");
 
-doc_page!(design_commitments, "design/commitments.md");
-doc_page!(design_verification, "design/verification.md");
-doc_page!(design_testing, "design/testing.md");
+doc_page!(design_commitments, "v0.5.0-alpha.1/design/commitments.md");
+doc_page!(design_verification, "v0.5.0-alpha.1/design/verification.md");
+doc_page!(design_testing, "v0.5.0-alpha.1/design/testing.md");
 
-doc_page!(reference_events, "reference/events.md");
-doc_page!(reference_features, "reference/features.md");
-doc_page!(reference_platforms, "reference/platforms.md");
+doc_page!(reference_events, "v0.5.0-alpha.1/reference/events.md");
+doc_page!(reference_features, "v0.5.0-alpha.1/reference/features.md");
+doc_page!(reference_platforms, "v0.5.0-alpha.1/reference/platforms.md");
 
-doc_page!(examples_task_board, "examples/task-board.md");
-doc_page!(examples_board_watch, "examples/board-watch.md");
+doc_page!(examples_task_board, "v0.5.0-alpha.1/examples/task-board.md");
+doc_page!(
+    examples_board_watch,
+    "v0.5.0-alpha.1/examples/board-watch.md"
+);
 
-// The Korean translations. Every path mirrors the English list above, file
-// extension included, so the two halves read as one table and a page that
-// exists in one language but not the other is visible at a glance rather than
-// only when someone goes looking.
-doc_page!(ko_start_index, "ko/start/index.md");
-doc_page!(ko_start_protocol, "ko/start/protocol.md");
-doc_page!(ko_start_crates, "ko/start/crates.md");
+// The Korean translations mirror the English page list.
+doc_page!(ko_start_index, "ko/v0.5.0-alpha.1/start/index.md");
+doc_page!(ko_start_protocol, "ko/v0.5.0-alpha.1/start/protocol.md");
+doc_page!(ko_start_crates, "ko/v0.5.0-alpha.1/start/crates.md");
 
-doc_page!(ko_server_index, "ko/server/index.md");
+doc_page!(ko_server_index, "ko/v0.5.0-alpha.1/server/index.md");
 
-doc_page!(ko_server_agent, "ko/server/agent.md");
-doc_page!(ko_server_text, "ko/server/text.md");
-doc_page!(ko_server_tools, "ko/server/tools.md");
-doc_page!(ko_server_state, "ko/server/state.md");
-doc_page!(ko_server_interrupts, "ko/server/interrupts.md");
-doc_page!(ko_server_subagents, "ko/server/subagents.md");
-doc_page!(ko_server_errors, "ko/server/errors.md");
-doc_page!(ko_server_axum, "ko/server/axum.md");
+doc_page!(ko_server_agent, "ko/v0.5.0-alpha.1/server/agent.md");
+doc_page!(ko_server_text, "ko/v0.5.0-alpha.1/server/text.md");
+doc_page!(ko_server_tools, "ko/v0.5.0-alpha.1/server/tools.md");
+doc_page!(ko_server_state, "ko/v0.5.0-alpha.1/server/state.md");
+doc_page!(
+    ko_server_interrupts,
+    "ko/v0.5.0-alpha.1/server/interrupts.md"
+);
+doc_page!(ko_server_subagents, "ko/v0.5.0-alpha.1/server/subagents.md");
+doc_page!(ko_server_errors, "ko/v0.5.0-alpha.1/server/errors.md");
+doc_page!(ko_server_axum, "ko/v0.5.0-alpha.1/server/axum.md");
 
-doc_page!(ko_client_index, "ko/client/index.md");
-doc_page!(ko_client_tools, "ko/client/tools.md");
-doc_page!(ko_client_state, "ko/client/state.md");
-doc_page!(ko_client_interrupts, "ko/client/interrupts.md");
+doc_page!(ko_client_index, "ko/v0.5.0-alpha.1/client/index.md");
+doc_page!(ko_client_tools, "ko/v0.5.0-alpha.1/client/tools.md");
+doc_page!(ko_client_state, "ko/v0.5.0-alpha.1/client/state.md");
+doc_page!(
+    ko_client_interrupts,
+    "ko/v0.5.0-alpha.1/client/interrupts.md"
+);
 
-doc_page!(ko_client_thread, "ko/client/thread.md");
-doc_page!(ko_client_updates, "ko/client/updates.md");
-doc_page!(ko_client_rendering, "ko/client/rendering.md");
-doc_page!(ko_client_transports, "ko/client/transports.md");
+doc_page!(ko_client_thread, "ko/v0.5.0-alpha.1/client/thread.md");
+doc_page!(ko_client_updates, "ko/v0.5.0-alpha.1/client/updates.md");
+doc_page!(ko_client_rendering, "ko/v0.5.0-alpha.1/client/rendering.md");
+doc_page!(
+    ko_client_transports,
+    "ko/v0.5.0-alpha.1/client/transports.md"
+);
 
-doc_page!(ko_a2ui_index, "ko/a2ui/index.md");
-doc_page!(ko_a2ui_authoring, "ko/a2ui/authoring.md");
-doc_page!(ko_a2ui_validation, "ko/a2ui/validation.md");
+doc_page!(ko_a2ui_index, "ko/v0.5.0-alpha.1/a2ui/index.md");
+doc_page!(ko_a2ui_authoring, "ko/v0.5.0-alpha.1/a2ui/authoring.md");
+doc_page!(ko_a2ui_validation, "ko/v0.5.0-alpha.1/a2ui/validation.md");
 
-doc_page!(ko_design_commitments, "ko/design/commitments.md");
-doc_page!(ko_design_verification, "ko/design/verification.md");
-doc_page!(ko_design_testing, "ko/design/testing.md");
+doc_page!(
+    ko_design_commitments,
+    "ko/v0.5.0-alpha.1/design/commitments.md"
+);
+doc_page!(
+    ko_design_verification,
+    "ko/v0.5.0-alpha.1/design/verification.md"
+);
+doc_page!(ko_design_testing, "ko/v0.5.0-alpha.1/design/testing.md");
 
-doc_page!(ko_reference_events, "ko/reference/events.md");
-doc_page!(ko_reference_features, "ko/reference/features.md");
-doc_page!(ko_reference_platforms, "ko/reference/platforms.md");
+doc_page!(ko_reference_events, "ko/v0.5.0-alpha.1/reference/events.md");
+doc_page!(
+    ko_reference_features,
+    "ko/v0.5.0-alpha.1/reference/features.md"
+);
+doc_page!(
+    ko_reference_platforms,
+    "ko/v0.5.0-alpha.1/reference/platforms.md"
+);
 
-doc_page!(ko_examples_task_board, "ko/examples/task-board.md");
-doc_page!(ko_examples_board_watch, "ko/examples/board-watch.md");
+doc_page!(
+    ko_examples_task_board,
+    "ko/v0.5.0-alpha.1/examples/task-board.md"
+);
+doc_page!(
+    ko_examples_board_watch,
+    "ko/v0.5.0-alpha.1/examples/board-watch.md"
+);

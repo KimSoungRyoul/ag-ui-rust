@@ -1,10 +1,27 @@
-# 0.5 candidate migration notes
+# Migrating from 0.4.5 to 0.5.0-alpha.1
 
-This is an unpublished `0.5.0-alpha.1` QA build of the `ag-ui` work proposed in
-[upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778). The
-published `ag-ui` and `ag-ui-a2ui` packages remain at `0.4.5`. The version in
-this checkout does not establish the first upstream release version or transfer
-package ownership.
+`0.5.0-alpha.1` is a prerelease of the `ag-ui` work proposed in
+[upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778).
+It does not establish the first upstream release version or transfer package
+ownership. The previous stable release is `0.4.5`. Read the matching
+[0.5.0-alpha.1](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.1/start/)
+or [0.4.5](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/start/)
+guide when updating an application.
+
+## Install
+
+For registry dependencies, pin the prerelease explicitly:
+
+```toml
+[dependencies]
+ag-ui = { version = "=0.5.0-alpha.1", features = ["http"] }
+ag-ui-a2ui = "=0.5.0-alpha.1"
+```
+
+Use `ag-ui/axum` for a server instead of `ag-ui/http`. To test before the
+registry version is indexed, use paths to `crates/ag-ui` and `crates/ag-ui-a2ui`
+in a checkout of this repository. Update the application's `Cargo.lock` after
+changing its dependencies.
 
 ## AG-UI 1.0 wire behavior
 
@@ -76,11 +93,11 @@ updated to read text from `ToolContent`, including ordered parts; A2UI protocol
 authoring and validation remain in that crate. The A2UI source proposed for
 upstream is reviewed separately from PR #2778.
 
-## Try the candidate
+## Verify the upgrade
 
-Use path dependencies pointing at this checkout, then test the application
-against its own real agent and transport. The workspace's independent
-`examples/` consumers exercise HTTP, conversation state, interrupts and A2UI.
+Test the application against its own real agent and transport. The workspace's
+independent `examples/` consumers exercise HTTP, conversation state, interrupts
+and A2UI.
 
 ```sh
 cargo fmt --all -- --check
@@ -92,5 +109,5 @@ cargo run --locked -p xtask -- drift-check --local
 
 The TypeScript and A2UI renderer comparisons live in `e2e/interop` and
 `examples/review-desk/interop`. The [QA record](QA.md#05-candidate-verification-2026-09-27)
-distinguishes verified source from publication. No alpha tag or crate upload is
-part of this candidate migration.
+describes source and consumer validation; check
+[crates.io](https://crates.io/crates/ag-ui) for the current registry status.

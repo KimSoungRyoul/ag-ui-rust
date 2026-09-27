@@ -31,10 +31,11 @@ remained opt-in). This temporary compile bridge classifies the new outcomes as
 unconfirmed; it does **not** establish HCX's final cancellation or pending
 frontend tool policy.
 
-The alpha version is **not published**. The A2UI registry dry run cannot resolve
-its `ag-ui` dependency until the same version of `ag-ui` is on crates.io. The
-publish workflow checks A2UI immediately before its eventual upload. A green
-source/CI run is evidence of the candidate, not of registry publication.
+At the time of this candidate QA run, the alpha version was **not published**.
+The A2UI registry dry run cannot resolve its `ag-ui` dependency until the
+same version of `ag-ui` is on crates.io. The publish workflow checks A2UI
+after publishing `ag-ui`. A green source/CI run alone does not establish
+registry publication; verify both versions in the registry separately.
 
 ## 0.4 implementation verification (2026-09-13)
 
