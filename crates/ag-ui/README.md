@@ -11,22 +11,28 @@ This independent SDK provides protocol types, server emitters and client convers
 It is not affiliated with or endorsed by the AG-UI protocol organisation. The
 AG-UI 1.0 schema and event baseline are checked in CI.
 
-To host an agent behind axum:
+For `0.5.0-alpha.1`, use an exact prerelease requirement. The
+[0.5.0-alpha.1 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.1/start/)
+covers this API; the [0.4.5 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/start/)
+covers the previous stable version.
 
-Replace `/path/to/qa-checkout` with the absolute path to this unpublished
-candidate checkout.
+To host an agent behind axum:
 
 ```toml
 [dependencies]
-ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["axum"] }
+ag-ui = { version = "=0.5.0-alpha.1", features = ["axum"] }
 ```
 
 To consume an agent over HTTP:
 
 ```toml
 [dependencies]
-ag-ui = { path = "/path/to/qa-checkout/crates/ag-ui", features = ["http"] }
+ag-ui = { version = "=0.5.0-alpha.1", features = ["http"] }
 ```
+
+For local source development, clone the repository and use
+`ag-ui = { path = "/absolute/path/to/ag-ui-rust/crates/ag-ui", features = ["http"] }`
+to test the same source.
 
 ## What is in the box
 
@@ -98,7 +104,7 @@ See the [repository](https://github.com/KimSoungRyoul/ag-ui-rust) for the design
 
 MIT
 
-## Conversations in the 0.5 candidate
+## Conversations in 0.5.0-alpha.1
 
 `HttpAgent::new(url)` configures a connection. `agent.thread(id)` creates a local
 conversation; `thread.send(text)?` returns a run stream. `collect_report().await`
@@ -113,8 +119,8 @@ frontend tool calls awaiting answers; `RunEnd::SuccessWithPendingToolCalls`
 preserves their IDs. Remote cancellation is `RunEnd::Cancelled`, distinct from
 local `RunEnd::Aborted`. Tool results now use `ToolContent::Text` or ordered
 `ToolContent::Parts`; use `as_text()` when text is required, or preserve the
-parts when forwarding multimodal results. See the repository's
-[0.5 migration notes](../../docs/migration-0.5.md).
+parts when forwarding multimodal results. See the
+[0.5 migration notes](https://github.com/KimSoungRyoul/ag-ui-rust/blob/main/docs/migration-0.5.md).
 
 ## Validate events from another runtime
 
