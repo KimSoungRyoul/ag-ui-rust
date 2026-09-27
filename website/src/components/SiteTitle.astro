@@ -1,54 +1,51 @@
 ---
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const locale = Astro.locals.starlightRoute.locale === 'ko' ? 'ko/' : '';
-const relativePath = Astro.url.pathname.slice(`${base}/`.length).replace(/^ko\//, '');
-const match = relativePath.match(/^(v0\.4\.5|v0\.5\.0-alpha\.[12])\/(.*)$/);
-const currentVersion = match?.[1];
+const match = Astro.url.pathname.match(/\/(v0\.4\.5|v0\.5\.0-alpha\.[12])\/(.*)$/);
+const version = match?.[1] ?? 'v0.5.0-alpha.2';
 const page = match?.[2] || 'start/';
+const label = locale ? '문서 버전' : 'Documentation version';
 const versions = [
-	{ id: 'v0.4.5', label: '0.4.5', shortLabel: '0.4.5' },
-	{ id: 'v0.5.0-alpha.1', label: '0.5.0-alpha.1', shortLabel: '0.5 α1' },
-	{ id: 'v0.5.0-alpha.2', label: '0.5.0-alpha.2', shortLabel: '0.5 α2' },
+	{ id: 'v0.5.0-alpha.2', full: '0.5.0-alpha.2' },
+	{ id: 'v0.4.5', full: '0.4.5' },
+	{ id: 'v0.5.0-alpha.1', full: '0.5.0-alpha.1' },
 ];
+const selected = versions.find((item) => item.id === version) ?? versions[0];
 ---
 
-<div class="site-identity">
-	<a class="sdk-title" href={`${base}/${locale}versions/`} aria-label="ag-ui-rust documentation versions">
-		<svg width="25" height="29" viewBox="-3 -3 59 68" fill="none" stroke="currentColor" stroke-width="3.3125" aria-hidden="true">
-			<path d="M0,25.9335975 L16.5448881,0 C40.848296,5.37332138 53,8.05998207 53,8.05998207 L43.1229639,62 L0,25.9335975 Z" stroke-linejoin="round" />
-			<path d="M16.5828221,0 L43.2453988,62 M0,25.9335975 L53,8.48421053" />
-		</svg>
-		<span translate="no">AG-UI</span>
-		<span class="sdk-badge" translate="no">Rust SDK</span>
-	</a>
-	<nav class="version-links" aria-label={locale ? '문서 버전' : 'Documentation version'}>
-		{versions.map((version) => (
-			<a
-				href={`${base}/${locale}${version.id}/${page}`}
-				aria-current={currentVersion === version.id ? 'page' : undefined}
-				aria-label={version.label}
-			>
-				<span class="full-label" translate="no">{version.label}</span>
-				<span class="short-label" translate="no">{version.shortLabel}</span>
-			</a>
+<a class="sdk-title" href={`${base}/${locale}${version}/start/`} aria-label="ag-ui-rust documentation home">
+	<svg width="25" height="29" viewBox="-3 -3 59 68" fill="none" stroke="currentColor" stroke-width="3.3125" aria-hidden="true">
+		<path d="M0,25.9335975 L16.5448881,0 C40.848296,5.37332138 53,8.05998207 53,8.05998207 L43.1229639,62 L0,25.9335975 Z" stroke-linejoin="round" />
+		<path d="M16.5828221,0 L43.2453988,62 M0,25.9335975 L53,8.48421053" />
+	</svg>
+	<span translate="no">AG-UI</span>
+	<span class="sdk-badge" translate="no">Rust SDK</span>
+</a>
+
+<details class="mobile-version" aria-label={label}>
+	<summary><span class="sr-only">{label}</span><span translate="no">{selected.full}</span><span aria-hidden="true">⌄</span></summary>
+	<ul>
+		{versions.map((item) => (
+			<li><a href={`${base}/${locale}${item.id}/${page}`} aria-current={item.id === version ? 'page' : undefined} translate="no">{item.full}</a></li>
 		))}
-	</nav>
-</div>
+	</ul>
+</details>
 
 <style>
-	.site-identity { display: flex; align-items: center; gap: 1rem; min-width: 0; }
 	.sdk-title { display: inline-flex; align-items: center; gap: 0.6rem; color: var(--sl-color-white); text-decoration: none; white-space: nowrap; font-size: 1.15rem; font-weight: 650; letter-spacing: -0.025em; }
 	svg { flex-shrink: 0; }
 	.sdk-badge { border: 1px solid var(--sl-color-accent); border-radius: 0.35rem; padding: 0.15rem 0.4rem; color: var(--sl-color-text-accent); font-size: 0.7rem; font-weight: 600; letter-spacing: 0; }
-	.version-links { display: flex; align-items: center; gap: 0.25rem; white-space: nowrap; }
-	.version-links a { border-radius: 0.35rem; padding: 0.25rem 0.4rem; color: var(--sl-color-gray-2); font-size: var(--sl-text-xs); text-decoration: none; }
-	.version-links a:hover, .version-links a:focus-visible { color: var(--sl-color-white); background: var(--sl-color-gray-6); }
-	.version-links a[aria-current='page'] { color: var(--sl-color-text-accent); background: var(--sl-color-accent-low); font-weight: 600; }
-	.short-label { display: none; }
+	.mobile-version { display: none; }
 	@media (max-width: 49.99rem) {
-		.site-identity { gap: 0.35rem; }
-		.sdk-badge, .full-label { display: none; }
-		.short-label { display: inline; }
-		.version-links a { padding-inline: 0.25rem; }
+		:global(.title-wrapper) { overflow: visible; }
+		.sdk-badge { display: none; }
+		.mobile-version { display: block; position: relative; margin-inline-start: 0.5rem; color: var(--sl-color-gray-2); font-size: var(--sl-text-xs); }
+		.mobile-version summary { display: flex; align-items: center; gap: 0.25rem; cursor: pointer; list-style: none; white-space: nowrap; }
+		.mobile-version summary::-webkit-details-marker { display: none; }
+		.mobile-version summary:focus-visible { outline: 2px solid var(--sl-color-text-accent); border-radius: 0.25rem; }
+		.mobile-version ul { position: absolute; z-index: 30; inset-block-start: calc(100% + 0.75rem); inset-inline-start: 0; width: max-content; max-width: calc(100vw - 2rem); margin: 0; padding: 0.25rem; list-style: none; background: var(--sl-color-bg-nav); border: 1px solid var(--sl-color-gray-5); border-radius: 0.5rem; box-shadow: var(--sl-shadow-md); }
+		.mobile-version a { display: block; padding: 0.45rem 0.65rem; color: var(--sl-color-gray-2); text-decoration: none; border-radius: 0.25rem; }
+		.mobile-version a:hover, .mobile-version a:focus-visible { color: var(--sl-color-white); background: var(--sl-color-accent-low); }
+		.mobile-version a[aria-current='page'] { color: var(--sl-color-text-accent); font-weight: 600; }
 	}
 </style>

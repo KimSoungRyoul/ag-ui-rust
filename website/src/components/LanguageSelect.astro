@@ -76,7 +76,44 @@ const options = Object.entries(config.locales ?? {}).map(([locale, localeConfig]
 const current = options.find((option) => option.current);
 
 const label = Astro.locals.t('languageSelect.accessibleLabel');
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const versionMatch = Astro.url.pathname.match(/\/(v0\.4\.5|v0\.5\.0-alpha\.[12])\/(.*)$/);
+const currentVersion = versionMatch?.[1] ?? 'v0.5.0-alpha.2';
+const page = versionMatch?.[2] || 'start/';
+const localePath = currentLocale === 'ko' ? 'ko/' : '';
+const versionLabel = currentLocale === 'ko' ? '문서 버전' : 'Documentation version';
+const versions = [
+	{ id: 'v0.5.0-alpha.2', label: '0.5.0-alpha.2', status: currentLocale === 'ko' ? '현재 프리릴리스' : 'Current prerelease' },
+	{ id: 'v0.4.5', label: '0.4.5', status: currentLocale === 'ko' ? '안정 버전' : 'Stable' },
+	{ id: 'v0.5.0-alpha.1', label: '0.5.0-alpha.1', status: currentLocale === 'ko' ? '교체됨' : 'Superseded' },
+];
 ---
+
+<starlight-version-select>
+	<details data-picker aria-label={versionLabel}>
+		<summary>
+			<span class="sr-only">{versionLabel}</span>
+			<span class="value version-value" translate="no">{currentVersion.slice(1)}</span>
+			<Icon name="down-caret" class="icon caret" />
+		</summary>
+		<ul class="panel">
+			{versions.map((version) => (
+				<li>
+					<a
+						class="option"
+						data-picker-option
+						href={`${base}/${localePath}${version.id}/${page}`}
+						aria-current={currentVersion === version.id ? 'true' : undefined}
+					>
+						<Icon name="approve-check" class="check" />
+						<span translate="no">{version.label}</span>
+						<small class="version-status">{version.status}</small>
+					</a>
+				</li>
+			))}
+		</ul>
+	</details>
+</starlight-version-select>
 
 {
 	config.isMultilingual && (
@@ -125,7 +162,7 @@ const label = Astro.locals.t('languageSelect.accessibleLabel');
 }
 
 <script>
-	class StarlightLanguageSelect extends HTMLElement {
+	class StarlightPicker extends HTMLElement {
 		constructor() {
 			super();
 
@@ -202,7 +239,8 @@ const label = Astro.locals.t('languageSelect.accessibleLabel');
 		}
 	}
 
-	customElements.define('starlight-lang-select', StarlightLanguageSelect);
+	customElements.define('starlight-lang-select', class extends StarlightPicker {});
+	customElements.define('starlight-version-select', class extends StarlightPicker {});
 </script>
 
 <style>
@@ -217,6 +255,11 @@ const label = Astro.locals.t('languageSelect.accessibleLabel');
 	details {
 		position: relative;
 	}
+
+	starlight-version-select { display: block; }
+	starlight-version-select .version-value { width: 9.5em; }
+	starlight-version-select .panel { min-width: min(17rem, calc(100vw - 2rem)); max-width: min(19rem, calc(100vw - 2rem)); }
+	.version-status { margin-inline-start: auto; color: var(--sl-color-gray-3); font-size: var(--sl-text-xs); }
 
 	summary {
 		display: flex;
@@ -377,6 +420,10 @@ const label = Astro.locals.t('languageSelect.accessibleLabel');
 			inset-block-end: auto;
 			inset-block-start: calc(100% + 0.5rem);
 		}
+	}
+
+	@media (max-width: 49.99rem) {
+		starlight-version-select { display: none; }
 	}
 
 	@media (prefers-reduced-motion: reduce) {
