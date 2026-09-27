@@ -19,7 +19,7 @@ message or an independent run.
 | `Error` | A diagnostic; continue consuming until `Done` |
 | `Done` | The run's terminal outcome |
 
-`Update` is non-exhaustive. `RunEnd` has four variants:
+`Update` is non-exhaustive. `RunEnd` has six variants:
 
 ```rust
 use ag_ui::client::RunEnd;
@@ -27,14 +27,20 @@ use ag_ui::client::RunEnd;
 fn label(end: &RunEnd) -> &'static str {
     match end {
         RunEnd::Success { .. } => "completed",
+        RunEnd::SuccessWithPendingToolCalls { .. } => "waiting for frontend tool results",
         RunEnd::Interrupted { .. } => "waiting for input",
         RunEnd::Failed { .. } => "failed",
+        RunEnd::Cancelled => "cancelled by the server",
         RunEnd::Aborted => "stopped locally",
     }
 }
 
 assert_eq!(label(&RunEnd::Aborted), "stopped locally");
 ```
+
+`SuccessWithPendingToolCalls` confirms the server run finished while named frontend tool
+calls still await application results; it does not mean those tools ran. `Cancelled` is a
+remote terminal outcome. `Aborted` only records that this client stopped consuming the run.
 
 A successful server result can coexist with local diagnostics such as a rejected state
 patch. `collect_report()` retains the outcome and diagnostics from the **whole run**,

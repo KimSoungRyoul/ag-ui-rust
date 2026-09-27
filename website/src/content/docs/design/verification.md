@@ -221,84 +221,74 @@ same SDK.
 
 ## Layer 3: drift against upstream
 
-The Rust event types are a hand-written port of upstream's Zod schemas. Nothing
-in the compiler links the two, so upstream can add an event and this SDK will
-keep building, keep passing its tests, and silently not speak the protocol any
-more. That is exactly how an earlier community SDK came to declare 24 event
-variants against a spec that had 32 at the time — it has 36 today — with nothing
-anywhere forcing the question.
+The Rust event types are hand-written against the frozen AG-UI 1.0 JSON Schema.
+Nothing in the compiler links them to that schema, so the SDK could otherwise
+keep building after the protocol adds an event. An earlier community SDK had
+24 variants against a 32-event spec. AG-UI 1.0 now defines **31** event types;
+Rust also retains five `THINKING_*` variants for reading older streams.
 
-`xtask drift-check` is that link:
+The offline drift checks are:
 
 ```sh
-cargo run -p xtask -- drift-check
+cargo run --locked -p xtask -- drift-check
+cargo run --locked -p xtask -- drift-check --local
 ```
+
+The first command currently reports:
 
 ```text
 drift-check
-  baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@bc8477bfd6, captured 2026-09-02)
-  upstream  36 event types
+  baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@fdbca490dc, captured 2026-09-23)
+  upstream  31 event types
   rust      crates/ag-ui/src/event  (10 files, 36 event types, tagged enum `Event`)
 
-OK  36 event types match the baseline.
+OK  31 event types match the baseline.
 ```
 
-It compares `xtask/baseline/events.json` — a vendored snapshot of upstream's
-`sdks/typescript/packages/core/src/events.ts`, recording the commit it came from,
-the `EventType` values in upstream order, and each event's payload fields with an
-optional/required flag — against `crates/ag-ui/src/event/`, **read as text**
-so the check keeps working while that module does not compile.
+The baseline is a reviewed snapshot of upstream `spec/1.0/schema.json`. It
+records the current event names, fields and requiredness, plus signatures for
+the schema root and definitions. The scanner reads `crates/ag-ui/src/event/` as
+text, so it can detect Rust drift even when that module does not compile. The
+five legacy `THINKING_*` variants are excluded from the normative comparison.
 
-It is offline and deterministic, which is what qualifies it to be a required
-check: no network blip can redden it. Exit 0 is clean, exit 1 is drift, and exit
-2 is a missing baseline or a moved event module — a genuine repo defect, which
-should fail too.
-
-An event whose Zod schema the extractor could not read confidently is recorded as
-`unparsed`: its type is still compared, its fields are not, and it produces a
-warning rather than a failure. A check that cries wolf gets disabled, so an
-unreadable schema is never a hard failure. If that list grows, the extractor
-should be taught the shape rather than the check lowered.
+`--local` also compares the schema vendored at
+`crates/ag-ui/src/protocol/schema-1.0.json` with the reviewed baseline. A
+missing schema, changed shape or unreadable field fails that check. Both
+commands are offline and run in pull-request CI; exit 1 means drift and exit 2
+means the check could not run.
 
 ### Is the baseline itself current?
 
-The offline check can only tell you the Rust types match the snapshot. Whether
-the *snapshot* still matches upstream is a separate question, and answering it
-needs the network:
+The offline checks cannot tell whether the upstream repository changed after
+the snapshot was reviewed. That needs a network request:
 
 ```sh
-cargo run -p xtask -- drift-check --upstream
+cargo run --locked -p xtask -- drift-check --upstream
 ```
 
-That runs as a scheduled job rather than a required check. It keeps the offline
-verdict and merely reports when the fetch fails, so a rate limit or a GitHub
-outage cannot fail the run — only real upstream movement can.
+This is a scheduled, non-required job. Upstream movement reports drift; a fetch
+failure reports that the check could not run and fails that job.
 
-When it reports movement, a human accepts it:
+When upstream changes, a human reviews the new schema and refreshes the
+baseline:
 
 ```sh
-cargo run -p xtask -- drift-check --refresh
+cargo run --locked -p xtask -- drift-check --refresh
 ```
 
-That re-captures the baseline and records the upstream commit and fetch date.
-The diff to `events.json` **is** the protocol change, and it is the part of the
-resulting pull request that deserves the closest review. Then
-`crates/ag-ui/src/event/` is updated to match, in the same pull request,
-until `drift-check` is clean again.
-
-`events.json` is generated, never hand-edited. Editing it by hand is editing the
-protocol to match the code, which is precisely the failure this check exists to
-catch.
+The refreshed `events.json` records the upstream commit and fetch date. Review
+its diff alongside the vendored schema and update `crates/ag-ui/src/event/` in
+the same pull request. The baseline is generated, never hand-edited to make a
+failing implementation pass.
 
 ## What each layer cannot do
 
 - The borrow checker cannot see events emitted through `ctx.emit`, which is why
   layer 2 exists.
-- The runtime verifier cannot know that the protocol grew a 37th event, which is
-  why layer 3 exists.
-- The drift check cannot tell you an event's *semantics* changed while its name
-  and fields did not. Nothing here can. That is what reading the diff in
-  `--refresh` is for.
+- The runtime verifier cannot know that the schema added another event, which
+  is why layer 3 exists.
+- The drift check cannot detect a change in interpretation when the schema
+  itself stays the same. Review upstream changes beyond the schema as well.
 
 Everything above runs in CI on every pull request except the upstream freshness
 job. [Testing](/ag-ui-rust/design/testing/) is the full list and how to run it

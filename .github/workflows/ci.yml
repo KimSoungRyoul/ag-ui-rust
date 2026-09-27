@@ -396,13 +396,8 @@ jobs:
           done
           exit $status
 
-  # The community SDK fell behind because the port was hand-written with no
-  # mechanical link to upstream. This job is that link.
-  #
-  # Offline and deterministic: it compares the vendored baseline against the
-  # Rust source and never opens a socket, so it cannot be reddened by a network
-  # blip. Exit 1 is drift; exit 2 is a missing baseline or a moved event module,
-  # which is a genuine repo defect and should fail too.
+  # Offline checks compare Rust events and the vendored 1.0 schema with the
+  # reviewed baseline. Network freshness runs separately.
   drift:
     name: protocol drift vs upstream
     runs-on: ubuntu-latest
@@ -412,11 +407,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run -p xtask -- drift-check
+      - run: cargo run --locked -p xtask -- drift-check --local
 
-  # The other half of the link: is the *baseline* still current? This one does
-  # hit GitHub, so it is scheduled rather than required. `--upstream` keeps the
-  # offline verdict and merely reports when the fetch fails, so a rate limit or
-  # an outage cannot fail the run either — only real upstream movement can.
+  # This scheduled check asks GitHub whether the reviewed baseline has changed.
+  # A fetch failure fails this non-required job.
   upstream-freshness:
     name: upstream freshness (scheduled)
     runs-on: ubuntu-latest

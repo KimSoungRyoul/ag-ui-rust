@@ -113,7 +113,7 @@ async fn ship(agent: impl Agent + 'static) -> (Vec<Message>, Value) {
         .messages()
         .iter()
         .find_map(|message| match message {
-            Message::Tool(tool) => Some(tool.content.clone()),
+            Message::Tool(tool) => Some(tool.content.to_text()),
             _ => None,
         })
         .expect("the agent should have produced a tool result");

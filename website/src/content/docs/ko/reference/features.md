@@ -14,9 +14,9 @@ feature가 포함하는 다른 feature의 의존성도 함께 활성화됩니다
 | `ag-ui` | `utoipa` | off | `dep:utoipa` | OpenAPI schema derive |
 | `ag-ui` | `server` | off | `dep:futures-core`, `dep:futures-channel`, `dep:futures-util`, `dep:json-patch` | Agent adapter와 event 생성 |
 | `ag-ui` | `verify` | on | — | 서버 event 순서 검사 |
-| `ag-ui` | `client` | off | `dep:futures-core`, `dep:futures-util`, `dep:json-patch`, `dep:getrandom`, `dep:time`, `dep:js-sys` | Thread, Update와 custom transport |
+| `ag-ui` | `client` | off | `dep:futures-core`, `dep:futures-util`, `dep:json-patch`, `dep:getrandom`, `dep:chrono`, `dep:js-sys` | Thread, Update와 custom transport |
 | `ag-ui` | `http` | off | `client`, `sse`, `dep:reqwest` | HttpAgent와 reqwest transport |
-| `ag-ui` | `axum` | off | `server`, `sse`, `dep:axum`, `dep:tokio`, `dep:futures-util` | Axum HTTP endpoint |
+| `ag-ui` | `axum` | off | `server`, `sse`, `dep:axum`, `dep:futures-util` | Axum HTTP endpoint |
 | `ag-ui-a2ui` | `toolkit` | on | — | 수동 A2UI 작성과 복구 helper |
 | `ag-ui-a2ui` | `schema-validation` | off | `toolkit`, `dep:jsonschema`, `dep:schema-getrandom` | 로컬 schema를 이용한 전체 검증 |
 | `ag-ui-a2ui` | `author` | off | `toolkit`, `schema-validation` | 검증된 A2UI 작성 |

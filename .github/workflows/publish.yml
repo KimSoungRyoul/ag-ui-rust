@@ -1,6 +1,8 @@
 name: Publish
 
-# Publishing a GitHub release uploads the crates to crates.io. The release is
+# Publishing a GitHub release by hand, or dispatching this workflow with
+# dry_run=false, uploads the crates to crates.io. A release created by
+# release.yml with GITHUB_TOKEN does not trigger this workflow. The release is
 # what a human decides; this file is what carries it out, so the two steps a
 # person used to do by hand — `cargo publish` twice, in the right order — stop
 # being a thing anyone can get wrong at 2am.
@@ -125,13 +127,14 @@ jobs:
               continue
             fi
             if [ "${DRY_RUN:-false}" = "true" ]; then
-              # `ag-ui-a2ui` cannot resolve `ag-ui` from the registry until
-              # that version is really there, so its rehearsal is allowed to
-              # fail without failing the run.
-              cargo publish --dry-run -p "$crate" || {
-                echo "::notice title=Dry run::$crate could not be verified in isolation; it resolves once ag-ui $VERSION is published"
-              }
+              if [ "$crate" = "ag-ui-a2ui" ] && ! on_crates_io ag-ui "$VERSION"; then
+                cargo package --list -p "$crate" >/dev/null
+                echo "::notice title=Dry run::ag-ui-a2ui registry check waits for ag-ui $VERSION"
+              else
+                cargo publish --dry-run -p "$crate"
+              fi
             else
+              cargo publish --dry-run -p "$crate"
               cargo publish -p "$crate"
               echo "published $crate $VERSION"
             fi

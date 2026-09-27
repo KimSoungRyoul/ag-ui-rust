@@ -5,11 +5,10 @@
 //! text and reasoning, calls tools, publishes state, and finishes — or pauses
 //! for human input.
 //!
-//! It implements all 36 event types, both halves of the protocol, and a drift
-//! check in CI that fails the build when upstream's event set moves — held to
-//! what an official SDK would have to be, because becoming the official AG-UI
-//! Rust SDK is the goal. It is not that yet: this crate is not affiliated with
-//! or endorsed by the AG-UI protocol organisation.
+//! Imported for review as a proposed unified community Rust SDK. The event
+//! surface is checked against the TypeScript definitions in this checkout.
+//! See the Rust workspace's migration guide for differences from the previously published
+//! `ag-ui-core` and `ag-ui-client` packages.
 //!
 //! # What is in the box
 //!
@@ -117,9 +116,9 @@
 //! ```toml
 //! [dependencies]
 //! # host an agent behind axum
-//! ag-ui = { version = "0.3", features = ["axum"] }
+//! ag-ui = { version = "0.5", features = ["axum"] }
 //! # or consume one over HTTP
-//! ag-ui = { version = "0.3", features = ["http"] }
+//! ag-ui = { version = "0.5", features = ["http"] }
 //! ```
 //!
 //! [AG-UI protocol]: https://github.com/ag-ui-protocol/ag-ui
@@ -157,6 +156,9 @@ pub mod tool;
 
 mod serde_util;
 
+#[cfg(any(feature = "client", feature = "axum"))]
+mod protocol;
+
 #[cfg(any(feature = "sse", feature = "protobuf"))]
 pub mod encode;
 
@@ -173,8 +175,8 @@ pub mod server;
 
 /// A JSON object — the Rust spelling of TypeScript's `Record<string, any>`.
 ///
-/// Key order is preserved, so a payload that round-trips through this crate
-/// comes back out in the order it arrived.
+/// Member order follows the consumer's `serde_json` configuration. The SDK
+/// does not enable `preserve_order` for downstream applications.
 pub type JsonObject = serde_json::Map<String, serde_json::Value>;
 
 pub use capabilities::{
@@ -204,11 +206,11 @@ pub use event::{
     ThinkingTextMessageEndEvent, ThinkingTextMessageStartEvent,
 };
 pub use ids::{AgentId, MessageId, RunId, StepName, SubagentRunId, ThreadId, ToolCallId};
-pub use input::RunAgentInput;
+pub use input::{PROTOCOL_VERSION, RunAgentInput};
 pub use message::{
     ActivityMessage, AssistantMessage, BinaryInputContent, DeveloperMessage, InputContent,
     InputContentSource, MediaInputContent, Message, ReasoningMessage, Role, SystemMessage,
-    TextInputContent, ToolMessage, UserContent, UserMessage,
+    TextInputContent, ToolContent, ToolMessage, UserContent, UserMessage,
 };
 pub use metadata::{AGUI_METADATA_KEY, merge_metadata};
 pub use outcome::{Interrupt, ResumeEntry, ResumeStatus, RunOutcome};

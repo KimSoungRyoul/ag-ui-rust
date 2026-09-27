@@ -20,6 +20,7 @@ request body는 `RunAgentInput`입니다. agent가 대화에 대해 알아도 �
 | --- | --- |
 | `threadId` | 이 run이 속한 대화. |
 | `runId` | 이 run의 id. 모든 lifecycle event에 되울립니다. |
+| `protocolVersion` | client가 사용하는 protocol 버전. 이 SDK는 `1.0`을 선언하며 구버전 peer에서는 생략할 수 있습니다. |
 | `parentRunId` | 이 run을 낳은 run. 중첩되거나 위임된 agent를 위한 것. |
 | `state` | 공유 application state. 자유 형식 JSON이고 protocol에는 불투명합니다. |
 | `messages` | 대화 이력. 오래된 것부터. |
@@ -34,6 +35,7 @@ use ag_ui::RunAgentInput;
 let body = r#"{
     "threadId": "thread-1",
     "runId": "run-1",
+    "protocolVersion": "1.0",
     "state": { "tasks": [] },
     "messages": [{ "id": "m1", "role": "user", "content": "add a task" }],
     "tools": [],
@@ -43,6 +45,7 @@ let body = r#"{
 let input: RunAgentInput = serde_json::from_str(body).unwrap();
 
 assert_eq!(input.thread_id.as_str(), "thread-1");
+assert_eq!(input.protocol_version.as_deref(), Some("1.0"));
 assert_eq!(input.messages.len(), 1);
 assert_eq!(input.state["tasks"], serde_json::json!([]));
 assert!(!input.is_resume());
@@ -87,17 +90,22 @@ let body: String = run
 
 assert_eq!(
     body.lines().next(),
-    Some(r#"data: {"type":"RUN_STARTED","threadId":"thread-1","runId":"run-1"}"#),
+    Some(r#"data: {"type":"RUN_STARTED","threadId":"thread-1","runId":"run-1","protocolVersion":"1.0"}"#),
 );
 // frame 하나는 `data:` 줄 하나와 빈 줄 하나입니다. 직렬화한 JSON에는 날
 // 줄바꿈이 없습니다. event가 frame에 걸쳐 쪼개지지 않습니다.
 assert_eq!(body.matches("\n\n").count(), 6);
 ```
 
+`RUN_STARTED`의 버전은 producer가 실제 내보내는 protocol의 선언입니다. request의
+`protocolVersion`을 그대로 되돌리는 값은 아닙니다. 구버전 peer를 읽을 때는 어느 쪽
+선언이든 빠져 있을 수 있습니다.
+
 SSE는 상호운용의 기본값입니다. 이 SDK가 온전히 구현하는 유일한 transport이기도 합니다.
 protocol은 binary media type `application/vnd.ag-ui.event+proto`도 정의하고
-`ag-ui`가 그것을 협상합니다. 다만 upstream의 `events.proto`는 36개 event type 중
-21개만 다룹니다. 그쪽으로 encode하면 event를 조용히 떨어뜨립니다. 그래서 여기에
+`ag-ui`가 그것을 협상합니다. 다만 upstream의 `events.proto`는 이 SDK가 decode할 수
+있는 36개 event variant 중 21개만 다루고, 현재 1.0 event 일부도 빠져 있습니다.
+그쪽으로 encode하면 event를 조용히 떨어뜨립니다. 그래서 여기에
 encoder는 없습니다. 자세한 것은 [feature flag](/ag-ui-rust/ko/reference/features/)에
 있습니다.
 
@@ -116,12 +124,16 @@ RUN_STARTED
 RUN_FINISHED   or   RUN_ERROR
 ```
 
-`RUN_FINISHED`는 `outcome`을 싣습니다. "끝났다"에는 *멈춰 섰다*도 들어갑니다:
+`RUN_FINISHED`는 `outcome`을 싣습니다. "끝났다"에는 *멈춰 섰다*와 *취소됐다*도 들어갑니다:
 
 - `{"type":"success"}` — run이 완료되었습니다.
+- `{"type":"success","pendingToolCallIds":[…]}` — run은 끝났지만 프런트엔드 도구
+  호출의 결과를 application이 아직 제공해야 합니다. 도구가 실행됐다는 뜻은 아닙니다.
 - `{"type":"interrupt","interrupts":[…]}` — agent가 사람을 기다립니다. client가 답을
   모아 *다음* request의 `resume`에 실어 보냅니다. run은 거기서 이어집니다.
   [human in the loop](/ag-ui-rust/ko/server/interrupts/)를 보세요.
+- `{"type":"cancelled"}` — producer가 실행 오류 없이 완료 전에 run을 중단했습니다.
+  client의 로컬 중단만으로 이 원격 결과를 확인할 수는 없습니다.
 
 이 field는 선택입니다. interrupt protocol보다 앞선 producer는 생략합니다. 소비자는
 그것을 성공으로 읽어야 합니다.
@@ -182,7 +194,9 @@ chunk event 다섯 개가 message 하나일 수 있습니다.
 
 ## event 계열
 
-event type은 **36개**입니다. `ag-ui`는 그것을 빠짐없는 `Event` enum 하나와
+AG-UI 1.0 schema의 규범적 event type은 **31개**입니다. 이 SDK는 이전 stream의
+폐기된 `THINKING_*` event 5개도 decode하므로 `EventType::ALL`에는 36개
+variant가 있습니다. `ag-ui`는 이를 빠짐없는 `Event` enum 하나와
 `EventType` 판별자로 표현합니다:
 
 ```rust
@@ -202,7 +216,7 @@ assert_eq!(EventType::ALL.len(), 36);
 | text message | `TEXT_MESSAGE_START` / `_CONTENT` / `_END` / `_CHUNK` | 사용자가 읽는 답변. |
 | tool call | `TOOL_CALL_START` / `_ARGS` / `_END` / `_CHUNK` / `_RESULT` | call, 그 인자 JSON, 그리고 결과. |
 | reasoning | `REASONING_START` / `_END`, `REASONING_MESSAGE_START` / `_CONTENT` / `_END` / `_CHUNK`, `REASONING_ENCRYPTED_VALUE` | 답변과 떼어 둔 사고. block 하나가 message 하나 이상을 감쌉니다. |
-| thinking | `THINKING_START` / `_END`, `THINKING_TEXT_MESSAGE_START` / `_CONTENT` / `_END` | reasoning 계열의 폐기 예정 선행자. 아직 wire에 있고, 아직 type으로 남아 있습니다. |
+| thinking | `THINKING_START` / `_END`, `THINKING_TEXT_MESSAGE_START` / `_CONTENT` / `_END` | 이전 입력과의 호환용입니다. 새 1.0 producer는 `REASONING_*`를 내보냅니다. |
 | state | `STATE_SNAPSHOT`, `STATE_DELTA`, `MESSAGES_SNAPSHOT` | shared state, 그리고 이력의 통째 교체. |
 | activity | `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA` | agent가 지금 *하는 일*. 검색, 읽기, 대기. client가 그릴 수 있는 모양으로. |
 | run과 step | `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`, `STEP_FINISHED` | 위의 lifecycle. |
@@ -239,7 +253,7 @@ application state는 양쪽이 함께 비추는 자유 형식 JSON입니다. age
 ## subagent는 그릇이 아니라 tag입니다
 
 많은 agent가 일을 맡깁니다. 조사를 넘기는 supervisor, 그 자체가 agent인 tool call.
-frontend에는 그것이 stream 하나로 도착합니다. protocol의 답은 작습니다. 36개 event type 중
+frontend에는 그것이 stream 하나로 도착합니다. protocol의 답은 작습니다. 31개 1.0 규범적 event type 중
 24개에 붙는 optional `subagentRunId`가 각 event를 만든 subagent를 가리킵니다. 그리고
 subagent가 언제 시작하고 끝나고 실패하는지 말하는 lifecycle event 셋이 있습니다. 이 field가
 없는 event는 부모의 것입니다. 그래서 이 field를 한 번도 쓰지 않는 stream은 전과 정확히

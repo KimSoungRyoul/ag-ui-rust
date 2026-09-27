@@ -1,6 +1,6 @@
 ---
 title: Event reference
-description: All 36 event types in the protocol, the Rust variant that carries each one, and the families they fall into.
+description: The 31 AG-UI 1.0 event types, five legacy receive-only variants, and their Rust mappings.
 ---
 
 An AG-UI run is a sequence of events. On the wire each is a JSON object with a
@@ -9,10 +9,11 @@ An AG-UI run is a sequence of events. On the wire each is a JSON object with a
 [`EventType`](/ag-ui-rust/api/ag_ui/event/enum.EventType.html) is that
 discriminator on its own.
 
-There are **36** of them. That number is
-`EventType::ALL.len()`, and it is also what `cargo run -p xtask -- drift-check`
-compares against the vendored snapshot of the upstream TypeScript schemas on
-every pull request — see [Verification](/ag-ui-rust/design/verification/).
+AG-UI 1.0 defines **31** event types. Rust's `EventType::ALL` contains **36**
+variants because the client also accepts five retired `THINKING_*` types from
+historical streams. `cargo run -p xtask -- drift-check` compares the 31 current
+types with the reviewed 1.0 schema baseline on every pull request — see
+[Verification](/ag-ui-rust/design/verification/).
 
 Both enums are exhaustive on purpose, so a protocol addition is a compile error
 where you match rather than something a `_` arm swallows.
@@ -32,7 +33,7 @@ into the message that event builds, key by key with the last write winning;
 [`ag_ui::metadata`](/ag-ui-rust/api/ag_ui/metadata/index.html) has the rules
 and the one reserved key.
 
-The order below is `EventType::ALL`'s order, which is upstream's.
+The order below is `EventType::ALL`'s order; the five legacy variants appear after the tool events.
 
 | Wire name | Rust variant | Family | What it means |
 | --- | --- | --- | --- |
@@ -73,20 +74,20 @@ The order below is `EventType::ALL`'s order, which is upstream's.
 | `SUBAGENT_FINISHED` | `SubagentFinished` | Subagent | Closes the invocation. `outcome` is `success` or `suspended` — the latter naming the `interruptIds` the subagent owns — and absent reads as success. `result` mirrors `RUN_FINISHED.result`. |
 | `SUBAGENT_ERROR` | `SubagentError` | Subagent | The invocation failed: a `message` for a human and an optional machine-readable `code`. |
 
-That is 4 text, 5 tool, 5 deprecated thinking, 3 state, 2 activity, 2 escape
-hatches, 5 lifecycle, 7 reasoning and 3 subagent.
+The 31 current types are 4 text, 5 tool, 3 state, 2 activity, 2 escape
+hatches, 5 lifecycle, 7 reasoning and 3 subagent. Five legacy thinking
+variants bring the Rust total to 36.
 
 ### Attribution
 
-Beyond the three lifecycle events, **24** of the 36 types carry an optional
-`subagentRunId` naming the subagent that produced them: the text, tool, state,
-activity, reasoning and step families, plus `RAW` and `CUSTOM`. An event
-without one belongs to the parent agent, so a stream that never sets the field
-is exactly the stream there was before subagents existed. The nine that cannot
-carry it are the run lifecycle (`RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`),
-`MESSAGES_SNAPSHOT` — whose messages carry their own — and the five deprecated
-`THINKING_*` events. `EventType::is_attributable` is that list as a method,
-and `Event::subagent_run_id` reads the tag off any event.
+Among the 31 current types, **24** carry an optional `subagentRunId` naming
+the subagent that produced them: the text, tool, state, activity, reasoning and
+step families, plus `RAW` and `CUSTOM`. An event without one belongs to the
+parent agent. The seven current types without optional attribution are
+`RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `MESSAGES_SNAPSHOT` and the three
+`SUBAGENT_*` lifecycle events, whose IDs name their subjects. The five legacy
+`THINKING_*` variants cannot carry it either. `EventType::is_attributable`
+reports this per type, and `Event::subagent_run_id` reads the tag.
 [Subagents](/ag-ui-rust/server/subagents/) is what to do with it.
 
 ## On the wire
@@ -97,7 +98,7 @@ and `Event::subagent_run_id` reads the tag off any event.
 use ag_ui::{Event, EventType};
 
 fn main() {
-    // Every event type the protocol defines, in upstream order.
+    // Current protocol events plus five legacy receive-only variants.
     assert_eq!(EventType::ALL.len(), 36);
 
     // The discriminator is the wire name, both ways.
@@ -122,16 +123,15 @@ rather than quietly rendering three quarters of a conversation.
 
 ## The `THINKING_*` family is deprecated
 
-All five are still in the protocol, still parsed, and still emitted by producers
-that predate the change — so they are here, and the SDK carries them. The
-`REASONING_*` events replace them, and the replacements fix the reason the
-originals were retired: `THINKING_TEXT_MESSAGE_CONTENT` carries no message id,
-so a thinking block could only ever have one message in flight.
+AG-UI 1.0 excludes these five types. The client still parses them in older
+streams, but current producers reject them and emit `REASONING_*` instead.
+`THINKING_TEXT_MESSAGE_CONTENT` carried no message id, so a thinking block
+could only ever have one message in flight.
 
 The Rust variants and payload structs are marked `#[deprecated]`. `ag-ui`'s
 own event module carries `#![allow(deprecated)]` — it has to name these types in
 the union, in `event_type()` and in the factories, and warning at itself for
-implementing the spec as written helps nobody. The suppression is local to that
+supporting historical input helps nobody. The suppression is local to that
 module, so a consumer that names one still gets the warning at its own use site,
 which is where the decision to keep using it is actually being made.
 
@@ -198,8 +198,8 @@ will not let you do is close a call you never opened. See
 ## What the binary transport cannot carry
 
 The protocol also defines a protobuf encoding, and it is a lossy subset. The
-`Event` message in upstream's `events.proto` is a `oneof` over **21** of the 36
-types:
+`Event` message in upstream's `events.proto` is a `oneof` over **21** of the 31
+current AG-UI 1.0 types:
 
 `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`,
 `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
@@ -207,23 +207,24 @@ types:
 `CUSTOM`, `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`,
 `STEP_FINISHED`, `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR`.
 
-The other 15 have no binary representation at all: all seven `REASONING_*`
-events, both `ACTIVITY_*` events, all five deprecated `THINKING_*` events, and
-`TOOL_CALL_RESULT`. An agent that reasons, reports activities, or returns a tool
-result — which is most of them — cannot express its stream in that format.
+The other ten current types have no binary representation: all seven
+`REASONING_*` events, both `ACTIVITY_*` events and `TOOL_CALL_RESULT`. The five
+legacy `THINKING_*` variants are absent too. An agent that reasons, reports
+activities or returns a tool result cannot express its stream in that format.
 
 So `ag-ui` declines to encode any of it. The `protobuf` feature exists so a
 build can negotiate and name the media type; the formatter's `encode` always
-fails with `Error::UnsupportedTransport`. Silently dropping close to half the
-protocol is worse than refusing. Use SSE, which carries all 36. The
+fails with `Error::UnsupportedTransport`. Silently dropping current
+events is worse than refusing. Use SSE for all 31 current types; it also
+accepts the five legacy types when reading older streams. The
 [`encode::protobuf`](/ag-ui-rust/api/ag_ui/encode/protobuf/index.html)
 module lists the covered set as `COVERED_EVENT_TYPES` and offers `is_covered`,
 so a test can assert that a given stream would have survived the binary
 transport.
 
-This is also why the port is written against the TypeScript Zod schemas rather
-than the proto definitions: a source of truth that is missing 15 of 36 events
-cannot serve as one.
+This is also why the port is checked against the frozen AG-UI 1.0 JSON Schema
+rather than the proto definitions: a source missing ten of 31 current events
+cannot serve as the event baseline.
 
 `COVERED_EVENT_TYPES` describes protobuf oneof fields in the protocol snapshot, not an implemented encoder.
 This SDK does not encode any event as protobuf.

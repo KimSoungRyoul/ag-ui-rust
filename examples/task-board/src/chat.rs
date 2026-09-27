@@ -293,8 +293,9 @@ fn print_result(output: &mut impl Write, message: &Message) -> io::Result<()> {
     let Message::Tool(tool) = message else {
         return Ok(());
     };
-    let Ok(value) = serde_json::from_str::<Value>(&tool.content) else {
-        writeln!(output, "    → {}", tool.content)?;
+    let content = tool.content.to_text();
+    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+        writeln!(output, "    → {content}")?;
         return Ok(());
     };
 

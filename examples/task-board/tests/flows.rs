@@ -66,7 +66,7 @@ fn last_surface(thread: &Thread<HttpTransport, Board>) -> Vec<ag_ui_a2ui::AgentM
         .iter()
         .rev()
         .find_map(|message| match message {
-            Message::Tool(tool) => serde_json::from_str::<Value>(&tool.content)
+            Message::Tool(tool) => serde_json::from_str::<Value>(&tool.content.to_text())
                 .ok()
                 .filter(is_operations_envelope),
             _ => None,

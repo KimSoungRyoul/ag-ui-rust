@@ -4,7 +4,7 @@
 //! backend: a POST carrying [`RunAgentInput`],
 //! answered by a stream of typed events. This crate is the server half —
 //! implement [`Agent`], hand it to [`run()`], and you have a stream a transport
-//! can serialize. [`ag-ui-axum`] mounts it on a router; nothing here depends on
+//! can serialize. [`axum`] mounts it on a router; nothing here depends on
 //! a web framework, an executor or an LLM client.
 //!
 //! ```
@@ -181,16 +181,16 @@
 //!   verifier is a zero-sized type whose checks compile away.
 //!
 //! [AG-UI]: https://docs.ag-ui.com
-//! [`ag-ui-axum`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/axum/index.html
+//! [`axum`]: https://docs.rs/ag-ui/latest/ag_ui/axum/index.html
 //
-// `ag-ui-core` items are spelled as absolute links to the published rustdoc
+// Core protocol items are spelled as absolute links to the published rustdoc
 // rather than as intra-doc paths. `cargo doc --no-deps` — which is what CI and
 // the Pages deploy both run — cannot emit a path into a crate it is not
 // documenting, and it does not warn: a cross-crate intra-doc link silently
 // becomes literal `[text]`, and the `[text](path)` form silently becomes an
 // href of `path`, which renders as a link and 404s. See the `doc-links` job.
-//! [`RunAgentInput`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/input/struct.RunAgentInput.html
-//! [`RunOutcome::Interrupt`]: https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/outcome/enum.RunOutcome.html#variant.Interrupt
+//! [`RunAgentInput`]: crate::input::RunAgentInput
+//! [`RunOutcome::Interrupt`]: crate::outcome::RunOutcome::Interrupt
 
 pub mod agent;
 pub mod cancel;

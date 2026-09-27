@@ -3,7 +3,8 @@ title: Errors and cancellation
 description: How a run reports failure to the client, and what happens to an agent when the caller goes away mid-stream.
 ---
 
-When `Agent::run` returns `Err`, the driver attempts to emit a `RUN_ERROR`.
+When `Agent::run` returns an execution error, the driver attempts to emit a `RUN_ERROR`.
+`Error::Cancelled` instead closes a valid run with `RUN_FINISHED` and a cancelled outcome.
 A panic, disconnected transport or failed emission can still truncate the stream.
 Return an error for expected failures and handle transport termination separately on the client.
 
@@ -46,15 +47,15 @@ needs one `map_err(Error::agent)` and nothing else.
 ## The variants
 
 `ag_ui::server::Error` is what every method in the crate returns, through the
-`Result<T, E = Error>` alias. Each variant has a stable code that lands on the `RUN_ERROR`
-event:
+`Result<T, E = Error>` alias. Each variant has a stable code. Execution failures carry
+that code on `RUN_ERROR`; `Cancelled` normally produces a `RUN_FINISHED` outcome instead:
 
 | Variant | Code | Raised when |
 | --- | --- | --- |
 | `Protocol` | `PROTOCOL` | a core type rejected a value — an `interrupt` outcome with no interrupts, say |
 | `Json` | `SERIALIZATION` | state, tool arguments or a tool result would not convert to or from JSON |
 | `Verification` | `PROTOCOL_VIOLATION` | the emitted stream broke an ordering rule |
-| `Cancelled` | `CANCELLED` | the run was cancelled, usually because the client disconnected |
+| `Cancelled` | `CANCELLED` | the run was cancelled; its normal terminal event is `RUN_FINISHED` with a cancelled outcome |
 | `Disconnected` | `DISCONNECTED` | the consumer dropped the event stream |
 | `Agent` | `AGENT_ERROR` | your code failed. Built with `Error::agent` |
 
@@ -181,14 +182,18 @@ async fn main() {
         .collect();
     assert_eq!(said, ["one"]);
 
-    // The terminal event goes out regardless of the cancellation.
-    assert_eq!(events.last().map(Event::event_type), Some(EventType::RunError));
-    let Some(Event::RunError(error)) = events.last() else {
+    // A deliberate stop is a finished run with a cancelled outcome.
+    assert_eq!(events.last().map(Event::event_type), Some(EventType::RunFinished));
+    let Some(Event::RunFinished(finished)) = events.last() else {
         panic!("{events:?}");
     };
-    assert_eq!(error.code.as_deref(), Some("CANCELLED"));
+    assert_eq!(finished.outcome, Some(RunOutcome::Cancelled));
 }
 ```
+
+The driver sends that terminal event even though ordinary emits stop after cancellation.
+If a message or call remains open, the verifier may reject `RUN_FINISHED`; the driver then
+reports the verification failure with `RUN_ERROR` if the stream is still writable.
 
 An agent that wants to notice sooner has four ways to ask:
 

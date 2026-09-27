@@ -63,20 +63,17 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: cargo test --doc --workspace --all-features
       - run: cargo run -p xtask -- drift-check
+      - run: cargo run --locked -p xtask -- drift-check --local
 
-      # Everything `cargo publish` would do except the upload: the packaged
-      # file list, the manifest, and a build of the packaged crate itself.
-      # `ag-ui-a2ui` depends on `ag-ui` by version for the registry, so its own
-      # dry run cannot resolve until `ag-ui` is actually published; the
-      # `--allow-dirty`-free run below is checked with the workspace's path
-      # dependency, which is what `cargo publish` substitutes at package time.
-      - name: cargo publish --dry-run
+      # Verify the core package as crates.io would. A2UI's registry dry run
+      # must wait until this version of ag-ui is published; list its package
+      # here and verify it just before its eventual upload.
+      - name: package rehearsal
         run: |
           set -euo pipefail
           cargo publish --dry-run -p ag-ui
-          cargo publish --dry-run -p ag-ui-a2ui || {
-            echo "::notice title=a2ui dry run::ag-ui-a2ui cannot resolve ag-ui until it is on crates.io; publish ag-ui first."
-          }
+          cargo package --list -p ag-ui-a2ui >/dev/null
+          echo "::notice title=a2ui dry run::deferred until ag-ui is on crates.io"
 
       # The note lists what changed since the previous tag. The upload
       # instructions are part of it on purpose: the release exists before the
@@ -100,13 +97,15 @@ jobs:
             echo
             echo "## Publishing"
             echo
-            echo 'Verified on this commit: clippy, the workspace tests, the doctests, the'
-            echo 'protocol drift check, and `cargo publish --dry-run`. The upload itself is'
+            echo 'Verified on this commit: clippy, workspace tests, doctests, protocol drift,'
+            echo 'ag-ui publish dry run, and the ag-ui-a2ui package list. The latter gets its'
+            echo 'registry dry run after ag-ui is published, immediately before upload. Upload is'
             echo 'manual — the registry has no undo:'
             echo
             echo '```sh'
             echo "git checkout ${GITHUB_REF_NAME}"
             echo 'cargo publish -p ag-ui'
+            echo 'cargo publish --dry-run -p ag-ui-a2ui   # after ag-ui appears on crates.io'
             echo 'cargo publish -p ag-ui-a2ui   # once ag-ui is on crates.io'
             echo '```'
           } > release-note.md

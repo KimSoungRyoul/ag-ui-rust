@@ -18,7 +18,7 @@ description: 변경 이벤트와 진단을 받고, 서버 완료와 로컬 중�
 | `Error` | 진단. `Done`까지 계속 소비합니다 |
 | `Done` | 실행 종료 결과 |
 
-`Update`에는 앞으로 variant가 추가될 수 있습니다. `RunEnd`는 다음 네 가지를 명시적으로 처리합니다.
+`Update`에는 앞으로 variant가 추가될 수 있습니다. `RunEnd`는 다음 여섯 가지를 명시적으로 처리합니다.
 
 ```rust
 use ag_ui::client::RunEnd;
@@ -26,14 +26,20 @@ use ag_ui::client::RunEnd;
 fn label(end: &RunEnd) -> &'static str {
     match end {
         RunEnd::Success { .. } => "완료",
+        RunEnd::SuccessWithPendingToolCalls { .. } => "프런트엔드 도구 결과 대기",
         RunEnd::Interrupted { .. } => "입력 대기",
         RunEnd::Failed { .. } => "실패",
+        RunEnd::Cancelled => "서버에서 취소됨",
         RunEnd::Aborted => "로컬 중단",
     }
 }
 
 assert_eq!(label(&RunEnd::Aborted), "로컬 중단");
 ```
+
+`SuccessWithPendingToolCalls`는 서버 실행이 끝났지만 지정된 프런트엔드 도구 호출의 결과가
+아직 필요하다는 뜻입니다. 도구가 실행됐다는 증거는 아닙니다. `Cancelled`는 서버가 확인한
+종료 결과이고, `Aborted`는 이 클라이언트의 수신이 중단됐다는 뜻입니다.
 
 서버가 성공을 반환해도 클라이언트에서는 state patch 오류 등이 발생할 수 있습니다.
 `collect_report()`는 일부 업데이트를 먼저 읽었더라도 **실행 전체**의 종료와 진단을 보존합니다.

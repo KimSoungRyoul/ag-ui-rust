@@ -609,7 +609,7 @@ async fn a_run_that_has_already_done_work_can_still_pause() {
     assert!(
         thread.messages().iter().any(|message| matches!(
             message,
-            Message::Tool(tool) if tool.content.contains("write it down")
+            Message::Tool(tool) if tool.content.to_text().contains("write it down")
         )),
         "{:?}",
         thread.messages()

@@ -6,24 +6,25 @@ description: "MUST USE when writing Rust against ag-ui-rust to host an agent —
 # Serving an AG-UI agent in Rust
 
 Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.4.1**. If the API here disagrees with the compiler, the compiler is
+workspace version **0.5.0-alpha.1**. If the API here disagrees with the compiler, the compiler is
 right and the skill is stale — see `ag-ui-rust-update`.
 
 ## Adding the crates
 
-**One crate, `ag-ui`.** Not `ag-ui-core` / `ag-ui-server` / `ag-ui-client` — those names on
-crates.io are a different, unrelated project. Which half of the protocol you get is a
+**One crate, `ag-ui`.** The older `ag-ui-core` / `ag-ui-client` packages are separate from
+this unified SDK; do not substitute them or an `ag-ui-server` package. Which half you get is a
 feature; `axum` implies `server`:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ag-ui = { git = "https://github.com/KimSoungRyoul/ag-ui-rust", features = ["axum"] }
+ag-ui = { path = "/path/to/ag-ui-rust/crates/ag-ui", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
 
-Rust **1.85+**, edition 2024. No LLM crate is involved anywhere: bring your own model client
+The path selects this unpublished candidate for pre-merge QA. Rust **1.85+**, edition 2024.
+No LLM crate is involved anywhere: bring your own model client
 and call it inside `run`.
 
 ## The whole extension point
@@ -111,8 +112,10 @@ fn main() -> ag_ui::server::Result<()> {
 ```
 
 **`delta` is not async.** `Drop` cannot be async in Rust, so a handle that emits its own
-terminator cannot `await`. Emitters push into an unbounded channel and the transport drains
-it; nothing blocks. Do not write `.await` on an emitter, and do not reach for `async_drop`.
+terminator cannot `await`. By default, emitters push into an unbounded channel and the
+transport drains it. `event_buffer_capacity` opts into a limit that terminates the stream
+with `RUN_ERROR` / `EVENT_BUFFER_FULL` on overflow instead of blocking. Do not write
+`.await` on an emitter, and do not reach for `async_drop`.
 
 **Ids are strings, and derived.** `r-msg-1` is the run id plus a counter — no `uuid`
 dependency anywhere. `ThreadId`, `RunId`, `MessageId` are newtypes over `String`.
@@ -217,9 +220,13 @@ Publish once per change, not once per run — the point is that the client watch
 ## Ending a run
 
 - `Ok(RunOutcome::Success)` — done.
+- `Ok(RunOutcome::success_with_pending_tool_calls(ids))` — done, but the named frontend
+  tool calls still need application results. Their presence does not mean they ran.
 - `Ok(RunOutcome::interrupt(pending))` — paused for a human. Still a `RUN_FINISHED`; the
   connection closes and **no server-side thread survives**.
-- `Err(Error::agent(..))` — failed. Becomes `RUN_ERROR`, never a truncated stream.
+- `Ok(RunOutcome::Cancelled)` or `Err(Error::Cancelled)` — stopped before completion.
+  The driver emits `RUN_FINISHED` with a cancelled outcome when verification permits it.
+- `Err(Error::agent(..))` — failed. The driver attempts `RUN_ERROR` while the stream is writable.
 
 A panic is *not* an error and is not caught: it unwinds through whoever polls the stream, and
 over HTTP the client sees a truncated body because the `200` is long sent.
@@ -299,7 +306,7 @@ use ag_ui::axum::{AgentEndpoint, RouterExt};
 use ag_ui::RunOutcome;
 use ag_ui::server::{Agent, FilterToolCalls, Result, RunContext};
 use axum::Router;
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 struct CartAgent;
 
@@ -316,31 +323,37 @@ fn main() {
         // A *closure*: transformers are state machines, so the endpoint builds
         // a fresh chain per run rather than sharing one across concurrent runs.
         .transformer(|| FilterToolCalls::deny(["internal_debug"]))
-        .keep_alive(Duration::from_secs(15))   // off by default
+        .keep_alive(Duration::from_secs(10))   // overrides the 15-second default
+        .event_buffer_capacity(NonZeroUsize::new(128).unwrap()) // opt-in queue limit
         .echo_input(false);                    // off by default
 
     let _app: Router = Router::new().route_agui_with("/agent", endpoint);
 }
 ```
 
-A failed run is still `200` — the failure is a `RUN_ERROR` event, which is what lets a client
+A failed run can still be `200` — its `RUN_ERROR` event lets a client
 tell "the agent errored" from "the network died". `400`/`406`/`413`/`415` are the refusals
 that happen before a run starts. There is no `AgUiLayer`: by the time a tower layer sees the
 response the events are already SSE bytes. `AgUiInput` (extractor) and `SseResponse` are
 there for a hand-written handler.
 
+`AgentEndpoint` sends idle SSE comments every 15 seconds by default; `.keep_alive(interval)`
+changes the interval and `.without_keep_alive()` disables them. These comments are not AG-UI
+events. The event queue is unbounded by default; the configured limit above closes a run with
+`EVENT_BUFFER_FULL` instead of waiting for a slow consumer.
+
 ## Do not write
 
 | Instead of | Write |
 | --- | --- |
-| `ag-ui-server = "0.1"` | the git dependency above — the registry name is someone else's crate |
+| `ag-ui-server = "0.1"` | the local `ag-ui` dependency above — the package is different |
 | `#[async_trait]` on `impl Agent` | a plain `async fn run` |
 | `Box<dyn Agent>` | `BoxAgent<S>` (`DynAgent` is the object-safe half) |
 | `msg.delta(..).await` | `msg.delta(..)?` — the emit path is synchronous |
 | `ctx.emit(Event::text_message_start(..))` | `ctx.assistant_message()?` |
 | `tokio::spawn` around the run | nothing; polling the stream runs the agent |
 | `Uuid::new_v4()` for ids | nothing; ids are derived strings, or `*_with_id` |
-| `Err(..)` when a human declines | `ResumeStatus::Cancelled` — a decline is a successful run |
+| `Err(..)` when a human declines | `ResumeStatus::Cancelled` — declining an interrupt is not `RunOutcome::Cancelled` |
 | `Event::subagent_started(..)` + tagging each event by hand for a sequential child | `ctx.subagent_events(name)?` — the sink tags everything emitted through the handle |
 | a fresh id when a suspended subagent resumes | `ctx.subagent_with(SubagentStartedEvent::new(same_id, name))` |
 

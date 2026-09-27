@@ -3,7 +3,8 @@ title: 오류와 실행 중지
 description: run이 실패를 client에 알리는 방식. 그리고 stream 도중에 호출자가 사라졌을 때 agent에 벌어지는 일.
 ---
 
-`Agent::run`이 `Err`를 반환하면 driver는 `RUN_ERROR` 전송을 시도합니다.
+`Agent::run`이 실행 오류를 반환하면 driver는 `RUN_ERROR` 전송을 시도합니다.
+`Error::Cancelled`는 유효한 run을 `cancelled` outcome이 담긴 `RUN_FINISHED`로 닫습니다.
 Panic, 연결 해제, event 전송 실패가 발생하면 stream이 잘릴 수 있습니다.
 예상되는 실패는 error로 반환하고, client에서는 transport 종료도 별도로 처리합니다.
 
@@ -46,14 +47,15 @@ async fn main() {
 ## 배리언트
 
 `ag_ui::server::Error`는 이 crate의 모든 메서드가 반환하는 타입입니다. `Result<T, E = Error>`
-별칭을 통해서 말입니다. 각 배리언트에는 `RUN_ERROR` event에 실리는 안정된 code가 있습니다.
+별칭을 통해서 말입니다. 각 배리언트에는 안정된 code가 있습니다. 실행 오류의 code는
+`RUN_ERROR`에 실리지만, `Cancelled`는 보통 `RUN_FINISHED` outcome으로 전달됩니다.
 
 | 배리언트 | code | 언제 나오는가 |
 | --- | --- | --- |
 | `Protocol` | `PROTOCOL` | core 타입이 값을 거부했을 때. 이를테면 interrupt가 없는 `interrupt` outcome |
 | `Json` | `SERIALIZATION` | 상태, tool 인자, tool 결과가 JSON으로 오가지 못할 때 |
 | `Verification` | `PROTOCOL_VIOLATION` | emit된 stream이 ordering 규칙을 어겼을 때 |
-| `Cancelled` | `CANCELLED` | run이 취소되었을 때. 대개 client가 연결을 끊었기 때문 |
+| `Cancelled` | `CANCELLED` | run이 취소되었을 때. 정상적인 종료 event는 cancelled outcome이 담긴 `RUN_FINISHED` |
 | `Disconnected` | `DISCONNECTED` | 소비자가 event stream을 드롭했을 때 |
 | `Agent` | `AGENT_ERROR` | 여러분의 code가 실패했을 때. `Error::agent`로 만듭니다 |
 
@@ -181,14 +183,18 @@ async fn main() {
         .collect();
     assert_eq!(said, ["one"]);
 
-    // 최종 event는 cancellation과 상관없이 나갑니다.
-    assert_eq!(events.last().map(Event::event_type), Some(EventType::RunError));
-    let Some(Event::RunError(error)) = events.last() else {
+    // 의도적으로 중단한 run은 cancelled outcome으로 종료합니다.
+    assert_eq!(events.last().map(Event::event_type), Some(EventType::RunFinished));
+    let Some(Event::RunFinished(finished)) = events.last() else {
         panic!("{events:?}");
     };
-    assert_eq!(error.code.as_deref(), Some("CANCELLED"));
+    assert_eq!(finished.outcome, Some(RunOutcome::Cancelled));
 }
 ```
+
+일반 emit은 취소 후 실패하지만, driver는 위 종료 event를 따로 전송합니다. message나 call이
+열린 채라면 verifier가 `RUN_FINISHED`를 거부할 수 있습니다. 이때 stream에 쓸 수 있으면
+driver는 검증 실패를 `RUN_ERROR`로 보고합니다.
 
 더 일찍 알아채고 싶은 agent가 물어볼 방법은 네 가지입니다.
 

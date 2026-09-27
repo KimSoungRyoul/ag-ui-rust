@@ -12,7 +12,7 @@ stream, and without more information three concurrent researchers render as one 
 text.
 
 The protocol's answer is deliberately small. It **attributes** each event to the subagent
-that produced it — an optional `subagentRunId` on 24 of the 36 event types — and it reports
+that produced it — an optional `subagentRunId` on 24 of the 31 current AG-UI 1.0 event types — and it reports
 when subagents start and stop, with `SUBAGENT_STARTED`, `SUBAGENT_FINISHED` and
 `SUBAGENT_ERROR`. It does not orchestrate, schedule or define subagents. That stays with
 you.
@@ -30,8 +30,9 @@ that paused on an interrupt may reuse its id on the run that resumes it.
 An event with no `subagentRunId` belongs to the parent agent, so a stream that never sets
 the field behaves exactly as it did before subagents existed. `RUN_STARTED`, `RUN_FINISHED`
 and `RUN_ERROR` cannot carry it — they describe the run as a whole — and neither can
-`MESSAGES_SNAPSHOT`, whose messages carry their own. `EventType::is_attributable` answers
-the question per type.
+`MESSAGES_SNAPSHOT`, whose messages carry their own. The five legacy
+`THINKING_*` receive-only variants cannot carry it either. `EventType::is_attributable`
+answers the question per type.
 
 ## A subagent is a scope
 

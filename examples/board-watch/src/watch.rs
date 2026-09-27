@@ -277,7 +277,7 @@ fn delegated(change: &SubagentChangeKind) -> &'static str {
 
 /// How a run ended, in one phrase.
 ///
-/// Three arms and no `_`: [`RunEnd`] is exhaustive, so a fourth way for a run
+/// No `_`: [`RunEnd`] is exhaustive, so a new way for a run
 /// to end would stop this build rather than reach a user as a shrug. That is
 /// the match a client most wants the compiler's help with — the arms decide
 /// whether the prompt comes back, whether an answer is owed, and whether
@@ -285,12 +285,20 @@ fn delegated(change: &SubagentChangeKind) -> &'static str {
 fn ended(end: &RunEnd) -> String {
     match end {
         RunEnd::Success { .. } => "success".to_owned(),
+        RunEnd::SuccessWithPendingToolCalls {
+            pending_tool_call_ids,
+            ..
+        } => format!(
+            "completed; {} frontend tool calls pending",
+            pending_tool_call_ids.len()
+        ),
         RunEnd::Interrupted { interrupts } => format!("interrupted on {}", interrupts.len()),
         RunEnd::Failed { message, code } => match code {
             Some(code) => format!("failed [{code}] {message}"),
             None => format!("failed {message}"),
         },
         RunEnd::Aborted => "aborted locally".to_owned(),
+        RunEnd::Cancelled => "cancelled by server".to_owned(),
     }
 }
 
@@ -463,7 +471,8 @@ fn print_result(out: &mut impl Write, message: &Message) -> io::Result<()> {
         return Ok(());
     };
 
-    match view::surface_lines(&tool.content) {
+    let content = tool.content.to_text();
+    match view::surface_lines(&content) {
         Some(lines) => {
             writeln!(out, "  surface")?;
             for line in lines {
@@ -471,7 +480,7 @@ fn print_result(out: &mut impl Write, message: &Message) -> io::Result<()> {
             }
             Ok(())
         }
-        None => writeln!(out, "  result {}", view::clip(&tool.content, CLIP)),
+        None => writeln!(out, "  result {}", view::clip(&content, CLIP)),
     }
 }
 

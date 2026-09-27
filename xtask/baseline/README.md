@@ -1,49 +1,37 @@
-# Upstream baseline
+# AG-UI 1.0 schema baseline
 
-`events.json` is a vendored snapshot of the AG-UI event surface as declared by
-the protocol's source of truth:
+`events.json` is generated from upstream `spec/1.0/schema.json`. It records the normative
+event union, field names and requiredness, and stable signatures for the schema
+root and every `$defs` shape. Signatures exclude descriptive text, so a field
+type, union or root constraint change demands review even when the event and
+field names stay the same.
 
-    ag-ui-protocol/ag-ui : sdks/typescript/packages/core/src/events.ts
+From this standalone repository, run:
 
-It records the upstream commit it was taken from, the date it was taken, the
-`EventType` values in upstream order, and each event's payload fields with an
-optional/required flag as extracted from the Zod schema.
+    cargo run -p xtask -- drift-check
+    cargo run -p xtask -- drift-check --local
 
-## It is generated, not written
+The default command compares the reviewed baseline with Rust event types. The
+`--local` command also compares the vendored schema at
+`crates/ag-ui/src/protocol/schema-1.0.json` with that baseline. Both compare
+event names, fields, requiredness and wire types with
+`crates/ag-ui/src/event/`. The five retired
+`THINKING_*` Rust variants are retained for older recordings and explicitly
+excluded from the normative 1.0 union comparison. A missing local schema is a
+check error, never a clean result.
 
-    cargo run -p xtask -- drift-check --refresh
+Other modes:
 
-Never hand-edit it. Editing this file by hand is editing the protocol to match
-the code, which is precisely the failure this check exists to catch: the
-previous community Rust SDK drifted ten event types behind the spec because
-nothing mechanically linked the two.
+    cargo run -p xtask -- drift-check              # offline baseline vs Rust
+    cargo run -p xtask -- drift-check --upstream   # also check latest upstream schema
+    cargo run -p xtask -- drift-check --refresh    # regenerate reviewed baseline
 
-## How it is used
+`--upstream` and `--refresh` need network access. An unavailable upstream
+freshness check exits with a check error; it does not report success. After a
+schema change, review the baseline diff and update the Rust implementation in
+the same pull request.
 
-    cargo run -p xtask -- drift-check              # offline, deterministic — the CI gate
-    cargo run -p xtask -- drift-check --upstream   # is this snapshot itself stale? (network)
-    cargo run -p xtask -- drift-check --refresh    # re-capture it (network)
-
-The offline check compares this file against `crates/ag-ui/src/event/`,
-read as text so it keeps working while that module does not compile. It exits
-non-zero when an event type or a payload field differs. CI depends on that run
-only — the network-using modes are for a scheduled job and for a human.
-
-## Accepting an upstream change
-
-When `--upstream` reports that upstream has moved:
-
-1. Run `--refresh`.
-2. Read the diff to this file. That diff *is* the protocol change — it is the
-   part of the pull request that deserves the closest review.
-3. Update `crates/ag-ui/src/event/` to match, in the same pull request.
-4. Re-run `drift-check` until it is clean.
-
-## `unparsed`
-
-An event carrying an `unparsed` field is one whose Zod schema the extractor
-could not read confidently, so its fields are not compared and `drift-check`
-reports a warning rather than a failure. The event type itself is still
-compared. If that list grows, teach `xtask/src/drift/upstream.rs` the shape
-rather than lowering the check — but a check that cries wolf gets disabled,
-which is why an unreadable schema is never a hard failure.
+The Rust source scanner classifies supported Rust field types by their JSON
+wire kind and fails when a type cannot be classified. Schema signatures catch
+deeper changes for review. This check does not prove full nested serialization
+equivalence; wire round-trip and conformance tests cover that separately.

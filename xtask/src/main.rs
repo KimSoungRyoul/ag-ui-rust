@@ -17,10 +17,13 @@ USAGE
 
 SUBCOMMANDS
     drift-check            Compare the Rust event types against the vendored
-                           snapshot of the upstream TypeScript source of truth.
+                           snapshot of the AG-UI 1.0 schema.
                            Offline and deterministic; this is the CI gate.
 
 DRIFT-CHECK OPTIONS
+    --local               Compare the vendored schema at
+                           crates/ag-ui/src/protocol/schema-1.0.json with the
+                           reviewed baseline and Rust event types. Offline.
     --upstream             Additionally fetch upstream and report whether the
                            vendored baseline itself has gone stale. Needs the
                            network, so keep it out of the required CI job.
@@ -67,15 +70,19 @@ fn parse_drift_args(options: &[String]) -> Result<drift::Args, String> {
     let mut parsed = drift::Args::default();
     for option in options {
         match option.as_str() {
+            "--local" => parsed.local = true,
             "--upstream" => parsed.upstream = true,
             "--refresh" => parsed.refresh = true,
             other => {
                 return Err(format!(
                     "unknown option `{other}` for drift-check.\n\
-                     Valid options are --upstream and --refresh."
+                     Valid options are --local, --upstream and --refresh."
                 ));
             }
         }
+    }
+    if parsed.local && (parsed.refresh || parsed.upstream) {
+        return Err("--local cannot be combined with --upstream or --refresh".to_owned());
     }
     if parsed.refresh && parsed.upstream {
         return Err("--refresh already re-reads upstream; drop --upstream.\n\

@@ -213,83 +213,72 @@ fn main() {
 
 ## Layer 3: upstream 대비 drift
 
-Rust event type은 upstream Zod schema를 손으로 옮긴 것입니다. compiler에는 둘을
-잇는 것이 없습니다. 그래서 upstream이 event를 추가해도 이 SDK는 계속 build되고,
-계속 test를 통과하고, 조용히 protocol을 더는 말하지 못하게 됩니다. 앞선 어느
-커뮤니티 SDK가 그렇게 되었습니다. 당시 32개였던 spec을 상대로 event variant를
-24개만 선언했습니다. 오늘 spec은 36개입니다. 어디에도 그 질문을 강제하는 장치가
-없었습니다.
+Rust event type은 고정된 AG-UI 1.0 JSON Schema를 바탕으로 손으로 작성했습니다.
+compiler에는 둘을 잇는 것이 없어 protocol에 event가 추가돼도 SDK는 계속 build될
+수 있습니다. 앞선 커뮤니티 SDK에는 당시 32개였던 spec을 상대로 variant가
+24개뿐이었습니다. AG-UI 1.0의 현재 event type은 **31개**이고, Rust에는 과거
+stream 수신을 위한 `THINKING_*` variant 5개도 남아 있습니다.
 
-`xtask drift-check`가 그 연결입니다.
+offline drift 검사는 두 가지입니다.
 
 ```sh
-cargo run -p xtask -- drift-check
+cargo run --locked -p xtask -- drift-check
+cargo run --locked -p xtask -- drift-check --local
 ```
+
+첫 명령의 현재 출력은 다음과 같습니다.
 
 ```text
 drift-check
-  baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@bc8477bfd6, captured 2026-09-02)
-  upstream  36 event types
+  baseline  xtask/baseline/events.json  (ag-ui-protocol/ag-ui@fdbca490dc, captured 2026-09-23)
+  upstream  31 event types
   rust      crates/ag-ui/src/event  (10 files, 36 event types, tagged enum `Event`)
 
-OK  36 event types match the baseline.
+OK  31 event types match the baseline.
 ```
 
-이 검사는 `xtask/baseline/events.json`을 `crates/ag-ui/src/event/`와
-비교합니다. baseline은 upstream `sdks/typescript/packages/core/src/events.ts`를
-저장소에 넣어 둔 snapshot입니다. 어느 commit에서 왔는지, upstream 순서 그대로의
-`EventType` 값, 그리고 각 event의 payload field를 optional/required 표시와 함께
-기록합니다. Rust 쪽은 **텍스트로 읽습니다**. 그 module이 compile되지 않는 동안에도
-검사가 돌아야 하기 때문입니다.
+baseline은 upstream `spec/1.0/schema.json`에서 만든, 검토를 거친 snapshot입니다.
+현재 event 이름과 field, 필수 여부뿐 아니라 schema root와 각 정의의 서명도
+기록합니다. scanner는 `crates/ag-ui/src/event/`를 텍스트로 읽으므로 그 module이
+compile되지 않아도 Rust 쪽 drift를 찾을 수 있습니다. 과거 `THINKING_*` variant
+5개는 현재 protocol 집합의 비교에서 제외합니다.
 
-offline이고 결정적입니다. 그래서 필수 검사가 될 자격이 있습니다. network 장애가
-이것을 빨갛게 만들 수 없습니다. exit code 0은 깨끗함, 1은 drift입니다. 2는
-baseline이 없거나 event module이 옮겨졌다는 뜻입니다. 진짜 저장소 결함이므로 이
-역시 실패해야 합니다.
-
-추출기가 Zod schema를 확신 있게 읽지 못한 event는 `unparsed`로 기록됩니다. type은
-그대로 비교하고 field는 비교하지 않습니다. 실패가 아니라 경고를 냅니다. 늑대가
-나타났다고 외치기만 하는 검사는 결국 꺼집니다. 그래서 읽을 수 없는 schema는 하드
-실패가 아닙니다. 그 목록이 늘어나면 검사 기준을 낮출 것이 아니라, 추출기에 그
-모양을 가르쳐야 합니다.
+`--local`은 `crates/ag-ui/src/protocol/schema-1.0.json`에 넣어 둔 schema도
+검토된 baseline과 비교합니다. schema가 없거나 모양이 달라졌거나 field를 읽을 수
+없으면 실패합니다. 두 명령은 모두 offline이며 pull request CI에서 실행됩니다.
+exit code 1은 drift, 2는 검사를 실행할 수 없다는 뜻입니다.
 
 ### baseline 자체는 최신인가?
 
-offline 검사는 Rust type이 snapshot과 맞는다는 것까지만 말합니다. *snapshot*이
-여전히 upstream과 맞는지는 다른 질문입니다. 답하려면 network가 필요합니다.
+offline 검사는 snapshot을 검토한 이후 upstream 저장소가 바뀌었는지 알 수
+없습니다. 이 질문에는 network 요청이 필요합니다.
 
 ```sh
-cargo run -p xtask -- drift-check --upstream
+cargo run --locked -p xtask -- drift-check --upstream
 ```
 
-이것은 필수 검사가 아니라 예약 job으로 돕니다. offline 판정은 그대로 두고, fetch가
-실패하면 보고만 합니다. 그래서 rate limit이나 GitHub 장애는 실행을 실패시킬 수
-없습니다. 진짜 upstream 변화만 실패시킵니다.
+이 명령은 예약된 비필수 job에서 실행합니다. upstream이 바뀌면 drift를 보고하고,
+fetch가 실패하면 검사를 실행할 수 없었다고 보고하며 해당 job을 실패시킵니다.
 
-변화가 보고되면 사람이 그것을 받아들입니다.
+upstream이 바뀌면 사람이 새 schema를 검토하고 baseline을 갱신합니다.
 
 ```sh
-cargo run -p xtask -- drift-check --refresh
+cargo run --locked -p xtask -- drift-check --refresh
 ```
 
-이 명령은 baseline을 다시 잡고, upstream commit과 fetch 날짜를 기록합니다.
-`events.json`의 diff가 **곧** protocol 변경입니다. 그 pull request에서 가장 꼼꼼히
-볼 부분이 그것입니다. 그다음 `crates/ag-ui/src/event/`를 같은 pull request
-안에서 맞춥니다. `drift-check`가 다시 깨끗해질 때까지 합니다.
-
-`events.json`은 생성되는 파일입니다. 손으로 고치지 않습니다. 손으로 고치는 것은
-code에 맞춰 protocol을 고치는 일입니다. 이 검사가 잡으려고 존재하는 실패가 바로
-그것입니다.
+갱신된 `events.json`에는 upstream commit과 fetch 날짜가 기록됩니다. vendored
+schema와 함께 diff를 검토하고 같은 pull request에서
+`crates/ag-ui/src/event/`를 맞춥니다. 구현의 실패를 감추기 위해 baseline을
+손으로 고치지 않습니다.
 
 ## 각 layer가 못 하는 일
 
 - borrow checker는 `ctx.emit`으로 나간 event를 보지 못합니다. 그래서 layer 2가
   있습니다.
-- runtime verifier는 protocol에 37번째 event가 생겼다는 것을 알지 못합니다.
-  그래서 layer 3이 있습니다.
-- drift check는 이름과 field가 그대로인 채 event의 *의미*만 바뀐 것을 말해 주지
-  못합니다. 여기 있는 어떤 것도 못 합니다. `--refresh`의 diff를 읽는 일이 그래서
-  있습니다.
+- runtime verifier는 schema에 새 event가 추가됐는지 알지 못합니다. 그래서
+  layer 3이 있습니다.
+- schema 자체가 그대로인데 해석만 달라진 것은 drift check가 찾을 수 없습니다.
+  schema 밖의 upstream 변경도 검토해야 합니다.
 
 위의 모든 것은 upstream 최신성 job을 빼고 모든 pull request에서 CI로 돕니다.
 [테스트](/ag-ui-rust/ko/design/testing/)에 전체 목록과 로컬에서 돌리는 법이

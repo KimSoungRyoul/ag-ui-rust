@@ -1,12 +1,12 @@
 ---
 name: ag-ui-rust-qwen
-description: "Use when running ag-ui-rust against a real model on Qwen Cloud (Alibaba Model Studio / DashScope, including the token-plan Individual Plan) — the live e2e tests, task-board's --llm voice, or an agent of your own built the way e2e/src/llm.rs is. UNCONVENTIONAL, and wrong from memory: the repo reads QWEN_API_KEY / QWEN_BASE_URL / QWEN_MODEL by name, AG_UI_LLM_* wins over them, the default endpoint is Gemini's and needs its own key, a token-plan endpoint does NOT serve `qwen-plus` (list `$QWEN_BASE_URL/models`), the live tests are #[ignore] and SKIP without a key rather than fail, and a 404/429 from the provider is a skip, not an SDK bug. Triggers on: qwen, Qwen Cloud, DashScope, Model Studio, token-plan, compatible-mode, QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL, qwen3.8-flash, live_llm, live LLM test, --llm, 'run the live tests', 'which model', 'model not found', 'SKIPPED: no model answered'."
+description: "Use when running ag-ui-rust against a real model on Qwen Cloud (Alibaba Model Studio / DashScope, including the token-plan Individual Plan) — the live e2e tests, task-board's --llm voice, or an agent of your own built the way e2e/src/llm.rs is. The repo reads QWEN_API_KEY / QWEN_BASE_URL / QWEN_MODEL by name, AG_UI_LLM_* wins over them, and the default endpoint is Gemini's. Select a model the Qwen endpoint actually serves; the code default `qwen-plus` may not be available on token-plan endpoints. Live tests are #[ignore] and can SKIP without exercising the SDK when a key or model is unavailable. Triggers on: qwen, Qwen Cloud, DashScope, Model Studio, token-plan, compatible-mode, QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL, qwen3.8-flash, live_llm, live LLM test, --llm, 'run the live tests', 'which model', 'model not found', 'SKIPPED: no model answered'."
 ---
 
 # Qwen Cloud with ag-ui-rust
 
 Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.4.1**. If the repository disagrees with it, the repository is right
+workspace version **0.5.0-alpha.1**. If the repository disagrees with it, the repository is right
 and the skill is stale — see `ag-ui-rust-update`.
 
 The SDK depends on no LLM crate. Everything here that talks to a model is `reqwest` and
@@ -51,11 +51,14 @@ The selection is one function, `Endpoint::resolve` in `e2e/src/llm.rs`, and
 
 ## Pick a model your endpoint serves
 
-`qwen-plus`, the default, is the standard DashScope name and a **token-plan endpoint does not
-serve it**. Ask the endpoint rather than guessing:
+`qwen-plus` is the code default, but a token-plan endpoint may not serve it. Set `QWEN_MODEL`
+to an available model explicitly. Ask the endpoint rather than guessing; pass the key through
+standard input so it does not appear in the `curl` process arguments:
 
 ```sh
-curl -s -H "Authorization: Bearer $QWEN_API_KEY" "$QWEN_BASE_URL/models" \
+set +x
+printf 'Authorization: Bearer %s\n' "$QWEN_API_KEY" \
+  | curl --silent --show-error --fail-with-body --header @- "${QWEN_BASE_URL%/}/models" \
   | python3 -c 'import sys,json; print([m["id"] for m in json.load(sys.stdin)["data"]])'
 ```
 
@@ -126,7 +129,7 @@ delegated to, and every event it emits comes out attributed.
 
 | Wrong | Why |
 | --- | --- |
-| `QWEN_MODEL=qwen-plus` against a token-plan URL | Not served there; a 404 that reads like a broken SDK. List `/models`. |
+| Relying on `qwen-plus` against a token-plan URL | It may not be served there; a 404 can look like a broken SDK. List `/models` and set `QWEN_MODEL` explicitly. |
 | `QWEN_BASE_URL` without `QWEN_API_KEY` | Qwen Cloud is hosted; `from_env` refuses with `MissingApiKey` rather than sending an unauthenticated request. |
 | The key in `.envrc`, a test, a fixture, a commit | It is a bearer token to a paid plan. The repository reads it from the environment and prints only the endpoint. |
 | `AG_UI_LLM_BASE_URL=$QWEN_BASE_URL` with no `AG_UI_LLM_MODEL` | The generic path takes the Gemini default model, not `QWEN_MODEL`. Either set both generic variables or use only the `QWEN_*` ones. |
