@@ -6,11 +6,12 @@ import starlightLinksValidator from 'starlight-links-validator';
 const site = 'https://kimsoungryoul.github.io';
 const base = '/ag-ui-rust';
 
-const latestVersion = 'v0.5.0-alpha.2';
-const previousAlphaVersion = 'v0.5.0-alpha.1';
+const latestVersion = 'v0.5.0-alpha.3';
+const previousAlphaVersion = 'v0.5.0-alpha.2';
+const supersededAlphaVersion = 'v0.5.0-alpha.1';
 const stableVersion = 'v0.4.5';
 
-// Keep labels and page order in one place for both published guide trees.
+// Keep labels and page order in one place across the published guide trees.
 const docSections = [
 	{
 		label: 'Start here',
@@ -227,14 +228,15 @@ export default defineConfig({
 					// The plugin derives IDs with a slugger that removes dots from the
 					// version directories. The built-page verifier checks these links.
 					exclude: ({ file, link }) => {
-						const versioned = /(?:^|\/)(?:ko\/)?v0\.(?:4\.5|5\.0-alpha\.[12])\//;
+						const versioned = /(?:^|\/)(?:ko\/)?v0\.(?:4\.5|5\.0-alpha\.[123])\//;
 						return link.startsWith(`${base}/api/`) || versioned.test(file) || versioned.test(link);
 					},
 				}),
 			],
 			sidebar: [
-				{ label: '0.5.0-alpha.2 (preview)', collapsed: true, items: versionedSections(latestVersion) },
-				{ label: '0.5.0-alpha.1 (superseded)', collapsed: true, items: versionedSections(previousAlphaVersion) },
+				{ label: '0.5.0-alpha.3 (preview)', collapsed: true, items: versionedSections(latestVersion) },
+				{ label: '0.5.0-alpha.2 (previous)', collapsed: true, items: versionedSections(previousAlphaVersion) },
+				{ label: '0.5.0-alpha.1 (superseded)', collapsed: true, items: versionedSections(supersededAlphaVersion) },
 				{ label: '0.4.5 (stable)', collapsed: true, items: versionedSections(stableVersion) },
 			],
 		}),

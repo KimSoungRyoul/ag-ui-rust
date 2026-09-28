@@ -113,12 +113,13 @@ async fn ship(agent: impl Agent + 'static) -> (Vec<Message>, Value) {
         .messages()
         .iter()
         .find_map(|message| match message {
-            Message::Tool(tool) => Some(tool.content.to_text()),
+            Message::Tool(tool) => Some(tool.content.clone()),
             _ => None,
         })
         .expect("the agent should have produced a tool result");
 
-    let value = serde_json::from_str(&payload).expect("the tool result should be JSON");
+    let value = serde_json::from_str(payload.as_text().expect("A2UI tool result is text"))
+        .expect("the tool result should be JSON");
     (thread.messages().to_vec(), value)
 }
 

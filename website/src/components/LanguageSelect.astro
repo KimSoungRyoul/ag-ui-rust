@@ -77,13 +77,14 @@ const current = options.find((option) => option.current);
 
 const label = Astro.locals.t('languageSelect.accessibleLabel');
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
-const versionMatch = Astro.url.pathname.match(/\/(v0\.4\.5|v0\.5\.0-alpha\.[12])\/(.*)$/);
-const currentVersion = versionMatch?.[1] ?? 'v0.5.0-alpha.2';
+const versionMatch = Astro.url.pathname.match(/\/(v0\.4\.5|v0\.5\.0-alpha\.[123])\/(.*)$/);
+const currentVersion = versionMatch?.[1] ?? 'v0.5.0-alpha.3';
 const page = versionMatch?.[2] || 'start/';
 const localePath = currentLocale === 'ko' ? 'ko/' : '';
 const versionLabel = currentLocale === 'ko' ? '문서 버전' : 'Documentation version';
 const versions = [
-	{ id: 'v0.5.0-alpha.2', label: '0.5.0-alpha.2', status: currentLocale === 'ko' ? '현재 프리릴리스' : 'Current prerelease' },
+	{ id: 'v0.5.0-alpha.3', label: '0.5.0-alpha.3', status: currentLocale === 'ko' ? '현재 프리릴리스' : 'Current prerelease' },
+	{ id: 'v0.5.0-alpha.2', label: '0.5.0-alpha.2', status: currentLocale === 'ko' ? '이전 프리릴리스' : 'Previous prerelease' },
 	{ id: 'v0.4.5', label: '0.4.5', status: currentLocale === 'ko' ? '안정 버전' : 'Stable' },
 	{ id: 'v0.5.0-alpha.1', label: '0.5.0-alpha.1', status: currentLocale === 'ko' ? '교체됨' : 'Superseded' },
 ];
