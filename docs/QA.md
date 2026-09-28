@@ -6,6 +6,39 @@ The [official TypeScript interoperability suite](../e2e/interop/README.md) is a
 separate CI gate for acceptance and normalized values. It complements the
 event/field drift check and lists the typed representation differences explicitly.
 
+## 0.5 alpha.3 A2UI followup verification (2026-09-28)
+
+This candidate imports the companion work at
+[`5033ef049`](https://github.com/KimSoungRyoul/ag-ui/commit/5033ef049a06f1a8d88c812ba3295a8ea55c7216)
+into the standalone workspace. The AG-UI runtime is unchanged; both crates
+retain lockstep versions and the alpha.2 Rust 1.85 dependency constraints.
+The A2UI default now enables only `toolkit`; AG-UI integration is explicit.
+
+| Gate | Observed local result |
+| --- | --- |
+| Workspace all-feature tests | 969 passed, 4 opt-in live tests ignored |
+| Workspace doctests | 273 passed |
+| Versioned website | Typecheck clean; 259 pages built and 258 document bodies/navigation/redirects verified |
+| Clippy and formatting | Passed |
+| RustSec audit | Passed with warnings denied |
+| Protocol drift | Both baseline and vendored-schema checks passed |
+| Official TypeScript schema semantics | 44 cases passed |
+| Official A2UI web core | 13 unchanged-wire steps passed in both `e2e/a2ui-interop` and Review Desk |
+| Package rehearsal | `ag-ui` publish dry run and `ag-ui-a2ui` package listing passed |
+| Minimal/default A2UI features | Both test suites passed; default dependency tree contains no AG-UI |
+| Independent Review Desk | Loopback HTTP demo passed |
+| Fresh Rust 1.85 consumer | New lockfile selected `yoke-derive 0.8.2`; author/create/edit/restore, strict renderer decode, form snapshots, multimodal recovery and AG-UI emission passed |
+
+The A2UI suite includes 43 pinned official basic-catalog examples, strict
+renderer-message decoding, client data-model metadata, per-surface streaming,
+partial-document boundaries, nested bindings, and selected-surface recovery.
+The conformance suite distinguishes 110 direct matches, 9 expected streaming
+divergences, and 74 skipped cases; these are not extra full conformance passes.
+
+Source validation does not establish registry publication. Release and publish
+workflows must pass on the version tag, followed by a fresh registry-only
+consumer download and execution of both crates.
+
 ## 0.5 alpha.2 MSRV verification (2026-09-27)
 
 The published `0.5.0-alpha.1` packages passed a fresh registry consumer on the

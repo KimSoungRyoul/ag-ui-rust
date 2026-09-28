@@ -7,7 +7,7 @@ const website = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(website, 'dist');
 const base = '/ag-ui-rust/';
 const checkApi = process.argv.includes('--with-api');
-const versions = ['v0.4.5', 'v0.5.0-alpha.1', 'v0.5.0-alpha.2'];
+const versions = ['v0.4.5', 'v0.5.0-alpha.1', 'v0.5.0-alpha.2', 'v0.5.0-alpha.3'];
 const latestVersion = versions.at(-1);
 const docsRoot = join(website, 'src/content/docs');
 
@@ -27,8 +27,8 @@ const pages = sources.filter((path) => /\.mdx?$/.test(path));
 const snippetHarness = await readFile(join(website, '../e2e/src/website.rs'), 'utf8');
 const pageSlugs = pages.map((source) => source.slice(docsRoot.length + 1));
 
-// The 0.4.5 and alpha.1 trees describe older releases. The current doctest
-// harness compiles alpha.2 snippets against the current source tree.
+// Historical guide trees describe their tagged releases. The current doctest
+// harness compiles alpha.3 snippets against the current source tree.
 for (const locale of ['', 'ko/']) {
   const paths = versions.map((version) =>
     pageSlugs
@@ -46,7 +46,7 @@ for (const source of pages) {
   const slug = source.slice(docsRoot.length + 1);
   const markdown = await readFile(source, 'utf8');
   if (/^draft: true$/m.test(markdown)) continue;
-  if (!/^(?:ko\/)?(?:v0\.4\.5|v0\.5\.0-alpha\.1)\//.test(slug) && /^```rust\b/m.test(markdown)) {
+  if (slug.replace(/^ko\//, '').startsWith(`${latestVersion}/`) && /^```rust\b/m.test(markdown)) {
     assert(snippetHarness.includes(`"${slug}"`), `Rust snippets missing from doctest harness: ${slug}`);
   }
   const route = slug.replace(/(?:\/index)?\.mdx?$/, '');
@@ -58,10 +58,10 @@ for (const source of pages) {
     html.includes(`rel="canonical" href="https://kimsoungryoul.github.io${base}${route}/"`),
     `Wrong canonical URL: ${slug}`
   );
-  if (/^(?:ko\/)?v0\.(?:4\.5|5\.0-alpha\.[12])\//.test(route)) {
+  if (/^(?:ko\/)?v0\.(?:4\.5|5\.0-alpha\.[123])\//.test(route)) {
     assert(html.includes('aria-label="Documentation version"') || html.includes('aria-label="문서 버전"'),
       `Missing version navigation: ${slug}`);
-    const selectedVersion = route.match(/(?:^|\/)(v0\.(?:4\.5|5\.0-alpha\.[12]))\//)?.[1];
+    const selectedVersion = route.match(/(?:^|\/)(v0\.(?:4\.5|5\.0-alpha\.[123]))\//)?.[1];
     const sidebar = html.slice(html.indexOf('id="starlight__sidebar"'), html.indexOf('</sl-sidebar-state-persist>'));
     assert(sidebar.includes(`href="${base}${route.startsWith('ko/') ? 'ko/' : ''}${selectedVersion}/start/"`),
       `Missing current version in sidebar: ${slug}`);

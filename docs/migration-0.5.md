@@ -1,17 +1,20 @@
-# Migrating from 0.4.5 to 0.5.0-alpha.2
+# Migrating from 0.4.5 to 0.5.0-alpha.3
 
-`0.5.0-alpha.2` is a prerelease of the `ag-ui` work proposed in
-[upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778).
+`0.5.0-alpha.3` combines the `ag-ui` work proposed in
+[upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778) with the separate
+[Rust A2UI follow-up at `5033ef049`](https://github.com/KimSoungRyoul/ag-ui/commit/5033ef049).
 It does not establish the first upstream release version or transfer package
 ownership. The previous stable release is `0.4.5`. Read the matching
-[0.5.0-alpha.2](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.2/start/)
+[0.5.0-alpha.3](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.3/start/)
 or [0.4.5](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/start/)
 guide when updating an application.
 
 Alpha.1 can resolve `yoke-derive 0.8.3`, which requires Rust 1.87 despite its
 missing registry `rust-version` metadata. Alpha.2 constrains that transitive
 derive to 0.8.2 on the HTTP and A2UI schema-validation paths, preserving the
-declared Rust 1.85 minimum for a newly generated consumer lockfile.
+declared Rust 1.85 minimum for a newly generated consumer lockfile. Alpha.3
+retains that constraint; the [alpha.2 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.2/start/)
+remains available for applications pinned to it.
 
 ## Install
 
@@ -19,14 +22,62 @@ For registry dependencies, pin the prerelease explicitly:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.2", features = ["http"] }
-ag-ui-a2ui = "=0.5.0-alpha.2"
+ag-ui = { version = "=0.5.0-alpha.3", features = ["http"] }
+ag-ui-a2ui = "=0.5.0-alpha.3"
 ```
 
 Use `ag-ui/axum` for a server instead of `ag-ui/http`. To test before the
 registry version is indexed, use paths to `crates/ag-ui` and `crates/ag-ui-a2ui`
 in a checkout of this repository. Update the application's `Cargo.lock` after
 changing its dependencies.
+
+## A2UI changes from alpha.2
+
+`ag-ui-a2ui` now enables only `toolkit` by default. Applications using its AG-UI
+history or tool-definition helpers must request `features = ["ag-ui"]`.
+`features = ["ag-ui-server"]` includes that adapter, the author, and server
+emission. `author` alone validates and generates A2UI without adding AG-UI.
+
+```toml
+ag-ui-a2ui = { version = "=0.5.0-alpha.3", features = ["ag-ui"] }
+```
+
+- `StreamParser` keeps component, root, deletion and data-update state per
+  surface. Partial output waits for an explicit surface ID, a supported version,
+  and a settled data path. Only catalog-declared component references become
+  placeholders; similarly named application properties remain unchanged.
+- Missing or undefined bound values are accepted by default so user input and
+  later updates can populate them. Set `ValidateOptions.require_bound_values`
+  to `true` to require populated bindings. Invalid pointers and defined
+  non-array template collections still fail; defined nested collection items
+  are checked individually.
+- Use `RendererMessage::from_json` or a reusable
+  `client_schema::ClientSchemaValidator` with `schema-validation` to validate
+  raw renderer messages before serde applies compatibility defaults.
+  `Action.user_message` moves to `extensions["userMessage"]`.
+  `RendererError.path` becomes `path()` for string pointers; raw `path` and
+  the former `function_call_id` are retained in `extensions["path"]` and
+  `extensions["functionCallId"]`, preserving null and structured values.
+- `A2uiAuthor::with_send_data_model(true)` requires `sendDataModel: true` in
+  generated and restored creations. `ClientDataModel::from_json` validates
+  renderer snapshots carried in `a2uiClientDataModel` metadata. The application
+  chooses an owned surface and validates the snapshot as a root data-model
+  edit before requesting a follow-up; decoding metadata does not apply it.
+- Manual recovery returns `RecoveredSurface.surface_id`. If a generated batch
+  touches multiple live surfaces, choose one with
+  `RecoveryOptions.target_surface_id`; an untouched or deleted target fails.
+  The returned `operations` still contains the full batch.
+
+Explicit struct literals must account for the new `extensions` maps on `Action`,
+`RendererError`, `ClientCapabilities` and `ClientCapabilitiesWire`, along with
+`RecoveryOptions.target_surface_id`, `RecoveredSurface.surface_id`, and
+`ValidateOptions.require_bound_values`. Use `..Default::default()` for option
+structs when the defaults match the application.
+
+See [A2UI authoring](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.3/a2ui/authoring/)
+and [validation](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.3/a2ui/validation/)
+for complete examples. Both A2UI protocol discriminators remain `v0.9` and
+`v0.9.1`; the package alpha version does not select a new wire protocol.
 
 ## AG-UI 1.0 wire behavior
 

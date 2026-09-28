@@ -1,7 +1,7 @@
 import { defineRouteMiddleware } from '@astrojs/starlight/route-data';
 
-const latest = 'v0.5.0-alpha.2';
-const versionPattern = /\/(v0\.4\.5|v0\.5\.0-alpha\.[12])\//;
+const latest = 'v0.5.0-alpha.3';
+const versionPattern = /\/(v0\.4\.5|v0\.5\.0-alpha\.[123])\//;
 
 export const onRequest = defineRouteMiddleware(({ url, locals }) => {
 	const route = locals.starlightRoute;

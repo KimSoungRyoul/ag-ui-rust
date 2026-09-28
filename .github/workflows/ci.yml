@@ -222,9 +222,13 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: examples/review-desk/interop/package-lock.json
+          cache-dependency-path: |
+            examples/review-desk/interop/package-lock.json
+            e2e/a2ui-interop/package-lock.json
       - run: npm ci --ignore-scripts --prefix examples/review-desk/interop
       - run: npm test --prefix examples/review-desk/interop
+      - run: npm ci --ignore-scripts --prefix e2e/a2ui-interop
+      - run: npm test --prefix e2e/a2ui-interop
 
   # `rust-version = "1.85"` is a promise to anyone pinning an older toolchain,
   # and edition 2024 stabilised in exactly 1.85, so there is no slack in it.
