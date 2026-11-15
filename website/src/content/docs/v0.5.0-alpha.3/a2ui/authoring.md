@@ -116,15 +116,18 @@ resolve stale requests and concurrent edits before choosing a snapshot.
 ## Send through AG-UI
 
 ```rust
-use ag_ui::server::{AgentState, Result, RunContext};
-use ag_ui_a2ui::{ValidatedSurface, agui::A2uiRunContextExt};
+use ag_ui::server::{AgentState, Error, Result, RunContext};
+use ag_ui_a2ui::{ValidatedSurface, adapters::agui::SurfacePainter};
 
 fn send<S: AgentState>(ctx: &mut RunContext<S>, surface: &ValidatedSurface) -> Result<()> {
-    ctx.send_a2ui(surface)
+    let mut painter = SurfacePainter::from_history(ctx.messages()).map_err(Error::agent)?;
+    painter.paint(ctx, surface.operations())?;
+    Ok(())
 }
 ```
 
-This emits a `render_a2ui` tool call and an `a2ui_operations` result. A successful
+This emits a `render_a2ui` tool call, an `a2ui_operations` result and the
+`a2ui-surface` activity a frontend paints from. A successful
 return confirms local event enqueue, not renderer receipt or application. Do
 not automatically resend a failed batch: earlier events may have been sent.
 This API validates the whole generated batch before sending; it does not combine

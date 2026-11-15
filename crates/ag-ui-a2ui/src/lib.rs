@@ -83,44 +83,36 @@
     doc = "- `author` (feature `author`, off in this build) — one surface created or",
     doc = "  edited by a model, held to the JSON Schemas, on the agent layer."
 )]
-#![cfg_attr(
-    feature = "toolkit",
-    doc = "- [`toolkit`] (feature `toolkit`) — the conventions of an agent hosted on",
-    doc = "  AG-UI: the operations envelope, building the operations of a surface, the",
-    doc = "  generate and render tools, and recovering a surface from conversation",
-    doc = "  history."
-)]
-#![cfg_attr(
-    not(feature = "toolkit"),
-    doc = "- `toolkit` (feature `toolkit`, off in this build) — the conventions of an",
-    doc = "  agent hosted on AG-UI: the operations envelope, op builders, tools, history."
-)]
-#![cfg_attr(
-    feature = "ag-ui",
-    doc = "- [`agui`] (feature `ag-ui`) — the glue for an agent hosted on AG-UI:",
-    doc = "  history entries from [`ag_ui::Message`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/message/enum.Message.html), toolkit tool definitions as",
-    doc = "  offerable [`ag_ui::Tool`](https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/tool/struct.Tool.html)s."
-)]
 //!
 //! # Transport
 //!
 //! A2UI says nothing about how messages reach the renderer, and everything
-//! outside one module keeps it that way — turn the `ag-ui` feature off and the
-//! dependency goes with it, leaving a crate you can drive over A2A or MCP. That
-//! module is
-#![cfg_attr(feature = "ag-ui", doc = "[`agui`].")]
+//! outside [`adapters`] keeps it that way. An adapter is one transport's
+//! conventions, each behind its own feature:
+//!
+#![cfg_attr(
+    feature = "ag-ui",
+    doc = "- [`adapters::agui`] (feature `ag-ui`, and `ag-ui-server` to paint from a",
+    doc = "  run) — AG-UI, as AG-UI's own A2UI middleware speaks it: a batch of",
+    doc = "  operations as a `{\"a2ui_operations\": [...]}` tool result, the",
+    doc = "  `a2ui-surface` activity a frontend paints from, the two tools, and",
+    doc = "  surfaces read back out of a conversation."
+)]
 #![cfg_attr(
     not(feature = "ag-ui"),
-    doc = "`agui`, and this build does not have it."
+    doc = "- `adapters::agui` (feature `ag-ui`, off in this build) — AG-UI, as AG-UI's",
+    doc = "  own A2UI middleware speaks it. The dependency on `ag-ui` comes with the",
+    doc = "  feature and goes with it."
 )]
-//! The optional AG-UI integration wraps a batch of operations in a
-//! `{"a2ui_operations": [...]}` envelope and let the frontend sniff for that
-//! key.
 #![cfg_attr(
-    feature = "toolkit",
-    doc = "[`toolkit::envelope`] produces exactly that, as a plain JSON string that",
-    doc = "fits in an AG-UI assistant message, an A2A data part, or an MCP tool result",
-    doc = "without further wrapping."
+    feature = "a2a",
+    doc = "- [`adapters::a2a`] (feature `a2a`) — A2A: data parts, the agent-card",
+    doc = "  extension and a renderer's capabilities, as JSON, with no A2A library."
+)]
+#![cfg_attr(
+    not(feature = "a2a"),
+    doc = "- `adapters::a2a` (feature `a2a`, off in this build) — A2A: data parts, the",
+    doc = "  agent-card extension and a renderer's capabilities, as JSON."
 )]
 //!
 //! # Conformance
@@ -191,11 +183,7 @@ pub mod author;
 #[cfg(feature = "author")]
 pub use author::{A2uiAuthor, AuthorRequest, ValidatedSurface};
 
-#[cfg(feature = "toolkit")]
-pub mod toolkit;
-
-#[cfg(feature = "ag-ui")]
-pub mod agui;
+pub mod adapters;
 
 pub use crate::protocol::catalog::Catalog;
 pub use crate::protocol::message::{
@@ -205,15 +193,9 @@ pub use crate::protocol::message::{
 pub use crate::protocol::model::{DataModel, ModelChange, ModelValue};
 pub use crate::protocol::operation::Operation;
 pub use crate::protocol::processor::MessageProcessor;
-pub use crate::protocol::surface::{Lifecycle, SurfaceState, SurfaceStore};
+pub use crate::protocol::surface::{Lifecycle, Placed, SurfaceState, SurfaceStore};
 pub use crate::protocol::validate::{
     ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator,
 };
 pub use crate::protocol::version::A2uiVersion;
 pub use error::{Error, Result, ValidationErrors};
-
-#[cfg(feature = "toolkit")]
-pub use toolkit::{wrap_as_operations_envelope, wrap_error_envelope};
-
-#[cfg(feature = "ag-ui")]
-pub use agui::find_prior_surface_in;

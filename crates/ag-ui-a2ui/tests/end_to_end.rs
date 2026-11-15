@@ -5,12 +5,17 @@
 //! where a model's output is rejected and the errors go back out as an error
 //! envelope, and a surface shown while it is still being written.
 //!
-//! Generation is the agent layer's; the envelope and the history scan are the
-//! AG-UI conventions around it.
+//! Generation is the agent layer's; the envelope, the surface activity and
+//! reading a conversation back are the AG-UI adapter's.
 
-#![cfg(feature = "toolkit")]
+#![cfg(feature = "ag-ui")]
 
+use ag_ui::{Event, Message};
 use ag_ui_a2ui::A2uiVersion;
+use ag_ui_a2ui::adapters::agui::{
+    Attempt, Intent, SurfacePainter, SurfaceSpec, SurfaceStatus, assemble_ops, operations_in,
+    recovery_exhausted_envelope, surface_status, surfaces_in,
+};
 use ag_ui_a2ui::agent::{
     A2uiGenerator, A2uiRequestProcessor, CatalogConfig, CatalogDocument, RendererCapabilities,
     ResponsePart, RetryDriver, StreamOptions, StreamPart, Verdict,
@@ -19,9 +24,6 @@ use ag_ui_a2ui::binding::Scope;
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::constants::{A2UI_OPERATIONS_KEY, OFFICIAL_BASIC_CATALOG_ID, PROTOCOL_VERSION};
 use ag_ui_a2ui::message::{AgentMessage, AgentPayload, Component};
-use ag_ui_a2ui::toolkit::envelope::{wrap_as_operations_envelope, wrap_error_envelope};
-use ag_ui_a2ui::toolkit::history::{HistoryMessage, find_prior_surface};
-use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
 use ag_ui_a2ui::validate::{ErrorCode, Validator};
 use serde_json::{Value, json};
 
@@ -93,15 +95,25 @@ fn a_turn_generates_validates_and_ships_a_surface() {
         "2. Croissant"
     );
 
-    // 5. Ship it.
-    let envelope = wrap_as_operations_envelope(&messages(parts)).unwrap();
-    let value: Value = serde_json::from_str(&envelope).unwrap();
+    // 5. Ship it: the batch as the tool result, the surface as the activity.
+    let painted = SurfacePainter::new()
+        .settle("call-1", &messages(parts))
+        .unwrap();
+    let value: Value = serde_json::from_str(&painted.envelope).unwrap();
     let operations = value[A2UI_OPERATIONS_KEY].as_array().unwrap();
     assert_eq!(operations.len(), 3);
     assert_eq!(operations[0]["version"], PROTOCOL_VERSION);
     assert_eq!(
         operations[0]["createSurface"]["catalogId"],
         OFFICIAL_BASIC_CATALOG_ID
+    );
+    let [Event::ActivitySnapshot(activity)] = painted.activities.as_slice() else {
+        panic!("one surface, one activity");
+    };
+    assert_eq!(activity.activity_type, "a2ui-surface");
+    assert_eq!(
+        activity.content[A2UI_OPERATIONS_KEY],
+        value[A2UI_OPERATIONS_KEY]
     );
 }
 
@@ -116,17 +128,20 @@ fn a_follow_up_turn_edits_the_surface_without_re_creating_it() {
             .unwrap(),
     );
 
-    // Turn one is in history as the envelope the agent emitted.
+    // Turn one is in the next request as the result of the tool call that
+    // painted it.
+    let painted = SurfacePainter::new().settle("call-1", &first).unwrap();
     let history = vec![
-        HistoryMessage::text("user", "Show my coffee order."),
-        HistoryMessage::text("assistant", wrap_as_operations_envelope(&first).unwrap()),
-        HistoryMessage::text("user", "Add the total."),
+        Message::user("m-1", "Show my coffee order."),
+        Message::tool("m-2", "call-1", painted.envelope),
+        Message::user("m-3", "Add the total."),
     ];
+    assert_eq!(operations_in(&history[1]), Some(first));
 
     // Turn two recovers what is on screen, which is what the state holds.
-    let prior = find_prior_surface(&history).expect("the surface is in history");
-    assert_eq!(prior.surface_id, "order");
-    assert_eq!(prior.catalog_id.as_deref(), Some(OFFICIAL_BASIC_CATALOG_ID));
+    let surfaces = surfaces_in(&history).unwrap();
+    let prior = surfaces.get("order").expect("the surface is in history");
+    assert_eq!(prior.catalog_id, OFFICIAL_BASIC_CATALOG_ID);
     assert_eq!(prior.components, state.surface("order").unwrap().components);
     assert_eq!(
         prior.data_model.to_json().unwrap()["items"][0]["name"],
@@ -164,6 +179,7 @@ fn a_follow_up_turn_edits_the_surface_without_re_creating_it() {
 
     // The same edit built in code ships as an update too.
     let spec = SurfaceSpec::new(&prior.surface_id)
+        .with_catalog_id(OFFICIAL_BASIC_CATALOG_ID)
         .with_components(vec![
             Component::new("root", "Column").with("children", json!(["heading", "items", "total"])),
             Component::new("total", "Text").with("text", json!({"path": "/total"})),
@@ -212,22 +228,44 @@ fn a_surface_that_cannot_be_fixed_ships_as_an_error_envelope() {
     };
     assert_eq!(last.as_slice()[0].code, ErrorCode::UnresolvedChild);
 
-    // The frontend receives the reason, and nothing that looks like a surface.
-    let envelope =
-        wrap_error_envelope("order", "Could not build the surface.", last.as_slice()).unwrap();
+    // The frontend receives the reason, and nothing that looks like a surface:
+    // the tool result says the attempts are used up, and the surface activity
+    // says it failed.
+    let attempts: Vec<Attempt> = (1..=3)
+        .map(|attempt| Attempt {
+            attempt,
+            ok: false,
+            errors: last.as_slice().to_vec(),
+        })
+        .collect();
+    let envelope = recovery_exhausted_envelope(&attempts).unwrap();
     let value: Value = serde_json::from_str(&envelope).unwrap();
     assert!(value.get(A2UI_OPERATIONS_KEY).is_none(), "{value}");
-    assert_eq!(value["error"], "Could not build the surface.");
-    assert_eq!(value["code"], "VALIDATION_FAILED");
     assert_eq!(
-        value["path"],
+        value["error"],
+        "Failed to generate valid A2UI after 3 attempt(s)"
+    );
+    assert_eq!(value["code"], "a2ui_recovery_exhausted");
+    assert_eq!(
+        value["attempts"][2]["errors"][0]["path"],
         "messages[1].updateComponents.components[0].child"
     );
-    assert_eq!(value["details"][0]["code"], "unresolved_child");
+    let Event::ActivitySnapshot(failed) = surface_status(
+        "call-1",
+        &SurfaceStatus::Failed {
+            error: value["error"].as_str().unwrap().to_string(),
+            attempts,
+            max_attempts: 3,
+        },
+    ) else {
+        panic!("a status is an activity snapshot");
+    };
+    assert_eq!(failed.content["status"], "failed");
 
     // So the next turn does not offer the surface that was never built as the
     // one the user is looking at.
-    assert!(find_prior_surface(&[HistoryMessage::text("assistant", envelope)]).is_none());
+    let history = [Message::tool("m-1", "call-1", envelope)];
+    assert!(surfaces_in(&history).unwrap().get("order").is_none());
 }
 
 #[test]

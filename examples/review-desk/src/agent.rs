@@ -2,7 +2,7 @@
 
 use ag_ui::server::{Agent, Error, Result, RunContext};
 use ag_ui::{Event, Interrupt, ResumeStatus, RunOutcome};
-use ag_ui_a2ui::agui::A2uiRunContextExt;
+use ag_ui_a2ui::adapters::agui::SurfacePainter;
 use ag_ui_a2ui::{A2uiAuthor, A2uiVersion};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -171,6 +171,9 @@ fn decisions(ctx: &mut RunContext<ReviewState>) -> Result<RunOutcome> {
 
 async fn surface(ctx: &mut RunContext<ReviewState>) -> Result<RunOutcome> {
     let author = A2uiAuthor::basic(A2uiVersion::V0_9_1).map_err(Error::agent)?;
+    // One painter for the run, starting from what the conversation drew: the
+    // edit replaces the card's activity in place.
+    let mut painter = SurfacePainter::from_history(ctx.messages()).map_err(Error::agent)?;
     // A new visible card per invocation avoids recreating an active surface.
     let id = format!("review-{}", ctx.run_id());
     let title = ctx.state().title.clone();
@@ -200,7 +203,7 @@ async fn surface(ctx: &mut RunContext<ReviewState>) -> Result<RunOutcome> {
         "a2ui-generation",
         json!({"attempts": attempts.load(Ordering::Relaxed)}),
     ))?;
-    ctx.send_a2ui(&card)?;
+    painter.paint(ctx, card.operations())?;
 
     let patch = json!([{
         "version": "v0.9.1",
@@ -218,7 +221,7 @@ async fn surface(ctx: &mut RunContext<ReviewState>) -> Result<RunOutcome> {
         })
         .await
         .map_err(Error::agent)?;
-    ctx.send_a2ui(&edited)?;
+    painter.paint(ctx, edited.operations())?;
     ctx.say("Created the review card, then edited its title. Memo remains null.")?;
     Ok(RunOutcome::Success)
 }

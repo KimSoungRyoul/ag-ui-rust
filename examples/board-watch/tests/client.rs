@@ -634,36 +634,30 @@ async fn an_agent_that_needs_a_tool_says_so_when_the_client_offers_none() {
     assert!(printed.contains("  done   failed"), "{printed}");
 }
 
-/// A client that wants to be sent A2UI surfaces offers the toolkit's own tool
-/// definition, converted rather than retyped.
+/// A client that wants to be sent A2UI surfaces offers the adapter's own tool,
+/// which is already the shape a run carries.
 ///
-/// Round one found `ToolDefinition::to_value` emitting `input_schema` —
-/// Anthropic's key — where `ag_ui::Tool` wants `parameters`, so the
-/// obvious `from_value(def.to_value())` produced a tool with an empty schema.
-/// The conversion is now a `From` impl and the old name says whose shape it is.
-/// This is the regression guard for both halves.
+/// Round one found a tool definition emitting `input_schema` — Anthropic's
+/// key — where `ag_ui::Tool` wants `parameters`, so the obvious conversion
+/// produced a tool with an empty schema. The adapter now hands back an
+/// `ag_ui::Tool`, and this is the guard that its schema is under `parameters`.
 #[test]
 fn a_toolkit_tool_definition_can_be_offered_on_a_run() {
-    use ag_ui_a2ui::catalog::Catalog;
-    use ag_ui_a2ui::toolkit::tools::render_a2ui_tool;
+    use ag_ui_a2ui::adapters::agui::render_a2ui_tool;
 
-    let definition = render_a2ui_tool(Some(&Catalog::basic()));
-    let anthropic = definition.to_anthropic_value();
-    assert!(anthropic["input_schema"].is_object(), "{anthropic}");
-    assert!(
-        anthropic.get("parameters").is_none(),
-        "the Anthropic shape is the one that says so in its name: {anthropic}"
-    );
-
-    // The AG-UI shape, which is what a run carries.
-    let tool = Tool::from(definition.clone());
+    let tool: Tool = render_a2ui_tool();
     assert_eq!(tool.name, ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME);
-    assert_eq!(tool.parameters, definition.parameters);
+    assert_eq!(
+        tool.parameters["required"],
+        serde_json::json!(["surfaceId", "components"])
+    );
     assert!(
-        tool.parameters["properties"].is_object(),
-        "the schema survives the conversion: {}",
+        tool.parameters["properties"]["components"].is_object(),
+        "the schema is where a run reads it: {}",
         tool.parameters
     );
+    let wire = serde_json::to_value(&tool).expect("a tool serializes");
+    assert!(wire.get("input_schema").is_none(), "{wire}");
 
     // And it is offerable: a thread takes it like any other tool.
     let thread: Thread<HttpTransport, Board> = Thread::builder(

@@ -9,12 +9,9 @@
 
 use ag_ui::Message;
 use ag_ui::client::Thread;
-use ag_ui_a2ui::agui::find_prior_surface_in;
+use ag_ui_a2ui::adapters::agui::latest_surface;
 use ag_ui_a2ui::binding::Scope;
-use ag_ui_a2ui::constants::ROOT_ID;
-use ag_ui_a2ui::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
-use ag_ui_a2ui::toolkit::history::PriorSurface;
-use ag_ui_a2ui::{AgentPayload, ChildList, Component};
+use ag_ui_a2ui::{Catalog, Component, Placed, SurfaceState};
 use serde_json::Value;
 
 use crate::board::Board;
@@ -69,89 +66,62 @@ pub fn panel<T>(thread: &Thread<T, Board>) -> Vec<String> {
 ///
 /// The client's half of what the agent does to decide create-versus-update: the
 /// A2UI operations are in the transcript, so anything holding the transcript can
-/// replay them. No hand-written message mapping — that is what the toolkit's
-/// `ag-ui` feature is for.
-pub fn surface_in_history(messages: &[Message]) -> Option<PriorSurface> {
-    find_prior_surface_in(messages).filter(|prior| !prior.deleted)
+/// replay them. No hand-written message mapping and no fold of the operations —
+/// that is what the adapter is for.
+pub fn surface_in_history(messages: &[Message]) -> Option<SurfaceState> {
+    latest_surface(messages)
+        .ok()
+        .flatten()
+        .filter(|surface| !surface.deleted)
 }
 
-/// Draws an `a2ui_operations` envelope, or `None` if it is not one.
+/// The surface the conversation shows once `message` is part of it.
 ///
-/// The sniff every A2UI front-end does: a tool result either carries the
-/// envelope key or is an ordinary result, and nothing else tells them apart.
-pub fn surface_lines(payload: &str) -> Option<Vec<String>> {
-    let value: Value = serde_json::from_str(payload).ok()?;
-    if !is_operations_envelope(&value) {
+/// A tool result that updates a surface carries only what changed; what a
+/// person sees is the surface it leaves.
+pub fn surface_after(messages: &[Message], message: &Message) -> Option<SurfaceState> {
+    let mut conversation = messages.to_vec();
+    if !conversation.iter().any(|known| known.id() == message.id()) {
+        conversation.push(message.clone());
+    }
+    surface_in_history(&conversation)
+}
+
+/// Draws a surface, or `None` if it has no components to draw.
+///
+/// A real renderer owns a widget toolkit; this asks the surface for its
+/// outline — the components the root reaches, each in the scope its bindings
+/// resolve in, the list template instantiated once per item — and prints the
+/// ones that are text. That is far enough to prove the surface arrived whole.
+pub fn surface_lines(surface: &SurfaceState) -> Option<Vec<String>> {
+    if surface.components.is_empty() {
         return None;
     }
-
-    let operations = unwrap_operations_envelope(&value).ok()?;
-    let mut components: Vec<Component> = Vec::new();
-    let mut data = Value::Null;
-    for operation in &operations {
-        match &operation.payload {
-            AgentPayload::UpdateComponents(payload) => components.clone_from(&payload.components),
-            AgentPayload::UpdateDataModel(payload) => payload.apply(&mut data).ok()?,
-            _ => {}
-        }
-    }
-    if components.is_empty() {
-        return None;
-    }
-
-    let mut lines = Vec::new();
-    draw(&components, &Scope::root(&data), ROOT_ID, &mut lines);
+    let data = surface.data_model.to_json().ok()?;
+    let lines = surface
+        .outline(&Catalog::basic(), &data)
+        .iter()
+        .filter_map(line)
+        .collect();
     Some(lines)
 }
 
-/// Appends the lines one component draws as, children included.
-///
-/// A real renderer owns a widget toolkit; this walks far enough to prove the
-/// surface arrived whole — every child reference resolved, every binding
-/// evaluated, the list template instantiated once per item.
-fn draw(components: &[Component], scope: &Scope<'_>, id: &str, lines: &mut Vec<String>) {
-    let Some(component) = components.iter().find(|component| component.id == id) else {
-        lines.push(format!("<no component {id}>"));
-        return;
-    };
-
+/// The line one placed component draws as; containers draw nothing themselves.
+fn line(placed: &Placed<'_>) -> Option<String> {
+    let Placed {
+        component, scope, ..
+    } = placed;
     match component.component.as_str() {
-        "Text" => lines.push(bound(scope, component, "text")),
+        "Text" => Some(bound(scope, component, "text")),
         "CheckBox" => {
             let mark = if bound(scope, component, "value") == "true" {
                 "x"
             } else {
                 " "
             };
-            lines.push(format!("[{mark}] {}", bound(scope, component, "label")));
+            Some(format!("[{mark}] {}", bound(scope, component, "label")))
         }
-        "Card" => {
-            if let Some(child) = component.prop("child").and_then(Value::as_str) {
-                draw(components, scope, child, lines);
-            }
-        }
-        // Every container in the basic catalog spells its children the same
-        // way, so one arm covers them.
-        _ => match component.prop("children").and_then(ChildList::from_value) {
-            Some(ChildList::Ids(ids)) => {
-                for child in ids {
-                    draw(components, scope, &child, lines);
-                }
-            }
-            Some(ChildList::Template(template)) => {
-                let count = scope
-                    .resolve(&template.path)
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
-                for index in 0..count {
-                    // Entering the item scope is what makes the template's
-                    // relative paths resolve.
-                    let item = scope.item(&template.path, index);
-                    draw(components, &item, &template.component_id, lines);
-                }
-            }
-            None => lines.push(format!("<{} has no children>", component.component)),
-        },
+        _ => None,
     }
 }
 
@@ -198,8 +168,51 @@ mod tests {
 
     #[test]
     fn a_result_that_is_not_a_surface_draws_nothing() {
-        assert!(surface_lines(r#"{"id":1}"#).is_none());
-        assert!(surface_lines("not json at all").is_none());
+        let ordinary = [
+            Message::tool("m-1", "call-1", r#"{"id":1}"#),
+            Message::tool("m-2", "call-2", "not json at all"),
+        ];
+        assert!(surface_in_history(&ordinary).is_none());
+        assert!(surface_after(&ordinary[..1], &ordinary[1]).is_none());
+    }
+
+    #[test]
+    fn a_surface_is_drawn_as_the_update_leaves_it() {
+        use ag_ui_a2ui::adapters::agui::{
+            Intent, SurfaceSpec, assemble_ops, wrap_as_operations_envelope,
+        };
+        use serde_json::json;
+
+        let spec = SurfaceSpec::new("board")
+            .with_components(vec![
+                Component::new("root", "List")
+                    .with("children", json!({"componentId": "row", "path": "/tasks"})),
+                Component::new("row", "Text").with("text", json!({"path": "line"})),
+            ])
+            .with_data_model(json!({"tasks": [{"line": "one"}]}));
+        let result = |id: &str, intent: Intent, spec: &SurfaceSpec| {
+            Message::tool(
+                format!("m-{id}"),
+                format!("call-{id}"),
+                wrap_as_operations_envelope(&assemble_ops(intent, spec)).unwrap(),
+            )
+        };
+        let created = result("1", Intent::Create, &spec);
+        let updated = result(
+            "2",
+            Intent::Update,
+            &spec
+                .clone()
+                .with_data_model(json!({"tasks": [{"line": "one"}, {"line": "two"}]})),
+        );
+
+        let first = surface_after(&[], &created).expect("a surface");
+        assert_eq!(surface_lines(&first).unwrap(), ["one"]);
+        // Whether or not the conversation already holds the message.
+        for known in [vec![created.clone()], vec![created, updated.clone()]] {
+            let second = surface_after(&known, &updated).expect("a surface");
+            assert_eq!(surface_lines(&second).unwrap(), ["one", "two"]);
+        }
     }
 
     #[test]

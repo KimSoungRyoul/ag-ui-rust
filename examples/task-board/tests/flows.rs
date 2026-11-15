@@ -9,10 +9,9 @@
 use ag_ui::client::transport::HttpTransport;
 use ag_ui::client::{HttpAgent, RunEnd, RunParams, SubagentStatus, Thread, Update};
 use ag_ui::{Event, EventType, Message, SubagentRunId};
+use ag_ui_a2ui::adapters::agui::operations_in;
 use ag_ui_a2ui::message::AgentPayload;
-use ag_ui_a2ui::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
 use futures_util::StreamExt as _;
-use serde_json::Value;
 use task_board::board::{self, Board};
 use task_board::chat::Terminal;
 use task_board::{ROUTE, TaskBoard, chat, router};
@@ -59,21 +58,16 @@ async fn transcript(thread: &mut Thread<HttpTransport, Board>, script: &str) -> 
     printed
 }
 
-/// The A2UI operations from the last surface the agent shipped.
+/// The A2UI operations of the last tool result that carried a surface: the
+/// batch the agent shipped, as the model and the next request see it.
 fn last_surface(thread: &Thread<HttpTransport, Board>) -> Vec<ag_ui_a2ui::AgentMessage> {
-    let envelope = thread
+    thread
         .messages()
         .iter()
         .rev()
-        .find_map(|message| match message {
-            Message::Tool(tool) => serde_json::from_str::<Value>(&tool.content.to_text())
-                .ok()
-                .filter(is_operations_envelope),
-            _ => None,
-        })
-        .expect("the agent should have shipped a surface");
-
-    unwrap_operations_envelope(&envelope).expect("the envelope should unwrap")
+        .filter(|message| matches!(message, Message::Tool(_)))
+        .find_map(operations_in)
+        .expect("the agent should have shipped a surface")
 }
 
 /// Every line the surface draws as, read out of the transcript's box.
@@ -321,11 +315,13 @@ async fn the_event_stream_is_ordered_as_the_protocol_requires() {
     ));
     expected.extend([
         EventType::TextMessageEnd,
-        // The A2UI surface, in a tool result envelope.
+        // The A2UI surface: the operations in a tool result envelope, then
+        // the activity a frontend paints from.
         EventType::ToolCallStart,
         EventType::ToolCallArgs,
         EventType::ToolCallEnd,
         EventType::ToolCallResult,
+        EventType::ActivitySnapshot,
         EventType::StepFinished,
         EventType::RunFinished,
     ]);
@@ -446,8 +442,8 @@ async fn research_delegates_to_two_subagents_and_the_client_files_their_work_und
         .filter(|message| message.subagent_run_id().is_none())
         .count();
     // The user's line, the supervisor's thought before it delegated, the
-    // reply, and the surface's call and result.
-    assert_eq!(untagged, 5, "{:?}", thread.messages());
+    // reply, and the surface's call, result and activity.
+    assert_eq!(untagged, 6, "{:?}", thread.messages());
 
     // And the board moved twice, once inside each delegate.
     let board = thread.state().expect("a board");

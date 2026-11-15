@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use ag_ui::client::{HttpAgent, InterruptExt, RunEnd, RunReport, SubagentStatus, Thread};
 use ag_ui::{Event, Message};
+use ag_ui_a2ui::adapters::agui::{latest_surface, operations_in};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -175,15 +176,11 @@ pub async fn workflow_observed(
     let surface_batches = report
         .new_messages
         .iter()
-        .filter(|message| {
-            let Message::Tool(tool) = message else {
-                return false;
-            };
-            serde_json::from_str(&tool.content.to_text())
-                .is_ok_and(|value| ag_ui_a2ui::toolkit::envelope::is_operations_envelope(&value))
-        })
+        // A batch is a tool result. The card's activity carries operations
+        // too, and is the same card said again.
+        .filter(|message| matches!(message, Message::Tool(_)) && operations_in(message).is_some())
         .count();
-    let surface_data = ag_ui_a2ui::find_prior_surface_in(restored.messages())
+    let surface_data = latest_surface(restored.messages())?
         .ok_or("A2UI surface absent from conversation history")?
         .data_model
         .to_json()?;

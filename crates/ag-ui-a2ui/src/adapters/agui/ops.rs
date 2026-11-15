@@ -185,7 +185,7 @@ pub fn update_data_model(
 /// simply omit that operation.
 ///
 /// ```
-/// use ag_ui_a2ui::toolkit::ops::{assemble_ops, Intent, SurfaceSpec};
+/// use ag_ui_a2ui::adapters::agui::{assemble_ops, Intent, SurfaceSpec};
 /// use ag_ui_a2ui::message::Component;
 /// use serde_json::json;
 ///

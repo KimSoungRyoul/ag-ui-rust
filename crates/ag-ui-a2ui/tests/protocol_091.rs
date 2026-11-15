@@ -258,10 +258,13 @@ fn candidate_rpc_and_multiple_payloads_cannot_be_serialized_as_v09() {
     assert!(serde_json::from_value::<AgentMessage>(json!({"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"c"},"deleteSurface":{"surfaceId":"s"}})).is_err());
 }
 
-#[cfg(feature = "toolkit")]
+#[cfg(feature = "ag-ui")]
 #[test]
 fn history_replay_uses_the_same_lossless_and_fallible_reducer() {
-    use ag_ui_a2ui::toolkit::history::{HistoryMessage, try_find_prior_surface_by_id};
+    use ag_ui::Message;
+    use ag_ui_a2ui::SurfaceStore;
+    use ag_ui_a2ui::adapters::agui::{surfaces_in, wrap_as_operations_envelope};
+
     let ops = vec![
         AgentMessage::create_surface("s", "c"),
         AgentMessage::update_components(
@@ -271,27 +274,40 @@ fn history_replay_uses_the_same_lossless_and_fallible_reducer() {
         AgentMessage::update_data_model("s", "/items", json!([1, null])),
         AgentMessage::remove_data_model_value("s", "/items/0"),
     ];
-    let history = vec![HistoryMessage::data("tool", json!({"a2ui_operations":ops}))];
-    let prior = try_find_prior_surface_by_id(&history, "s")
-        .unwrap()
-        .unwrap();
+    let result = |id: &str, ops: &[AgentMessage]| {
+        Message::tool(
+            format!("m-{id}"),
+            format!("call-{id}"),
+            wrap_as_operations_envelope(ops).unwrap(),
+        )
+    };
+    let history = vec![result("1", &ops)];
+    let surfaces = surfaces_in(&history).unwrap();
+    let prior = surfaces.get("s").unwrap();
     assert!(prior.data_model.to_json().is_err());
+
+    // What rebuilds the surface elsewhere keeps the removed slot removed.
+    let mut rebuilt = SurfaceStore::new();
+    for message in prior.replay() {
+        rebuilt.apply(&message).unwrap();
+    }
+    assert_eq!(rebuilt.get("s"), Some(prior));
+
     let mut broken = history;
-    broken.push(HistoryMessage::data(
-        "tool",
-        json!(AgentMessage::update_data_model("s", "/items/bad", json!(1))),
+    broken.push(result(
+        "2",
+        &[AgentMessage::update_data_model("s", "/items/bad", json!(1))],
     ));
-    assert!(try_find_prior_surface_by_id(&broken, "s").is_err());
-    let invalid_wire = vec![HistoryMessage::data(
-        "tool",
-        json!({"version":"v0.9.1","updateDataModel":{"surfaceId":"s","path":23}}),
+    assert!(surfaces_in(&broken).is_err());
+    let invalid_wire = [Message::tool(
+        "m-1",
+        "call-1",
+        json!({"a2ui_operations": [
+            {"version":"v0.9.1","updateDataModel":{"surfaceId":"s","path":23}}
+        ]})
+        .to_string(),
     )];
-    assert!(try_find_prior_surface_by_id(&invalid_wire, "s").is_err());
-    let malformed_block = [HistoryMessage::text(
-        "assistant",
-        r#"<a2ui-json>[{"version":"v0.9.1","oops":{}}]</a2ui-json>"#,
-    )];
-    assert!(try_find_prior_surface_by_id(&malformed_block, "s").is_err());
+    assert!(surfaces_in(&invalid_wire).is_err());
 }
 
 #[test]
