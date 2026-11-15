@@ -183,6 +183,36 @@ fn the_depth_limit_does_not_depend_on_the_order_the_components_are_listed_in() {
     }
 }
 
+/// The agent refuses the answer a renderer would, in either order.
+#[cfg(feature = "agent")]
+#[test]
+fn an_answer_whose_tree_is_too_deep_is_refused_in_either_order() {
+    use ag_ui_a2ui::agent::{A2uiGenerator, CatalogConfig, RendererCapabilities};
+
+    let catalog = Catalog::basic();
+    let generator = A2uiGenerator::new(vec![CatalogConfig::basic(A2uiVersion::V0_9).unwrap()]);
+    let renderer = RendererCapabilities::supporting(A2uiVersion::V0_9, [&catalog.catalog_id]);
+    let processor = generator.create_processor(Some(&renderer)).unwrap();
+    let mut leaf_first = chain(80);
+    leaf_first.reverse();
+    for components in [chain(80), leaf_first] {
+        let answer = format!(
+            "<a2ui-json>{}</a2ui-json>",
+            json!([
+                {"version": "v0.9", "createSurface": {"surfaceId": "s", "catalogId": catalog.catalog_id}},
+                {"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": components}},
+            ])
+        );
+        let refused = processor
+            .parse_response(&answer)
+            .expect_err("a tree deeper than a renderer draws");
+        assert!(
+            refused.to_string().contains("max_depth_exceeded"),
+            "{refused}"
+        );
+    }
+}
+
 /// A loop is found wherever it is, reachable from the root or not, and a long
 /// one is a loop and not a depth overrun.
 #[test]
