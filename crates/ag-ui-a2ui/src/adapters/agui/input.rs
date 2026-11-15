@@ -20,8 +20,25 @@ pub const SCHEMA_CONTEXT_DESCRIPTION: &str = "A2UI Component Schema — availabl
 /// An action a user took on a surface: a button pressed, a form sent.
 ///
 /// Every field is optional on the wire, and a frontend sends what it has.
+///
+/// A later version may add a field, so one is not written out field by
+/// field. [`user_action`] reads one from a request; to build one, start from
+/// the default and set what there is:
+///
+/// ```
+/// use ag_ui_a2ui::adapters::agui::UserAction;
+///
+/// let mut action = UserAction::default();
+/// action.name = Some("checkout".into());
+/// action.surface_id = Some("cart".into());
+/// assert_eq!(
+///     action.as_user_text(),
+///     "A2UI user action:\n{\"name\":\"checkout\",\"surfaceId\":\"cart\"}"
+/// );
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct UserAction {
     /// The name the component gave its action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,7 +97,11 @@ pub fn user_action(input: &RunAgentInput) -> Option<UserAction> {
 }
 
 /// The catalog a frontend registered, as it sends it on every run.
+///
+/// A later version may add a field, so one is built with
+/// [`CatalogContext::new`]. [`catalog_context`] reads one from a request.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CatalogContext {
     /// The id of the catalog the renderer registered: a `createSurface` that
     /// names it resolves on that frontend.
@@ -91,6 +112,26 @@ pub struct CatalogContext {
 }
 
 impl CatalogContext {
+    /// The entry whose value is `schema`. The catalog id is the `catalogId`
+    /// the value states, when it states one that is not empty.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::adapters::agui::CatalogContext;
+    /// use serde_json::json;
+    ///
+    /// let catalog = CatalogContext::new(json!({"catalogId": "example.com:cards", "components": {}}));
+    /// assert_eq!(catalog.catalog_id.as_deref(), Some("example.com:cards"));
+    /// assert_eq!(CatalogContext::new(json!([{"name": "Card"}])).catalog_id, None);
+    /// ```
+    pub fn new(schema: Value) -> Self {
+        let catalog_id = schema
+            .get("catalogId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
+        Self { catalog_id, schema }
+    }
+
     /// The entry as the capabilities of a renderer that speaks `version`: it
     /// draws the catalog it named, and sends that catalog inline when the
     /// entry defines components.
@@ -140,12 +181,7 @@ pub fn catalog_context(input: &RunAgentInput) -> Option<CatalogContext> {
         .iter()
         .find(|entry| entry.description == SCHEMA_CONTEXT_DESCRIPTION)?;
     let schema: Value = serde_json::from_str(&entry.value).ok()?;
-    let catalog_id = schema
-        .get("catalogId")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string);
-    Some(CatalogContext { catalog_id, schema })
+    Some(CatalogContext::new(schema))
 }
 
 #[cfg(test)]

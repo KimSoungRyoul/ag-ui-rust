@@ -95,7 +95,11 @@ pub fn error_envelope(message: &str) -> String {
 }
 
 /// One attempt at generating a surface, as a failure reports it.
+///
+/// A later version may add a field, so one is built with
+/// [`Attempt::rejected`], [`Attempt::failed`] or [`Attempt::stood`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Attempt {
     /// Which attempt, counting from one.
     pub attempt: u32,
@@ -109,10 +113,25 @@ impl Attempt {
     /// The attempt a [`RetryDriver`](crate::agent::RetryDriver) turned down
     /// with `feedback`.
     pub fn rejected(feedback: &Feedback) -> Self {
+        Self::failed(feedback.attempt(), feedback.errors().to_vec())
+    }
+
+    /// Attempt number `attempt`, counting from one, whose answer was turned
+    /// down for `errors`.
+    pub fn failed(attempt: u32, errors: Vec<ValidationError>) -> Self {
         Self {
-            attempt: feedback.attempt(),
+            attempt,
             ok: false,
-            errors: feedback.errors().to_vec(),
+            errors,
+        }
+    }
+
+    /// Attempt number `attempt`, counting from one, whose answer stood.
+    pub fn stood(attempt: u32) -> Self {
+        Self {
+            attempt,
+            ok: true,
+            errors: Vec::new(),
         }
     }
 }
@@ -123,7 +142,7 @@ impl Attempt {
 /// ```
 /// use ag_ui_a2ui::adapters::agui::{Attempt, recovery_exhausted_envelope};
 ///
-/// let attempts = [Attempt { attempt: 1, ok: false, errors: Vec::new() }];
+/// let attempts = [Attempt::failed(1, Vec::new())];
 /// let value: serde_json::Value =
 ///     serde_json::from_str(&recovery_exhausted_envelope(&attempts).unwrap()).unwrap();
 /// assert_eq!(value["error"], "Failed to generate valid A2UI after 1 attempt(s)");

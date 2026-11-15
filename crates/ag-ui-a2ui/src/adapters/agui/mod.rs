@@ -15,7 +15,7 @@
 //! | Piece | What it is |
 //! |---|---|
 //! | [`wrap_as_operations_envelope`], [`error_envelope`], [`recovery_exhausted_envelope`] | What a tool result carries: a batch of operations, or a failure. |
-//! | [`SurfacePainter`], [`surface_status`] | The `a2ui-surface` activity a frontend paints from, and a surface's life before it is painted. |
+//! | [`SurfacePainter`], [`SurfacePainter::status`] | The `a2ui-surface` activity a frontend paints from, and a surface's life before it is painted. |
 //! | [`operations_in`], [`surfaces_in`], [`latest_surface`] | Reading surfaces back out of a conversation. |
 //! | [`user_action`], [`catalog_context`] | What a request says: an action on a surface, the frontend's catalog. |
 //! | [`generate_a2ui_tool`], [`render_a2ui_tool`] | The two tools, with their arguments. |
@@ -41,6 +41,19 @@
 //! in a later run arrives as a second activity, under that run's tool call,
 //! again carrying the whole surface; the first one stays in the transcript as
 //! what was shown then.
+//!
+//! A call may show where its surface is before it is painted:
+//! [`SurfacePainter::status`] gives the same activity with
+//! `{"status": "building"}`, `retrying` or `failed` for content. The paint of
+//! that call then goes in that activity, so the skeleton gives way to the
+//! surface. [`SurfacePainter`] has the rules for which activity a paint goes
+//! under, with the lines of the middleware they follow.
+//!
+//! A `deleteSurface` for a surface that is not live does nothing on any
+//! layer: [`MessageProcessor`](crate::processor::MessageProcessor) accepts it
+//! and changes nothing, the agent layer returns it among an answer's
+//! messages, and here it is passed over when a batch is painted and when a
+//! conversation is read back.
 //!
 //! Turn the feature off to use A2UI over A2A or MCP; the dependency on
 //! `ag-ui` goes with it.
@@ -78,7 +91,6 @@ mod tools;
 
 pub use activity::{
     Painted, SURFACE_ACTIVITY_TYPE, SurfacePainter, SurfaceStatus, surface_activity_id,
-    surface_status,
 };
 pub use envelope::{
     Attempt, RECOVERY_EXHAUSTED_CODE, error_envelope, is_operations_envelope, operations_envelope,
