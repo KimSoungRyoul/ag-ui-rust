@@ -175,8 +175,15 @@ discriminator. Every version accepts the four server operations: create,
 component update, data update, and delete. The protocol modules also speak
 `1.0` (`A2uiVersion::V1_0`): a message is written and read as its version
 spells it. The agent layer, the author and the adapters speak it too: a
-session is of the version of the catalogs it was given. The function-call
-messages of v1.0 are retained as Rust types but cannot be encoded or decoded.
+session is of the version of the catalogs it was given.
+
+From v1.0 an agent and a renderer call each other's functions with messages
+(`callRendererFunction`, `callAgentFunction` and their responses). The crate
+carries a call and routes it, and runs no function: a call the application has
+to run comes to it as a value (`agent::RendererMessageRouter`,
+`agent::AgentFunctionCall`), a call the agent makes is a message to send and
+an entry in a table that is told the time (`agent::RendererCalls`,
+`rpc::PendingCalls`), and nothing here holds a handler, a future or a timer.
 
 `BASIC_CATALOG_ID` is a historical toolkit ID. `A2uiAuthor::basic` uses the
 canonical `OFFICIAL_BASIC_CATALOG_ID` declared by the pinned schema. No alias is
@@ -202,21 +209,21 @@ async generation, catalog negotiation, and multi-surface transitions.
 The official conformance suite is vendored whole, and every suite in it is
 accounted for by name: executed, or skipped with the reason. The executed
 suites are the seven of the v0.9 core (validator, data context, data model,
-expressions, message processor, catalog, common types), the nine of the v1.0
-core that need no function call between the two sides (validator, message
-processor, data deletion, data-model pointers, reserved keys, several
-catalogs, composition constraints, the `@index` function, validation
-results), the thirteen of the agent tier that do not need another output
-format than direct JSON, each case as it is written, and the A2A extension
-suite, with the transcripts of v0.9.1 and of v1.0; they report **805 passed,
-34 expected divergences, 5 failing**,
+expressions, message processor, catalog, common types), the ten of the v1.0
+core that are not a renderer's own (validator, message processor, data
+deletion, data-model pointers, reserved keys, several catalogs, composition
+constraints, the `@index` function, validation results, and function calls as
+far as carrying and routing one goes), the fifteen of the agent tier that do
+not need another output format than direct JSON, each case as it is written,
+and the A2A extension suite, with the transcripts of v0.9.1 and of v1.0; they
+report **947 passed, 34 expected divergences, 3 failing**,
 and the per-suite counts are asserted by the test. The divergences
 are executed with pinned expectations: an unreachable component is a warning,
 an empty path segment is the empty key, a binding that cannot resolve is an
 error, and a streamed `updateDataModel` that states no path is emitted when its
-text closes. The failures are listed by name with what each case wants: two about
-removing a path that is not there from a v0.9 data model, and three about
-JSON Schema validation of a v1.0 message that draws from several catalogs.
+text closes. The failures are listed by name with what each case wants: three
+about JSON Schema validation of a v1.0 message that draws from several
+catalogs.
 The three suites of the SDK design upstream had before
 its agent layer are not executed, since the code they describe is gone. See
 [conformance notes](tests/conformance/README.md) and [schema provenance](schemas/README.md).

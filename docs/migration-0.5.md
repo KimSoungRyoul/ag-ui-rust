@@ -1006,9 +1006,8 @@ These are on `main` and not yet in a published version.
   `1.0` surface is refused, and the reverse. `MessageProcessor`, `Validator`,
   `SurfaceStore`, `DataModel`, `binding`, `Catalog`, `SchemaBundle` and the schema
   validators speak v1.0, and so do the agent layer, `A2uiAuthor` and the adapters,
-  which the bullets at the end of this list describe.
-  `callRendererFunction`, `callAgentFunction` and their responses are not read or
-  written.
+  which the bullets at the end of this list describe, as they do the function-call
+  messages (`callRendererFunction`, `callAgentFunction` and their responses).
 - What v1.0 spells differently is asked of the version, so code that writes for a
   surface of any version asks it too. `version.path("/name")` and
   `version.call("formatString", args)` write a binding and a call (`{"@path": …}`,
@@ -1037,11 +1036,11 @@ These are on `main` and not yet in a published version.
   written without it does not serialize.
 - A v1.0 `updateDataModel` requires `value`, and `"value": null` removes what is at
   the path; `AgentMessage::remove_data_model_value(id, path).with_version(V1_0)`
-  writes that. On a v1.0 surface, removing what is not there does nothing, and
-  removing the root leaves `{}`. `DataModel::apply_as(version, path, &value)` applies
-  an update as a version does; `DataModel::apply` is unchanged, and so is every v0.9
-  surface: `null` is stored, and a removal past the end of a list still pads it. A
-  typed update that sets `null` at a path of a v1.0 surface,
+  writes that. On a v1.0 surface removing the root leaves `{}`.
+  `DataModel::apply_as(version, path, &value)` applies an update as a version does;
+  on a v0.9 surface `null` is stored, as before. Removing what is not there does
+  nothing in any version, which is a change for v0.9 and has a bullet of its own
+  below. A typed update that sets `null` at a path of a v1.0 surface,
   `AgentMessage::update_data_model(id, path, Value::Null).with_version(V1_0)`, is
   written as that removal, so a `SurfaceStore` and `DataModel::apply_as` apply it as
   one: what an agent holds is what the renderer it wrote to holds. A `null` inside a
@@ -1449,6 +1448,105 @@ These are on `main` and not yet in a published version.
   the surface, so a v1.0 author (`A2uiAuthor::basic(A2uiVersion::V1_0)`) accepts a
   surface created whole in one message. It asked for an `updateComponents` after
   it.
+- Removing a path that holds nothing changes nothing, in every version: no container
+  is created on the way to it, and a list is not padded out to an index past its end.
+  `DataModel::apply`, a `SurfaceStore` and a `MessageProcessor` padded and created for
+  a v0.9 surface: removing `/items/10` from a list of three left eleven slots, and
+  removing `/a/b/c` from `{}` left `{"a": {"b": {}}}`. The protocol's conformance suite
+  asks the new rule of a v0.9 model, and the renderer does it (`@a2ui/web_core`
+  0.15.0, `src/state/data-model.js`); the two cases that were listed as failing pass.
+  A removal that names a list index above `MAX_LIST_INDEX` is such a removal, and is
+  `Ok` where it was `Error::Pointer`. A slot that is there still keeps its place when
+  it is removed. To make a list longer, write the element. One difference from that
+  renderer is left, and is not changed: a `null` written at a path of a v0.9 surface
+  is stored, as the v0.9 specification has it, where the renderer's processor removes
+  it; `examples/review-desk/interop` names it.
+- The function-call messages of A2UI 1.0 are written and read. A v1.0 `AgentMessage`
+  carries `AgentPayload::CallRendererFunction` or `AgentFunctionResponse`
+  (`AgentMessage::call_renderer_function`, `agent_function_response`), and a v1.0
+  `RendererMessage` carries `RendererPayload::CallAgentFunction` or
+  `RendererFunctionResponse`. Stamped with an earlier version, none of them serializes
+  or reads. The payload types were in alpha.3 as shapes that never reached the wire,
+  and are now the wire's:
+
+  | Instead of | Write |
+  |---|---|
+  | `CallRendererFunction { function_call_id, call_function }` | `CallRendererFunction::new(function_call_id, call_function)`, and `.on_surface(id)` for the new `surface_id` |
+  | `CallAgentFunction { surface_id, function_call_id, call_function }` | `CallAgentFunction::new(surface_id, function_call_id, call_function)` |
+  | `FunctionCall { call, args, catalog_id, return_type }` | `FunctionCall::new(name).with_catalog_id(id).with_args(args)`; it is written `@call`, and has no `return_type`, which a v1.0 call does not carry |
+  | `FunctionResponse { function_call_id, result: Some(value), error: None }` | `FunctionResponse::value(function_call_id, value)` |
+  | `FunctionResponse { function_call_id, result: None, error: Some(text) }` | `FunctionResponse::error(function_call_id, RpcError::new(code, text))` |
+  | `response.result`, `response.error` | `response.outcome`, a `rpc::FunctionOutcome`: `Value(value)` or `Error(RpcError { code, message })` |
+- `Operation` has two more variants, `CallRendererFunction` and
+  `AgentFunctionResponse`, and `Operation::ALL` lists six. `Operation::SURFACE` is
+  the four that change a surface, `Operation::changes_a_surface()` tells them apart,
+  and `A2uiVersion::operations()` is the four for the v0.9 family and the six for
+  v1.0 (`A2uiVersion::carries_function_calls()`). `AgentPayload::operation()` returns
+  an `Operation`, where it returned `Option<Operation>` with `None` for the two
+  function-call payloads: drop the `Some` or the `?`. `Operation` was already
+  non-exhaustive.
+- `RendererMessage` is written and read as its `version` spells it, as `AgentMessage`
+  is. `RendererMessage::new(payload)` still stamps `v0.9`;
+  `.with_version(A2uiVersion::V1_0)` is what a function call needs.
+- A `MessageProcessor` takes a v1.0 `callRendererFunction` and
+  `agentFunctionResponse`, where it refused both as unknown operations. A call is
+  checked as a renderer checks one before anything runs: the surface it names is
+  live, its catalog is registered and of the message's version, the function is one
+  the catalog declares and an agent may call (`agentOnly` or `rendererOrAgent`, and
+  no `requiresUserActivation`), and its arguments hold what a renderer can resolve
+  (a binding is `{"@path": …}` and nothing else, a nested call is one the renderer
+  may make, `@index` has nothing to count). A call it refuses is a `Rejection` whose
+  new `renderer_response()` is the `rendererFunctionResponse` a renderer sends, with
+  `INVALID_FUNCTION_CALL`; a message that is not a call at all has none, and
+  `renderer_error()` reports it under its `functionCallId`. Neither message changes
+  a surface: `SurfaceStore::apply` passes over one, where it returned `Error::Parse`.
+  So `RendererState`, `validate_payload` and `parse_response` accept an answer that
+  carries a call the agent may make, and refuse one it may not.
+- The new module `rpc` has what a call ends with and the table of the calls one side
+  has made: `RpcError { code, message }` with the codes this crate writes in
+  `rpc::code`, `FunctionOutcome`, and `PendingCalls` (`register`, `settle`, `fail`,
+  `expire(now)`, `cancel_surface`, `dispose`). Time is an argument, a `Duration` on a
+  clock of the caller's that does not go backwards; the table reads none. A call
+  waits thirty seconds unless told otherwise (`rpc::DEFAULT_CALL_TIMEOUT`), at most
+  `rpc::DEFAULT_MAX_PENDING` (64) wait at once, and how a call ended is handed over
+  when it ends and not kept.
+- The agent layer routes the function calls of a v1.0 session and runs none of them.
+  `CatalogDocument::with_agent_functions([AgentFunction::new(name, args_schema)])`
+  declares a function the agent runs on its copy of a catalog, so a prompt shows it
+  and a call to it validates. `A2uiRequestProcessor::renderer_messages()` gives a
+  `RendererMessageRouter` whose `route(&json)` reads what a renderer sent:
+  `Routed::Call(AgentFunctionCall)` for a call to run, whose `value(…)`, `error(…)`
+  or `failed(…)` is the `agentFunctionResponse` to send; `Routed::Reply(message)` for
+  one the crate answers itself (`UNKNOWN_FUNCTION`, `INVALID_FUNCTION_CALL`); and
+  `Routed::Action`, `Routed::Error`, `Routed::FunctionResponse` for the rest.
+  `router.checking_schemas()`, under the `schema-validation` feature, holds a call's
+  arguments to the function's `args` schema and fills in its defaults; without that
+  call the arguments arrive as sent, whatever features the build has.
+  `A2uiRequestProcessor::renderer_calls()` gives a `RendererCalls`: `call(RendererCall,
+  now)` checks a call against the active catalogs and gives the
+  `callRendererFunction` to send, `track(&message, now)` starts waiting on one a
+  model wrote in its answer, and `resolve`, `expire(now)` and `dispose` hand over
+  how each call ended.
+- `FunctionDef` has `args`, the JSON Schema of the function's arguments when its
+  declaration states one. On a v1.0 surface, a function call in a component that
+  passes an argument a closed `args` schema does not declare, or leaves out one it
+  requires, is refused as `invalid_value` at the call's `args`; it was accepted, and
+  a renderer refused it. Only the names are checked without a schema engine.
+- `adapters::agui::operations_envelope` and `wrap_as_operations_envelope` return
+  `Error::Validation` for a batch that holds a function call, and so do
+  `SurfacePainter::settle` and `paint`, which then paint nothing of the batch. AG-UI's
+  middleware names four operations and no function call, so there is no place in its
+  envelope for one; the call is refused and not dropped. Send a call by a transport
+  that carries A2UI messages as they are: over A2A a data part holds any message
+  (`adapters::a2a::data_part`).
+- `Rejection::named_catalogs()` is public: the `unknown_catalog` errors behind a
+  `RejectionKind::Catalog` refusal for a catalog a component or a function call
+  named, each where the message wrote the name. `Rejection::errors()` is empty for
+  such a refusal, as before.
+- `review-desk export-a2ui` takes an optional version (`export-a2ui 1.0`) and exports
+  the same steps written in it. With no version the command exports the v0.9.1
+  fixture it always has. `examples/review-desk/interop` runs both against
+  `@a2ui/web_core` 0.15.0.
 
 ## Verify the upgrade
 
