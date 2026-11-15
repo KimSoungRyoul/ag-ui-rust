@@ -25,12 +25,10 @@ impl Agent for Deployer {
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
         let Some(answer) = ctx.resume_for(APPROVE_DEPLOY) else {
             ctx.say("Deploying to production needs a human.")?;
-            return Ok(RunOutcome::interrupt(vec![Interrupt {
-                id: APPROVE_DEPLOY.to_owned(),
-                reason: "tool_approval".to_owned(),
-                message: Some("Deploy build 42 to production?".to_owned()),
-                ..Default::default()
-            }]));
+            return Ok(RunOutcome::interrupt(vec![
+                Interrupt::new(APPROVE_DEPLOY, "tool_approval")
+                    .with_message("Deploy build 42 to production?"),
+            ]));
         };
 
         match answer.status {
@@ -63,7 +61,6 @@ async fn main() {
     )]);
 
     let events: Vec<Event> = run(Deployer, resumed)
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -77,7 +74,8 @@ async fn main() {
 `Interrupt` fields: `id` (correlation, echoed back as `ResumeEntry::interrupt_id`), `reason`
 (machine-readable, e.g. `"tool_approval"`), `message`, `tool_call_id`, `response_schema`
 (JSON Schema, lets a client render a form), `expires_at`, `metadata`.
-`Interrupt::new(id, reason)` sets the two required ones.
+`Interrupt::new(id, reason)` sets the two required ones; `with_message`, `with_tool_call_id`,
+`with_response_schema` and `with_subagent_run_id` chain the optional ones.
 
 Reading the answers: `ctx.is_resume()`, `ctx.resume()`, `ctx.resume_for(id)`.
 

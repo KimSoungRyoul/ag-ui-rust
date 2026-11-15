@@ -55,7 +55,6 @@
 //! # rt.block_on(async {
 //! let input = RunAgentInput::new("thread-1", "run-1");
 //! let events: Vec<Event> = run(Editor, input)
-//!     .map(|event| event.expect("the stream should not break"))
 //!     .collect()
 //!     .await;
 //!
@@ -172,7 +171,6 @@
 //! # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
 //! # rt.block_on(async {
 //! # let events: Vec<Event> = run(Supervisor, RunAgentInput::new("thread-1", "run-1"))
-//! #     .map(|event| event.expect("the stream should not break"))
 //! #     .collect()
 //! #     .await;
 //! # assert_eq!(events.last().map(Event::event_type), Some(EventType::RunFinished));

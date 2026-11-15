@@ -13,6 +13,26 @@ pub enum Error {
     #[error("request rejected: {0}")]
     Request(String),
 
+    /// A run was refused before dispatch because these tool calls have no
+    /// answer in the transcript, in call order.
+    ///
+    /// Answer each with a tool message, or give it up with
+    /// [`Thread::abandon_tool_call`](crate::client::Thread::abandon_tool_call).
+    #[error(
+        "request rejected: unanswered tool calls must be answered with tool messages, or abandoned, before another run: {}",
+        .0.iter().map(crate::ToolCallId::as_str).collect::<Vec<_>>().join(", ")
+    )]
+    UnansweredToolCalls(Vec<crate::ToolCallId>),
+
+    /// A run that answers no interrupt was refused before dispatch because
+    /// the thread is paused on the interrupts with these ids.
+    ///
+    /// Answer them with [`Thread::resume`](crate::client::Thread::resume),
+    /// [`decline`](crate::client::Thread::decline) or
+    /// [`resume_many`](crate::client::Thread::resume_many).
+    #[error("request rejected: pending interrupts must be answered with resume_many")]
+    PendingInterrupts(Vec<String>),
+
     /// A saved local conversation is invalid or unsupported.
     #[error("invalid thread snapshot: {0}")]
     Snapshot(String),

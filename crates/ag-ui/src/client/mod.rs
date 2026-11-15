@@ -46,7 +46,7 @@ pub use thread::{
     RunReport, RunStream, StateViewError, SubagentUpdate, SubmissionStatus, Thread, ThreadBuilder,
     ThreadSnapshot, Update,
 };
-pub use transport::{EventStream, Transport};
+pub use transport::{EventStream, Transport, TransportStream};
 pub use verify::{Verifier, verify_all};
 
 #[cfg(feature = "http")]

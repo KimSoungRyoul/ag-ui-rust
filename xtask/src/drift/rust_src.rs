@@ -1429,7 +1429,7 @@ pub struct TextMessageChunkEvent {
 #[serde(rename_all = "camelCase")]
 pub struct MultiAgentCapabilities {
     #[serde(rename = "subagents", default, skip_serializing_if = "Option::is_none")]
-    pub sub_agents: Option<Vec<SubAgentInfo>>,
+    pub sub_agents: Option<Vec<SubagentInfo>>,
     pub parallel_calls: bool,
 }
 

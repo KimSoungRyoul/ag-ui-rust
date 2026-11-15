@@ -27,7 +27,7 @@ Wasm 컴파일 성공은 브라우저에서 Rust SDK를 실행했다는 뜻은 �
 `axum`이나 `http`를 켜면 Tokio가 포함됩니다. `http`는 opt-in입니다.
 
 ```rust
-use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream};
+use ag_ui::client::transport::{Transport, TransportFuture, TransportStream};
 use ag_ui::client::Result;
 use ag_ui::{Event, RunAgentInput};
 use futures_util::stream;
@@ -41,14 +41,14 @@ impl Transport for Canned {
     // error item입니다. 그 구분이 interface의 전부입니다.
     fn run(&self, _input: RunAgentInput) -> TransportFuture {
         let events: Vec<Result<Event>> = self.0.iter().cloned().map(Ok).collect();
-        Box::pin(async move { Ok(boxed_stream(stream::iter(events))) })
+        Box::pin(async move { Ok(TransportStream::typed(stream::iter(events))) })
     }
 }
 ```
 
 위 코드는 event를 재생하는 transport 예제입니다. 브라우저에서는 POST 요청과
-streaming 응답을 처리하는 구현으로 교체합니다. `EventStream`과 `TransportFuture`는
-native에서 `Send`를 요구하고 wasm에서는 그 bound를 제외합니다.
+streaming 응답을 `TransportStream::json`으로 넘기는 구현으로 교체합니다. `TransportFuture`와
+`TransportStream`이 받는 stream은 native에서 `Send`를 요구하고 wasm에서는 그 bound를 제외합니다.
 
 ## 직접 확인하기
 

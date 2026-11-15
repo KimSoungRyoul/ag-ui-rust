@@ -127,7 +127,7 @@ impl Agent for Adder {
 #[tokio::main]
 async fn main() {
     let types: Vec<EventType> = run(Adder, RunAgentInput::new("thread-1", "run-1"))
-        .map(|event| event.expect("the stream should not break").event_type())
+        .map(|event| event.event_type())
         .collect()
         .await;
 

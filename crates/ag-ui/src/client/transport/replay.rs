@@ -6,6 +6,11 @@
 //! [`RunAgentInput`]s it was handed, which is how a test asserts that a resume
 //! carried the right answers.
 //!
+//! The script is typed, but it stands in for a remote agent, so each event is
+//! serialized and read back through the compatibility boundary
+//! ([`TransportStream::enforced`]): a test sees what a client makes of the
+//! bytes, warnings included.
+//!
 //! ```
 //! use ag_ui::client::transport::ReplayTransport;
 //! use ag_ui::Event;
@@ -22,7 +27,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::{Event, RunAgentInput};
 
 use crate::client::error::Error;
-use crate::client::transport::{EventStream, Transport, TransportFuture};
+use crate::client::transport::{Transport, TransportFuture, TransportStream};
 
 /// A [`Transport`] that answers each run from a script.
 ///
@@ -133,7 +138,7 @@ impl Transport for ReplayTransport {
                 ));
             };
             let stream = futures_util::stream::iter(events.into_iter().map(Ok));
-            Ok(Box::pin(stream) as EventStream)
+            Ok(TransportStream::typed(stream).enforced())
         })
     }
 }

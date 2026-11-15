@@ -30,18 +30,14 @@ async fn cancelling_mid_run_stops_the_agent_at_its_next_emit() {
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
             ctx.say("one")?;
             // Stand in for the transport noticing the client disconnected.
-            ctx.cancel_token().cancel();
+            ctx.cancellation_token().cancel();
             ctx.say("two")?;
             ctx.say("three")?;
             Ok(RunOutcome::Success)
         }
     }
 
-    let events: Vec<Event> = Runner::new(Chatty)
-        .run(input())
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = Runner::new(Chatty).run(input()).collect().await;
 
     assert_eq!(text(&events), ["one"]);
     let Event::RunFinished(finished) = events.last().expect("a terminal event") else {
@@ -69,7 +65,6 @@ async fn a_run_cancelled_before_it_starts_emits_nothing_but_the_brackets() {
     let events: Vec<Event> = Runner::new(Chatty)
         .cancellation(token)
         .run(input())
-        .map(|event| event.expect("the run stream should not break"))
         .collect()
         .await;
 
@@ -104,20 +99,13 @@ async fn cancellation_wakes_an_agent_that_is_waiting() {
     let token = runner.cancellation_token();
     let mut stream = Box::pin(runner.run(input()));
 
-    let first = stream
-        .next()
-        .await
-        .expect("a first event")
-        .expect("no break");
+    let first = stream.next().await.expect("a first event");
     assert_eq!(first.event_type(), EventType::RunStarted);
 
     // The agent is parked inside `until_cancelled` by now.
     token.cancel();
 
-    let rest: Vec<Event> = stream
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let rest: Vec<Event> = stream.collect().await;
 
     assert_eq!(text(&rest), ["working"]);
     let Event::RunFinished(finished) = rest.last().expect("a terminal event") else {
@@ -139,17 +127,13 @@ async fn an_agent_can_check_cancellation_itself() {
                     return Err(Error::Cancelled);
                 }
                 ctx.say(chunk)?;
-                ctx.cancel_token().cancel();
+                ctx.cancellation_token().cancel();
             }
             Ok(RunOutcome::Success)
         }
     }
 
-    let events: Vec<Event> = Runner::new(Polite)
-        .run(input())
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = Runner::new(Polite).run(input()).collect().await;
 
     assert_eq!(text(&events), ["a"]);
     assert!(matches!(
@@ -168,11 +152,7 @@ async fn an_agent_can_check_cancellation_itself() {
 /// Runs `agent` to the end and checks the stream ends `RUN_FINISHED`
 /// cancelled, with nothing left open along the way.
 async fn cancelled_run(agent: impl Agent<State = ()>) -> Vec<Event> {
-    let events: Vec<Event> = Runner::new(agent)
-        .run(input())
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = Runner::new(agent).run(input()).collect().await;
     let Some(Event::RunFinished(finished)) = events.last() else {
         panic!("expected RUN_FINISHED, got {events:#?}");
     };
@@ -203,7 +183,7 @@ async fn cancelling_mid_message_closes_the_message_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut message = ctx.assistant_message()?;
             message.delta("partial")?;
             token.cancel();
@@ -234,7 +214,7 @@ async fn cancelling_mid_tool_call_closes_the_call_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut call = ctx.tool_call("search")?;
             call.args(r#"{"q":"#)?;
             token.cancel();
@@ -265,7 +245,7 @@ async fn a_result_after_cancellation_closes_the_call_but_is_not_sent() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut call = ctx.tool_call("search")?;
             call.args("{}")?;
             token.cancel();
@@ -295,7 +275,7 @@ async fn cancelling_mid_reasoning_closes_both_halves_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut reasoning = ctx.reasoning()?;
             reasoning.delta("first")?;
             token.cancel();
@@ -327,7 +307,7 @@ async fn cancelling_mid_step_closes_the_step_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut outer = ctx.step("plan")?;
             let mut inner = outer.step("search")?;
             inner.say("looking")?;
@@ -363,7 +343,7 @@ async fn cancelling_inside_a_subagent_closes_it_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut planner = ctx.subagent("planner")?;
             let mut estimator = planner.subagent("estimator")?;
             let mut message = estimator.assistant_message()?;
@@ -420,7 +400,7 @@ async fn a_subagent_can_still_be_closed_explicitly_after_cancellation() {
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
             let mut worker = ctx.subagent("worker")?;
             worker.say("halfway")?;
-            worker.cancel_token().cancel();
+            worker.cancellation_token().cancel();
             worker.fail_with_code("stopped by the user", "USER_STOP")?;
             ctx.check_cancelled()?;
             Ok(RunOutcome::Success)
@@ -477,11 +457,7 @@ async fn nothing_is_sent_after_the_run_ended() {
         }
     }
 
-    let events: Vec<Event> = Runner::new(TalksPastTheEnd)
-        .run(input())
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = Runner::new(TalksPastTheEnd).run(input()).collect().await;
     assert_eq!(
         types(&events),
         [EventType::RunStarted, EventType::RunFinished]
@@ -504,11 +480,7 @@ async fn dropping_the_stream_mid_run_disconnects_the_agent() {
     }
 
     let mut stream = Box::pin(Runner::new(Chatty).run(input()));
-    let first = stream
-        .next()
-        .await
-        .expect("a first event")
-        .expect("no break");
+    let first = stream.next().await.expect("a first event");
     assert_eq!(first.event_type(), EventType::RunStarted);
     drop(stream);
     // Nothing to assert beyond "this does not hang or panic": the agent's
