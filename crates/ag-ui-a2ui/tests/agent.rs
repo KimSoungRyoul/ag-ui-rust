@@ -14,7 +14,8 @@ use ag_ui_a2ui::agent::{
     CatalogDocument, DirectJson, RendererCapabilities, RendererState, ResponsePart, ResponseStream,
     RetryDriver, StreamOptions, StreamPart, StreamedAnswer, Verdict,
 };
-use ag_ui_a2ui::{A2uiVersion, AgentMessage, Component, Error, ErrorCode};
+use ag_ui_a2ui::processor::{MessageProcessor, RejectionKind};
+use ag_ui_a2ui::{A2uiVersion, AgentMessage, Catalog, Component, Error, ErrorCode};
 use serde_json::json;
 
 const BASIC: &str = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
@@ -278,18 +279,35 @@ fn a_state_of_other_catalogs_is_not_the_models_to_fix() {
     ));
 }
 
-/// The agent's half of a rule with two halves. A renderer that is handed a
-/// catalog it does not hold reports a catalog error; the core's message
-/// processor (#72) is where this crate says so, and its half of the rule is
-/// pinned beside this one once it is on main.
+/// A rule with two halves, both pinned here. A renderer that is handed a
+/// catalog it does not hold reports a catalog error, and the core's message
+/// processor is where this crate says so. The agent layer reads the same
+/// message as the answer's fault.
 #[test]
 fn a_surface_that_names_another_catalog_is_the_models_to_fix() {
+    const UNKNOWN: &str = "a/catalog/nobody/registered";
+    let create = json!({
+        "version": "v0.9",
+        "createSurface": {"surfaceId": "s", "catalogId": UNKNOWN},
+    });
+
+    // The core's half: a catalog error, which no message can correct.
+    let mut core = MessageProcessor::new();
+    core.register(Catalog::basic()).unwrap();
+    let refused = core.process(&create).unwrap_err();
+    assert_eq!(refused.kind, RejectionKind::Catalog);
+    assert_eq!(category(&Error::from(refused)), "catalog");
+
+    // The agent's half, on the same message: the name came from the payload,
+    // so it is a validation error where the name is written.
     let processor = processor();
     let mut state = processor.create_state();
-    let answer = surface("s", "Hi").replace(BASIC, "a/catalog/nobody/registered");
+    let refused = state.apply(std::slice::from_ref(&create)).unwrap_err();
+    assert_eq!(category(&refused), "validation");
+    assert_eq!(state, processor.create_state());
 
-    // The name came from the answer, so it is the answer's fault: a
-    // validation error where the name is written, not a catalog error.
+    // And the same in an answer.
+    let answer = surface("s", "Hi").replace(BASIC, UNKNOWN);
     let rejected = processor.parse_response(&answer).unwrap_err();
     assert_eq!(category(&rejected.error), "validation");
 

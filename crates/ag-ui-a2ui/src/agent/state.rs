@@ -76,7 +76,10 @@ impl ActiveCatalog {
 /// - A `createSurface` that names a catalog the state does not hold is one
 ///   `invalid_value` at `messages[i].createSurface.catalogId`. A renderer
 ///   calls that a catalog error, since it was handed a catalog it does not
-///   have. Here the name came from the payload. The reference SDK's agent
+///   have, and so does the core's
+///   [`MessageProcessor`](crate::processor::MessageProcessor)
+///   ([`RejectionKind::Catalog`](crate::processor::RejectionKind::Catalog)).
+///   Here the name came from the payload. The reference SDK's agent
 ///   layer makes the same turn above its core processor (`RendererState` wraps
 ///   it in `_as_validation_error`: "errors of other kinds, such as a catalog
 ///   that a message names but the processor doesn't hold, come from the
@@ -214,13 +217,14 @@ impl RendererState {
     /// [`RendererState::check_trees`].
     ///
     /// A `deleteSurface` that names a surface the renderer does not hold is
-    /// accepted and changes nothing. That is the one rule of the agent's
-    /// mirror that the surface state machine itself does not have:
-    /// [`SurfaceStore`] rejects such a delete, and the reference SDKs' renderer
-    /// treats it as a no-op (`model.delete_surface` in upstream's message
-    /// processor; the suite states it in
+    /// accepted and changes nothing. The surface state machine itself does
+    /// not have that rule: [`SurfaceStore`] rejects such a delete. The
+    /// reference SDKs' renderer treats it as a no-op (`model.delete_surface`
+    /// in upstream's message processor; the suite states it in
     /// `core/message_processor_v1_0.yaml::test_delete_non_existent_surface_is_safe_noop`),
-    /// which is what a renderer that holds nothing by that name can only do.
+    /// which is what a renderer that holds nothing by that name can only do,
+    /// and the core's [`MessageProcessor`](crate::processor::MessageProcessor)
+    /// follows the same rule.
     ///
     /// The call is atomic: if a message is rejected, none of them is applied.
     /// A failure is located in the message that has to change,
@@ -528,15 +532,9 @@ impl RendererState {
             .as_array()
             .filter(|components| operation == Operation::UpdateComponents && !foldable(components));
         if let Some(components) = unfoldable {
-            let located: Vec<ValidationError> = Validator::with_options(summary, in_progress)
-                .validate_json(components, None)
-                .errors
-                .into_iter()
-                .map(|mut error| {
-                    error.path = format!("{locator}.{key}.{}", error.path);
-                    error
-                })
-                .collect();
+            let located = Validator::with_options(summary, in_progress)
+                .validate_unfolded(index, components)
+                .errors;
             return Err(if located.is_empty() {
                 reject(
                     locator.clone(),
