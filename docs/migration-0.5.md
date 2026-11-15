@@ -499,6 +499,14 @@ These are on `main` and not yet in a published version.
     A template of more than 10,000 characters or 1,000 parts is an error
     (`MAX_TEMPLATE_CHARS`, `MAX_TEMPLATE_PARTS`); there was no limit.
 - `ag-ui-a2ui` depends on `unicode-ident`, for the `XID_Continue` table.
+- The `processor` module is new: `MessageProcessor` takes raw messages into a
+  `SurfaceStore`, with the catalogs a context speaks registered by id, each message or
+  batch as a transaction, and a refusal as a `Rejection` that names its kind
+  (`RejectionKind`: integrity, recursion, catalog, validation). A `deleteSurface` for
+  a surface that is not live does nothing there; `SurfaceStore::apply` still refuses
+  it.
+- `SurfaceStore::client_data_model` is new: the `a2uiClientDataModel` metadata for the
+  surfaces created with `sendDataModel: true`.
 
 ## Verify the upgrade
 

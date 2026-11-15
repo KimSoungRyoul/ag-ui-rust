@@ -632,22 +632,7 @@ impl<'a> Validator<'a> {
                 },
             };
             if let (false, Some(components)) = (folded, components) {
-                // No folded surface will hold these, so they are checked here,
-                // alone: their root and their children may be elsewhere.
-                let options = ValidateOptions {
-                    require_root: false,
-                    allow_dangling_children: true,
-                    check_bindings: false,
-                    ..self.options.clone()
-                };
-                let list = format!("messages[{index}].updateComponents.components");
-                let nodes: Vec<Node<'_>> = components
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| Node::from_json(i, v).at(format!("{list}[{i}]")))
-                    .collect();
-                let report =
-                    Validator::with_options(self.catalog, options).run(&nodes, None, &list);
+                let report = self.validate_unfolded(index, components);
                 message_report.errors.extend(report.errors);
             }
         }
@@ -674,6 +659,27 @@ impl<'a> Validator<'a> {
             message_report.unreachable.extend(report.unreachable);
         }
         (message_report, store)
+    }
+
+    /// Validates the components of an `updateComponents` message that no
+    /// surface will hold, because the message could not be folded: one of them
+    /// has no usable id or type, or its surface is not live. They are checked
+    /// alone, since their root and their children may be elsewhere, and are
+    /// located in message `index`.
+    pub(crate) fn validate_unfolded(&self, index: usize, components: &[Value]) -> ValidationReport {
+        let options = ValidateOptions {
+            require_root: false,
+            allow_dangling_children: true,
+            check_bindings: false,
+            ..self.options.clone()
+        };
+        let list = format!("messages[{index}].updateComponents.components");
+        let nodes: Vec<Node<'_>> = components
+            .iter()
+            .enumerate()
+            .map(|(i, v)| Node::from_json(i, v).at(format!("{list}[{i}]")))
+            .collect();
+        Validator::with_options(self.catalog, options).run(&nodes, None, &list)
     }
 
     /// Validates updates against explicit previously observed renderer state.
@@ -1379,7 +1385,7 @@ fn type_name(value: &Value) -> &'static str {
 /// [`ErrorCode::EmptyComponents`], [`ErrorCode::MissingId`],
 /// [`ErrorCode::MissingComponentType`] and [`ErrorCode::DuplicateId`], so a
 /// message this rejects always carries an error that says why.
-fn foldable(components: &[Value]) -> bool {
+pub(crate) fn foldable(components: &[Value]) -> bool {
     let named = |value: &Value, key: &str| {
         value
             .get(key)
@@ -1543,7 +1549,7 @@ pub(crate) fn check_envelope(message: &Value, locator: &str, report: &mut Valida
 ///
 /// At most one error of each kind is reported — a payload that is too deep is
 /// too deep once, and listing every node past the limit would bury the point.
-fn check_value_depth(
+pub(crate) fn check_value_depth(
     value: &Value,
     path: &str,
     base_depth: usize,

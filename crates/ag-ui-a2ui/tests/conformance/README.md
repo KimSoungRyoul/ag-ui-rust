@@ -23,7 +23,7 @@ below from the report the harness prints: the harness fails until the two agree.
 | `test_data/` | The fixtures the suites load, verbatim. |
 | `features.yaml`, `*.schema.json`, `conformance_schema.json`, `manifest_corpora.json` | Upstream's feature registry and the schemas of the case vocabulary, verbatim. |
 | `UPSTREAM_README.md`, `conformance_harness_implementation_guide.md` | Upstream's description of the suites and of how to write a harness. `UPSTREAM_README.md` is upstream's `README.md`, renamed because this file has the name. |
-| `specification/v0_9/catalogs/basic/catalog.json` | A specification document `core/validator_v0_9.yaml` names by repository path. Copied from the same commit, at the same path relative to the repository root. |
+| `specification/` | The specification documents the executed suites name by repository path: the basic catalogs of v0.9 and v0.9.1. Copied from the same commit, byte for byte, at the same path relative to the repository root. |
 | `retired/` | Suites as they stood at the previous pin, `44a420b67957fafc0b02d55a153fdaf72e32ffb5` (2026-08-14). See "Retired suites". |
 | `LICENSE` | Upstream's licence. |
 
@@ -54,7 +54,7 @@ other suite counts one check per case and verifies its steps in order; a case
 that stops at a step is reported under that step, `suite::case[step 2]`, and
 that is the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 312 passed, 17 expected divergence, 1711 skipped, 7 failing.
+Totals: 352 passed, 19 expected divergence, 1667 skipped, 9 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -65,10 +65,10 @@ Totals: 312 passed, 17 expected divergence, 1711 skipped, 7 failing.
 | `core/data_context.yaml` | 11 | 9 | 2 | 0 | 0 | executed |
 | `core/data_model.yaml` | 52 | 43 | 4 | 1 | 4 | executed |
 | `core/expressions.yaml` | 98 | 92 | 0 | 6 | 0 | executed |
+| `core/message_processor_v0_9.yaml` | 48 | 40 | 2 | 4 | 2 | executed |
 | `retired/core/validator.yaml` | 45 | 26 | 0 | 25 | 0 | executed; retired upstream |
 | `retired/core/catalog.yaml` | 24 | 23 | 0 | 1 | 0 | executed; retired upstream |
 | `retired/agent/inference_format.yaml` | 19 | 13 | 0 | 6 | 0 | executed; retired upstream |
-| `core/message_processor_v0_9.yaml` | 48 | 0 | 0 | 48 | 0 | no runner yet (#72): the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads |
 | `core/catalog.yaml` | 73 | 0 | 0 | 73 | 0 | no runner yet (#72): the reference catalog API: fromJson, toJson, round trip, validationSchema, derive |
 | `core/common_types.yaml` | 22 | 0 | 0 | 22 | 0 | no runner yet (#72): values against the published common types; 3 cases compare a schema generated from an SDK's own types |
 | `core/validator_v1_0.yaml` | 49 | 0 | 0 | 49 | 0 | later: A2UI v1.0 (#42): envelope, schema and topology validation of v1.0 messages |
@@ -148,7 +148,7 @@ name.
 | later: agent layer (#41) | 28 | 772 | The suite tests the agent layer: inference formats, the per-request processor, catalog resolution, renderer capabilities and state. The next pull request of #41 builds it. |
 | later: A2UI v1.0 (#42) | 19 | 397 | The suite tests A2UI v1.0. |
 | later: adapters (#43) | 1 | 11 | The suite tests the A2A transport adapter. |
-| no runner yet (#72) | 3 | 143 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
+| no runner yet (#72) | 2 | 95 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
 | out of scope: renderer | 8 | 241 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. |
 | out of scope: v0.8 | 2 | 36 | The suite tests the v0.8 wire format. This crate speaks v0.9 and v0.9.1. |
 | not applicable | 2 | 12 | The suite asks something of an SDK that does not apply here: a schema generated from the SDK's own types, an integration with Google's ADK. |
@@ -157,7 +157,7 @@ Upstream's `adapter/` tier is its UI framework adapters (`@a2ui/lit`, React,
 Angular, Flutter, SwiftUI), that is, renderers. The suites about transports are
 under `extensions/`.
 
-### The three suites with no runner yet
+### The two suites with no runner yet
 
 These are in scope: they test the same core this crate implements, at the
 versions it speaks. They are not run because each needs a runner for an action
@@ -166,26 +166,25 @@ expose. Issue #72 tracks them, suite by suite.
 
 | Suite | What a runner would need |
 |---|---|
-| `core/message_processor_v0_9.yaml` | A facade over `SurfaceStore` with a catalog registry, and the `rendererError` payload a renderer would send for each rejection. The lifecycle cases map onto `SurfaceStore::apply` directly. |
 | `core/catalog.yaml` | 17 of the 73 cases state v0.9 or v0.9.1. `Catalog::from_schema` covers `from_json`; there is no `toJson`, `validationSchema` or `derive`. |
 | `core/common_types.yaml` | 19 cases validate a value against a published common type; 3 compare a schema generated from an SDK's own types, which this crate does not generate. |
 
 ## Expected divergences
 
-Seventeen checks: three in `core/validator_v0_9.yaml`, eight in
-`agent/legacy/streaming_parser.yaml`, two in `core/data_context.yaml` and four
-in `core/data_model.yaml`. Those of the suites run one check per case are listed
-in `DIVERGENCES` in the harness with what this crate gives, and the harness
-holds it to exactly that.
+Nineteen checks: three in `core/validator_v0_9.yaml`, eight in
+`agent/legacy/streaming_parser.yaml`, two in `core/data_context.yaml`, four in
+`core/data_model.yaml` and two in `core/message_processor_v0_9.yaml`. Those of
+the suites run one check per case are listed in `DIVERGENCES` in the harness
+with what this crate gives, and the harness holds it to exactly that.
 
 | Checks | Reference expectation | Checked behaviour |
 |---:|---|---|
-| 2 (`test_v09_topology_orphaned_component_error`, `test_v09_topology_plain_string_property_not_treated_as_child_ref`) | A component the root cannot reach is an error. | It is reported in `ValidationReport::unreachable`, as a warning. The specification tells renderers to buffer a component until its parent arrives, so an unreachable component is usually a half-streamed tree. |
+| 2 + 1 (`test_v09_topology_orphaned_component_error`, `test_v09_topology_plain_string_property_not_treated_as_child_ref`; `test_topology_orphaned_component_error` in the processor suite) | A component the root cannot reach is an error. | It is reported in `ValidationReport::unreachable`, as a warning. The specification tells renderers to buffer a component until its parent arrives, so an unreachable component is usually a half-streamed tree. The processor accepts the message, and `MessageProcessor::report` names the component. |
 | 1 (`test_custom_catalog_0_9`, step 2) | `children: 123` is `invalid_value`. | It is `type_mismatch`, at the same place. |
 | 1 (`test_delta_streaming_correctness_v09`) | Emit components from a message that has not declared the required `version`. | Emit nothing until a supported version is known. |
 | 6 (`test_incremental_data_model_streaming_v09` and five `test_sniff_partial_*_v09` cases) | Emit a root data-model update while the optional `path` field could still arrive after `value`. | Emit nothing until an explicit `path` is known or the message completes. |
 | 1 (`test_cut_unicode_multibyte_emoji_v09`) | Emit text cut after the first half of a surrogate pair. | Emit nothing until the pair is whole: half a pair is not a string in Rust. The suite writes that half as a YAML escape, which is not valid YAML either; the harness reads it as U+FFFD and pins the case. |
-| 2 (`test_resolve_path_context_with_trailing_slash`, `test_resolve_path_empty_in_trailing_slash_context`) | A trailing slash on the scope is dropped: `foo` under `/bar/` is `/bar/foo`. | An empty segment is the empty key, as RFC 6901 reads it, and `""` is a key JSON allows: `foo` under `/bar/` is `/bar//foo`, and the scope `/user/` itself is `/user/`. Only `/` alone is the root. |
+| 2 + 1 (`test_resolve_path_context_with_trailing_slash`, `test_resolve_path_empty_in_trailing_slash_context`; `test_resolve_path_relative_trailing_slash` in the processor suite) | A trailing slash on the scope is dropped: `foo` under `/bar/` is `/bar/foo`. | An empty segment is the empty key, as RFC 6901 reads it, and `""` is a key JSON allows: `foo` under `/bar/` is `/bar//foo`, and the scope `/user/` itself is `/user/`. Only `/` alone is the root. |
 | 2 (`test_data_model_normalizes_trailing_slash`, `test_data_model_normalizes_empty_path_segments`) | Empty segments are dropped from a data-model path: `/foo/` is `/foo`, and `//a///b//` is `/a/b`. | The same rule as above: `/foo/` is the key `""` under `foo`. The write is accepted and stored there, so `/foo` then holds `{"": "bar"}`. |
 | 2 (`test_data_model_get_out_of_range_index`, `test_data_model_rejects_leading_zero_list_index`) | Reading a list at `-1`, `invalid` or `01` finds no value. | It is an `Error::Pointer`, on a read as on a write. The specification says of a path that "it is an error to use a non-numeric index on a path segment that refers to an array", and RFC 6901 has no index `01`. |
 
@@ -201,10 +200,11 @@ to declare `children` as a `ChildList`, and both now pass as written.
 
 ## Failing
 
-Seven checks. Three are in cases upstream added after the previous pin, all
+Nine checks. Three are in cases upstream added after the previous pin, all
 about the toolkit's parsers; the agent layer replaces those parsers, and these
 cases are for it to pass. Four are rules of the reference data model that
-`DataModel` does not have.
+`DataModel` does not have. Two are refusals only a JSON Schema engine makes,
+which `MessageProcessor` does not run.
 
 | Check | What happens |
 |---|---|
@@ -215,6 +215,8 @@ cases are for it to pass. Four are rules of the reference data model that
 | `core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]` | Removing `/nonexistent/child/path` from an empty model leaves `{"nonexistent": {"child": {}}}`. The case wants nothing created, and no watched path changed. Same upstream change. |
 | `core/data_model.yaml::test_data_model_rejects_forbidden_path_segments[step 0]` | A write to `/__proto__/polluted` is accepted. The reference refuses the segments `__proto__`, `constructor` and `prototype` in every language, so that a payload behaves the same in all of them. |
 | `core/data_model.yaml::test_data_model_rejects_excessive_list_index[step 2]` | A write to `/items/10001` is accepted. The reference refuses an index above 10,000; this crate bounds how far one write may grow a list instead, at 65,536 slots (`DEFAULT_ARRAY_GROWTH_LIMIT`). |
+| `core/message_processor_v0_9.yaml::test_create_surface_strict_theme_validation_failure` | A `createSurface` whose theme breaks the `pattern` in the catalog's theme schema is accepted. The processor checks what the semantic validator checks. `SchemaValidator`, behind `schema-validation`, is the JSON Schema engine, and it takes whole schema documents, not the fragment this case declares. |
+| `core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys` | A `Text` carrying `@metadata`, which the basic catalog does not declare, is accepted. A property a component does not declare is `unevaluatedProperties` in the catalog's schema, and the same engine's to refuse. |
 
 ## Skips inside the executed suites
 
@@ -227,6 +229,7 @@ cases are for it to pass. Four are rules of the reference data model that
 | 5 | **A JSON Schema failure** in `core/validator_v0_9.yaml`: an undeclared property, an undeclared function, a function argument of the wrong type, and two theme values. The semantic validator the harness runs does not evaluate these; `SchemaValidator`, behind the `schema-validation` feature, does. They are listed by name in `SCHEMA_ONLY`, because their fixtures are also invalid in ways the semantic validator does report, and would otherwise pass for the wrong reason. |
 | 1 | **JSON Schema validation of an example file.** `test_load_examples_validation_fails_on_schema_error`, in `retired/core/catalog.yaml`, asks `load_examples` to validate each example against an arbitrary schema. |
 | 1 | **Detaching observers.** `test_data_model_stops_notifying_after_dispose`, in `core/data_model.yaml`. Registering observers on a data model is a renderer's; `DataModel` has none to detach. |
+| 4 | **Advertising capabilities.** The four `get_renderer_capabilities` cases of `core/message_processor_v0_9.yaml` ask for the `a2uiClientCapabilities` a renderer sends, with its catalogs rewritten inline. This crate reads capabilities (`toolkit::negotiate`); nothing in it writes them. |
 
 ## How the validator cases are run
 
@@ -277,6 +280,39 @@ that was understood.
   compared as a number, so `1e5` is the `100000` the suite writes. A
   `ParseError` is an `Error::Binding`, with the phrase of the reference's
   message mapped to this crate's reason for the same fault.
+- **`process_messages`** (`core/message_processor_v0_9.yaml`). One
+  `processor::MessageProcessor` per case; the case's messages, or each step's,
+  go in as one batch (`process_all`), unwrapped when they come as
+  `{"messages": [...]}`.
+  - *Catalogs.* Inline `catalogs` are registered as they are. A catalog named
+    by `catalogPaths` is a published one, while the messages create surfaces
+    under ids of their own (`test-catalog`), so it is registered under each id
+    the messages name, as the reference harnesses do. A case that expects a
+    `CatalogError` gets no such alias.
+  - *Strictness.* With `strictMode: true` every message must leave its surface
+    whole, by the options the validator suite uses. Without it the reference
+    processor checks the envelope and the surface's life only, and its
+    fixtures rely on that (a `Button` with only a `label`, a type no catalog
+    defines), so the harness turns the catalog and tree checks off.
+  - *A refusal.* `expectError.category` is held with `RejectionKind::is`, so
+    `ValidationError` accepts an integrity or a recursion refusal and
+    `IntegrityError` does not accept a plain validation one. `surfaceId` is
+    `Rejection::surface_id`. A `message` is a phrase of the reference's
+    sentence, mapped to the fault this crate reports. Where the case gives the
+    `rendererError` a renderer would send, `Rejection::renderer_error` has to
+    have its `version`, `code` and `surfaceId`; its sentence is this crate's.
+  - *State.* `expect.surfaces.<id>`: `exists` is `Lifecycle::Live`;
+    `sendDataModel` treats "not asked" as `false`; `dataModel` is the whole
+    model; `components` as a list is every component, as a map some of them.
+    A component's property is compared as a renderer would show it, bound
+    against the surface's data model with `Scope::resolve_dynamic`.
+- **`get_renderer_data_model`** (same suite). The messages go through a
+  processor, and `SurfaceStore::client_data_model` is compared whole.
+
+The v0.9 suite has no case that deletes a surface that does not exist.
+`core/message_processor_v1_0.yaml` has one, and its rule is that such a delete
+does nothing. `MessageProcessor` follows it; `SurfaceStore::apply` refuses the
+delete, as before.
 
 ## Retired suites
 

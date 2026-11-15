@@ -28,6 +28,7 @@
 //! | [`binding`] | JSON Pointer resolution, template scopes and the `formatString` interpolation grammar, so an agent can check its own bindings before shipping them. |
 //! | [`model`] | The data model, including the undefined slots JSON cannot express. |
 //! | [`surface`] | The surface state machine: lifecycle, and folding a stream of operations. Every stream is folded through it. |
+//! | [`processor`] | Taking raw messages into a surface store: the catalogs a context speaks, the order of the checks, a batch as a transaction, and the kinds of refusal. |
 //! | [`validate`] | The semantic checks JSON Schema cannot express: does every child reference resolve, is there a root, is the tree acyclic. Plus the two a generating model gets wrong often enough to be worth checking without a schema engine: the message envelope, and property values against the type the catalog declares. |
 // Gate module links with their features so minimal rustdoc builds resolve them.
 #![cfg_attr(
@@ -146,7 +147,7 @@ mod protocol;
 
 #[doc(inline)]
 pub use crate::protocol::{
-    binding, catalog, message, model, operation, surface, validate, version,
+    binding, catalog, message, model, operation, processor, surface, validate, version,
 };
 #[cfg(feature = "schema-validation")]
 #[doc(inline)]
@@ -170,6 +171,7 @@ pub use crate::protocol::message::{
 };
 pub use crate::protocol::model::{DataModel, ModelChange, ModelValue};
 pub use crate::protocol::operation::Operation;
+pub use crate::protocol::processor::MessageProcessor;
 pub use crate::protocol::surface::{Lifecycle, SurfaceState, SurfaceStore};
 pub use crate::protocol::validate::{
     ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator,

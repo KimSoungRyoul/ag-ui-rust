@@ -28,9 +28,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use ag_ui_a2ui::binding::{absolute_path, parse_template};
+use ag_ui_a2ui::binding::{Scope, absolute_path, parse_template};
 use ag_ui_a2ui::catalog::Catalog;
-use ag_ui_a2ui::surface::SurfaceStore;
+use ag_ui_a2ui::processor::{MessageProcessor, Rejection, RejectionKind};
+use ag_ui_a2ui::surface::{Lifecycle, SurfaceStore};
 use ag_ui_a2ui::toolkit::negotiate::{CatalogRegistry, ClientCapabilities, select_catalog_schema};
 use ag_ui_a2ui::toolkit::parser::{has_a2ui_parts, parse_and_fix, parse_response};
 use ag_ui_a2ui::toolkit::prompt::{GENERATION_GUIDELINES, PromptSpec, build_subagent_prompt};
@@ -143,12 +144,12 @@ const SUITES: &[Suite] = &[
     run("core/data_context.yaml", [9, 2, 0, 0]),
     run("core/data_model.yaml", [43, 4, 1, 4]),
     run("core/expressions.yaml", [92, 0, 6, 0]),
+    run("core/message_processor_v0_9.yaml", [40, 2, 4, 2]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
     retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
     retired("retired/agent/inference_format.yaml", [13, 0, 6, 0]),
 
     // --- core tier, pre-1.0: in scope, no runner in this harness yet (#72) ---------------------
-    skip("core/message_processor_v0_9.yaml", 48, Why::Unharnessed, "the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads"),
     skip("core/catalog.yaml", 73, Why::Unharnessed, "the reference catalog API: fromJson, toJson, round trip, validationSchema, derive"),
     skip("core/common_types.yaml", 22, Why::Unharnessed, "values against the published common types; 3 cases compare a schema generated from an SDK's own types"),
 
@@ -441,6 +442,17 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
         "a write may grow a list by 65,536 slots (DEFAULT_ARRAY_GROWTH_LIMIT), whatever the \
          index; the reference refuses an index above 10,000",
     ),
+    // Two refusals only a JSON Schema engine makes. The processor checks what
+    // the semantic validator checks; `SchemaValidator` is the engine, and it
+    // takes whole schema documents.
+    (
+        "core/message_processor_v0_9.yaml::test_create_surface_strict_theme_validation_failure",
+        "a theme is not checked against the catalog's theme schema",
+    ),
+    (
+        "core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys",
+        "a property the component does not declare, here `@metadata`, is accepted",
+    ),
 ];
 
 /// Set `A2UI_CONFORMANCE_VERBOSE=1` to list every executed check by name.
@@ -489,6 +501,18 @@ const DIVERGENCES: &[(&str, &str, &str)] = &[
         "core/data_model.yaml::test_data_model_rejects_leading_zero_list_index[step 0]",
         "pointer error: expected a canonical array index",
         NOT_AN_INDEX,
+    ),
+    (
+        "core/message_processor_v0_9.yaml::test_resolve_path_relative_trailing_slash",
+        r#""/bar//foo""#,
+        TRAILING_SLASH,
+    ),
+    // The same difference as in `core/validator_v0_9.yaml`: the component is
+    // found and reported, and the message is not refused for it.
+    (
+        "core/message_processor_v0_9.yaml::test_topology_orphaned_component_error",
+        r#"accepted, with unreachable ["orphan_comp"] on s1"#,
+        "an unreachable component is a warning here, an error upstream",
     ),
 ];
 
@@ -774,7 +798,13 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     let wire_format = matches!(
         (action, format),
         (
-            "validate" | "resolve_path" | "data_model" | "parse_expression_template",
+            "validate"
+                | "resolve_path"
+                | "data_model"
+                | "parse_expression_template"
+                | "process_messages"
+                | "get_renderer_data_model"
+                | "get_renderer_capabilities",
             Format::Current,
         ) | (
             "process_chunk" | "parse_full" | "fix_payload" | "has_parts",
@@ -804,6 +834,20 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
         ("load_catalog", _) => tally.record(check, run_load_catalog(case)),
         ("generate_prompt", _) => tally.record(check, run_generate_prompt(case)),
         ("resolve_path", Format::Current) => settle(check, run_resolve_path(case), tally),
+        ("process_messages", Format::Current) => {
+            settle(check, run_process_messages(case), tally);
+        }
+        ("get_renderer_data_model", Format::Current) => {
+            settle(check, run_renderer_data_model(case), tally);
+        }
+        ("get_renderer_capabilities", Format::Current) => tally.record(
+            check,
+            Outcome::Skipped(
+                "advertises a renderer's capabilities: this crate reads them \
+                 (toolkit::negotiate) and has nothing that writes them"
+                    .to_string(),
+            ),
+        ),
         ("parse_expression_template", Format::Current) => {
             settle(check, run_parse_expression_template(case), tally);
         }
@@ -1624,6 +1668,488 @@ fn run_parse_expression_template(case: &Value) -> Result<(), Miss> {
             )),
         },
         Err(other) => Err(Miss::new(format!("error: {other}"), "a binding error")),
+    }
+}
+
+// --- process_messages -------------------------------------------------------
+
+/// The messages of a case or a step: a list, or a list wrapped as
+/// `{"messages": [...]}`.
+fn message_list(value: Option<&Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::Object(wrapper)) => match wrapper.get("messages") {
+            Some(Value::Array(items)) => items.clone(),
+            _ => vec![Value::Object(wrapper.clone())],
+        },
+        Some(other) => vec![other.clone()],
+        None => Vec::new(),
+    }
+}
+
+/// How a `process_messages` case without `strictMode` is held: the reference
+/// processor then checks the envelope and the surface's life, and neither the
+/// catalog's schema nor the shape of the tree. Its fixtures rely on that: a
+/// `Button` with only a `label`, a component type no catalog defines.
+fn lenient_options() -> ValidateOptions {
+    ValidateOptions {
+        require_root: false,
+        allow_dangling_children: true,
+        check_component_types: false,
+        check_required_props: false,
+        check_prop_types: false,
+        check_bindings: false,
+        ..ValidateOptions::full_surface()
+    }
+}
+
+/// The processor a case describes: its catalogs registered, and held strictly
+/// when the case says `strictMode: true`.
+///
+/// A catalog named by `catalogPaths` is a published one, and the suite's
+/// messages create their surfaces under ids of their own (`test-catalog`). As
+/// the reference harnesses do, the published catalog is registered under each
+/// id the messages name, except in a case that expects a `CatalogError`, where
+/// an unregistered id is the point.
+fn case_processor(case: &Value) -> Result<MessageProcessor, Miss> {
+    let setup = |what: String| Miss::new(what, "a processor for the case");
+    let options = if case.get("strictMode") == Some(&Value::Bool(true)) {
+        conformance_options()
+    } else {
+        lenient_options()
+    };
+    let mut processor = MessageProcessor::with_options(options);
+    for document in case
+        .get("catalogs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let catalog = Catalog::from_schema(document)
+            .map_err(|error| setup(format!("an inline catalog was rejected: {error}")))?;
+        processor
+            .register(catalog)
+            .map_err(|error| setup(error.to_string()))?;
+    }
+    let mut published = Vec::new();
+    for path in string_list(case.get("catalogPaths")) {
+        let text = std::fs::read_to_string(fixture(&path))
+            .map_err(|_| setup(format!("{path} is not vendored under tests/conformance/")))?;
+        let document: Value = serde_json::from_str(&text)
+            .map_err(|error| setup(format!("{path} is not JSON: {error}")))?;
+        let catalog = Catalog::from_schema(&document)
+            .map_err(|error| setup(format!("{path} was rejected: {error}")))?;
+        processor
+            .register(catalog.clone())
+            .map_err(|error| setup(error.to_string()))?;
+        published.push(catalog);
+    }
+    let expects_catalog_error = case
+        .pointer("/expectError/category")
+        .and_then(Value::as_str)
+        == Some("CatalogError");
+    if let (Some(catalog), false) = (published.first(), expects_catalog_error) {
+        let steps = case.get("steps").and_then(Value::as_array);
+        let batches = std::iter::once(case.get("messages"))
+            .chain(steps.into_iter().flatten().map(|step| step.get("messages")));
+        for message in batches.flat_map(message_list) {
+            let named = message
+                .pointer("/createSurface/catalogId")
+                .and_then(Value::as_str);
+            if let Some(id) = named.filter(|id| processor.catalog(id).is_none()) {
+                let mut alias = catalog.clone();
+                alias.catalog_id = id.to_string();
+                processor
+                    .register(alias)
+                    .map_err(|error| setup(error.to_string()))?;
+            }
+        }
+    }
+    Ok(processor)
+}
+
+/// What a refusal was, written the way [`DIVERGENCES`] pins it.
+fn refusal_outcome(rejection: &Rejection) -> String {
+    let detail = match rejection.errors().first() {
+        Some(error) => format!("{} at {}", error.code, error.path),
+        None => rejection.error.to_string(),
+    };
+    format!("refused as {}: {detail}", rejection.kind)
+}
+
+/// What an accepted batch left that a case could have wanted refused: the
+/// components no root reaches, which this crate reports and does not refuse.
+fn accepted_outcome(processor: &MessageProcessor) -> String {
+    let unreachable: Vec<String> = processor
+        .surfaces()
+        .surfaces()
+        .filter_map(|surface| {
+            let report = processor.report(&surface.surface_id)?;
+            (!report.unreachable.is_empty())
+                .then(|| format!("{:?} on {}", report.unreachable, surface.surface_id))
+        })
+        .collect();
+    if unreachable.is_empty() {
+        "accepted".to_string()
+    } else {
+        format!("accepted, with unreachable {}", unreachable.join(", "))
+    }
+}
+
+/// Whether a refusal is the one a phrase of the reference processor's message
+/// names. `None` for a phrase this runner has no reading of.
+fn refusal_says(phrase: &str, rejection: &Rejection) -> Option<bool> {
+    let errors = rejection.errors();
+    let any = |code: ErrorCode| errors.iter().any(|error| error.code == code);
+    let first_says = |needle: &str| errors.first().is_some_and(|e| e.message.contains(needle));
+    let integrity = rejection.kind == RejectionKind::Integrity;
+    Some(
+        if phrase.starts_with("Surface ") && phrase.ends_with(" already exists") {
+            integrity && first_says("already exists")
+        } else if phrase.starts_with("Surface not found for message: ") {
+            integrity && (first_says("does not exist") || first_says("was deleted"))
+        } else if let Some(id) = phrase.strip_prefix("Catalog not found: ") {
+            rejection.kind == RejectionKind::Catalog
+                && rejection.error.to_string().contains(&format!("{id:?}"))
+        } else if phrase == "catalogId" {
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::MissingField && e.path.ends_with(".catalogId"))
+        } else if phrase == "missing an 'id'" {
+            any(ErrorCode::MissingId)
+        } else if phrase.starts_with("Cannot create component ")
+            && phrase.ends_with("without a type")
+        {
+            any(ErrorCode::MissingComponentType)
+        } else if phrase == "Missing root component" {
+            any(ErrorCode::NoRoot)
+        } else if phrase == "Circular reference detected" {
+            any(ErrorCode::ChildCycle)
+        } else if phrase == "Dangling reference" {
+            any(ErrorCode::UnresolvedChild)
+        } else if let Some(kind) = phrase.strip_prefix("Validation failed for component ") {
+            // `'Chart'`: an error about a property of a component of that type.
+            errors.iter().any(|e| {
+                matches!(
+                    e.code,
+                    ErrorCode::TypeMismatch
+                        | ErrorCode::MissingRequiredProp
+                        | ErrorCode::InvalidValue
+                ) && e.message.starts_with(kind)
+            })
+        } else if phrase == "Message contains multiple conflicting update actions" {
+            errors.iter().any(|e| {
+                e.code == ErrorCode::InvalidValue
+                    && e.message.starts_with("Exactly one A2UI payload key")
+            })
+        } else if phrase.starts_with("action '") && phrase.contains("is not supported in protocol")
+        {
+            errors.iter().any(|e| {
+                e.code == ErrorCode::MissingField
+                    && e.message.starts_with("A message must carry one")
+            })
+        } else if phrase == "surfaceId must be a string" {
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::TypeMismatch && e.path.ends_with(".surfaceId"))
+        } else {
+            return None;
+        },
+    )
+}
+
+/// Holds a refusal to a case's `expectError`: its category, its surface, the
+/// fault its message names, and the `error` message a renderer would send.
+fn check_refusal(rejection: &Rejection, wanted: &Value) -> Result<(), Miss> {
+    unknown_key(
+        wanted,
+        &["category", "surfaceId", "message", "rendererError"],
+        "expectError",
+    )?;
+    let actual = refusal_outcome(rejection);
+    if let Some(category) = wanted.get("category").and_then(Value::as_str) {
+        if !rejection.kind.is(category) {
+            return Err(Miss::new(actual, format!("a {category}")));
+        }
+    }
+    if let Some(surface) = wanted.get("surfaceId").and_then(Value::as_str) {
+        if rejection.surface_id.as_deref() != Some(surface) {
+            return Err(Miss::new(
+                format!("{actual}, on surface {:?}", rejection.surface_id),
+                format!("a refusal on surface {surface:?}"),
+            ));
+        }
+    }
+    if let Some(phrase) = wanted.get("message").and_then(Value::as_str) {
+        match refusal_says(phrase, rejection) {
+            Some(true) => {}
+            Some(false) => return Err(Miss::new(actual, format!("the refusal for {phrase:?}"))),
+            None => {
+                return Err(Miss::new(
+                    actual,
+                    format!("a refusal for {phrase:?}, a phrase this runner does not map"),
+                ));
+            }
+        }
+    }
+    if let Some(reply) = wanted.get("rendererError") {
+        unknown_key(reply, &["version", "error"], "rendererError")?;
+        let error = reply.get("error").unwrap_or(&Value::Null);
+        unknown_key(
+            error,
+            &["code", "surfaceId", "message"],
+            "rendererError.error",
+        )?;
+        let sent = serde_json::to_value(rejection.renderer_error())
+            .map_err(|error| Miss::new(error.to_string(), "an error message"))?;
+        for (pointer, wanted) in [
+            ("/version", reply.get("version")),
+            ("/error/code", error.get("code")),
+            ("/error/surfaceId", error.get("surfaceId")),
+        ] {
+            if wanted.is_some() && sent.pointer(pointer) != wanted {
+                return Err(Miss::new(
+                    format!("a renderer error {sent}"),
+                    format!("a renderer error {reply}"),
+                ));
+            }
+        }
+        // The sentence is this crate's own. The fault it is about is the one
+        // `message` names, which was held above.
+        let says_something = sent
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty());
+        if error.get("message") != wanted.get("message") || !says_something {
+            return Err(Miss::new(
+                format!("a renderer error {sent}"),
+                format!("a renderer error {reply}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Holds the state a processor is in to a case's `expect.surfaces`.
+fn check_surfaces(processor: &MessageProcessor, expect: Option<&Value>) -> Result<(), Miss> {
+    let Some(expect) = expect else {
+        return Ok(());
+    };
+    unknown_key(expect, &["surfaces"], "expect")?;
+    let surfaces = expect.get("surfaces").and_then(Value::as_object);
+    for (id, wanted) in surfaces.into_iter().flatten() {
+        unknown_key(
+            wanted,
+            &[
+                "exists",
+                "sendDataModel",
+                "theme",
+                "components",
+                "dataModel",
+            ],
+            "expect.surfaces",
+        )?;
+        let store = processor.surfaces();
+        let live = store.lifecycle(id) == Lifecycle::Live;
+        if wanted.get("exists") == Some(&Value::Bool(false)) {
+            if live {
+                return Err(Miss::new(
+                    format!("surface {id} is live"),
+                    format!("no surface {id}"),
+                ));
+            }
+            continue;
+        }
+        let Some(surface) = store.get(id).filter(|_| live) else {
+            return Err(Miss::new(
+                format!("no surface {id}"),
+                format!("surface {id}"),
+            ));
+        };
+        if let Some(theme) = wanted.get("theme") {
+            if surface.theme.as_ref() != Some(theme) {
+                return Err(Miss::new(
+                    format!("{id} has theme {:?}", surface.theme),
+                    format!("{id} to have theme {theme}"),
+                ));
+            }
+        }
+        if let Some(send) = wanted.get("sendDataModel").and_then(Value::as_bool) {
+            // Not asked for is not sent.
+            if surface.send_data_model.unwrap_or(false) != send {
+                return Err(Miss::new(
+                    format!("{id} has sendDataModel {:?}", surface.send_data_model),
+                    format!("{id} to have sendDataModel {send}"),
+                ));
+            }
+        }
+        let data = surface.data_model.to_json().unwrap_or(Value::Null);
+        if let Some(model) = wanted.get("dataModel") {
+            // The whole model, so that a key that should be gone is seen.
+            if !same_json(&data, model) {
+                return Err(Miss::new(
+                    format!("{id} holds {data}"),
+                    format!("{id} to hold {model}"),
+                ));
+            }
+        }
+        let Some(components) = wanted.get("components") else {
+            continue;
+        };
+        // A list is every component of the surface; a map is some of them.
+        let listed: Vec<(String, &Value)> = match components {
+            Value::Array(items) => {
+                if items.len() != surface.components.len() {
+                    return Err(Miss::new(
+                        format!("{id} has {} component(s)", surface.components.len()),
+                        format!("{id} to have {}", items.len()),
+                    ));
+                }
+                items
+                    .iter()
+                    .map(|item| (item["id"].as_str().unwrap_or_default().to_string(), item))
+                    .collect()
+            }
+            Value::Object(items) => items.iter().map(|(id, item)| (id.clone(), item)).collect(),
+            _ => Vec::new(),
+        };
+        let scope = Scope::root(&data);
+        for (component_id, wanted) in listed {
+            let Some(component) = surface.components.iter().find(|c| c.id == component_id) else {
+                return Err(Miss::new(
+                    format!("{id} has no component {component_id}"),
+                    format!("component {component_id} on {id}"),
+                ));
+            };
+            for (key, wanted) in wanted.as_object().into_iter().flatten() {
+                let actual = match key.as_str() {
+                    "id" => Some(Value::String(component.id.clone())),
+                    "component" => Some(Value::String(component.component.clone())),
+                    // A property as a renderer would show it: bound against
+                    // the surface's data model, at the root scope.
+                    _ => component
+                        .prop(key)
+                        .map(|raw| scope.resolve_dynamic(raw).unwrap_or_else(|_| raw.clone())),
+                };
+                if !actual
+                    .as_ref()
+                    .is_some_and(|actual| same_json(actual, wanted))
+                {
+                    return Err(Miss::new(
+                        format!(
+                            "{component_id}.{key} is {}",
+                            actual.map_or_else(|| "absent".to_string(), |value| value.to_string())
+                        ),
+                        format!("{component_id}.{key} to be {wanted}"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One batch of a `process_messages` case: taken in as a transaction, and held
+/// to what the case expects of it.
+fn process_step(
+    processor: &mut MessageProcessor,
+    messages: Option<&Value>,
+    expect: Option<&Value>,
+    expect_error: Option<&Value>,
+) -> Result<(), Miss> {
+    match (processor.process_all(&message_list(messages)), expect_error) {
+        (Ok(()), None) => check_surfaces(processor, expect),
+        (Ok(()), Some(wanted)) => Err(Miss::new(
+            accepted_outcome(processor),
+            format!("a refusal: {wanted}"),
+        )),
+        (Err(rejection), None) => Err(Miss::new(
+            refusal_outcome(&rejection),
+            "the messages to be accepted",
+        )),
+        (Err(rejection), Some(wanted)) => check_refusal(&rejection, wanted),
+    }
+}
+
+/// `process_messages`: one [`MessageProcessor`] for the case, and the case's
+/// messages, or each step's, taken in as a batch.
+fn run_process_messages(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[
+            &CASE_KEYS[..],
+            &[
+                "catalogPaths",
+                "catalogs",
+                "strictMode",
+                "messages",
+                "steps",
+                "expect",
+                "expectError",
+            ],
+        ]
+        .concat(),
+        "case",
+    )?;
+    let mut processor = case_processor(case)?;
+    let Some(steps) = case.get("steps").and_then(Value::as_array) else {
+        return process_step(
+            &mut processor,
+            case.get("messages"),
+            case.get("expect"),
+            case.get("expectError"),
+        );
+    };
+    for (index, step) in steps.iter().enumerate() {
+        unknown_key(step, &["messages", "expect", "expectError"], "step")
+            .and_then(|()| {
+                process_step(
+                    &mut processor,
+                    step.get("messages"),
+                    step.get("expect"),
+                    step.get("expectError"),
+                )
+            })
+            .map_err(|miss| miss.at(index))?;
+    }
+    Ok(())
+}
+
+/// `get_renderer_data_model`: the `a2uiClientDataModel` metadata a renderer
+/// holding the surfaces the messages leave would attach.
+fn run_renderer_data_model(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[
+            &CASE_KEYS[..],
+            &["catalogPaths", "catalogs", "messages", "args", "expect"],
+        ]
+        .concat(),
+        "case",
+    )?;
+    let args = case.get("args").unwrap_or(&Value::Null);
+    unknown_key(args, &["version"], "args")?;
+    let mut processor = case_processor(case)?;
+    processor
+        .process_all(&message_list(case.get("messages")))
+        .map_err(|rejection| {
+            Miss::new(refusal_outcome(&rejection), "the messages to be accepted")
+        })?;
+    let version = args
+        .get("version")
+        .and_then(Value::as_str)
+        .and_then(A2uiVersion::parse)
+        .ok_or_else(|| Miss::new("args.version is not a version this crate speaks", "one"))?;
+    let wanted = case.get("expect").cloned().unwrap_or(Value::Null);
+    let actual = processor
+        .surfaces()
+        .client_data_model(version)
+        .and_then(|metadata| Ok(serde_json::to_value(metadata)?))
+        .map_err(|error| Miss::new(format!("error: {error}"), wanted.to_string()))?;
+    if same_json(&actual, &wanted) {
+        Ok(())
+    } else {
+        Err(Miss::new(actual.to_string(), wanted.to_string()))
     }
 }
 

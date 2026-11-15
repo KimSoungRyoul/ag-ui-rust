@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::message::{AgentMessage, AgentPayload, Component};
+use super::message::{AgentMessage, AgentPayload, ClientDataModel, Component};
 use super::model::DataModel;
 use super::version::A2uiVersion;
 use crate::error::{Error, Result};
@@ -152,6 +152,59 @@ impl SurfaceStore {
             Some(surface) if surface.deleted => Lifecycle::Deleted,
             Some(_) => Lifecycle::Live,
         }
+    }
+    /// The `a2uiClientDataModel` metadata a renderer holding these surfaces
+    /// attaches to what it sends: the data model of every live surface that
+    /// was created with `sendDataModel: true`, stamped `version`.
+    ///
+    /// `None` when no surface asks for its data model back. A surface created
+    /// under a version that shares no wire format with `version` is left out.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{A2uiVersion, AgentMessage, AgentPayload, SurfaceStore};
+    /// use serde_json::json;
+    ///
+    /// let mut echoed = AgentMessage::create_surface("form", "catalog");
+    /// if let AgentPayload::CreateSurface(create) = &mut echoed.payload {
+    ///     create.send_data_model = Some(true);
+    /// }
+    /// let mut store = SurfaceStore::new();
+    /// store.apply(&echoed)?;
+    /// store.apply(&AgentMessage::create_surface("banner", "catalog"))?;
+    /// store.apply(&AgentMessage::update_data_model("form", "/email", json!("a@b.c")))?;
+    /// store.apply(&AgentMessage::update_data_model("banner", "/text", json!("hi")))?;
+    ///
+    /// let metadata = store.client_data_model(A2uiVersion::V0_9)?.expect("one surface asks");
+    /// assert_eq!(
+    ///     serde_json::to_value(metadata)?,
+    ///     json!({"version": "v0.9", "surfaces": {"form": {"email": "a@b.c"}}})
+    /// );
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The metadata carries JSON objects. Returns [`Error::Undefined`] when
+    /// the model of a surface that asks holds an undefined slot, and
+    /// [`Error::Parse`] when its root is not an object.
+    pub fn client_data_model(&self, version: A2uiVersion) -> Result<Option<ClientDataModel>> {
+        let mut metadata = ClientDataModel::new(version);
+        for surface in self.surfaces.values() {
+            let shares_format = A2uiVersion::parse(&surface.version)
+                .is_some_and(|created| created.accepts(version));
+            if surface.deleted || surface.send_data_model != Some(true) || !shares_format {
+                continue;
+            }
+            let serde_json::Value::Object(model) = surface.data_model.to_json()? else {
+                return Err(Error::parse(format!(
+                    "the data model of surface {:?} is not an object, and a2uiClientDataModel \
+                     carries objects",
+                    surface.surface_id
+                )));
+            };
+            metadata.surfaces.insert(surface.surface_id.clone(), model);
+        }
+        Ok((!metadata.surfaces.is_empty()).then_some(metadata))
     }
     /// The surface an update or delete may target: created, and not deleted since.
     pub(crate) fn live(&self, id: &str) -> Result<&SurfaceState> {

@@ -11,6 +11,7 @@ pub(crate) mod graph;
 pub mod message;
 pub mod model;
 pub mod operation;
+pub mod processor;
 pub mod surface;
 pub(crate) mod template;
 pub mod validate;
