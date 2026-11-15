@@ -93,10 +93,13 @@ failure and local abort explicitly. `Aborted` is local observation, not a new wi
 event. `Update` remains non-exhaustive because new display changes can be added
 without changing the protocol.
 
-The runtime side agrees with the type side. An event type this build does not know fails to
-deserialize, `Thread` reports it and ends the run as `RunEnd::Failed`. A frontend talking
-to a newer agent stops with an error naming the unknown type rather than quietly rendering
-three quarters of a conversation.
+The runtime side agrees with the type side: an event type this build does not know never
+reaches a typed consumer. AG-UI 1.0 asks a receiver to tolerate what it does not recognise,
+so the compatibility boundary drops the event before deserialization and the run carries on.
+It is not silent. `Thread` reports the drop as a `warning` diagnostic naming the type, in the
+run's updates and its `RunReport`, so a frontend talking to a newer agent can show that it
+rendered less than it was sent rather than quietly rendering three quarters of a
+conversation. The library prints nothing; where a warning goes is the application's choice.
 
 ## Crate boundaries
 

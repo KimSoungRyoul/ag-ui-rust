@@ -648,7 +648,7 @@ async fn an_input_may_omit_the_free_form_fields() {
 #[tokio::test(flavor = "multi_thread")]
 async fn explicit_null_request_values_are_rejected() {
     let addr = serve(Router::new().route_agui("/agent", Chatty)).await;
-    for field in ["state", "forwardedProps", "protocolVersion", "resume"] {
+    for field in ["state", "protocolVersion", "resume"] {
         let mut body = serde_json::json!({
             "threadId": "t",
             "runId": "r",
@@ -662,6 +662,11 @@ async fn explicit_null_request_values_are_rejected() {
             "{field}: {response}"
         );
     }
+    // The one exception: AG-UI 1.0 registers `forwardedProps: null` as an
+    // older client's spelling of the omitted field.
+    let body = br#"{"threadId":"t","runId":"r","messages":[],"forwardedProps":null}"#;
+    let (head, response) = request(addr, &[], body).await;
+    assert_eq!(head.status, 200, "forwardedProps: {response}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

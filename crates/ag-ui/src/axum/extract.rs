@@ -35,7 +35,8 @@ use crate::axum::error::{Error, Result};
 /// The AG-UI run request, extracted from a JSON body.
 ///
 /// Rejects with [`Error`], which renders as a `4xx` and a JSON body naming what
-/// was wrong.
+/// was wrong. The decoding warnings are discarded; a handler that wants them
+/// takes the body as [`Bytes`] and calls [`decode_with_warnings`].
 ///
 /// # The `Content-Type` is required
 ///
@@ -65,12 +66,13 @@ impl AgUiInput {
     }
 
     /// The extractor, with the one choice an endpoint can make about it:
-    /// whether a request with no `Content-Type` is read as JSON.
+    /// whether a request with no `Content-Type` is read as JSON. Keeps the
+    /// decoding warnings, which the mounted endpoint hands to its hook.
     pub(crate) async fn read<S>(
         request: Request,
         state: &S,
         allow_missing_content_type: bool,
-    ) -> Result<Self>
+    ) -> Result<(Self, Vec<String>)>
     where
         S: Send + Sync,
     {
@@ -83,7 +85,8 @@ impl AgUiInput {
                 status: rejection.status(),
                 message: rejection.body_text(),
             })?;
-        Ok(Self(decode(&bytes)?))
+        let (input, warnings) = decode_with_warnings(&bytes)?;
+        Ok((Self(input), warnings))
     }
 }
 
@@ -94,7 +97,8 @@ where
     type Rejection = Error;
 
     async fn from_request(request: Request, state: &S) -> Result<Self> {
-        Self::read(request, state, false).await
+        let (input, _warnings) = Self::read(request, state, false).await?;
+        Ok(input)
     }
 }
 
@@ -102,6 +106,7 @@ where
 ///
 /// Before typed decoding, unknown protocol additions are removed and malformed
 /// known fields are rejected against the same schema used by client streams.
+/// What was removed is discarded; [`decode_with_warnings`] returns it.
 ///
 /// The transport-free half of the extractor, for tests and for callers that
 /// already hold the body.
@@ -116,15 +121,35 @@ where
 /// # Ok::<(), ag_ui::axum::Error>(())
 /// ```
 pub fn decode(body: &[u8]) -> Result<RunAgentInput> {
+    decode_with_warnings(body).map(|(input, _warnings)| input)
+}
+
+/// [`decode`], also returning a warning for each thing it removed or read as
+/// omitted: an unrecognised field or enum member, a deprecated optional
+/// `null`. Each quotes at most 64 characters of the body, with control
+/// characters escaped. Nothing in this crate prints them; where they go is the
+/// caller's choice.
+///
+/// ```
+/// # use ag_ui::axum::extract::decode_with_warnings;
+/// let (input, warnings) = decode_with_warnings(
+///     br#"{"threadId":"t","runId":"r","messages":[],"somethingNewer":1}"#,
+/// )?;
+/// assert_eq!(input.run_id.as_str(), "r");
+/// assert_eq!(warnings, ["unrecognised property at /somethingNewer"]);
+/// # Ok::<(), ag_ui::axum::Error>(())
+/// ```
+pub fn decode_with_warnings(body: &[u8]) -> Result<(RunAgentInput, Vec<String>)> {
     // serde's message for an empty body is "EOF while parsing a value at line 1
     // column 0", which reads like a truncated payload rather than no payload.
     if body.iter().all(u8::is_ascii_whitespace) {
         return Err(Error::EmptyBody);
     }
     let value = serde_json::from_slice(body)?;
-    let value =
-        crate::protocol::input(value).map_err(<serde_json::Error as serde::de::Error>::custom)?;
-    Ok(serde_json::from_value(value)?)
+    let mut warnings = Vec::new();
+    let value = crate::protocol::input(value, &mut warnings)
+        .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+    Ok((serde_json::from_value(value)?, warnings))
 }
 
 /// Refuses a body that does not say it is JSON.

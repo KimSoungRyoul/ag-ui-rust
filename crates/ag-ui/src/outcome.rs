@@ -247,8 +247,9 @@ pub struct ResumeEntry {
     /// The answer. Shape is up to the agent; when the interrupt supplied a
     /// `responseSchema`, this should satisfy it. For a tool approval that was
     /// edited before approval, agents that advertise `approveWithEdits` expect
-    /// `{"editedArgs": …}` here.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// `{"editedArgs": …}` here. `Some(Value::Null)` is written as an
+    /// omitted field, which is how AG-UI 1.0 spells no answer.
+    #[serde(default, skip_serializing_if = "crate::serde_util::is_none_or_null")]
     pub payload: Option<Value>,
     /// Envelope data about the answer — signatures, routing keys — as opposed
     /// to `payload`, which is the answer the agent asked for and will act on.
