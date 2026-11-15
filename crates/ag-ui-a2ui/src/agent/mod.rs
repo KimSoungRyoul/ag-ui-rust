@@ -10,10 +10,22 @@
 //! It is the one generation path of the crate: one prompt snippet, one reader
 //! for each output format, one retry decision.
 //!
+//! # The version of a session
+//!
+//! A session speaks the protocol version of its catalogs, and nothing else
+//! says which: [`CatalogConfig::basic`] with [`A2uiVersion::V1_0`](crate::A2uiVersion::V1_0)
+//! is a v1.0 session. The prompt then shows the v1.0 schemas, an answer is
+//! read as v1.0 (a creation may carry its surface, a binding is `@path`, a
+//! component may name its catalog with `@catalogId`), the renderer's
+//! capabilities are looked for under `a2uiRendererCapabilities`, and a stream
+//! holds a component until it has closed. The catalogs of one session are of
+//! one family, so a v0.9 catalog and a v1.0 one do not share a session.
+//!
 //! | Piece | What it is |
 //! |---|---|
 //! | [`CatalogConfig`] | A catalog the agent registered, and the transformers it applies before a model or a validator sees it. |
 //! | [`RendererCapabilities`], [`resolve_catalogs`] | What the renderer said it can draw, and which catalogs that makes active. |
+//! | [`AgentCapabilities`] | What the agent advertises in return: the catalogs it writes UI for, and whether it takes a renderer's inline ones. |
 //! | [`A2uiGenerator`] | What the agent knows for its whole life: catalogs, examples, format. Built once. |
 //! | [`A2uiRequestProcessor`] | Everything one request needs: the active catalogs, the prompt snippet, and the reading of an answer, whole or streamed. |
 //! | [`OutputFormat`] | The notation a model writes in. [`DirectJson`] is the one implemented. |
@@ -128,13 +140,16 @@ mod capabilities;
 mod catalog;
 mod direct_json;
 mod format;
+mod ordered;
 mod processor;
 mod retry;
 mod state;
 mod stream;
 
 pub use answer::{AnswerPart, StreamedAnswer};
-pub use capabilities::{CLIENT_CAPABILITIES_KEY, RendererCapabilities, resolve_catalogs};
+pub use capabilities::{
+    AgentCapabilities, CLIENT_CAPABILITIES_KEY, RendererCapabilities, resolve_catalogs,
+};
 pub use catalog::{CatalogConfig, CatalogDocument, CatalogTransformer};
 pub use direct_json::DirectJson;
 pub use format::{

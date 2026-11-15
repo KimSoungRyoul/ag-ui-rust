@@ -22,11 +22,10 @@
 //! # The agent tier
 //!
 //! The suites under `agent/` are run by the module in `conformance_agent/`.
-//! Upstream writes them against A2UI v1.0; a case is lowered to v0.9 on the
-//! way in and lifted on the way out, by the rules of
-//! `conformance_agent/lowering.rs` and nowhere else, and a case v0.9 cannot
-//! state is skipped. The report says, per suite, how many cases ran lowered,
-//! how many as written and how many were skipped under each label.
+//! Upstream writes them against A2UI v1.0, and a few cases against v0.9. Each
+//! runs as written, under the version its catalogs declare. The report says,
+//! per suite, how many cases ran in v1.0, how many in the v0.9 family, and
+//! how many were skipped under each label.
 //!
 //! Run with `cargo test -p ag-ui-a2ui --all-features --test conformance --
 //! --nocapture` to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list
@@ -112,9 +111,8 @@ impl Why {
 enum Plan {
     /// Its cases are executed. One of them may still be skipped, with a reason.
     Run,
-    /// An agent-tier suite, executed by the runners in `conformance_agent/`.
-    /// A case written against v1.0 runs lowered to v0.9; one that v0.9 cannot
-    /// state is skipped, with the reason.
+    /// An agent-tier suite, executed by the runners in `conformance_agent/`,
+    /// each case as written.
     Agent,
     /// A suite as it stood at [`RETIRED_COMMIT`], before upstream rewrote its
     /// cases under other names. It is kept, and executed whole, because the
@@ -209,16 +207,16 @@ const SUITES: &[Suite] = &[
     // --- agent tier ----------------------------------------------------------------------------
     agent("agent/request_processor.yaml", [20, 0, 9, 0]),
     agent("agent/catalog_resolution.yaml", [23, 0, 0, 0]),
-    agent("agent/catalog_provider.yaml", [9, 0, 1, 0]),
+    agent("agent/catalog_provider.yaml", [10, 0, 0, 0]),
     agent("agent/catalog_transformer.yaml", [15, 0, 0, 0]),
-    agent("agent/renderer_capabilities.yaml", [5, 0, 19, 0]),
+    agent("agent/renderer_capabilities.yaml", [22, 0, 2, 0]),
     agent("agent/renderer_state.yaml", [5, 0, 4, 0]),
     agent("agent/streamed_answer.yaml", [6, 0, 0, 0]),
-    agent("agent/direct_json/prompt_generator.yaml", [1, 0, 14, 0]),
+    agent("agent/direct_json/prompt_generator.yaml", [15, 0, 0, 0]),
     agent("agent/direct_json/response_parser.yaml", [35, 0, 1, 0]),
-    agent("agent/direct_json/response_streaming.yaml", [87, 7, 45, 0]),
-    agent("agent/direct_json/compiler.yaml", [18, 0, 20, 0]),
-    agent("agent/direct_json/decompiler.yaml", [9, 0, 2, 0]),
+    agent("agent/direct_json/response_streaming.yaml", [92, 7, 40, 0]),
+    agent("agent/direct_json/compiler.yaml", [19, 0, 19, 0]),
+    agent("agent/direct_json/decompiler.yaml", [10, 0, 1, 0]),
     skip("agent/direct_json/scaling.yaml", 7, Why::Timing, "the direct JSON format: parse time against payload size"),
     skip("agent/skill.yaml", 12, Why::Formats, "skill documents generated from a format and its catalogs; the goldens are Express"),
     skip("agent/express/prompt_generator.yaml", 23, Why::Formats, "the Express format: system prompt snippet"),
@@ -234,7 +232,7 @@ const SUITES: &[Suite] = &[
     skip("agent/legacy/parser.yaml", 23, Why::Superseded, "the tag parser; `agent/direct_json/response_parser.yaml` is the suite of the parser that reads the same tags now"),
     skip("agent/legacy/inference_format.yaml", 22, Why::Superseded, "catalog selection and prompt assembly; `agent/catalog_resolution.yaml`, `agent/request_processor.yaml` and `agent/direct_json/prompt_generator.yaml` are the suites of what does that now"),
     skip("agent/legacy/streaming_parser.yaml", 88, Why::Superseded, "the streaming parser, with placeholders for components still to arrive; `agent/direct_json/response_streaming.yaml` is the suite of the stream that replaced it"),
-    skip("agent/multi_catalog_formats.yaml", 35, Why::V1_0, "components and function calls resolved across several active catalogs"),
+    agent("agent/multi_catalog_formats.yaml", [9, 0, 26, 0]),
     skip("agent/agent_functions.yaml", 64, Why::V1_0, "agent functions and the agent's side of renderer messages"),
     skip("agent/renderer_function_calls.yaml", 30, Why::V1_0, "the agent calling renderer functions"),
 
@@ -243,10 +241,10 @@ const SUITES: &[Suite] = &[
     agent("e2e/v0_9_1/missing_surface_error.yaml", [1, 0, 1, 0]),
     agent("e2e/v0_9_1/newsletter_signup.yaml", [1, 0, 1, 0]),
     agent("e2e/v0_9_1/restaurant_list_booking.yaml", [1, 0, 1, 0]),
-    skip("e2e/login_form_action.yaml", 1, Why::V1_0, "a v1.0 transcript"),
-    skip("e2e/missing_surface_error.yaml", 1, Why::V1_0, "a v1.0 transcript"),
-    skip("e2e/newsletter_signup.yaml", 1, Why::V1_0, "a v1.0 transcript"),
-    skip("e2e/restaurant_list_booking.yaml", 1, Why::V1_0, "a v1.0 transcript"),
+    agent("e2e/login_form_action.yaml", [1, 0, 1, 0]),
+    agent("e2e/missing_surface_error.yaml", [1, 0, 1, 0]),
+    agent("e2e/newsletter_signup.yaml", [1, 0, 1, 0]),
+    agent("e2e/restaurant_list_booking.yaml", [1, 0, 1, 0]),
 
     // --- upstream's adapter tier is its UI framework adapters, that is, renderers ---------------
     skip("adapter/adapter_conformance_v0_9.yaml", 16, Why::Renderer, "rendered view hierarchies in the UI framework adapters"),
@@ -395,10 +393,11 @@ struct Tally {
     failing_reasons: BTreeMap<String, usize>,
     /// Failures nothing lists, and listed failures that did not happen.
     unexpected: Vec<String>,
-    /// Agent-tier cases written against v1.0 and executed lowered to v0.9.
-    lowered: usize,
-    /// Agent-tier cases executed as they are written.
-    as_written: usize,
+    /// Agent-tier cases executed in v1.0.
+    in_v1_0: usize,
+    /// Agent-tier cases executed in the v0.9 family, or with nothing that
+    /// states a version.
+    in_v0_9: usize,
 }
 
 impl Tally {
@@ -779,10 +778,10 @@ fn tally_suite(suite: &Suite) -> (usize, Tally) {
             Plan::Run => run_case(&check, case, Format::Current, &mut tally),
             Plan::Agent => {
                 for (format, ran) in agent_tier::run_case(case) {
-                    match (&ran.outcome, ran.lowered) {
+                    match (&ran.outcome, ran.in_v1_0) {
                         (Outcome::Skipped(_), _) => {}
-                        (_, true) => tally.lowered += 1,
-                        (_, false) => tally.as_written += 1,
+                        (_, true) => tally.in_v1_0 += 1,
+                        (_, false) => tally.in_v0_9 += 1,
                     }
                     // A transcript is one check per format it declares.
                     let check = match format {
@@ -859,8 +858,8 @@ const PATHLESS_UPDATE_WAITS: &str = "an updateDataModel that states no path is e
      applied at the root before its path arrives replaces the whole data model";
 
 /// The row of the agent-tier table for one suite: how many of its cases ran
-/// lowered from v1.0, how many as written, and how many were skipped under
-/// each label. It is what #42 reads to know what to stop lowering.
+/// in v1.0, how many in the v0.9 family, and how many were skipped under each
+/// label.
 fn agent_row(suite: &Suite, cases: usize, tally: &Tally) -> String {
     let skipped = |label: &str| -> usize {
         tally
@@ -873,8 +872,8 @@ fn agent_row(suite: &Suite, cases: usize, tally: &Tally) -> String {
     format!(
         "| `{}` | {cases} | {} | {} | {} | {} | {} |",
         suite.path,
-        tally.lowered,
-        tally.as_written,
+        tally.in_v1_0,
+        tally.in_v0_9,
         skipped(agent_tier::NEEDS_V1_0),
         skipped(agent_tier::NEEDS_V0_8),
         skipped(agent_tier::NEEDS_FORMAT),
@@ -953,8 +952,8 @@ fn conformance_suite() {
         rows.push(table_row(suite, cases, counts));
         if suite.plan == Plan::Agent {
             agent_rows.push(agent_row(suite, cases, &tally));
-            total.lowered += tally.lowered;
-            total.as_written += tally.as_written;
+            total.in_v1_0 += tally.in_v1_0;
+            total.in_v0_9 += tally.in_v0_9;
         }
 
         total.passed += tally.passed;
@@ -974,11 +973,11 @@ fn conformance_suite() {
         println!("{row}");
     }
     println!(
-        "\nAGENT TIER: {} cases ran lowered from v1.0, {} as written\n",
-        total.lowered, total.as_written
+        "\nAGENT TIER: {} checks ran in v1.0, {} in the v0.9 family\n",
+        total.in_v1_0, total.in_v0_9
     );
     println!(
-        "| Suite | Cases | Lowered from v1.0 | As written | Skipped: v1.0 | Skipped: v0.8 | Skipped: another format |"
+        "| Suite | Cases | In v1.0 | In v0.9 | Skipped: v1.0 | Skipped: v0.8 | Skipped: another format |"
     );
     println!("|---|---:|---:|---:|---:|---:|---:|");
     for row in &agent_rows {
@@ -1030,8 +1029,8 @@ fn conformance_suite() {
         "tests/conformance/README.md does not state the total: {total_line}"
     );
     let agent_line = format!(
-        "{} checks ran lowered from v1.0 and {} as written",
-        total.lowered, total.as_written
+        "{} checks ran in v1.0 and {} in the v0.9 family",
+        total.in_v1_0, total.in_v0_9
     );
     assert!(
         readme.contains(&agent_line),
@@ -1159,7 +1158,7 @@ fn a2a_skip(action: &str, case: &Value) -> Option<&'static str> {
         _ => false,
     };
     wants_v0_8.then_some(
-        "out of scope: v0.8: activates the v0.8 extension, and this crate speaks v0.9 and v0.9.1",
+        "out of scope: v0.8: activates the v0.8 extension, and this crate speaks v0.9, v0.9.1 and v1.0",
     )
 }
 

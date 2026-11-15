@@ -113,28 +113,35 @@ impl SchemaBundle {
     ///
     /// Returns an error only if a document this crate ships does not parse.
     pub fn for_version(version: A2uiVersion) -> Result<Self> {
-        let (s2c, common_types, catalog) = match version {
-            A2uiVersion::V0_9 => (
-                include_str!("../../schemas/v0_9/server_to_client.json"),
-                include_str!("../../schemas/v0_9/common_types.json"),
-                include_str!("../../schemas/v0_9/catalog.json"),
-            ),
-            A2uiVersion::V0_9_1 => (
-                include_str!("../../schemas/v0_9_1/server_to_client.json"),
-                include_str!("../../schemas/v0_9_1/common_types.json"),
-                include_str!("../../schemas/v0_9_1/catalog.json"),
-            ),
-            A2uiVersion::V1_0 => (
-                include_str!("../../schemas/v1_0/agent_to_renderer.json"),
-                include_str!("../../schemas/v1_0/common_types.json"),
-                include_str!("../../schemas/v1_0/catalog.json"),
-            ),
-        };
+        let [s2c, common_types, catalog] = Self::texts(version);
         Ok(Self {
             s2c: serde_json::from_str(s2c)?,
             common_types: serde_json::from_str(common_types)?,
             catalog: serde_json::from_str(catalog)?,
         })
+    }
+
+    /// The documents of [`SchemaBundle::for_version`] as their text: the
+    /// envelope, the common types, the basic catalog. A prompt writes them in
+    /// the order their authors did, which a parsed value does not keep.
+    pub(crate) fn texts(version: A2uiVersion) -> [&'static str; 3] {
+        match version {
+            A2uiVersion::V0_9 => [
+                include_str!("../../schemas/v0_9/server_to_client.json"),
+                include_str!("../../schemas/v0_9/common_types.json"),
+                include_str!("../../schemas/v0_9/catalog.json"),
+            ],
+            A2uiVersion::V0_9_1 => [
+                include_str!("../../schemas/v0_9_1/server_to_client.json"),
+                include_str!("../../schemas/v0_9_1/common_types.json"),
+                include_str!("../../schemas/v0_9_1/catalog.json"),
+            ],
+            A2uiVersion::V1_0 => [
+                include_str!("../../schemas/v1_0/agent_to_renderer.json"),
+                include_str!("../../schemas/v1_0/common_types.json"),
+                include_str!("../../schemas/v1_0/catalog.json"),
+            ],
+        }
     }
 
     /// Builds a complete v0.9-family bundle from an inline capabilities catalog.

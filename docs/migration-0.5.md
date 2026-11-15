@@ -1005,8 +1005,8 @@ These are on `main` and not yet in a published version.
   and nothing is translated from one family to the other: a `v0.9` message for a
   `1.0` surface is refused, and the reverse. `MessageProcessor`, `Validator`,
   `SurfaceStore`, `DataModel`, `binding`, `Catalog`, `SchemaBundle` and the schema
-  validators speak v1.0. The agent layer, `A2uiAuthor` and the adapters speak the
-  v0.9 family, and `CatalogDocument::load` refuses a v1.0 catalog.
+  validators speak v1.0, and so do the agent layer, `A2uiAuthor` and the adapters,
+  which the bullets at the end of this list describe.
   `callRendererFunction`, `callAgentFunction` and their responses are not read or
   written.
 - What v1.0 spells differently is asked of the version, so code that writes for a
@@ -1040,7 +1040,12 @@ These are on `main` and not yet in a published version.
   writes that. On a v1.0 surface, removing what is not there does nothing, and
   removing the root leaves `{}`. `DataModel::apply_as(version, path, &value)` applies
   an update as a version does; `DataModel::apply` is unchanged, and so is every v0.9
-  surface: `null` is stored, and a removal past the end of a list still pads it.
+  surface: `null` is stored, and a removal past the end of a list still pads it. A
+  typed update that sets `null` at a path of a v1.0 surface,
+  `AgentMessage::update_data_model(id, path, Value::Null).with_version(V1_0)`, is
+  written as that removal, so a `SurfaceStore` and `DataModel::apply_as` apply it as
+  one: what an agent holds is what the renderer it wrote to holds. A `null` inside a
+  value is stored in every version.
 - From v1.0 a key that starts with one `@` is the protocol's. On a v1.0 surface, a
   `@` key that is no directive is refused wherever it sits in a component
   (`ErrorCode::ReservedKey`, `reserved_key`), and a literal key is written doubled:
@@ -1070,7 +1075,8 @@ These are on `main` and not yet in a published version.
   crate ships, and no longer a transcription of it. Three things differ. Its id is
   `OFFICIAL_BASIC_CATALOG_ID`: write
   `Catalog::basic().with_catalog_id(BASIC_CATALOG_ID)` where a surface is created
-  under the id AG-UI's toolkit uses, which is what `SurfaceSpec` still defaults to.
+  under the id AG-UI's toolkit uses, which is what `SurfaceSpec` still defaults to;
+  `adapters::agui::basic_catalog(A2uiVersion::V0_9)` is that catalog in one call.
   `List` declares `listStyle`, which upstream restored to the v0.9 document. The six
   input components take their check rules from the common `Checkable` type, so
   `checks` is not among `ComponentDef::props`: ask `ComponentDef::is_checkable()`.
@@ -1335,6 +1341,114 @@ These are on `main` and not yet in a published version.
   snapshot, which drops it again on the joining client, and takes it out of the
   messages given. Alpha.3 restated it after the snapshot with what followed, so a
   joiner held a message a reader of the whole run did not.
+- The agent layer speaks A2UI v1.0. A session is of the version of its catalogs, and
+  nothing else says which: `CatalogConfig::basic(A2uiVersion::V1_0)` starts a v1.0
+  session, and `CatalogDocument::load` takes a v1.0 document, which it refused. In
+  such a session the prompt shows the v1.0 schemas, an answer is read as v1.0 (a
+  creation may carry its surface, a binding is `{"@path": …}`, a component may name
+  one of the active catalogs with `@catalogId`), and `RendererState` and
+  `validate_payload` hold each component to the catalog it is drawn from. A catalog
+  the state does not hold is an `unknown_catalog` where the answer named it, such as
+  `messages[0].updateComponents.components[2].@catalogId`. The catalogs of one
+  session are of one family: a v0.9 catalog beside a v1.0 one is `Error::Catalog`. A
+  session of v0.9 or v0.9.1 catalogs is what it was, but for the next four bullets.
+- Two active catalogs under one id are refused with `Error::Catalog` ("two active
+  catalogs share the id …") by `A2uiRequestProcessor::new` and `RendererState::new`,
+  in any version: a component could not say which it meant. They were accepted.
+  Register a catalog once; two catalogs that differ need two ids.
+- The prompt snippet of `DirectJson` is the reference SDK's, byte for byte for a
+  v1.0 session. It starts with a line break, and the envelope schema, the common
+  types and each catalog are shown with their keys in the order their documents are
+  written in, where they were sorted. The same holds for a v0.9 session, so what a
+  model is told is unchanged and the text is not: regenerate a test that pins it,
+  and expect a prompt cache keyed on it to miss once. `CatalogDocument::parse(text,
+  catalog_id, version)` reads a catalog from its text and keeps its order, and so
+  does `CatalogDocument::read`; `CatalogDocument::load` takes a `serde_json::Value`,
+  whose keys are sorted already. `CatalogDocument::written()` is the document as a
+  prompt shows it.
+- A catalog pruned with `CatalogConfig::keeping_components`, `keeping_functions` or
+  a `CatalogTransformer` lists what is left in its `$defs/anyComponent` and
+  `$defs/anyFunction`, when the document declares them and the rule removed
+  something: the references in the catalog's order, with the `component`
+  discriminator for components, or `{"not": {}}` when nothing is left. It kept the
+  union as its author wrote it, minus the references to what was removed.
+  `CatalogDocument::document()` and the prompt show the new one.
+- `RendererState` and `validate_payload` report a component that sits where its
+  catalog's `allowedParents` or `allowedChildren` do not let it as `unallowed_parent`
+  or `unallowed_child` (`ErrorCode::UnallowedParent`, `UnallowedChild`), with the
+  sentence a `Validator` writes, for a surface of any version, and once nothing else
+  is wrong with the tree. It was `invalid_value` with a message that began
+  `UNALLOWED_PARENT:` or `UNALLOWED_CHILD:`, beside the other errors. Match the
+  code where you matched the text.
+- `DirectJson::holding_components_until_closed`, left unset, follows the version of
+  the answer: off for v0.9 and v0.9.1 as before, on for v1.0, where a component
+  names its catalog and half of one reads as a component of another. Set it to
+  choose for either. `OutputFormat` has a provided method
+  `reader_for(version, wrapped)`, which a request processor calls with the version
+  of its catalogs; it calls `reader(wrapped)` unless a format overrides it, so an
+  existing format compiles and reads as before.
+- `RendererCapabilities::from_metadata(metadata, version)` reads the metadata key
+  and the entry of `version`: `a2uiRendererCapabilities` and `"1.0"` for v1.0,
+  `a2uiClientCapabilities` and `"v0.9"` for the v0.9 family as before
+  (`A2uiVersion::capabilities_key()`, `capabilities_entry()`). A renderer that
+  speaks both sends both keys, and each is read by its version.
+  `adapters::a2a::renderer_capabilities(message, version)` reads the same way.
+- `agent::AgentCapabilities` is what an agent advertises: the ids of the catalogs it
+  writes UI for and whether it takes a renderer's inline catalogs.
+  `A2uiGenerator::capabilities()` gives a generator's, `to_json(version)` writes the
+  protocol's object (`{"1.0": {"supportedCatalogIds": […], "acceptsInlineCatalogs":
+  false}}`, under `"v0.9"` for the v0.9 family), and `AgentCapabilities::from_json`
+  reads one. An A2A agent card takes the same two values in
+  `adapters::a2a::agent_extension`.
+- `adapters::a2a::activate` activates an agent card's `…/a2ui/v1.0` extension and
+  answers `A2uiVersion::V1_0`. It passed that extension over, so a client that asked
+  for 1.0 and 0.9.1 was answered in 0.9.1. An agent that is not ready for v1.0 does
+  not advertise the extension.
+- `SurfaceSpec` is `#[non_exhaustive]` and has `version` (`A2uiVersion`, `v0.9`
+  unless set): `assemble_ops` writes every operation in it. A struct expression no
+  longer compiles outside the crate; the fields stay public to read and to set.
+  `with_version(V1_0)` also moves a spec that still names the basic catalog to the
+  basic catalog of v1.0. Write:
+
+  | Instead of | Write |
+  |---|---|
+  | `SurfaceSpec { surface_id, components, ..SurfaceSpec::default() }` | `SurfaceSpec::new(surface_id).with_components(components)` |
+  | `SurfaceSpec { catalog_id, data_model: Some(data), ..spec }` | `spec.with_catalog_id(catalog_id).with_data_model(data)` |
+  | `SurfaceSpec { theme: Some(theme), send_data_model: Some(true), ..spec }` | `spec.with_theme(theme).with_send_data_model(true)` |
+  | `SurfaceSpec { data_path, ..spec }` | `spec.with_data_path(data_path)` |
+- The AG-UI adapter writes for the protocol a frontend declares.
+  `CatalogContext::protocol_version()` is v1.0 when the catalog entry of the request
+  declares `protocolVersion` 1.0 and v0.9 otherwise, which is how AG-UI's middleware
+  chooses. Hand it to `CatalogContext::capabilities(version)`,
+  `render_a2ui_tool_for(version)`, whose description names the protocol and, for
+  1.0, how to write a binding, and `SurfaceSpec::with_version(version)`.
+  `render_a2ui_tool()` is still the v0.9 tool. A surface painted in v1.0 is read
+  back as one by `surfaces_in`, `latest_surface` and `SurfacePainter::from_history`,
+  and its activity carries v1.0 operations.
+- `adapters::agui::basic_catalog_id(version)` is the id an AG-UI frontend registers
+  the basic catalog under, and `adapters::agui::basic_catalog(version)` is the
+  catalog under that id: what to check the operations of a `SurfaceSpec` that names
+  no catalog against. For v0.9 the id is `BASIC_CATALOG_ID`, which AG-UI's toolkit,
+  its middleware and the renderer behind them use; for v1.0 it is the published id
+  (`A2uiVersion::V1_0.basic_catalog_id()`), which all three use too. No default
+  moved: a `SurfaceSpec` creates under the same id as in alpha.3.
+- The `render_a2ui` call `SurfacePainter::paint` makes carries the surface, not the
+  batch: `surfaceId`, every component the surface holds once the batch is applied,
+  and `data` when the batch writes the root of the data model. It carried the
+  components of the batch, and none for a batch that changed only data, which is
+  not a call the tool accepts: its schema requires `components`, and AG-UI's
+  handler refuses an empty list. A deleted surface, and one not drawn yet, is
+  `surfaceId` alone. The tool result and the activity are unchanged. A frontend
+  that drew from the arguments of the call now draws the whole surface each time.
+- `SurfaceState::outline_over(catalogs, &data)` outlines a v1.0 surface that draws
+  from several catalogs: the children of a component are read from the catalog the
+  component names, or from its surface's. `SurfaceState::outline(&catalog, &data)`
+  is unchanged and reads every component from the one catalog it is given, so it
+  stops at a component of another.
+- `A2uiAuthor` takes a `createSurface` that carries its components as one that draws
+  the surface, so a v1.0 author (`A2uiAuthor::basic(A2uiVersion::V1_0)`) accepts a
+  surface created whole in one message. It asked for an `updateComponents` after
+  it.
 
 ## Verify the upgrade
 

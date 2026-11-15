@@ -252,6 +252,9 @@ impl AgentMessage {
     }
 
     /// `updateDataModel`: upsert `value` at `path` (JSON Pointer, `/` = whole model).
+    ///
+    /// In a v1.0 message a `null` value removes what is at the path: it is
+    /// written as a removal is, and a surface applies it as one.
     pub fn update_data_model(
         surface_id: impl Into<String>,
         path: impl Into<String>,

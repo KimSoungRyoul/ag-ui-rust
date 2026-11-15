@@ -132,6 +132,61 @@ impl CatalogContext {
         Self { catalog_id, schema }
     }
 
+    /// The protocol the frontend's catalog is written for: v1.0 when the
+    /// entry declares `protocolVersion` 1.0, and v0.9 otherwise.
+    ///
+    /// This is how AG-UI's middleware chooses the protocol of everything it
+    /// writes for a run (`catalogProtocolVersion`,
+    /// `a2ui-middleware/src/protocol.ts:28-58`): "only an explicit
+    /// `protocolVersion` selects 1.0; an absent or unrecognised declaration
+    /// keeps the v0.9 default". A declaration is read as the middleware reads
+    /// one: an optional `v`, major and minor, and whatever follows them, so
+    /// `"1.0"`, `"v1.0"` and `"1.0.0-beta"` are all 1.0. The whole v0.9
+    /// family is `v0.9` on this wire.
+    ///
+    /// It is the version to hand [`CatalogContext::capabilities`],
+    /// [`render_a2ui_tool_for`](super::render_a2ui_tool_for) and
+    /// [`SurfaceSpec::with_version`](super::SurfaceSpec::with_version).
+    ///
+    /// ```
+    /// use ag_ui_a2ui::A2uiVersion;
+    /// use ag_ui_a2ui::adapters::agui::CatalogContext;
+    /// use serde_json::json;
+    ///
+    /// let v1_0 = CatalogContext::new(json!({"catalogId": "c", "protocolVersion": "1.0.0"}));
+    /// assert_eq!(v1_0.protocol_version(), A2uiVersion::V1_0);
+    /// for other in [json!({"catalogId": "c"}), json!({"protocolVersion": "0.9.1"}), json!([])] {
+    ///     assert_eq!(CatalogContext::new(other).protocol_version(), A2uiVersion::V0_9);
+    /// }
+    /// ```
+    pub fn protocol_version(&self) -> A2uiVersion {
+        let declared = self
+            .schema
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let declared = declared.strip_prefix(['v', 'V']).unwrap_or(declared);
+        // Major and minor, then an optional patch, then a pre-release or
+        // build suffix: what is read is the first two numbers.
+        let numbers = declared
+            .split_once(['-', '+'])
+            .map_or(declared, |(numbers, _)| numbers);
+        let mut parts = numbers.split('.');
+        let number = |part: Option<&str>| {
+            part.filter(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|digits| digits.parse::<u64>().ok())
+        };
+        let (major, minor) = (number(parts.next()), number(parts.next()));
+        let patch_is_a_number = parts
+            .next()
+            .is_none_or(|patch| number(Some(patch)).is_some());
+        match (major, minor) {
+            (Some(1), Some(0)) if patch_is_a_number && parts.next().is_none() => A2uiVersion::V1_0,
+            _ => A2uiVersion::V0_9,
+        }
+    }
+
     /// The entry as the capabilities of a renderer that speaks `version`: it
     /// draws the catalog it named, and sends that catalog inline when the
     /// entry defines components.

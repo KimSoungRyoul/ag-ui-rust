@@ -20,6 +20,7 @@ use super::format::{AnswerReader, OutputFormat, RawPart};
 use crate::error::{Error, Result};
 use crate::protocol::message::AgentMessage;
 use crate::protocol::operation::Operation;
+use crate::protocol::version::A2uiVersion;
 
 /// The key of the list a reader holds back until each item has closed, when
 /// asked to: [`DirectJson::holding_components_until_closed`].
@@ -60,7 +61,8 @@ const COMPONENTS: &str = "components";
 pub struct DirectJson {
     allowed_messages: Option<Vec<Operation>>,
     progressive_keys: BTreeSet<String>,
-    hold_components: bool,
+    /// `None` leaves it to the version an answer is written in.
+    hold_components: Option<bool>,
 }
 
 impl DirectJson {
@@ -106,15 +108,28 @@ impl DirectJson {
     /// Whether a stream emits a component only once its own JSON object has
     /// closed.
     ///
-    /// Off by default: a component is emitted while it arrives, with its
-    /// strings under progressive keys ended early, and again each time a
-    /// chunk changes it. On, a component still arriving is left out of its
-    /// list, and progressive keys heal only values outside components, such
-    /// as a data model.
+    /// Off, a component is emitted while it arrives, with its strings under
+    /// progressive keys ended early, and again each time a chunk changes it.
+    /// On, a component still arriving is left out of its list, and
+    /// progressive keys heal only values outside components, such as a data
+    /// model.
+    ///
+    /// Left unset, it follows the version the answer is written in: off for
+    /// v0.9 and v0.9.1, on from v1.0. A v1.0 component says which catalog it
+    /// is read from and may call functions of several, and half of one reads
+    /// as a component of another catalog, or of none; the reference stream
+    /// reads a v1.0 component only once it has closed, and the conformance
+    /// cases written for v1.0 fix that timing.
     #[must_use]
     pub fn holding_components_until_closed(mut self, hold: bool) -> Self {
-        self.hold_components = hold;
+        self.hold_components = Some(hold);
         self
+    }
+
+    /// Whether a reader of an answer in `version` holds components back.
+    fn holds_components(&self, version: A2uiVersion) -> bool {
+        self.hold_components
+            .unwrap_or(!A2uiVersion::V0_9_1.accepts(version))
     }
 }
 
@@ -176,19 +191,25 @@ impl OutputFormat for DirectJson {
         Ok(serde_json::to_string_pretty(messages)?)
     }
 
+    /// A reader for an answer in the version a constructor stamps
+    /// ([`A2uiVersion::DEFAULT`]). A request processor opens one for the
+    /// version of its catalogs, with [`OutputFormat::reader_for`].
     fn reader(&self, wrapped: bool) -> Option<Box<dyn AnswerReader>> {
+        self.reader_for(A2uiVersion::DEFAULT, wrapped)
+    }
+
+    fn reader_for(&self, version: A2uiVersion, wrapped: bool) -> Option<Box<dyn AnswerReader>> {
+        let hold = self.holds_components(version);
         let healing = Healing {
             progressive_keys: self.progressive_keys.clone(),
-            whole_item_keys: if self.hold_components {
+            whole_item_keys: if hold {
                 BTreeSet::from([COMPONENTS.to_string()])
             } else {
                 BTreeSet::new()
             },
         };
         Some(Box::new(reader::DirectJsonReader::new(
-            wrapped,
-            healing,
-            self.hold_components,
+            wrapped, healing, hold,
         )))
     }
 }

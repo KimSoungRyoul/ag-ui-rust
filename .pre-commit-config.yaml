@@ -38,7 +38,7 @@ default_stages: [pre-commit]
 # what the parse-error case needs to be pointed at.
 exclude: |
   (?x)^(
-      crates/ag-ui-a2ui/tests/(conformance|spec_v0_9)/
+      crates/ag-ui-a2ui/tests/conformance/
     | crates/ag-ui-a2ui/schemas/
     | crates/ag-ui/tests/fixtures/ag-ui-1\.0/
     | crates/ag-ui/tests/snapshots/

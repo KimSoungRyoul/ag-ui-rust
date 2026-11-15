@@ -18,8 +18,21 @@
 //! | [`SurfacePainter`], [`SurfacePainter::status`] | The `a2ui-surface` activity a frontend paints from, and a surface's life before it is painted. |
 //! | [`operations_in`], [`surfaces_in`], [`latest_surface`] | Reading surfaces back out of a conversation. |
 //! | [`user_action`], [`catalog_context`] | What a request says: an action on a surface, the frontend's catalog. |
-//! | [`generate_a2ui_tool`], [`render_a2ui_tool`] | The two tools, with their arguments. |
+//! | [`generate_a2ui_tool`], [`render_a2ui_tool`], [`render_a2ui_tool_for`] | The two tools, with their arguments. |
 //! | [`SurfaceSpec`], [`assemble_ops`] | The operations of a surface built in code. |
+//! | [`basic_catalog`], [`basic_catalog_id`] | The basic catalog as an AG-UI frontend registers it, which is what a spec that names no catalog is drawn from. |
+//!
+//! # Protocol 1.0
+//!
+//! The frontend's catalog decides the protocol of a run, as it does for
+//! AG-UI's middleware: [`CatalogContext::protocol_version`] is v1.0 when the
+//! catalog the frontend sends declares it, and v0.9 otherwise. With that
+//! version, [`render_a2ui_tool_for`] tells the model which protocol it
+//! writes, [`SurfaceSpec::with_version`] stamps the operations, and
+//! [`CatalogContext::capabilities`] negotiates for it. Nothing else changes
+//! on this wire: the envelope, the activity and the tool's arguments are the
+//! same, and a surface is still created, drawn and filled by three
+//! operations (`a2ui-middleware/src/index.ts:711-730`).
 //!
 //! # What a client receives
 //!
@@ -101,6 +114,9 @@ pub use input::{
     CatalogContext, SCHEMA_CONTEXT_DESCRIPTION, UserAction, catalog_context, user_action,
 };
 pub use ops::{
-    Intent, SurfaceSpec, assemble_ops, create_surface, update_components, update_data_model,
+    Intent, SurfaceSpec, assemble_ops, basic_catalog, basic_catalog_id, create_surface,
+    update_components, update_data_model,
 };
-pub use tools::{GenerateArgs, RenderArgs, generate_a2ui_tool, render_a2ui_tool};
+pub use tools::{
+    GenerateArgs, RenderArgs, generate_a2ui_tool, render_a2ui_tool, render_a2ui_tool_for,
+};

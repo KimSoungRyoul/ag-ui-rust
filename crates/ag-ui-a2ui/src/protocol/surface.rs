@@ -226,9 +226,11 @@ impl SurfaceState {
     /// ([`DataModel::to_json`]).
     ///
     /// Each scope reads a binding as the surface's version writes one
-    /// ([`SurfaceState::spoken_version`]). The walk follows the references
-    /// `catalog` knows: on a v1.0 surface that draws from several catalogs,
-    /// a component of another catalog is placed and its children are not.
+    /// ([`SurfaceState::spoken_version`]). `catalog` stands for whatever
+    /// catalog the surface and its components name. A v1.0 surface that draws
+    /// from several is outlined with [`SurfaceState::outline_over`], which
+    /// reads each component's children from the catalog that component is
+    /// drawn from.
     ///
     /// This is the walk a client makes before it can draw anything, and it
     /// draws nothing itself. A reference to a component that does not exist
@@ -283,6 +285,62 @@ impl SurfaceState {
     /// # Ok::<(), ag_ui_a2ui::Error>(())
     /// ```
     pub fn outline<'a>(&'a self, catalog: &'a Catalog, data: &'a Value) -> Outline<'a> {
+        self.outlined(Catalogs::One(catalog), data)
+    }
+
+    /// [`SurfaceState::outline`], for a surface that draws from several
+    /// catalogs: from v1.0 a component may name its own, with `@catalogId`.
+    ///
+    /// The children of a component are the ones the catalog it is drawn from
+    /// says it has ([`SurfaceState::catalog_of`]): the catalog the component
+    /// names, or else the surface's. A component whose catalog is not among
+    /// `catalogs` is placed, and nothing below it is, since nothing says
+    /// which of its properties name children.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::message::CreateSurface;
+    /// use ag_ui_a2ui::{A2uiVersion, AgentMessage, AgentPayload, Catalog, Component, SurfaceStore};
+    /// use serde_json::json;
+    ///
+    /// let basic = Catalog::basic_for(A2uiVersion::V1_0);
+    /// let panels = Catalog::from_schema(&json!({
+    ///     "catalogId": "example.com:panels",
+    ///     "protocolVersion": "1.0",
+    ///     "components": {"Panel": {"type": "object", "properties": {
+    ///         "body": {"$ref": "common_types.json#/$defs/Child"}
+    ///     }}}
+    /// }))?;
+    /// let create = CreateSurface::new("s")
+    ///     .with_catalog_id(&basic.catalog_id)
+    ///     .with_components(vec![
+    ///         Component::new("root", "Panel")
+    ///             .with("@catalogId", json!("example.com:panels"))
+    ///             .with("body", json!("text")),
+    ///         Component::new("text", "Text").with("text", json!("Inside")),
+    ///     ]);
+    /// let mut store = SurfaceStore::new();
+    /// store.apply(&AgentMessage::new(AgentPayload::CreateSurface(create)).with_version(A2uiVersion::V1_0))?;
+    /// let surface = store.get("s").unwrap();
+    /// let data = json!({});
+    ///
+    /// // One catalog knows nothing of `Panel`, and stops at it.
+    /// assert_eq!(surface.outline(&basic, &data).count(), 1);
+    /// let placed: Vec<&str> = surface
+    ///     .outline_over([&basic, &panels], &data)
+    ///     .map(|placed| placed.component.id.as_str())
+    ///     .collect();
+    /// assert_eq!(placed, ["root", "text"]);
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    pub fn outline_over<'a>(
+        &'a self,
+        catalogs: impl IntoIterator<Item = &'a Catalog>,
+        data: &'a Value,
+    ) -> Outline<'a> {
+        self.outlined(Catalogs::Several(catalogs.into_iter().collect()), data)
+    }
+
+    fn outlined<'a>(&'a self, catalogs: Catalogs<'a>, data: &'a Value) -> Outline<'a> {
         let by_id: BTreeMap<&str, &Component> = self
             .components
             .iter()
@@ -293,12 +351,22 @@ impl SurfaceState {
             .get(ROOT_ID)
             .map(|root| (*root, Scope::root(data).speaking(self.spoken_version())));
         Outline {
-            catalog,
+            surface: self,
+            catalogs,
             by_id,
             next,
             path: Vec::new(),
         }
     }
+}
+
+/// The catalogs an outline reads a component's children from.
+#[derive(Debug, Clone)]
+enum Catalogs<'a> {
+    /// One, which stands for whatever a surface and its components name.
+    One(&'a Catalog),
+    /// Several, each found by the id a component or its surface names.
+    Several(Vec<&'a Catalog>),
 }
 
 /// The components a surface's root reaches, placed one at a time.
@@ -310,7 +378,8 @@ impl SurfaceState {
 /// what it took.
 #[derive(Debug, Clone)]
 pub struct Outline<'a> {
-    catalog: &'a Catalog,
+    surface: &'a SurfaceState,
+    catalogs: Catalogs<'a>,
     by_id: BTreeMap<&'a str, &'a Component>,
     /// The component to place next, in its scope, below the end of `path`.
     next: Option<(&'a Component, Scope<'a>)>,
@@ -395,10 +464,24 @@ impl<'a> Iterator for Outline<'a> {
                 // A component at the deepest a renderer draws is placed, and
                 // its children are not.
                 if depth < MAX_DEPTH {
+                    // The catalog the component is drawn from says which of
+                    // its properties name children.
+                    let catalog = match &self.catalogs {
+                        Catalogs::One(catalog) => Some(*catalog),
+                        Catalogs::Several(catalogs) => {
+                            let named = self.surface.catalog_of(component);
+                            catalogs
+                                .iter()
+                                .copied()
+                                .find(|catalog| Some(catalog.catalog_id.as_str()) == named)
+                        }
+                    };
                     self.path.push(Step {
                         component,
                         scope,
-                        references: self.catalog.references(component),
+                        references: catalog
+                            .map(|catalog| catalog.references(component))
+                            .unwrap_or_default(),
                         at: 0,
                         items: None,
                     });

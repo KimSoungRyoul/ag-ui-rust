@@ -458,6 +458,57 @@ impl SurfacePainter {
     /// result carries it, and its arguments name the first surface the batch
     /// changed.
     ///
+    /// # What the call carries
+    ///
+    /// The call's arguments are the surface, not the batch: `surfaceId`, every
+    /// component the surface holds once the batch is applied, and `data` when
+    /// the batch writes the root of the data model. A batch that changes one
+    /// component, or only data, is still sent as that batch in the result.
+    ///
+    /// `render_a2ui` describes a surface whole. Its `components` are required
+    /// (AG-UI's `a2ui-middleware/src/tools.ts:54`, read at
+    /// `ag-ui-protocol/ag-ui` commit `2330368a`), and AG-UI's handler holds
+    /// every closed list to "a non-empty array" with a root
+    /// (`a2ui-toolkit/src/validate.ts:112-117`, called at
+    /// `a2ui-middleware/src/index.ts:985-997`), so neither a list left out nor
+    /// an empty one is a call that tool accepts. AG-UI's middleware never
+    /// makes this call for an update itself: there an update is the result of
+    /// whatever tool the agent ran (`index.ts:1176-1309` reads the operations
+    /// out of any tool result). An agent that has such a call sends the batch
+    /// with [`SurfacePainter::settle`] under it. `paint` is for an agent that
+    /// has none, and the call it makes is one the tool's own schema accepts.
+    ///
+    /// A surface that holds no component, because the batch deleted it or has
+    /// not drawn it yet, has none to send, and the call then carries
+    /// `surfaceId` alone.
+    ///
+    /// ```
+    /// use ag_ui::server::RunContext;
+    /// use ag_ui::{Event, RunAgentInput};
+    /// use ag_ui_a2ui::adapters::agui::{Intent, SurfacePainter, SurfaceSpec, assemble_ops};
+    /// use ag_ui_a2ui::{AgentMessage, Component};
+    /// use serde_json::{Value, json};
+    ///
+    /// let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("thread", "run"))?;
+    /// let spec = SurfaceSpec::new("cart")
+    ///     .with_components(vec![Component::new("root", "Text").with("text", json!({"path": "/total"}))])
+    ///     .with_data_model(json!({"total": "12.00"}));
+    /// let mut painter = SurfacePainter::new();
+    /// painter.paint(&mut ctx, &assemble_ops(Intent::Create, &spec))?;
+    /// events.drain();
+    ///
+    /// // A change to the data alone.
+    /// painter.paint(&mut ctx, &[AgentMessage::update_data_model("cart", "/total", json!("15.00"))])?;
+    /// let sent = events.drain();
+    /// let Event::ToolCallArgs(arguments) = &sent[1] else { unreachable!() };
+    /// let arguments: Value = serde_json::from_str(&arguments.delta)?;
+    /// assert_eq!(arguments["surfaceId"], "cart");
+    /// assert_eq!(arguments["components"][0]["id"], "root");
+    /// let Event::ToolCallResult(result) = &sent[3] else { unreachable!() };
+    /// assert!(result.content.to_text().contains(r#""path":"/total""#));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns an agent error when the operations do not apply to what the
@@ -472,7 +523,7 @@ impl SurfacePainter {
         let applied = self
             .apply(operations)
             .map_err(ag_ui::server::Error::agent)?;
-        let arguments = render_arguments(operations, &applied.changes);
+        let arguments = render_arguments(operations, &applied);
         let painted = self
             .commit(id.as_str(), operations, applied)
             .map_err(ag_ui::server::Error::agent)?;
@@ -487,32 +538,62 @@ impl SurfacePainter {
     }
 }
 
-/// The arguments a `render_a2ui` call would have had for a batch: the first
-/// surface its `changes` name, with that surface's components and root data
-/// when the batch carries them. A batch that changed nothing names the first
-/// surface of its `operations`.
+/// The arguments of the `render_a2ui` call a batch is sent as: the first
+/// surface its changes name, with every component that surface holds once
+/// the batch is applied, and its root data when the batch writes it. A batch
+/// that changed nothing names the first surface of its `operations`.
+///
+/// See [`SurfacePainter::paint`] for why the components are the surface's and
+/// not the batch's.
 #[cfg(feature = "ag-ui-server")]
-fn render_arguments(operations: &[AgentMessage], changes: &[&AgentMessage]) -> Value {
+fn render_arguments(operations: &[AgentMessage], applied: &Applied<'_>) -> Value {
     use crate::protocol::message::{AgentPayload, DataModelUpdate};
+    use crate::protocol::version::A2uiVersion;
 
-    let surface_id = changes
+    let surface_id = applied
+        .changes
         .iter()
         .find_map(|change| change.surface_id())
         .or_else(|| operations.iter().find_map(AgentMessage::surface_id));
     let mut arguments = JsonObject::new();
     arguments.insert("surfaceId".into(), json!(surface_id.unwrap_or_default()));
-    for change in changes {
+    let held = surface_id
+        .and_then(|surface_id| applied.surfaces.get(surface_id))
+        .filter(|surface| !surface.deleted && !surface.components.is_empty());
+    if let Some(surface) = held {
+        arguments.insert("components".into(), json!(surface.components));
+    }
+    for change in &applied.changes {
         if change.surface_id() != surface_id {
             continue;
         }
+        // What a change writes is read as its version writes it.
+        let version = A2uiVersion::parse(&change.version);
         match &change.payload {
-            AgentPayload::UpdateComponents(update) => {
-                arguments.insert("components".into(), json!(update.components));
-            }
             AgentPayload::UpdateDataModel(update) if matches!(update.path.as_str(), "" | "/") => {
-                if let DataModelUpdate::Set(value) = &update.value {
-                    arguments.insert("data".into(), value.clone());
+                let null_removes = version.is_some_and(A2uiVersion::null_removes);
+                match &update.value {
+                    DataModelUpdate::Set(value) if !(null_removes && value.is_null()) => {
+                        arguments.insert("data".into(), value.clone())
+                    }
+                    // A later removal of the root takes the data back.
+                    _ => arguments.remove("data"),
+                };
+            }
+            // A surface made again starts with the data its creation carries,
+            // which a creation may from v1.0, and with none otherwise.
+            AgentPayload::CreateSurface(create) => {
+                arguments.remove("data");
+                if let Some(data) = create
+                    .data_model
+                    .as_ref()
+                    .filter(|_| version.is_some_and(A2uiVersion::creates_inline))
+                {
+                    arguments.insert("data".into(), Value::Object(data.clone()));
                 }
+            }
+            AgentPayload::DeleteSurface(_) => {
+                arguments.remove("data");
             }
             _ => {}
         }
@@ -1165,6 +1246,121 @@ mod server_tests {
         assert_eq!(
             serde_json::from_str::<Value>(&arguments.delta).unwrap(),
             json!({"surfaceId": "old"})
+        );
+    }
+
+    /// The call `paint` makes is one `render_a2ui` accepts: `components` is
+    /// required, and a list that is empty or has no root is refused upstream.
+    #[test]
+    fn the_call_carries_the_surface_whole_whatever_the_batch_changed() {
+        let (mut ctx, mut events) =
+            RunContext::<()>::new(RunAgentInput::new("thread", "run")).unwrap();
+        let mut painter = SurfacePainter::new();
+        let spec = SurfaceSpec::new("s")
+            .with_components(vec![
+                Component::new("root", "Column").with("children", json!(["title", "total"])),
+                Component::new("title", "Text").with("text", json!("Cart")),
+                Component::new("total", "Text").with("text", json!({"path": "/total"})),
+            ])
+            .with_data_model(json!({"total": 1}));
+        let mut arguments_of = |painter: &mut SurfacePainter, batch: &[AgentMessage]| -> Value {
+            painter.paint(&mut ctx, batch).unwrap();
+            let sent = events.drain();
+            let Event::ToolCallArgs(arguments) = &sent[1] else {
+                panic!("the second event carries the arguments");
+            };
+            let Event::ToolCallResult(result) = &sent[3] else {
+                panic!("the fourth event is the result");
+            };
+            // The result is the batch, as sent.
+            assert_eq!(
+                result.content.to_text(),
+                wrap_as_operations_envelope(batch).unwrap()
+            );
+            serde_json::from_str(&arguments.delta).unwrap()
+        };
+        let ids = |arguments: &Value| -> Vec<String> {
+            arguments["components"]
+                .as_array()
+                .map(|components| {
+                    components
+                        .iter()
+                        .map(|component| component["id"].as_str().unwrap().to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let created = arguments_of(&mut painter, &assemble_ops(Intent::Create, &spec));
+        assert_eq!(ids(&created), ["root", "title", "total"]);
+        assert_eq!(created["data"], json!({"total": 1}));
+
+        // Data alone: the components are the surface's, and no `data`, since
+        // the batch does not write the root.
+        let data_only = arguments_of(
+            &mut painter,
+            &[AgentMessage::update_data_model("s", "/total", json!(2))],
+        );
+        assert_eq!(ids(&data_only), ["root", "title", "total"]);
+        assert_eq!(data_only.get("data"), None);
+        assert_eq!(
+            data_only.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["components", "surfaceId"]
+        );
+
+        // One component of three: still the whole list, with the change in it.
+        let one = arguments_of(
+            &mut painter,
+            &[AgentMessage::update_components(
+                "s",
+                vec![Component::new("title", "Text").with("text", json!("Basket"))],
+            )],
+        );
+        assert_eq!(ids(&one), ["root", "title", "total"]);
+        assert_eq!(one["components"][1]["text"], "Basket");
+
+        // A surface with nothing drawn, and one that is gone, have nothing
+        // to send.
+        let empty = arguments_of(&mut painter, &[AgentMessage::create_surface("t", "c")]);
+        assert_eq!(empty, json!({"surfaceId": "t"}));
+        let deleted = arguments_of(&mut painter, &[AgentMessage::delete_surface("s")]);
+        assert_eq!(deleted, json!({"surfaceId": "s"}));
+
+        // A v1.0 creation that carries its surface: the call carries it too.
+        let version = crate::A2uiVersion::V1_0;
+        let create = crate::protocol::message::CreateSurface::new("v")
+            .with_catalog_id(version.basic_catalog_id())
+            .with_components(vec![
+                Component::new("root", "Text").with("text", version.path("/total")),
+            ])
+            .with_data_model(json!({"total": 3}));
+        let whole = arguments_of(
+            &mut painter,
+            &[
+                AgentMessage::new(crate::protocol::message::AgentPayload::CreateSurface(
+                    create,
+                ))
+                .with_version(version),
+            ],
+        );
+        assert_eq!(ids(&whole), ["root"]);
+        assert_eq!(whole["data"], json!({"total": 3}));
+        // In v1.0 a `null` at the root removes, so there is no data to send.
+        let emptied = arguments_of(
+            &mut painter,
+            &[AgentMessage::update_data_model("v", "/", Value::Null).with_version(version)],
+        );
+        assert_eq!(ids(&emptied), ["root"]);
+        assert_eq!(emptied.get("data"), None);
+        assert_eq!(
+            painter
+                .surfaces()
+                .get("v")
+                .unwrap()
+                .data_model
+                .to_json()
+                .unwrap(),
+            json!({})
         );
     }
 }

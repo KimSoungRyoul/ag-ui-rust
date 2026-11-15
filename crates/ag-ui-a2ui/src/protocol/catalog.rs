@@ -787,6 +787,13 @@ impl Catalog {
     /// a v1.0 catalog that breaks one of the rules above;
     /// [`Error::Validation`] for an extension name that is not an identifier.
     pub fn from_schema(schema: &Value) -> Result<Self> {
+        Self::from_schema_as(schema, A2uiVersion::V0_9)
+    }
+
+    /// [`Catalog::from_schema`], for a reader that knows which version a
+    /// document that states none is written for: the agent layer's, which is
+    /// handed a version with a catalog.
+    pub(crate) fn from_schema_as(schema: &Value, unstated: A2uiVersion) -> Result<Self> {
         let root = schema
             .as_object()
             .ok_or_else(|| Error::catalog("catalog document must be a JSON object"))?;
@@ -799,7 +806,7 @@ impl Catalog {
 
         let mut catalog = Self::empty(catalog_id);
         catalog.version = match root.get("protocolVersion") {
-            None | Some(Value::Null) => A2uiVersion::V0_9,
+            None | Some(Value::Null) => unstated,
             Some(Value::String(stated)) => A2uiVersion::from_number(stated).ok_or_else(|| {
                 Error::catalog(format!(
                     "catalog '{catalog_id}' targets protocol version '{stated}', which this \

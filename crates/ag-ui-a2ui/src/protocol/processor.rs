@@ -252,6 +252,14 @@ impl MessageProcessor {
     /// a [`RejectionKind::Validation`] refusal, each failure located like any
     /// other, `messages[1].updateComponents.components[0].text`.
     ///
+    /// A schema is one catalog's, so it holds a message that draws from one
+    /// catalog. From v1.0 a component or a function call may name another
+    /// catalog than its surface's own, and a message in which one does is not
+    /// put to a schema at all: what it names is resolved against the
+    /// registered catalogs (the catalog, the component type, the function),
+    /// and the properties and arguments are not checked against any JSON
+    /// Schema, the surface's own included.
+    ///
     /// ```
     /// use std::collections::BTreeMap;
     ///
@@ -811,6 +819,10 @@ pub struct Rejection {
     pub error: Error,
     /// The version the refused message declares, for the reply.
     version: A2uiVersion,
+    /// What a [`RejectionKind::Catalog`] refusal was found as, when a
+    /// component or a function call named the catalog: the errors, each where
+    /// the message wrote the name. Empty for any other refusal.
+    named: Vec<ValidationError>,
 }
 
 impl Rejection {
@@ -825,19 +837,40 @@ impl Rejection {
                 .and_then(Value::as_str)
                 .and_then(A2uiVersion::parse)
                 .unwrap_or(A2uiVersion::DEFAULT),
+            named: Vec::new(),
         }
     }
 
     fn invalid(index: usize, message: &Value, errors: Vec<ValidationError>) -> Self {
         let kind = RejectionKind::of(&errors);
-        let error = match (kind, errors.first()) {
+        match (kind, errors.first()) {
             // A catalog a component names is refused as one the surface names.
-            (RejectionKind::Catalog, Some(first)) => Error::catalog(first.message.clone()),
-            _ => Error::Validation {
-                errors: ValidationErrors(errors),
-            },
-        };
-        Self::new(kind, index, message, error)
+            (RejectionKind::Catalog, Some(first)) => {
+                let error = Error::catalog(first.message.clone());
+                let mut rejection = Self::new(kind, index, message, error);
+                rejection.named = errors;
+                rejection
+            }
+            _ => Self::new(
+                kind,
+                index,
+                message,
+                Error::Validation {
+                    errors: ValidationErrors(errors),
+                },
+            ),
+        }
+    }
+
+    /// The errors behind a refusal for a catalog that a component or a
+    /// function call named, each located where the message names it. Empty
+    /// when the surface named the catalog, and for every other kind.
+    ///
+    /// A renderer reports such a refusal as a catalog it does not have. A
+    /// caller that wrote the message reads here which name to change.
+    #[cfg_attr(not(feature = "agent"), allow(dead_code))]
+    pub(crate) fn named_catalogs(&self) -> &[ValidationError] {
+        &self.named
     }
 
     /// The validation errors of the refusal; none for a

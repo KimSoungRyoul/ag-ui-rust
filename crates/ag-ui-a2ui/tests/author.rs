@@ -74,6 +74,48 @@ fn a_basic_author_holds_a_list_style_to_the_catalog_of_its_version() {
     assert!(refused.to_string().contains("listStyle"), "{refused}");
 }
 
+/// An author on the v1.0 documents: a creation that carries its surface, a
+/// binding written `@path`, and an edit that removes a value with `null`.
+#[test]
+fn a_v1_0_author_creates_and_edits_in_v1_0() {
+    let catalog = A2uiVersion::V1_0.basic_catalog_id();
+    let author = A2uiAuthor::basic(A2uiVersion::V1_0).unwrap();
+    let create = vec![json!({"version": "1.0", "createSurface": {
+        "surfaceId": "s",
+        "catalogId": catalog,
+        "dataModel": {"title": "Hello", "note": "x"},
+        "components": [{"id": "root", "component": "Text", "text": {"@path": "/title"}}]
+    }})];
+    let created = author.validate_create("s", &create).unwrap();
+    assert_eq!(created.components().len(), 1);
+    assert_eq!(created.catalog_id(), catalog);
+
+    let edit = vec![
+        json!({"version": "1.0", "updateDataModel": {"surfaceId": "s", "path": "/note", "value": null}}),
+    ];
+    let edited = author.validate_edit(&created, &edit).unwrap();
+    assert_eq!(
+        edited.data_model().to_json().unwrap(),
+        json!({"title": "Hello"})
+    );
+
+    // The v0.9 spelling is not this author's: its schemas hold the message.
+    let mut old = create.clone();
+    old[0]["createSurface"]["components"][0]["text"] = json!({"path": "/title"});
+    assert!(author.validate_create("s", &old).is_err());
+    let mut other_version = create.clone();
+    other_version[0]["version"] = json!("v0.9.1");
+    assert!(author.validate_create("s", &other_version).is_err());
+    // A creation with nothing drawn is still not a surface.
+    let empty =
+        vec![json!({"version": "1.0", "createSurface": {"surfaceId": "s", "catalogId": catalog}})];
+    let refused = author.validate_create("s", &empty).unwrap_err();
+    assert!(
+        refused.to_string().contains("created with nothing in it"),
+        "{refused}"
+    );
+}
+
 #[test]
 fn create_and_edit_pin_target_version_catalog_and_lifecycle() {
     let author = A2uiAuthor::basic(A2uiVersion::V0_9_1).unwrap();

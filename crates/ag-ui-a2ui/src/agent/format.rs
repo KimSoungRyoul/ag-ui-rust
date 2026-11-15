@@ -17,6 +17,7 @@ use serde_json::Value;
 use super::catalog::CatalogDocument;
 use crate::error::{Error, Result};
 use crate::protocol::message::AgentMessage;
+use crate::protocol::version::A2uiVersion;
 
 /// A piece of an answer as the model wrote it, before any block is compiled.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,5 +257,15 @@ pub trait OutputFormat: fmt::Debug + Send + Sync {
     fn reader(&self, wrapped: bool) -> Option<Box<dyn AnswerReader>> {
         let _ = wrapped;
         None
+    }
+
+    /// [`OutputFormat::reader`], for an answer written in `version`: the one
+    /// a request processor opens, with the version of its catalogs.
+    ///
+    /// A format whose reading does not depend on the version leaves this as
+    /// it is.
+    fn reader_for(&self, version: A2uiVersion, wrapped: bool) -> Option<Box<dyn AnswerReader>> {
+        let _ = version;
+        self.reader(wrapped)
     }
 }
