@@ -253,6 +253,48 @@ These are on `main` and not yet in a published version.
 - The constructors `SseFrame::event(e)` and `SseFrame::comment(text)` on
   `encode::sse::SseFrame` (also `axum::SseFrame`) are removed. Write the variants instead:
   `SseFrame::Event(e)` and `SseFrame::Comment(text.into())`.
+- The client ends a chunk stream where AG-UI 1.0 says it ends. A `CUSTOM`, `STATE_SNAPSHOT`,
+  `STATE_DELTA`, `STEP_STARTED`, `STEP_FINISHED`, `REASONING_START` or `REASONING_END`
+  event closes the open `*_CHUNK` stream of the agent or subagent it belongs to;
+  `RUN_STARTED` and `MESSAGES_SNAPSHOT` close every one, as `RUN_FINISHED` already did; and
+  `SUBAGENT_FINISHED` or `SUBAGENT_ERROR` closes that subagent's, so the synthesized end
+  now comes before the subagent's terminal event. A chunk that names no id after one of
+  these is a protocol error ("carries no messageId and no message is open"), where alpha.3
+  appended it to the message before. A chunk that repeats the id re-opens the message and
+  the text assembles as before, with a second `Started` and `Ended` update. `RAW`,
+  `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA`, `REASONING_ENCRYPTED_VALUE` and `SUBAGENT_STARTED`
+  still close nothing.
+- A continuation chunk that repeats `role` or `name` (`TEXT_MESSAGE_CHUNK`), or
+  `toolCallName` or `parentMessageId` (`TOOL_CALL_CHUNK`), with a value other than the one
+  its stream was opened with is a protocol error; alpha.3 ignored the repeat. An opener
+  without a `role` opened an `assistant` message, so a later chunk naming another role
+  contradicts it. Repeating the same value, or leaving the field out, is unchanged.
+- An `ACTIVITY_SNAPSHOT` with `replace: false` for an activity that already exists changes
+  nothing: content, `activityType` and owner stay, and `Applier::apply` returns
+  `Changed::Nothing`. Alpha.3 merged the content (RFC 7396) and overwrote `activityType`.
+  Its own values still apply when it creates the activity.
+- An `ACTIVITY_DELTA` for an id that has no activity message, or whose message is not an
+  activity, is skipped. `Applier::apply` returns `Error::Patch` ("no activity message has
+  this id, so the delta was skipped"), and a `Thread` reports it as a `patch` diagnostic and
+  carries on. Alpha.3 created an empty activity from the delta and patched that.
+- The client verifier brackets a reasoning block. `REASONING_START` for a block that is
+  already open, `REASONING_END` for one that is not, and `RUN_FINISHED` while one is open
+  are protocol errors, as they already were for a hosted run. Alpha.3 accepted all three.
+- A request carries a legacy `binary` content part as the 1.0 media part it stands for:
+  `image`, `audio`, `video` or `document` by MIME type, with its `data` or else its `url` as
+  the source and `filename` under `metadata`. A part that only repeats a media part already
+  in the message is dropped, and one with only an `id` is sent unchanged. This applies to
+  `Thread` runs and `RemoteAgent::run_events`; the messages the application holds are not
+  rewritten. Alpha.3 sent the `binary` part, which a 1.0 agent strips.
+- A `Thread` reports a second `RUN_STARTED` inside an active run as "RUN_STARTED arrived
+  twice in one stream" whatever ids it carries. Alpha.3 reported a different run id as
+  "RUN_STARTED does not match the requested thread and run IDs". With `verify(false)` the
+  id check is still what fails it.
+- `server::EventVerifier` rejects a first event that is neither `RUN_STARTED` nor
+  `RUN_ERROR`, with `Rule::OutOfOrder`. Alpha.3 accepted any first event. A hosted run is
+  unaffected, since the driver emits `RUN_STARTED` first, and so is `RunContext::new`, whose
+  harness stands in for the driver. Code that feeds a standalone `EventVerifier` a recorded
+  stream has to start with the run's `RUN_STARTED`.
 
 ## Verify the upgrade
 
