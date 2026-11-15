@@ -1,5 +1,12 @@
 # AG-UI / A2UI SDK 개선안: As-is → To-be
 
+> **기록 문서.** 0.3 동작(As-is)과 0.4.0–0.4.1에서 구현한 설계(To-be)를 기록하며 현재 설계가
+> 아니다. 아래 Rust 코드 블록은 컴파일 검사를 받지 않아 현재 API와 다를 수 있다. 현재 사용법은
+> [README](../README.md)와 [0.5 migration notes](migration-0.5.md)를 따른다.
+>
+> *History, not the current design: records 0.3 and the 0.4.0–0.4.1 work. Its Rust blocks are
+> not compiled.*
+
 작성일: 2026-09-13. 분석 대상: `ag-ui-rust`의 `37ce5e0`.
 
 상태: 0.4.1 명칭 정리 반영. 독립 소비자 앱, 공식 renderer core와의 상호운용, Rust 1.85·wasm 검증까지 수행했다. 실제 사용법은 README와 migration-0.4.md를 기준으로 하며 아래 As-is는 0.3 동작을 기록한다.

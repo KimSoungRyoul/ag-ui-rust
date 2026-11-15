@@ -5,7 +5,7 @@ description: "Use when writing Rust consumers of AG-UI agents. The client is ag_
 
 # Consuming an AG-UI agent from Rust
 
-This skill targets workspace version **0.5.0-alpha.1**. Check the actual checkout before copying
+This skill targets workspace version **0.5.0-alpha.3**. Check the actual checkout before copying
 APIs into an older released consumer. One crate, `ag-ui`, contains protocol/server/client
 features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 
@@ -13,12 +13,13 @@ features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 
 ```toml
 [dependencies]
-ag-ui = { path = "/path/to/ag-ui-rust/crates/ag-ui", features = ["http"] }
+ag-ui = { version = "=0.5.0-alpha.3", features = ["http"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-The path selects this unpublished candidate during pre-merge QA. `http` is opt-in.
+`ag-ui` is on crates.io; the `=` keeps Cargo from moving to a later prerelease on its own.
+`http` is opt-in.
 `client` alone accepts custom transports and supports wasm without
 Tokio or reqwest. The public relationship is endpoint → conversation → run:
 
@@ -108,6 +109,10 @@ AG-UI has no tool discovery. Configure tools yourself through builder `.tools` o
 - `Done` contains `RunEnd::{Success, SuccessWithPendingToolCalls, Interrupted, Failed, Cancelled, Aborted}`.
   Pending frontend tool calls still need application results. `Cancelled` is a server-confirmed
   stop; `Aborted` only means local consumption stopped. Match all six.
+- `thread.unanswered_tool_calls()` lists every call the next run must answer first, including
+  one a failed or aborted run left without a result; `send`/`run`/`resume_many` refuse until
+  each has a tool message. Answer with `push_message(Message::tool(..))`, or give a call up
+  with `abandon_tool_call(&id, reason)`, which records a tool message with `error` set.
 
 `Update` is non-exhaustive. `RunEnd` is exhaustive. A successful terminal can coexist with
 local patch/validation diagnostics. `collect_report()` returns `end`, `new_messages`,
@@ -125,7 +130,8 @@ accepts local callbacks. Decode failures are diagnostics and terminate the high-
 
 Use `thread.resume_many(entries)?` to answer **all** pending interrupts exactly once.
 `resume(&interrupt, payload)` and `decline(&interrupt)` are single-interrupt conveniences.
-Unknown/duplicate/missing IDs and expired stored interrupts fail before dispatch. The
+Unknown/duplicate/missing IDs and answers to expired stored interrupts fail before dispatch.
+An expired interrupt can still be declined, which is how the thread moves past it. The
 caller-supplied Interrupt object cannot replace the stored expiry. `response_schema` is
 preserved for form rendering; arbitrary JSON Schema validation and execution authorization
 remain application/server responsibilities.

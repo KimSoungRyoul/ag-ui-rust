@@ -303,7 +303,7 @@ struct Live {
 
 /// Mounts the agents on a real router and binds a real port, or skips.
 ///
-/// The run goes over loopback HTTP through `ag-ui-client` rather than straight
+/// The run goes over loopback HTTP through `ag_ui::client` rather than straight
 /// into the agent: the point is to exercise the whole stack, SSE encoding and
 /// decoding included.
 ///

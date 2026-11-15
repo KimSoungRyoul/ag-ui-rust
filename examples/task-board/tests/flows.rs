@@ -1,7 +1,7 @@
 //! The flows the README shows, run against a real server.
 //!
 //! Nothing here is mocked: the agent is mounted with `route_agui` on a loopback
-//! port, and the client is `ag-ui-client`'s own HTTP transport. The terminal
+//! port, and the client is `ag_ui::client`'s own HTTP transport. The terminal
 //! flows drive [`task_board::chat::converse`] — the same code the binary runs —
 //! with a scripted stdin and a `Vec<u8>` for a screen, so the transcripts in
 //! `README.md` are assertions rather than illustrations.
