@@ -149,6 +149,46 @@ async fn a_thread_declares_its_version_unless_its_peer_is_pinned_as_legacy() {
     );
 }
 
+#[tokio::test]
+async fn context_and_forwarded_props_go_with_every_run_after_they_are_set_until_replaced() {
+    let transport = ReplayTransport::with_runs([success(), success(), success(), success()])
+        .matching_requests();
+    let mut thread = Thread::new(transport.clone(), "t");
+    thread.send("before").unwrap().collect_report().await;
+
+    let context = vec![ag_ui::Context::new("locale", "en-GB")];
+    let props = json!({ "tenant": "acme" });
+    thread.set_context(context.clone());
+    thread.set_forwarded_props(props.clone());
+    thread.send("set").unwrap().collect_report().await;
+    // Not set again: a later run sends the same.
+    thread.send("kept").unwrap().collect_report().await;
+
+    thread.set_context(Vec::<ag_ui::Context>::new());
+    thread.set_forwarded_props(serde_json::Value::Null);
+    thread.send("cleared").unwrap().collect_report().await;
+
+    let wire: Vec<_> = transport
+        .requests()
+        .iter()
+        .map(|request| serde_json::to_value(request).unwrap())
+        .collect();
+    let [before, set, kept, cleared] = wire.as_slice() else {
+        panic!("four runs, four requests: {wire:?}");
+    };
+    for request in [before, cleared] {
+        assert_eq!(request["context"], json!([]));
+        assert!(request.get("forwardedProps").is_none(), "{request}");
+    }
+    for request in [set, kept] {
+        assert_eq!(
+            request["context"],
+            json!([{"description": "locale", "value": "en-GB"}])
+        );
+        assert_eq!(request["forwardedProps"], props);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Counter {
     count: u32,

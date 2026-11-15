@@ -680,6 +680,22 @@ These are on `main` and not yet in a published version.
   in a new snapshot, so code that read it reads `messages` and filters by role. A
   version 2 snapshot with entries in `reasoning` is refused, and alpha.3 cannot read a
   version 2 snapshot.
+- A continuation `*_CHUNK` without a `delta` that carries `metadata`, such as a final
+  chunk reporting a finish reason, expands to a content event with an empty delta
+  (`TEXT_MESSAGE_CONTENT`, `TOOL_CALL_ARGS` or `REASONING_MESSAGE_CONTENT`) that carries
+  the metadata, so it merges into the message, tool call or reasoning message, as
+  AG-UI 1.0 requires. So does any chunk without a `delta` that carries a `rawEvent`.
+  Alpha.3 expanded such a chunk to nothing, and its metadata and `rawEvent` were lost. A
+  `Thread` yields one more update for it, `MessageChangeKind::Content`,
+  `MessageChangeKind::ToolCallArgs` or `ReasoningChangeKind::Content` with an empty
+  `delta`; code that treats every content update as new text skips an empty one.
+- The events `ChunkNormalizer` and `normalize_all` synthesize from a chunk no longer
+  carry its `timestamp`, which AG-UI 1.0 keeps off them. The synthesized `*_START` no
+  longer carries its `rawEvent` either: the content event carries it, once, as in the
+  reference client. Both still carry its `metadata`. Alpha.3 copied the chunk's
+  `timestamp`, `rawEvent` and `metadata` onto the start and onto the content event. Read
+  a chunk's `timestamp` from the chunk, which `Thread::on_event` observes before
+  expansion, and its `rawEvent` from the content event.
 
 ## Verify the upgrade
 
