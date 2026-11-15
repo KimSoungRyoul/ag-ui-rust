@@ -178,6 +178,54 @@ fn nothing_may_follow_a_finished_run() {
         said.contains("after the run had already finished"),
         "{said}"
     );
+
+    // The escape hatches belong to an open run, not to a closed one.
+    for late in [Event::raw(json!({})), Event::custom("late", json!(1))] {
+        let said = complaint(&[
+            Event::run_started("t", "r"),
+            Event::run_finished_success("t", "r"),
+            late,
+        ]);
+        assert!(
+            said.contains("after the run had already finished"),
+            "{said}"
+        );
+    }
+}
+
+#[test]
+fn a_run_error_may_follow_run_finished_once() {
+    // 1.0, lifecycle: "A producer MAY emit RUN_ERROR after RUN_FINISHED,
+    // reporting a failure that surfaced after the run reported success". The
+    // upstream stream `late-run-error-after-finished-run-continues`.
+    verify_all(&[
+        Event::run_started("t", "r"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_content("msg-1", "delivered before the failure"),
+        Event::text_message_end("msg-1"),
+        Event::run_finished_success("t", "r"),
+        Event::run_error("the transport failed while flushing"),
+    ])
+    .expect("a late RUN_ERROR is a run failure, not a protocol violation");
+
+    // "A producer MUST NOT emit anything after RUN_ERROR" — a late one
+    // included.
+    for after in [
+        Event::run_error("again"),
+        Event::run_finished_success("t", "r"),
+        Event::custom("late", json!(1)),
+    ] {
+        let said = complaint(&[
+            Event::run_started("t", "r"),
+            Event::run_finished_success("t", "r"),
+            Event::run_error("late"),
+            after,
+        ]);
+        assert!(
+            said.contains("after the run had already finished"),
+            "{said}"
+        );
+    }
 }
 
 #[test]
@@ -188,6 +236,7 @@ fn a_run_starts_once() {
 
 #[test]
 fn the_stream_opens_with_run_started() {
+    // The upstream stream `first-event-not-run-started-fatal`.
     let said = complaint(&[Event::text_message_start(
         "msg-1",
         TextMessageRole::Assistant,
@@ -196,18 +245,50 @@ fn the_stream_opens_with_run_started() {
 }
 
 #[test]
-fn raw_and_custom_events_are_outside_the_ordering_rules() {
-    // Both are escape hatches by definition, including before the run starts.
-    let mut verifier = Verifier::new();
-    verifier
-        .verify(&Event::custom("hello", json!(1)))
-        .expect("custom is allowed anywhere");
-    verifier
-        .verify(&Event::raw(json!({ "provider": "openai" })))
-        .expect("raw is allowed anywhere");
-    verifier
-        .verify(&Event::run_started("t", "r"))
-        .expect("and the run still starts cleanly");
+fn a_stream_may_open_with_run_error() {
+    // 1.0, lifecycle: "A stream MUST begin with RUN_STARTED or RUN_ERROR" — a
+    // run can fail before it begins. The upstream stream
+    // `run-error-first-run-continues`.
+    verify_all(&[Event::RunError(
+        ag_ui::RunErrorEvent::new("the agent was unreachable").with_code("UNAVAILABLE"),
+    )])
+    .expect("a run that failed before it began is a complete stream");
+
+    // And that closes it like any other RUN_ERROR.
+    let said = complaint(&[
+        Event::run_error("unreachable"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+    ]);
+    assert!(
+        said.contains("after the run had already finished"),
+        "{said}"
+    );
+}
+
+#[test]
+fn raw_and_custom_events_may_not_open_the_stream() {
+    // Escape hatches "MAY appear anywhere within an open run" — and only there:
+    // nothing but RUN_STARTED or RUN_ERROR may come first.
+    for first in [
+        Event::custom("hello", json!(1)),
+        Event::raw(json!({ "provider": "openai" })),
+    ] {
+        let said = complaint(&[first, Event::run_started("t", "r")]);
+        assert!(said.contains("before RUN_STARTED"), "{said}");
+    }
+
+    // Inside the run they are outside the ordering rules, even mid-message.
+    verify_all(&[
+        Event::run_started("t", "r"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_content("msg-1", "before"),
+        Event::raw(json!({ "provider": "openai" })),
+        Event::text_message_content("msg-1", " and after"),
+        Event::text_message_end("msg-1"),
+        Event::custom("com.example.cart-updated", json!({ "items": 3 })),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("raw and custom pass through an open run");
 }
 
 #[test]

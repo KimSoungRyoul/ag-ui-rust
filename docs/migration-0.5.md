@@ -156,6 +156,38 @@ These are on `main` and not yet in a published version.
 - `MultiAgentCapabilities` reads and writes its sub-agent list under the AG-UI 1.0
   key `subagents`. Alpha.3 and earlier used `subAgents`, which 1.0 peers do not read;
   that spelling is no longer read here either. The Rust field is still `sub_agents`.
+- An A2UI data-model path has at most `binding::MAX_VALUE_DEPTH` (256) segments.
+  `DataModel::apply` and `DataModel::lookup` return `Error::Pointer` for a longer one,
+  so `SurfaceStore`, history recovery and the validator report an over-deep
+  `updateDataModel` path as an ordinary error. No error variant is added.
+- The client follows the 1.0 run lifecycle at both ends of a stream. A stream that
+  opens with `RUN_ERROR` ends as `RunEnd::Failed` with the server's `message` and
+  `code`, not as a protocol error. `RAW` or `CUSTOM` before `RUN_STARTED` is now a
+  protocol error.
+- A `RUN_ERROR` after `RUN_FINISHED` fails the run, so a `Thread` yields `Done` only
+  when the stream ends, not at `RUN_FINISHED`. Aborting or dropping the run after
+  `RUN_FINISHED` keeps the outcome it reported. Another event there is a protocol
+  error, except a later run's `RUN_STARTED`: the first run keeps its outcome and an
+  `unsupported` diagnostic (the new `Error::Unsupported`) says the rest was not read.
+  `Applier::interrupts` is cleared by `RUN_ERROR`.
+- `Validator` rejects a child written inline. A catalog's `ComponentId`,
+  `ChildList` and `Tabs` child references must be component id strings, never
+  objects or bindings, and a `ChildList` template needs both `componentId` and
+  `path`. These checks run even with `ValidateOptions.check_prop_types` set to
+  `false`. With it `true`, a literal string must also be one of the values the
+  catalog's `enum` lists. All of these values were accepted before.
+- `validate_json_messages`, `validate_messages` and the recovery loop report
+  each defect once, where the same mistake was often reported twice. Locators
+  name the message that last wrote the component, for example
+  `messages[1].updateComponents.components[0].child` rather than
+  `components[0].child`. Update code that matches on the old paths.
+- `ag-ui/http` and `ag-ui-a2ui/schema-validation` no longer pin `yoke-derive` to
+  `=0.8.2`. Its 0.8.4 declares Rust 1.82, so a fresh Rust 1.85 resolution selects it.
+- `ag-ui-a2ui/schema-validation` uses `jsonschema` 0.61.2 instead of 0.29.1. The same
+  messages pass and fail with the same diagnostics, and an `enum` failure still names
+  every allowed value. A message with several errors can list them in a different order.
+- `ag-ui-a2ui` requires exactly its own version of `ag-ui` (`=0.5.0-…`) while both are
+  prereleases, instead of accepting any later alpha.
 - A hosted run cancelled while a message, tool call, reasoning block, step or subagent is
   open now ends with `RUN_FINISHED` and the cancelled outcome. Alpha.3 ended it with
   `RUN_ERROR`, code `PROTOCOL_VIOLATION`. A handle's terminator — `end()`, `finish()`,

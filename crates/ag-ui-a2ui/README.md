@@ -143,7 +143,9 @@ assert!(model.to_json().is_err()); // JSON cannot express the undefined slot.
 Upserts create missing/null containers; numeric paths infer arrays and sparse gaps
 are `Undefined`. Implicit array growth defaults to at most 65,536 new slots per
 update; `apply_with_array_growth_limit` makes that allocation policy explicit.
-A failed path or growth limit leaves the old model intact.
+A path of more than `binding::MAX_VALUE_DEPTH` (256) segments is rejected when
+reading and writing alike. A failed path or growth limit leaves the old model
+intact.
 
 Deletion removes object keys, preserves array lengths with `Undefined` slots,
 and leaves an `Undefined` root on root deletion. The versioned `DataModel`
@@ -164,7 +166,7 @@ rejects a result requiring Undefined instead of silently substituting null.
 
 Default features include only `toolkit`, so an A2A or MCP consumer gets no AG-UI
 dependency or schema engine. `default-features = false` selects the protocol
-types alone. The schema engine is pinned to `jsonschema 0.29.1` without its
+types alone. The schema engine is pinned to `jsonschema 0.61.2` without its
 network/filesystem resolvers. Rust 1.85 and wasm builds are covered; browser
 entropy support is target- and feature-specific to the schema engine.
 

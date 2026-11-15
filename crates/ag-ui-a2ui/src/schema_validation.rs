@@ -2,7 +2,9 @@
 
 use crate::toolkit::schema::SchemaBundle;
 use crate::{Error, ErrorCode, Result, ValidationError};
-use jsonschema::output::{ErrorDescription, OutputUnit};
+use jsonschema::Evaluation;
+use jsonschema::error::ValidationErrorKind;
+use jsonschema::output::ErrorDescription;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -25,19 +27,23 @@ impl jsonschema::Retrieve for NoExternalResources {
 #[derive(Debug)]
 pub struct SchemaValidator {
     compiled: jsonschema::Validator,
+    /// Every registered document by URI. A diagnostic carries only its
+    /// keyword's absolute location, so a failed `enum` reads its allowed values
+    /// back from here.
+    documents: BTreeMap<String, Value>,
 }
 impl SchemaValidator {
     /// Compiles the official envelope against the supplied catalog and common types.
     /// Additional resources must be supplied locally, keyed by their absolute URI.
     pub fn new(bundle: &SchemaBundle, resources: &BTreeMap<String, Value>) -> Result<Self> {
-        let mut registry = resources.clone();
+        let mut documents = resources.clone();
         let mut register = |id: &str, value: &Value| -> Result<()> {
-            if let Some(prior) = registry.get(id) {
+            if let Some(prior) = documents.get(id) {
                 if prior != value {
                     return Err(Error::catalog(format!("conflicting schema resource {id}")));
                 }
             }
-            registry.insert(id.into(), value.clone());
+            documents.insert(id.into(), value.clone());
             Ok(())
         };
         for document in [&bundle.s2c, &bundle.common_types, &bundle.catalog] {
@@ -53,17 +59,27 @@ impl SchemaValidator {
             "https://a2ui.org/specification/v0_9/catalog.json",
             &bundle.catalog,
         )?;
-        let mut options = jsonschema::options()
+        // Each document keeps the draft its own `$schema` declares. An unknown
+        // `$schema` is a meta-schema the retriever would have to fetch, so it
+        // fails here rather than reaching the network.
+        let registry =
+            jsonschema::Registry::new()
+                .retriever(NoExternalResources)
+                .extend(documents.iter().map(|(id, document)| {
+                    (id, jsonschema::Resource::from_contents(document.clone()))
+                }))
+                .and_then(jsonschema::RegistryBuilder::prepare)
+                .map_err(Error::catalog)?;
+        let compiled = jsonschema::options()
             .with_draft(jsonschema::Draft::Draft202012)
-            .with_retriever(NoExternalResources);
-        for (id, document) in registry {
-            options = options.with_resource(
-                id,
-                jsonschema::Resource::from_contents(document).map_err(Error::catalog)?,
-            );
-        }
-        let compiled = options.build(&bundle.s2c).map_err(Error::catalog)?;
-        Ok(Self { compiled })
+            .with_retriever(NoExternalResources)
+            .with_registry(&registry)
+            .build(&bundle.s2c)
+            .map_err(Error::catalog)?;
+        Ok(Self {
+            compiled,
+            documents,
+        })
     }
     /// Revalidates a complete observed surface, including prior component definitions
     /// and its creation theme. Useful when restoring state or changing validators.
@@ -108,10 +124,8 @@ impl SchemaValidator {
         if errors.is_empty() {
             return Ok(());
         }
-        let details = match self.compiled.apply(message).basic() {
-            jsonschema::BasicOutput::Invalid(details) => schema_diagnostics(message, &details),
-            jsonschema::BasicOutput::Valid(_) => Vec::new(),
-        };
+        let details =
+            schema_diagnostics(message, &self.compiled.evaluate(message), &self.documents);
         Err(Error::Validation {
             errors: if details.is_empty() {
                 errors
@@ -120,8 +134,8 @@ impl SchemaValidator {
                     .map(|error| {
                         ValidationError::new(
                             ErrorCode::InvalidValue,
-                            error.instance_path.to_string(),
-                            bounded_diagnostic(&error.masked().to_string()),
+                            error.instance_path().to_string(),
+                            bounded_diagnostic(&masked_message(&error)),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -133,6 +147,47 @@ impl SchemaValidator {
     }
 }
 
+// jsonschema 0.61 words a failed `enum` as `"x" is not one of "a", "b" or 5
+// other candidates`. A model correcting its own output in the retry loop needs
+// every allowed value, which 0.29 gave it as `"x" is not one of ["a","b",…]`, so
+// these keep 0.29's wording. Every other message is the engine's own.
+
+/// `error`'s message, naming every allowed value of a failed `enum`.
+pub(crate) fn message(error: &jsonschema::ValidationError<'_>) -> String {
+    match error.kind() {
+        ValidationErrorKind::Enum { options } => enum_message(error.instance(), options),
+        _ => error.to_string(),
+    }
+}
+
+/// [`message`] with the instance replaced by `value`, so no input is echoed.
+fn masked_message(error: &jsonschema::ValidationError<'_>) -> String {
+    match error.kind() {
+        ValidationErrorKind::Enum { options } => enum_message("value", options),
+        _ => error.masked().to_string(),
+    }
+}
+
+fn enum_message(value: impl std::fmt::Display, options: &Value) -> String {
+    format!("{value} is not one of {options}")
+}
+
+/// The `enum` array a diagnostic's keyword URI points at, such as
+/// `https://…/catalog.json#/components/Text/allOf/2/properties/variant/enum`.
+/// `None` when the document is not one of ours or the pointer misses.
+fn enum_options<'a>(
+    documents: &'a BTreeMap<String, Value>,
+    schema_location: &str,
+) -> Option<&'a Value> {
+    let (document, _) = schema_location.split_once('#')?;
+    let uri = jsonschema::uri::from_str(schema_location).ok()?;
+    let pointer = uri.fragment()?.decode().to_string().ok()?;
+    documents
+        .get(document)?
+        .pointer(&pointer)
+        .filter(|options| options.is_array())
+}
+
 fn bounded_diagnostic(message: &str) -> String {
     let mut chars = message.chars();
     let mut result: String = chars.by_ref().take(384).collect();
@@ -142,25 +197,63 @@ fn bounded_diagnostic(message: &str) -> String {
     result
 }
 
+/// For `…/oneOf/1/type` (or `anyOf`, through any `$ref`s), the combinator
+/// `…/oneOf` and the branch `1` whose own `type` the value failed.
+fn type_only_branch(keyword: &str) -> Option<(&str, usize)> {
+    let mut branch = keyword.strip_suffix("/type")?;
+    while let Some(rest) = branch.strip_suffix("/$ref") {
+        branch = rest;
+    }
+    let at = branch.rfind("/oneOf/").max(branch.rfind("/anyOf/"))?;
+    let index = branch[at + "/oneOf/".len()..].parse().ok()?;
+    Some((&branch[..at + "/oneOf".len()], index))
+}
+
 fn at_or_below(path: &str, ancestor: &str) -> bool {
     path.strip_prefix(ancestor)
         .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
 }
 
+/// Every error in the evaluation tree, in pre-order, keyed by its evaluation
+/// path (the keywords followed from the root, `$ref`s included). The branch
+/// matching below reads `oneOf`/`anyOf` indices off that path, so the absolute
+/// schema location `Evaluation::iter_errors` reports would not do; that
+/// location rides along for [`enum_options`].
+fn evaluation_errors(evaluation: &Evaluation) -> Vec<(&str, &str, (&str, &ErrorDescription))> {
+    let mut errors = Vec::new();
+    let mut stack = vec![evaluation.root()];
+    while let Some(unit) = stack.pop() {
+        let path = unit.evaluation_path().as_str();
+        for error in unit.errors() {
+            errors.push((
+                path,
+                unit.instance_location().as_str(),
+                (unit.schema_location(), error),
+            ));
+        }
+        // `unevaluatedProperties` already names every offending property in
+        // its own error. Its children are the per-property subschema results
+        // (`False schema does not allow …` for each one), which would only
+        // repeat that error one property at a time.
+        if path.ends_with("/unevaluatedProperties") {
+            continue;
+        }
+        let start = stack.len();
+        stack.extend(unit.children());
+        stack[start..].reverse();
+    }
+    errors
+}
+
 fn schema_diagnostics(
     instance: &Value,
-    details: &std::collections::VecDeque<OutputUnit<ErrorDescription>>,
+    evaluation: &Evaluation,
+    documents: &BTreeMap<String, Value>,
 ) -> Vec<ValidationError> {
-    let details: Vec<_> = details
-        .iter()
-        .map(|error| {
-            (
-                error.keyword_location().as_str(),
-                error.instance_location().as_str(),
-                error.error_description(),
-            )
-        })
-        .collect();
+    if evaluation.flag().valid {
+        return Vec::new();
+    }
+    let details = evaluation_errors(evaluation);
     // Discriminator failures belong to other catalog branches. Scope exclusions
     // by instance because another component may match that same schema branch.
     let unrelated: Vec<_> = details
@@ -186,8 +279,34 @@ fn schema_diagnostics(
                 })
         })
         .collect();
+    // A oneOf/anyOf branch that fails on the value's JSON type alone is an
+    // alternative the value never tried to be: the template form of a child
+    // list, when the value is an array. Report the branch it did try.
+    let untried: Vec<_> = selected
+        .iter()
+        .map(|(keyword, _, _)| type_only_branch(keyword))
+        .collect();
+    let tried_another = |combinator: &str, branch: usize| {
+        selected
+            .iter()
+            .zip(&untried)
+            .any(|((keyword, _, _), other)| {
+                let Some(index) = keyword
+                    .strip_prefix(combinator)
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .and_then(|rest| rest.split('/').next())
+                    .and_then(|index| index.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                index != branch && *other != Some((combinator, index))
+            })
+    };
     let mut results = Vec::new();
-    for (keyword, location, description) in &selected {
+    for ((keyword, location, (schema_location, error)), untried) in selected.iter().zip(&untried) {
+        if untried.is_some_and(|(combinator, branch)| tried_another(combinator, branch)) {
+            continue;
+        }
         // Failed allOf branches also emit secondary unevaluated-property errors.
         if keyword.ends_with("/unevaluatedProperties")
             && selected.iter().any(|(other, path, _)| {
@@ -196,8 +315,15 @@ fn schema_diagnostics(
         {
             continue;
         }
-        let mut description = description.to_string();
-        if let Some(value) = instance.pointer(location) {
+        let failed = instance.pointer(location);
+        // The evaluation keeps only the rendered message, so a failed `enum`
+        // reads its options back from the schema it came from.
+        let mut description = match (error.keyword(), failed) {
+            ("enum", Some(value)) => enum_options(documents, schema_location)
+                .map_or_else(|| error.to_string(), |options| enum_message(value, options)),
+            _ => error.to_string(),
+        };
+        if let Some(value) = failed {
             if let Some(suffix) = description.strip_prefix(&value.to_string()) {
                 description = format!("value{suffix}");
             }
@@ -327,5 +453,5 @@ pub fn validate_capabilities(value: &Value) -> Result<()> {
         .map_err(Error::catalog)?;
     validator
         .validate(value)
-        .map_err(|e| Error::catalog(e.to_string()))
+        .map_err(|e| Error::catalog(message(&e)))
 }
