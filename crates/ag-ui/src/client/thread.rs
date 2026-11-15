@@ -165,7 +165,8 @@ pub struct StateViewError {
 /// One retained diagnostic, independent of the terminal outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunDiagnostic {
-    /// A stable broad category (`state`, `protocol`, `patch`, `transport`, or `run`).
+    /// A stable broad category (`state`, `protocol`, `patch`, `transport`, `run`,
+    /// or `unsupported`).
     pub kind: &'static str,
     /// Human-readable cause.
     pub message: String,
@@ -973,6 +974,7 @@ impl<T, S> RunStream<'_, T, S> {
             let kind = match &error {
                 Error::State(_) => "state",
                 Error::Protocol(_) | Error::InvalidPatchDocument { .. } => "protocol",
+                Error::Unsupported(_) => "unsupported",
                 Error::Patch { .. } => "patch",
                 Error::Run { .. } => "run",
                 Error::Json(_) | Error::Decode(_) => "decode",
@@ -1152,6 +1154,16 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
         // Pair the terminal with the stream's announced run even when optional
         // ordering verification is disabled. Run errors carry no IDs.
         match &event {
+            // 1.0 lets a later run follow a closed one on the same stream. This
+            // stream reads one run: it ends as reported, and the rest is unread.
+            Event::RunStarted(_) if self.finished.is_some() => {
+                self.diagnostic(Error::Unsupported(
+                    "RUN_STARTED after RUN_FINISHED: a later run on the same stream was not read"
+                        .into(),
+                ));
+                self.finish_reported();
+                return;
+            }
             Event::RunStarted(started) => {
                 if started.thread_id != self.thread.thread_id
                     || started.run_id != self.request_run_id

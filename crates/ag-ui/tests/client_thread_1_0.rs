@@ -125,6 +125,41 @@ async fn a_run_error_after_run_finished_fails_the_run() {
 }
 
 #[tokio::test]
+async fn a_later_run_on_the_stream_is_left_unread_without_failing_the_first() {
+    // 1.0 lets RUN_STARTED follow a closed run. Until a thread reads several
+    // runs (#44), the first run keeps the outcome it reported, and the
+    // diagnostic says the rest was not read — not that it was malformed.
+    for verify in [true, false] {
+        let transport = ReplayTransport::new([
+            Event::run_started("t", "r"),
+            Event::run_finished_success("t", "r"),
+            Event::run_started("t", "r-later"),
+            Event::text_message_start("later-m-1", TextMessageRole::Assistant),
+            Event::text_message_end("later-m-1"),
+            Event::run_finished_success("t", "r-later"),
+        ])
+        .matching_requests();
+        let mut thread = Thread::<_>::builder(transport, "t")
+            .verify(verify)
+            .build()
+            .unwrap();
+        let report = thread.send("go").unwrap().collect_report().await;
+        assert_eq!(
+            report.end,
+            RunEnd::Success { result: None },
+            "verify {verify}"
+        );
+        assert_eq!(report.diagnostics.len(), 1, "verify {verify}: {report:?}");
+        assert_eq!(report.diagnostics[0].kind, "unsupported");
+        assert!(
+            report.diagnostics[0].message.contains("later run"),
+            "{report:?}"
+        );
+        assert_eq!(thread.messages().len(), 1, "the later run is not applied");
+    }
+}
+
+#[tokio::test]
 async fn a_late_run_error_withdraws_the_outcome_it_follows() {
     // The interrupts a RUN_FINISHED reported belong to a run that then failed:
     // nothing is pending, and nothing is announced.
@@ -147,6 +182,7 @@ async fn a_late_run_error_withdraws_the_outcome_it_follows() {
         "{updates:?}"
     );
     assert!(thread.interrupts().is_empty());
+    assert!(thread.applier().interrupts().is_empty());
 }
 
 #[tokio::test]

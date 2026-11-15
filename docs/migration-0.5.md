@@ -93,13 +93,6 @@ cancellation is reported as `RUN_FINISHED` with a cancelled outcome; local strea
 abortion remains a separate client decision. A successful outcome can name
 `pendingToolCallIds`, which are frontend calls still awaiting results.
 
-The client follows the 1.0 run lifecycle. A stream may open with `RUN_ERROR`,
-which ends the run as `RunEnd::Failed` with the server's `message` and `code`
-rather than a protocol error. A `RUN_ERROR` after `RUN_FINISHED` fails the
-run, so a `Thread` reads to the end of the stream before it yields `Done`;
-any other event there is a protocol error. `RAW` and `CUSTOM` before
-`RUN_STARTED` are now protocol errors too.
-
 ## Rust API changes from 0.4.5
 
 - `ToolMessage.content` and `ToolCallResultEvent.content` are `ToolContent`:
@@ -167,6 +160,16 @@ These are on `main` and not yet in a published version.
   `DataModel::apply` and `DataModel::lookup` return `Error::Pointer` for a longer one,
   so `SurfaceStore`, history recovery and the validator report an over-deep
   `updateDataModel` path as an ordinary error. No error variant is added.
+- The client follows the 1.0 run lifecycle at both ends of a stream. A stream that
+  opens with `RUN_ERROR` ends as `RunEnd::Failed` with the server's `message` and
+  `code`, not as a protocol error. `RAW` or `CUSTOM` before `RUN_STARTED` is now a
+  protocol error.
+- A `RUN_ERROR` after `RUN_FINISHED` fails the run, so a `Thread` yields `Done` only
+  when the stream ends, not at `RUN_FINISHED`. Aborting or dropping the run after
+  `RUN_FINISHED` keeps the outcome it reported. Another event there is a protocol
+  error, except a later run's `RUN_STARTED`: the first run keeps its outcome and an
+  `unsupported` diagnostic (the new `Error::Unsupported`) says the rest was not read.
+  `Applier::interrupts` is cleared by `RUN_ERROR`.
 
 ## Verify the upgrade
 
