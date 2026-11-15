@@ -160,6 +160,15 @@ These are on `main` and not yet in a published version.
   `DataModel::apply` and `DataModel::lookup` return `Error::Pointer` for a longer one,
   so `SurfaceStore`, history recovery and the validator report an over-deep
   `updateDataModel` path as an ordinary error. No error variant is added.
+- `ag-ui/http` and `ag-ui-a2ui/schema-validation` no longer pin `yoke-derive` to
+  `=0.8.2`. Its 0.8.4 declares Rust 1.82, so a fresh Rust 1.85 resolution selects it.
+- `ag-ui-a2ui/schema-validation` uses `jsonschema` 0.61.2 instead of 0.29.1. The same
+  messages pass and fail with the same diagnostics, but the engine words some of them
+  differently: an `enum` failure names two allowed values and a count
+  (`value is not one of "h1", "h2" or 5 other candidates`) instead of all of them, and
+  a message with several errors can list them in a different order.
+- `ag-ui-a2ui` requires exactly its own version of `ag-ui` (`=0.5.0-…`) while both are
+  prereleases, instead of accepting any later alpha.
 
 ## Verify the upgrade
 
