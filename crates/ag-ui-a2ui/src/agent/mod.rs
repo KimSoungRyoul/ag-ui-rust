@@ -105,12 +105,17 @@
 //! # Errors
 //!
 //! The layer reports with [`crate::Error`], and the variant says whose fault
-//! it is. [`Error::Parse`](crate::Error::Parse): the answer's text could not
-//! be read. [`Error::Validation`](crate::Error::Validation): it reads, and a
-//! renderer in this state would reject it; every failure carries a locator
-//! into the answer and a sentence a model can act on.
-//! [`Error::Catalog`](crate::Error::Catalog): the catalogs or the renderer's
-//! capabilities are the problem, and no answer can fix that.
+//! it is.
+//!
+//! | Variant | What it is | Category of the A2UI conformance suites |
+//! |---|---|---|
+//! | [`Error::Parse`](crate::Error::Parse) | The answer's text could not be read: a block that is not the format's notation, or one the answer ended inside. | `ParseError` |
+//! | [`Error::Validation`](crate::Error::Validation) | The answer reads, and a renderer in this state would reject it. Every failure carries a locator into the answer and a sentence a model can act on. A fault of a surface's life (created while live, updated while not) is one `invalid_value` at `messages[i]`; so is a message that does not decode. | `ValidationError`, with its kinds `IntegrityError` and `RecursionError` |
+//! | [`Error::Catalog`](crate::Error::Catalog) | The catalogs are the problem, and no answer can fix that: one that does not load, capabilities that leave none active, a state that holds other catalogs than the processor. | `CatalogError` |
+//!
+//! The first two are the model's to fix, and [`RetryDriver`] feeds them back.
+//! A `createSurface` that names a catalog the session does not hold is one of
+//! them, an `invalid_value` at its `catalogId`: the name came from the answer.
 
 mod answer;
 mod capabilities;

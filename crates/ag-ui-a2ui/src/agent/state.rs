@@ -12,7 +12,7 @@ use crate::protocol::operation::Operation;
 use crate::protocol::surface::{Lifecycle, SurfaceState, SurfaceStore};
 use crate::protocol::validate::{
     ErrorCode, MAX_DEPTH, MAX_FUNCTION_CALL_DEPTH, ValidateOptions, ValidationError,
-    ValidationReport, Validator, check_envelope, check_value_depth,
+    ValidationReport, Validator, check_envelope, check_value_depth, foldable,
 };
 use crate::protocol::version::A2uiVersion;
 
@@ -194,8 +194,9 @@ impl RendererState {
     /// mirror that the surface state machine itself does not have:
     /// [`SurfaceStore`] rejects such a delete, and the reference SDKs' renderer
     /// treats it as a no-op (`model.delete_surface` in upstream's message
-    /// processor), which is what a renderer that holds nothing by that name
-    /// can only do.
+    /// processor; the suite states it in
+    /// `core/message_processor_v1_0.yaml::test_delete_non_existent_surface_is_safe_noop`),
+    /// which is what a renderer that holds nothing by that name can only do.
     ///
     /// The call is atomic: if a message is rejected, none of them is applied.
     /// A failure is located in the message that has to change,
@@ -208,7 +209,13 @@ impl RendererState {
     /// # Errors
     ///
     /// Returns [`Error::Validation`] with every failure found in the first
-    /// message a renderer in this state would reject.
+    /// message a renderer in this state would reject. A fault of a surface's
+    /// life (created while it is live, updated while it is not) is one
+    /// `invalid_value` at `messages[i]`, and so is a message that does not
+    /// decode. A `createSurface` that names a catalog that is not active is
+    /// an `invalid_value` at its `catalogId`: the name came from the payload,
+    /// so it is the payload's fault, not a fault of the catalogs. No other
+    /// variant leaves this call.
     pub fn apply(&mut self, messages: &[Value]) -> Result<Vec<String>> {
         self.transaction(|state| {
             state.begin_answer();
@@ -264,13 +271,11 @@ impl RendererState {
                 continue;
             }
             let Some(catalog) = self.catalog(&surface.catalog_id) else {
-                report.errors.push(inactive_catalog(
-                    format!("surfaces[\"{surface_id}\"]"),
-                    surface_id,
+                return Err(inactive_catalog(
+                    format!("surfaces[{surface_id:?}]"),
                     &surface.catalog_id,
                     &self.catalogs,
                 ));
-                continue;
             };
             let summary = catalog.document.catalog();
             let origin = self.store.origin(surface_id);
@@ -424,43 +429,60 @@ impl RendererState {
                 .map_err(|error| reject(locator.clone(), error.to_string()))
         };
 
-        let live = self.store.lifecycle(&surface_id) == Lifecycle::Live;
-        let catalog = match operation {
+        // The surface's place in its life, and its catalog, in the order the
+        // core's message processor asks. A fault of the surface's life is one
+        // error, at the message.
+        let lifecycle = self.store.lifecycle(&surface_id);
+        let catalog_id = match operation {
+            Operation::CreateSurface => {
+                let catalog_id = message[key]["catalogId"].as_str().unwrap_or_default();
+                if self.catalog(catalog_id).is_none() {
+                    return Err(inactive_catalog(
+                        format!("{locator}.{key}.catalogId"),
+                        catalog_id,
+                        &self.catalogs,
+                    ));
+                }
+                if lifecycle == Lifecycle::Live {
+                    return Err(reject(
+                        locator.clone(),
+                        format!("surface {surface_id:?} already exists"),
+                    ));
+                }
+                catalog_id.to_string()
+            }
             // Nothing by that name to delete. See `apply`.
-            Operation::DeleteSurface if !live => {
+            Operation::DeleteSurface if lifecycle != Lifecycle::Live => {
                 return Ok(Applied {
                     message: decode(message)?,
                     surface_id,
                 });
             }
-            Operation::CreateSurface => {
-                let catalog_id = message[key]["catalogId"].as_str().unwrap_or_default();
-                self.catalog(catalog_id).ok_or_else(|| Error::Validation {
-                    errors: vec![inactive_catalog(
-                        format!("{locator}.{key}.catalogId"),
-                        &surface_id,
-                        catalog_id,
-                        &self.catalogs,
-                    )]
-                    .into(),
-                })?
+            _ if lifecycle != Lifecycle::Live => {
+                return Err(reject(
+                    locator.clone(),
+                    match lifecycle {
+                        Lifecycle::Deleted => format!(
+                            "surface {surface_id:?} was deleted; create it again before updating it"
+                        ),
+                        _ => format!(
+                            "surface {surface_id:?} does not exist; create it before updating it"
+                        ),
+                    },
+                ));
             }
-            _ => {
-                let surface = self
-                    .store
-                    .live(&surface_id)
-                    .map_err(|error| reject(locator.clone(), error.to_string()))?;
-                self.catalog(&surface.catalog_id)
-                    .ok_or_else(|| Error::Validation {
-                        errors: vec![inactive_catalog(
-                            locator.clone(),
-                            &surface_id,
-                            &surface.catalog_id,
-                            &self.catalogs,
-                        )]
-                        .into(),
-                    })?
-            }
+            _ => self
+                .store
+                .get(&surface_id)
+                .map(|surface| surface.catalog_id.clone())
+                .unwrap_or_default(),
+        };
+        let Some(catalog) = self.catalog(&catalog_id) else {
+            return Err(inactive_catalog(
+                locator.clone(),
+                &catalog_id,
+                &self.catalogs,
+            ));
         };
 
         #[cfg(feature = "schema-validation")]
@@ -475,34 +497,34 @@ impl RendererState {
             ..ValidateOptions::incremental_update()
         };
         let summary = catalog.document.catalog();
-        let typed = match decode(message) {
-            Ok(typed) => typed,
-            Err(undecodable) => {
-                // A component with no usable id or type cannot be decoded, and
-                // the decoder only says the message failed. Say which
-                // component, and what it is missing.
-                let components = message[key]["components"].as_array();
-                let located: Vec<ValidationError> = components
-                    .map(|components| {
-                        Validator::with_options(summary, in_progress.clone())
-                            .validate_json(components, None)
-                            .errors
-                    })
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|mut error| {
-                        error.path = format!("{locator}.{key}.{}", error.path);
-                        error
-                    })
-                    .collect();
-                if located.is_empty() {
-                    return Err(undecodable);
-                }
-                return Err(Error::Validation {
+
+        // Components the store cannot key by id are located one by one; the
+        // decoder would only say that the message did not decode.
+        let unfoldable = message[key]["components"]
+            .as_array()
+            .filter(|components| operation == Operation::UpdateComponents && !foldable(components));
+        if let Some(components) = unfoldable {
+            let located: Vec<ValidationError> = Validator::with_options(summary, in_progress)
+                .validate_json(components, None)
+                .errors
+                .into_iter()
+                .map(|mut error| {
+                    error.path = format!("{locator}.{key}.{}", error.path);
+                    error
+                })
+                .collect();
+            return Err(if located.is_empty() {
+                reject(
+                    locator.clone(),
+                    "the components of this message cannot be stored".to_string(),
+                )
+            } else {
+                Error::Validation {
                     errors: located.into(),
-                });
-            }
-        };
+                }
+            });
+        }
+        let typed = decode(message)?;
 
         let mut next = self.store.clone();
         next.apply_at(index, &typed)
@@ -544,24 +566,28 @@ impl RendererState {
     }
 }
 
-fn inactive_catalog(
-    path: String,
-    surface_id: &str,
-    catalog_id: &str,
-    active: &[ActiveCatalog],
-) -> ValidationError {
+/// A surface names a catalog the session does not hold.
+///
+/// For a renderer that is a catalog error: it was handed a catalog it does
+/// not have. Here the name came from the payload, so it is one more thing the
+/// payload got wrong: a validation error, located where the name is written.
+/// The reference SDK's agent layer makes the same turn (`_as_validation_error`
+/// in its `RendererState`: "errors of other kinds, such as a catalog that a
+/// message names but the processor doesn't hold, come from the payload too"),
+/// and `agent/request_processor.yaml` expects it.
+fn inactive_catalog(place: String, catalog_id: &str, active: &[ActiveCatalog]) -> Error {
     let ids: Vec<&str> = active
         .iter()
         .map(|catalog| catalog.document.catalog_id())
         .collect();
-    ValidationError::new(
-        ErrorCode::InvalidValue,
-        path,
-        format!(
-            "Surface '{surface_id}' uses catalog '{catalog_id}', which is not one of the active \
-             catalogs: {ids:?}."
-        ),
-    )
+    Error::Validation {
+        errors: vec![ValidationError::new(
+            ErrorCode::InvalidValue,
+            place,
+            format!("Catalog {catalog_id:?} is not one of the active catalogs: {ids:?}."),
+        )]
+        .into(),
+    }
 }
 
 /// Checks one payload on its own, the way a renderer holding `catalogs` would,
@@ -731,11 +757,50 @@ mod tests {
     #[test]
     fn a_surface_must_name_an_active_catalog() {
         let mut state = state();
+        let before = state.clone();
+        // The payload's fault, so a validation error, where the name is
+        // written. It is looked at before the surface's place in its life.
+        for (messages, path) in [
+            (
+                vec![create("a", "three")],
+                "messages[0].createSurface.catalogId",
+            ),
+            (
+                vec![create("a", "one"), create("a", "three")],
+                "messages[1].createSurface.catalogId",
+            ),
+        ] {
+            assert_eq!(
+                located(state.apply(&messages).unwrap_err()),
+                [(ErrorCode::InvalidValue, path.to_string())]
+            );
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn a_message_whose_components_cannot_be_keyed_is_located_component_by_component() {
+        let mut state = state();
+        state.apply(&[create("a", "one")]).unwrap();
+        let twice = update(
+            "a",
+            json!([
+                {"id": "root", "component": "Text", "text": "x"},
+                {"id": "root", "component": "Text", "text": "y"},
+            ]),
+        );
         assert_eq!(
-            located(state.apply(&[create("a", "three")]).unwrap_err()),
+            located(state.apply(&[twice]).unwrap_err()),
             [(
-                ErrorCode::InvalidValue,
-                "messages[0].createSurface.catalogId".to_string()
+                ErrorCode::DuplicateId,
+                "messages[0].updateComponents.components[1].id".to_string()
+            )]
+        );
+        assert_eq!(
+            located(state.apply(&[update("a", json!([]))]).unwrap_err()),
+            [(
+                ErrorCode::EmptyComponents,
+                "messages[0].updateComponents.components".to_string()
             )]
         );
     }

@@ -278,6 +278,34 @@ fn a_state_of_other_catalogs_is_not_the_models_to_fix() {
     ));
 }
 
+#[test]
+fn a_surface_that_names_another_catalog_is_the_models_to_fix() {
+    let processor = processor();
+    let mut state = processor.create_state();
+    let answer = surface("s", "Hi").replace(BASIC, "a/catalog/nobody/registered");
+
+    // The name came from the answer, so it is the answer's fault: a
+    // validation error where the name is written, not a catalog error.
+    let rejected = processor.parse_response(&answer).unwrap_err();
+    assert_eq!(category(&rejected.error), "validation");
+
+    // And one the model can correct, so it is fed back.
+    let mut retry = RetryDriver::new(&processor, 3);
+    let Verdict::Retry(feedback) = retry.judge(&answer, &mut state) else {
+        panic!("a wrong catalog id asks again");
+    };
+    assert_eq!(feedback.errors()[0].code, ErrorCode::InvalidValue);
+    assert_eq!(
+        feedback.errors()[0].path,
+        "messages[0].createSurface.catalogId"
+    );
+    assert!(
+        feedback.errors()[0]
+            .message
+            .contains("\"a/catalog/nobody/registered\" is not one of the active catalogs")
+    );
+}
+
 // --- a streamed answer --------------------------------------------------------------------------
 
 #[test]

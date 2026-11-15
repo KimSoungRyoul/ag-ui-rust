@@ -1376,7 +1376,7 @@ fn type_name(value: &Value) -> &'static str {
 /// [`ErrorCode::EmptyComponents`], [`ErrorCode::MissingId`],
 /// [`ErrorCode::MissingComponentType`] and [`ErrorCode::DuplicateId`], so a
 /// message this rejects always carries an error that says why.
-fn foldable(components: &[Value]) -> bool {
+pub(crate) fn foldable(components: &[Value]) -> bool {
     let named = |value: &Value, key: &str| {
         value
             .get(key)

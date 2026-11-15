@@ -124,14 +124,19 @@ impl RetryDriver {
     /// exactly what it was before the call.
     pub fn judge(&mut self, answer: &str, state: &mut RendererState) -> Verdict {
         self.attempts += 1;
+        let fits = self.processor.accepts_state(state);
         let rejected = match self.processor.parse_response_in(answer, state) {
             Ok(parts) => return Verdict::Done(parts),
             Err(rejected) => rejected.error,
         };
+        if !fits {
+            // The state holds other catalogs than the processor. No answer
+            // can change that.
+            return Verdict::GiveUp(rejected);
+        }
         let errors = match rejected {
             Error::Validation { errors } => errors.0,
-            // The state does not fit the processor. No answer can change that.
-            Error::Catalog(_) => return Verdict::GiveUp(rejected),
+            // A block that could not be read: the model's to fix, told as is.
             other => vec![ValidationError::new(
                 ErrorCode::InvalidValue,
                 "response",
