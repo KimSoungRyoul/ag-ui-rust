@@ -501,16 +501,27 @@ jobs:
 
   # This scheduled check asks GitHub whether the reviewed baseline has changed,
   # and reports — without failing on it — what the unreleased spec/draft adds.
-  # A fetch failure fails this non-required job.
+  # It then compares the upstream copy of crates/ag-ui (PR 2778) with the sync
+  # point in UPSTREAM.md. A fetch failure fails this non-required job.
   upstream-freshness:
     name: upstream freshness (scheduled)
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # upstream-sync lists the commits since the recorded local sync
+          # commit, so it needs the history back to it.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run --locked -p xtask -- drift-check --upstream --draft
         env:
           # Lifts the 60-requests/hour/IP unauthenticated limit.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The two alarms are unrelated, so a stale protocol baseline above must
+      # not hide a moved copy here.
+      - run: cargo run --locked -p xtask -- upstream-sync
+        if: ${{ !cancelled() }}
+        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

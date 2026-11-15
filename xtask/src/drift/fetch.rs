@@ -110,7 +110,9 @@ fn snippet(text: &str) -> String {
     }
 }
 
-fn get(url: &str) -> Result<String, String> {
+/// A GET against GitHub, authenticated when a token is in the environment.
+/// Shared with `upstream-sync`, which reads the same host.
+pub(crate) fn get(url: &str) -> Result<String, String> {
     let mut request = ureq::get(url)
         .header("User-Agent", USER_AGENT)
         .header("Accept", "application/vnd.github+json");
@@ -142,7 +144,8 @@ fn explain(url: &str, error: &ureq::Error) -> String {
         ),
         ureq::Error::StatusCode(404) => format!(
             "{url} returned 404 — upstream may have moved the file.\n\
-             Check {UPSTREAM_REPO} and update UPSTREAM_PATH in xtask/src/drift/baseline.rs."
+             For the protocol schema, check {UPSTREAM_REPO} and update UPSTREAM_PATH in \
+             xtask/src/drift/baseline.rs; for the upstream copy of ag-ui, check UPSTREAM.md."
         ),
         _ => format!("cannot fetch {url}: {error}"),
     }

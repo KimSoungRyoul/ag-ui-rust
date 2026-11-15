@@ -4,6 +4,7 @@
 
 mod docs_check;
 mod drift;
+mod upstream_copy;
 
 use std::process::ExitCode;
 
@@ -27,9 +28,13 @@ SUBCOMMANDS
                            workspace version, the README's dependency blocks,
                            paths that exist, no merged crate names in e2e/ and
                            examples/. Offline; exits 1 on a stale statement.
+    upstream-sync          Compare the upstream copy of crates/ag-ui (PR 2778 on
+                           ag-ui-protocol/ag-ui) with the sync point recorded
+                           in UPSTREAM.md, and list the local commits since it.
+                           Needs the network.
 
 DRIFT-CHECK OPTIONS
-    --local               Also compare the vendored schema at
+    --local                Also compare the vendored schema at
                            crates/ag-ui/src/protocol/schema-1.0.json with the
                            reviewed baseline. Offline; this is the CI gate.
     --upstream             Additionally fetch upstream and report whether the
@@ -42,9 +47,14 @@ DRIFT-CHECK OPTIONS
                            recording the upstream commit and the fetch date.
                            This is how a human accepts an upstream change.
 
+UPSTREAM-SYNC OPTIONS
+    --publish-guard <ver>  Offline: exit 1 if <ver> is the version UPSTREAM.md
+                           says the upstream copy reserves. publish.yml runs it.
+
 EXIT CODES
     0  no drift
-    1  drift found (or, with --upstream, the baseline is stale)
+    1  drift found (or, with --upstream, the baseline is stale; for
+       upstream-sync, the copy moved or the version is reserved)
     2  the check could not run
 ";
 
@@ -72,8 +82,25 @@ fn dispatch(args: &[String]) -> Result<u8, String> {
         }
         "drift-check" => drift::run(parse_drift_args(options)?),
         "docs-check" => docs_check::run(options),
+        "upstream-sync" => upstream_copy::run(parse_sync_args(options)?),
         other => Err(format!(
             "unknown subcommand `{other}`.\nRun `cargo run -p xtask -- --help` for the list."
+        )),
+    }
+}
+
+fn parse_sync_args(options: &[String]) -> Result<upstream_copy::Args, String> {
+    match options {
+        [] => Ok(upstream_copy::Args::default()),
+        [flag, version] if flag == "--publish-guard" && !version.starts_with('-') => {
+            Ok(upstream_copy::Args {
+                publish_guard: Some(version.clone()),
+            })
+        }
+        _ => Err(format!(
+            "unexpected options `{}` for upstream-sync.\n\
+             It takes none, or `--publish-guard <version>`.",
+            options.join(" ")
         )),
     }
 }
