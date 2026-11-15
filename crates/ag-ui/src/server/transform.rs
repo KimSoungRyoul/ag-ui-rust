@@ -310,11 +310,11 @@ enum Verdict {
 /// that was filtered where the filter cannot see it: by the filter of an
 /// earlier run, so that the client's history never held it, or by the
 /// earlier driver of this run, so that the events sent do not. With the
-/// ordering checks on, an event of such a call would be rejected after the
-/// filter in any case, as one for a call that never started. Without them it
-/// would be sent. And it is not dropped with an `Ok`, because the other case
-/// is a call the filter has nothing against, whose agent would go on as if
-/// the event had been sent.
+/// ordering checks on, the arguments, the end and the result of such a call
+/// would be rejected after the filter in any case, as those of a call that
+/// never started. Without them they would be sent. And it is not dropped
+/// with an `Ok`, because the other case is a call the filter has nothing
+/// against, whose agent would go on as if the event had been sent.
 ///
 /// In a run that continues another driver's, name the call on every chunk:
 /// the filter knows the calls that were sent, not the chunk streams the
