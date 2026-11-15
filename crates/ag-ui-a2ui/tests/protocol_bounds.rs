@@ -212,3 +212,57 @@ fn a_loop_is_found_wherever_it_is_listed() {
         "{report:?}"
     );
 }
+
+/// A processor of `version` that has created surface `s` on the basic catalog.
+fn processor_with_surface(version: A2uiVersion) -> MessageProcessor {
+    let catalog = Catalog::basic_for(version);
+    let mut processor = MessageProcessor::new();
+    let create = json!({
+        "version": version.as_str(),
+        "createSurface": {"surfaceId": "s", "catalogId": catalog.catalog_id},
+    });
+    processor.register(catalog).unwrap();
+    processor.process(&create).unwrap();
+    processor
+}
+
+/// What a data model holds that no message wrote is bounded over all the
+/// updates, not per update. Each of these messages is a few dozen bytes and
+/// grows six lists to the last index a write may name, which one update may
+/// do; the first leaves 60,000 undefined slots, and the next is refused.
+#[test]
+fn a_data_model_holds_a_bounded_number_of_slots_no_message_wrote() {
+    for version in [A2uiVersion::V0_9, A2uiVersion::V1_0] {
+        let mut processor = processor_with_surface(version);
+        let grow = |key: &str| {
+            json!({
+                "version": version.as_str(),
+                "updateDataModel": {
+                    "surfaceId": "s",
+                    "path": format!("/{key}{}", "/10000".repeat(6)),
+                    "value": 1,
+                },
+            })
+        };
+        let held = |processor: &MessageProcessor| {
+            processor
+                .surfaces()
+                .get("s")
+                .unwrap()
+                .data_model
+                .undefined_slots()
+        };
+        processor.process(&grow("k0")).unwrap();
+        assert_eq!(held(&processor), 60_000, "{version}");
+
+        let rejection = processor
+            .process(&grow("k1"))
+            .expect_err("a second message past the bound");
+        assert!(
+            rejection.error.to_string().contains("undefined list slots"),
+            "{version}: {}",
+            rejection.error
+        );
+        assert_eq!(held(&processor), 60_000, "{version}: nothing applied");
+    }
+}
