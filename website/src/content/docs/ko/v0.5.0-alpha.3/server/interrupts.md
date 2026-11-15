@@ -78,7 +78,6 @@ fn request() -> Interrupt {
 async fn main() {
     // 첫 번째 차례: agent가 멈춥니다.
     let first: Vec<Event> = run(Deployer, RunAgentInput::new("deploy", "run-1"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -98,7 +97,6 @@ async fn main() {
     )]);
 
     let second: Vec<Event> = run(Deployer, resumed)
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 

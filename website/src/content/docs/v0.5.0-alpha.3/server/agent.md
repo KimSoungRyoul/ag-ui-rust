@@ -40,7 +40,6 @@ async fn main() {
     let input = RunAgentInput::new("thread-1", "run-1");
 
     let events: Vec<Event> = run(Greeter, input)
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -238,7 +237,6 @@ impl Agent for Researcher {
 #[tokio::main]
 async fn main() {
     let events: Vec<Event> = run(Researcher, RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 

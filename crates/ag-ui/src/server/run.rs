@@ -22,7 +22,6 @@
 //! # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
 //! # rt.block_on(async {
 //! let events: Vec<Event> = run(Greeter, RunAgentInput::new("thread-1", "run-1"))
-//!     .map(|event| event.expect("the stream should not break"))
 //!     .collect()
 //!     .await;
 //!

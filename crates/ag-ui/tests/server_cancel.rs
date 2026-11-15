@@ -37,11 +37,7 @@ async fn cancelling_mid_run_stops_the_agent_at_its_next_emit() {
         }
     }
 
-    let events: Vec<Event> = Runner::new(Chatty)
-        .run(input())
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = Runner::new(Chatty).run(input()).collect().await;
 
     assert_eq!(text(&events), ["one"]);
     let Event::RunFinished(finished) = events.last().expect("a terminal event") else {
@@ -69,7 +65,6 @@ async fn a_run_cancelled_before_it_starts_emits_nothing_but_the_brackets() {
     let events: Vec<Event> = Runner::new(Chatty)
         .cancellation(token)
         .run(input())
-        .map(|event| event.expect("the run stream should not break"))
         .collect()
         .await;
 
@@ -104,20 +99,13 @@ async fn cancellation_wakes_an_agent_that_is_waiting() {
     let token = runner.cancellation_token();
     let mut stream = Box::pin(runner.run(input()));
 
-    let first = stream
-        .next()
-        .await
-        .expect("a first event")
-        .expect("no break");
+    let first = stream.next().await.expect("a first event");
     assert_eq!(first.event_type(), EventType::RunStarted);
 
     // The agent is parked inside `until_cancelled` by now.
     token.cancel();
 
-    let rest: Vec<Event> = stream
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let rest: Vec<Event> = stream.collect().await;
 
     assert_eq!(text(&rest), ["working"]);
     let Event::RunFinished(finished) = rest.last().expect("a terminal event") else {
@@ -145,11 +133,7 @@ async fn an_agent_can_check_cancellation_itself() {
         }
     }
 
-    let events: Vec<Event> = Runner::new(Polite)
-        .run(input())
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = Runner::new(Polite).run(input()).collect().await;
 
     assert_eq!(text(&events), ["a"]);
     assert!(matches!(
@@ -168,11 +152,7 @@ async fn an_agent_can_check_cancellation_itself() {
 /// Runs `agent` to the end and checks the stream ends `RUN_FINISHED`
 /// cancelled, with nothing left open along the way.
 async fn cancelled_run(agent: impl Agent<State = ()>) -> Vec<Event> {
-    let events: Vec<Event> = Runner::new(agent)
-        .run(input())
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = Runner::new(agent).run(input()).collect().await;
     let Some(Event::RunFinished(finished)) = events.last() else {
         panic!("expected RUN_FINISHED, got {events:#?}");
     };
@@ -477,11 +457,7 @@ async fn nothing_is_sent_after_the_run_ended() {
         }
     }
 
-    let events: Vec<Event> = Runner::new(TalksPastTheEnd)
-        .run(input())
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = Runner::new(TalksPastTheEnd).run(input()).collect().await;
     assert_eq!(
         types(&events),
         [EventType::RunStarted, EventType::RunFinished]
@@ -504,11 +480,7 @@ async fn dropping_the_stream_mid_run_disconnects_the_agent() {
     }
 
     let mut stream = Box::pin(Runner::new(Chatty).run(input()));
-    let first = stream
-        .next()
-        .await
-        .expect("a first event")
-        .expect("no break");
+    let first = stream.next().await.expect("a first event");
     assert_eq!(first.event_type(), EventType::RunStarted);
     drop(stream);
     // Nothing to assert beyond "this does not hang or panic": the agent's

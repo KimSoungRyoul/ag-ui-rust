@@ -8,10 +8,7 @@ use ag_ui::{Event, EventType, Interrupt, RunAgentInput, RunOutcome};
 use futures_util::StreamExt as _;
 
 async fn collect(agent: impl Agent, input: RunAgentInput) -> Vec<Event> {
-    run(agent, input)
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await
+    run(agent, input).collect().await
 }
 
 fn input() -> RunAgentInput {

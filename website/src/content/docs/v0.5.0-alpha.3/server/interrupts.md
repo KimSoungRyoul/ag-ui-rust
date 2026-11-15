@@ -78,7 +78,6 @@ fn request() -> Interrupt {
 async fn main() {
     // Turn one: the agent pauses.
     let first: Vec<Event> = run(Deployer, RunAgentInput::new("deploy", "run-1"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -98,7 +97,6 @@ async fn main() {
     )]);
 
     let second: Vec<Event> = run(Deployer, resumed)
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 

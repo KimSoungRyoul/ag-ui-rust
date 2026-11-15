@@ -28,7 +28,6 @@ impl Agent for Flaky {
 #[tokio::main]
 async fn main() {
     let events: Vec<Event> = run(Flaky, RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -170,7 +169,6 @@ impl Agent for Chatty {
 #[tokio::main]
 async fn main() {
     let events: Vec<Event> = run(Chatty, RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 

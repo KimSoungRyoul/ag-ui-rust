@@ -247,7 +247,6 @@ async fn a_resumed_run_can_answer_a_call_an_earlier_run_opened() {
         let events: Vec<Event> = Runner::new(Executes)
             .echo_input(echo)
             .run(resumed_input())
-            .map(|event| event.expect("the run stream should not break"))
             .collect()
             .await;
         let Some(Event::RunFinished(_)) = events.last() else {
@@ -329,10 +328,7 @@ async fn a_violation_in_a_real_run_becomes_run_error() {
         }
     }
 
-    let events: Vec<Event> = run(Sloppy, RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = run(Sloppy, RunAgentInput::new("t", "r")).collect().await;
 
     let Event::RunError(error) = events.last().expect("a terminal event") else {
         panic!("expected RUN_ERROR, got {:?}", events.last());
@@ -361,7 +357,6 @@ async fn a_run_left_open_by_a_raw_emit_still_terminates() {
     }
 
     let events: Vec<Event> = run(LeavesOpen, RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the run stream should not break"))
         .collect()
         .await;
 
