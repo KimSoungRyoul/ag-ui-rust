@@ -1540,7 +1540,7 @@ pub(crate) fn check_envelope(message: &Value, locator: &str, report: &mut Valida
 ///
 /// At most one error of each kind is reported — a payload that is too deep is
 /// too deep once, and listing every node past the limit would bury the point.
-fn check_value_depth(
+pub(crate) fn check_value_depth(
     value: &Value,
     path: &str,
     base_depth: usize,

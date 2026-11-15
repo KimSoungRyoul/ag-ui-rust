@@ -17,6 +17,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["toolkit"]
+# The framework-neutral agent layer: catalog negotiation, the prompt snippet,
+# reading a model's answer whole or streamed, renderer state, the retry
+# decision. Protocol modules only; no model call, executor or network.
+agent = []
 # Agent-side authoring: op builders, prompt assembly, recovery loop.
 toolkit = []
 # Full Draft 2020-12 validation with local resources only.

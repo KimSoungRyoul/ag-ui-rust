@@ -275,6 +275,47 @@ pub(crate) fn prune_components(catalog: &mut Value, allowed: &[String]) {
     }
 }
 
+/// Keeps only the named functions, and the `anyFunction` branches that reach
+/// them.
+///
+/// A catalog document lists its functions as a map keyed by name; the inline
+/// catalogs of a renderer's capabilities list them as an array of objects that
+/// each carry a `name`. Both are read.
+#[cfg(feature = "agent")]
+pub(crate) fn prune_functions(catalog: &mut Value, allowed: &[String]) {
+    let allowed: BTreeSet<&str> = allowed.iter().map(String::as_str).collect();
+    let Some(object) = catalog.as_object_mut() else {
+        return;
+    };
+    match object.get_mut("functions") {
+        Some(Value::Object(functions)) => {
+            functions.retain(|name, _| allowed.contains(name.as_str()));
+        }
+        Some(Value::Array(functions)) => functions.retain(|function| {
+            function
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| allowed.contains(name))
+        }),
+        _ => {}
+    }
+    if let Some(Value::Object(defs)) = object.get_mut("$defs") {
+        if let Some(Value::Object(any_function)) = defs.get_mut("anyFunction") {
+            for key in ["oneOf", "anyOf"] {
+                if let Some(Value::Array(branches)) = any_function.get_mut(key) {
+                    branches.retain(|branch| match branch.get("$ref").and_then(Value::as_str) {
+                        Some(reference) => reference
+                            .rsplit('/')
+                            .next()
+                            .is_some_and(|name| allowed.contains(name)),
+                        None => true,
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Keeps only the named messages, then drops definitions nothing reaches.
 ///
 /// Handles both envelope shapes: a `oneOf` of `$ref`s, and a flat `properties`

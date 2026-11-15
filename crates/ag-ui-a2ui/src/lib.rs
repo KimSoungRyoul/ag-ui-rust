@@ -53,6 +53,19 @@
 //! # Around the protocol
 //!
 #![cfg_attr(
+    feature = "agent",
+    doc = "- [`agent`] (feature `agent`) — what an agent framework delegates A2UI to:",
+    doc = "  catalog negotiation, the prompt snippet, reading a model's answer whole or",
+    doc = "  streamed, the mirror of the renderer's state, and the retry decision. The",
+    doc = "  framework makes the model call; nothing in the layer does I/O."
+)]
+#![cfg_attr(
+    not(feature = "agent"),
+    doc = "- `agent` (feature `agent`, off in this build) — what an agent framework",
+    doc = "  delegates A2UI to: negotiation, prompt snippet, answer parsing, renderer",
+    doc = "  state and the retry decision, with no model call and no I/O."
+)]
+#![cfg_attr(
     feature = "toolkit",
     doc = "- [`toolkit`] (feature `toolkit`) — building ops, negotiating a catalog,",
     doc = "  assembling prompts, parsing a model's output as it streams, recovering a",
@@ -151,6 +164,9 @@ pub use crate::protocol::{
 #[cfg(feature = "schema-validation")]
 #[doc(inline)]
 pub use crate::protocol::{client_schema, schema_validation};
+
+#[cfg(feature = "agent")]
+pub mod agent;
 
 #[cfg(feature = "author")]
 pub mod author;
