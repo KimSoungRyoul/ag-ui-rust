@@ -191,6 +191,104 @@ impl BinaryInputContent {
     pub fn has_payload(&self) -> bool {
         self.id.is_some() || self.url.is_some() || self.data.is_some()
     }
+
+    /// The 1.0 media part this legacy part stands for: its inline data, or
+    /// else its URL, under the modality its MIME type names, the file name
+    /// kept as `metadata.filename`. `None` when it carries only an `id`,
+    /// which no 1.0 source can express.
+    #[cfg(feature = "client")]
+    fn upgraded(&self) -> Option<InputContent> {
+        let mime_type = self.mime_type.clone();
+        let filled = |value: &Option<String>| value.clone().filter(|value| !value.is_empty());
+        let source = if let Some(value) = filled(&self.data) {
+            InputContentSource::Data { value, mime_type }
+        } else {
+            InputContentSource::Url {
+                value: filled(&self.url)?,
+                mime_type: Some(mime_type),
+            }
+        };
+        let media = MediaInputContent {
+            id: None,
+            source,
+            metadata: filled(&self.filename)
+                .map(|filename| serde_json::json!({ "filename": filename })),
+        };
+        let modality = self.mime_type.split_once('/').map(|(kind, _)| kind);
+        Some(match modality {
+            Some("image") => InputContent::Image(media),
+            Some("audio") => InputContent::Audio(media),
+            Some("video") => InputContent::Video(media),
+            _ => InputContent::Document(media),
+        })
+    }
+}
+
+/// Rewrites the legacy `binary` parts of a request's messages as the 1.0
+/// media parts they stand for. AG-UI 1.0 retired the shape: a consumer
+/// translates it rather than send what a 1.0 producer strips.
+///
+/// A legacy part that merely mirrors a media part already in the same message
+/// is dropped; one that carries only an `id` stays as it is.
+#[cfg(feature = "client")]
+pub(crate) fn upgrade_legacy_content(messages: &mut [Message]) {
+    for message in messages {
+        let parts = match message {
+            Message::User(user) => match &mut user.content {
+                UserContent::Parts(parts) => parts,
+                UserContent::Text(_) => continue,
+            },
+            Message::Tool(tool) => match &mut tool.content {
+                ToolContent::Parts(parts) => parts,
+                ToolContent::Text(_) => continue,
+            },
+            _ => continue,
+        };
+        if !parts
+            .iter()
+            .any(|part| matches!(part, InputContent::Binary(_)))
+        {
+            continue;
+        }
+        let original = std::mem::take(parts);
+        for part in &original {
+            let InputContent::Binary(binary) = part else {
+                parts.push(part.clone());
+                continue;
+            };
+            match binary.upgraded() {
+                // Matched against the parts as they arrived, so two legacy
+                // parts with the same payload stay two.
+                Some(media) if original.iter().any(|other| mirrors(other, &media, binary)) => {}
+                Some(media) => parts.push(media),
+                None => parts.push(part.clone()),
+            }
+        }
+    }
+}
+
+/// Whether `part` is the media part `media` was converted to, file name
+/// included when the legacy part had one.
+#[cfg(feature = "client")]
+fn mirrors(part: &InputContent, media: &InputContent, legacy: &BinaryInputContent) -> bool {
+    let (part, media) = match (part, media) {
+        (InputContent::Image(part), InputContent::Image(media))
+        | (InputContent::Audio(part), InputContent::Audio(media))
+        | (InputContent::Video(part), InputContent::Video(media))
+        | (InputContent::Document(part), InputContent::Document(media)) => (part, media),
+        _ => return false,
+    };
+    let kept_name = part
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("filename"))
+        .and_then(Value::as_str);
+    part.source == media.source
+        && legacy
+            .filename
+            .as_deref()
+            .filter(|filename| !filename.is_empty())
+            .is_none_or(|filename| kept_name == Some(filename))
 }
 
 /// One part of a multimodal user message.
