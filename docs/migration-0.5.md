@@ -160,6 +160,16 @@ These are on `main` and not yet in a published version.
   `DataModel::apply` and `DataModel::lookup` return `Error::Pointer` for a longer one,
   so `SurfaceStore`, history recovery and the validator report an over-deep
   `updateDataModel` path as an ordinary error. No error variant is added.
+- The client follows the 1.0 run lifecycle at both ends of a stream. A stream that
+  opens with `RUN_ERROR` ends as `RunEnd::Failed` with the server's `message` and
+  `code`, not as a protocol error. `RAW` or `CUSTOM` before `RUN_STARTED` is now a
+  protocol error.
+- A `RUN_ERROR` after `RUN_FINISHED` fails the run, so a `Thread` yields `Done` only
+  when the stream ends, not at `RUN_FINISHED`. Aborting or dropping the run after
+  `RUN_FINISHED` keeps the outcome it reported. Another event there is a protocol
+  error, except a later run's `RUN_STARTED`: the first run keeps its outcome and an
+  `unsupported` diagnostic (the new `Error::Unsupported`) says the rest was not read.
+  `Applier::interrupts` is cleared by `RUN_ERROR`.
 
 ## Verify the upgrade
 

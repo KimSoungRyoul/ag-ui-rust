@@ -357,6 +357,24 @@ fn interrupts_of_only_reports_a_paused_run() {
 }
 
 #[test]
+fn a_run_error_after_a_pause_withdraws_its_interrupts() {
+    // 1.0: a RUN_ERROR after RUN_FINISHED fails the run, and a failed run
+    // waits for nothing.
+    let mut applier = ag_ui::client::Applier::new();
+    for event in [
+        Event::run_started("t", "r"),
+        Event::run_finished_interrupt("t", "r", vec![approval()]),
+    ] {
+        applier.apply(&event).expect("applies");
+    }
+    assert_eq!(applier.interrupts(), [approval()]);
+    applier
+        .apply(&Event::run_error("failed after pausing"))
+        .expect("applies");
+    assert!(applier.interrupts().is_empty());
+}
+
+#[test]
 fn an_empty_interrupt_outcome_is_a_protocol_error() {
     // The type system cannot say "at least one", so the applier checks.
     let mut applier = ag_ui::client::Applier::new();
