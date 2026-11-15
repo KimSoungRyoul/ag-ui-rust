@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use ag_ui::axum::extract::decode_with_warnings;
 use ag_ui::client::transport::{decode_raw_events, enforce_events};
-use ag_ui::{AgentCapabilities, ExecutionCapabilities, MultiAgentCapabilities, SubAgentInfo};
+use ag_ui::{AgentCapabilities, ExecutionCapabilities, MultiAgentCapabilities, SubagentInfo};
 use futures_util::{FutureExt, StreamExt, stream};
 use serde_json::{Value, json};
 
@@ -184,7 +184,7 @@ fn run(definition: &str, document: Value) -> Fate {
         "AgentCapabilities" => through_type::<AgentCapabilities>(&document),
         "ExecutionCapabilities" => through_type::<ExecutionCapabilities>(&document),
         "MultiAgentCapabilities" => through_type::<MultiAgentCapabilities>(&document),
-        "SubagentInfo" => through_type::<SubAgentInfo>(&document),
+        "SubagentInfo" => through_type::<SubagentInfo>(&document),
         event if event.ends_with("Event") => through_events(document.clone(), &document, ""),
         other => panic!("no consumer is named for definition {other}: add it to `run`"),
     }
@@ -296,16 +296,16 @@ const TOLERATED: &[(&str, Fate)] = &[
         "MultiAgentCapabilities/invalid/old-subagents-key.json",
         Fate::Lossy,
     ),
-    // ... and the two execution limits are `i64` on purpose, so they take a
-    // value outside the schema's bounds as written: `EXECUTION_SIGNED` in
-    // xtask/src/drift/shapes.rs.
+    // ... and the two execution limits are `u64`, read leniently. One above
+    // the schema's maximum is taken as written. A negative one, which some
+    // frameworks send for "no limit", reads as no limit declared.
     (
         "ExecutionCapabilities/invalid/max-iterations-over-maximum.json",
         Fate::Whole,
     ),
     (
         "ExecutionCapabilities/invalid/negative-max-execution-time.json",
-        Fate::Whole,
+        Fate::Lossy,
     ),
 ];
 

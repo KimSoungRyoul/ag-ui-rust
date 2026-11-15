@@ -2,8 +2,9 @@
 //!
 //! [`RemoteAgent`] adds almost nothing to [`Transport`] — a request builder, and
 //! a stream that flattens connecting into streaming. It delivers checked typed
-//! events; a proxy or recorder needing the original JSON uses
-//! [`Transport::run_raw`].
+//! events; a proxy or recorder needing the original JSON calls
+//! [`Transport::run`] and takes
+//! [`TransportStream::into_json`](crate::client::transport::TransportStream::into_json).
 //!
 //! For a UI, [`Thread`](crate::client::Thread) sits on top of this and does the
 //! assembling.
@@ -35,7 +36,7 @@ use crate::{
 use futures_util::TryStreamExt;
 use serde_json::Value;
 
-use crate::client::transport::{EventStream, Transport, boxed_stream};
+use crate::client::transport::{EventStream, Transport, TransportStream};
 
 #[cfg(feature = "http")]
 use crate::client::error::Result;
@@ -186,21 +187,25 @@ impl<T: Transport> RemoteAgent<T> {
     ///
     /// Chunks remain chunks; ordering is not verified or assembled here. A UI
     /// wants [`Thread`](crate::client::Thread), while a proxy needing original
-    /// fields can call [`Transport::run_raw`].
+    /// fields calls [`Transport::run`] and takes
+    /// [`TransportStream::into_json`].
     ///
     /// Connecting is folded into the stream: a transport that cannot reach the
     /// agent yields one error item and ends.
     ///
     /// The boundary's warnings are discarded here. A `Thread` reports them;
-    /// [`enforce_events`](crate::client::transport::enforce_events) over
-    /// [`Transport::run_raw`] hands them to a callback.
+    /// [`TransportStream::into_events`] over [`Transport::run`] hands them to
+    /// a callback.
     ///
     /// A legacy `binary` content part in the request's messages is sent as the
     /// 1.0 media part it stands for.
     pub fn run_events(&self, params: impl Into<RunAgentInput>) -> EventStream {
-        let connecting = self.transport.run_raw(outgoing(params));
-        let raw = futures_util::stream::once(connecting).try_flatten();
-        boxed_stream(crate::client::enforce::stream(raw))
+        let connecting = self.transport.run(outgoing(params));
+        Box::pin(
+            futures_util::stream::once(connecting)
+                .map_ok(|stream| stream.into_events(|_| {}))
+                .try_flatten(),
+        )
     }
 
     /// [`Self::run_events`] with the boundary's warnings left in the stream.
@@ -208,9 +213,12 @@ impl<T: Transport> RemoteAgent<T> {
         &self,
         params: impl Into<RunAgentInput>,
     ) -> crate::client::enforce::CheckedStream {
-        let connecting = self.transport.run_raw(outgoing(params));
-        let raw = futures_util::stream::once(connecting).try_flatten();
-        Box::pin(crate::client::enforce::checked(raw))
+        let connecting = self.transport.run(outgoing(params));
+        Box::pin(
+            futures_util::stream::once(connecting)
+                .map_ok(TransportStream::into_checked)
+                .try_flatten(),
+        )
     }
 }
 
@@ -287,7 +295,8 @@ impl HttpAgent {
     }
     /// Typed events after compatibility translation and schema enforcement.
     /// Chunks are not assembled or applied to conversation state here. Use
-    /// [`Transport::run_raw`] to inspect the original wire JSON.
+    /// [`Transport::run`] and [`TransportStream::into_json`] to inspect the
+    /// original wire JSON.
     pub fn run_events(&self, params: impl Into<RunAgentInput>) -> EventStream {
         self.agent.run_events(params)
     }

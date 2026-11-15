@@ -72,7 +72,6 @@ impl Agent for Supervisor {
 #[tokio::main]
 async fn main() {
     let events: Vec<Event> = run(Supervisor, RunAgentInput::new("t", "run-1"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -248,7 +247,6 @@ impl Agent for Janitor {
 #[tokio::main]
 async fn main() {
     let paused: Vec<Event> = run(Janitor, RunAgentInput::new("t", "run-1"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -264,7 +262,6 @@ async fn main() {
     let mut input = RunAgentInput::new("t", "run-2");
     input.resume = Some(vec![ResumeEntry::resolved(APPROVE, json!(true))]);
     let resumed: Vec<Event> = run(Janitor, input)
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -275,7 +272,7 @@ async fn main() {
     for answer in [ResumeEntry::cancelled(APPROVE), ResumeEntry::resolved(APPROVE, json!(false))] {
         let mut input = RunAgentInput::new("t", "run-denied");
         input.resume = Some(vec![answer]);
-        let events: Vec<Event> = run(Janitor, input).map(Result::unwrap).collect().await;
+        let events: Vec<Event> = run(Janitor, input).collect().await;
         assert!(events.iter().any(|event| matches!(event,
             Event::TextMessageContent(content) if content.delta == "Not deleted.")));
         assert!(!events.iter().any(|event| matches!(event,
@@ -382,7 +379,6 @@ async fn main() {
     let inline: Vec<Event> = Runner::new(Delegating)
         .transformer(SubagentVisibility::inline())
         .run(RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -397,7 +393,6 @@ async fn main() {
     let hidden: Vec<Event> = Runner::new(Delegating)
         .transformer(SubagentVisibility::hidden())
         .run(RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 

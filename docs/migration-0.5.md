@@ -234,8 +234,9 @@ These are on `main` and not yet in a published version.
   error, and keeps it in `RunReport.diagnostics` with kind `warning`, within
   `diagnostic_limit`; the run is unaffected. A match on `Update` that treats every
   variant it does not name as an error should let warnings through.
-  `RemoteAgent::run_events`, `decode_events` and `Transport::run` discard warnings,
-  and the new `transport::enforce_events` hands each to a callback. Within a run, a
+  `RemoteAgent::run_events` and `decode_events` discard warnings, and the new
+  `transport::enforce_events` and `TransportStream::into_events` hand each to a
+  callback. Within a run, a
   warning already delivered is not delivered again, so a pre-1.0 producer streaming
   `THINKING_*` tokens yields one warning per kind of event, not one per token. On the
   server, `AgentEndpoint::on_input_warnings` receives a request's warnings and
@@ -342,6 +343,127 @@ These are on `main` and not yet in a published version.
 - The message of `Error::Pointer` quotes at most `error::MAX_SHOWN_PATH_CHARS` (120)
   characters of the path and states its length; so do the validator's sentences about
   a binding path. The `pointer` field still holds the whole path.
+- `client::Transport` has one method. `run_raw` is removed, and `run` returns a
+  `TransportStream` where it returned typed events. A transport no longer decodes or
+  checks anything: it hands over wire JSON with `TransportStream::json`, or events built
+  in this process with `TransportStream::typed`, and the client applies the compatibility
+  boundary to either. A transport that reads JSON used to implement both methods, and
+  the one the client never called had to panic:
+
+  ```rust,ignore
+  impl Transport for Socket {
+      fn run(&self, _input: RunAgentInput) -> TransportFuture {
+          panic!("the client reads run_raw")
+      }
+
+      fn run_raw(&self, input: RunAgentInput) -> RawTransportFuture {
+          let frames = self.frames(input);
+          Box::pin(async move { Ok(boxed_raw_stream(frames)) })
+      }
+  }
+  ```
+
+  Now:
+
+  ```rust
+  use ag_ui::RunAgentInput;
+  use ag_ui::client::transport::{Transport, TransportFuture, TransportStream};
+  use futures_util::stream;
+  use serde_json::Value;
+
+  struct Socket(Vec<Value>);
+
+  impl Transport for Socket {
+      fn run(&self, _input: RunAgentInput) -> TransportFuture {
+          let frames = stream::iter(self.0.clone().into_iter().map(Ok));
+          Box::pin(async move { Ok(TransportStream::json(frames)) })
+      }
+  }
+  ```
+
+  A transport that returned typed events replaces `Ok(boxed_stream(events))`, or
+  `Ok(Box::pin(events) as EventStream)`, with `Ok(TransportStream::typed(events))`. Such
+  events used to be serialized, walked against the schema and deserialized again, one by
+  one. They are now delivered as given, with what 1.0 retired still translated as it is on
+  the wire (a `THINKING_*` event, and an event that carries a `binary` content part) and a
+  newer `protocolVersion` still reported, so the warnings a typed stream can cause still
+  reach a `Thread`. `TransportStream::typed(events).enforced()` restores
+  the full check, and `ReplayTransport` does that, so tests written against it behave as
+  before. A caller of `transport.run_raw(input)` writes
+  `transport.run(input).await?.into_json()`; a caller that read typed events from
+  `transport.run(input)` adds `.into_events(|warning| …)`. `RawTransportFuture`,
+  `boxed_stream` and `boxed_raw_stream` are removed, and `TransportFuture` now resolves
+  to a `TransportStream`. None of the old names is kept as a deprecated alias: the return
+  type of the one required method changed, so no alias could make an existing
+  `impl Transport` compile.
+- `server::Runner::run` and `server::run` yield `Event`, not `Result<Event>`. The stream
+  never produced an `Err`: a failure inside a run is its `RUN_ERROR`. Before:
+
+  ```rust,ignore
+  let events: Vec<Event> = run(Greeter, input)
+      .map(|event| event.expect("the stream should not break"))
+      .collect()
+      .await;
+  ```
+
+  Now:
+
+  ```rust
+  use ag_ui::server::{Agent, Result, RunContext, run};
+  use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+  use futures_util::StreamExt;
+
+  struct Greeter;
+
+  impl Agent for Greeter {
+      type State = ();
+
+      async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+          ctx.say("hello")?;
+          Ok(RunOutcome::Success)
+      }
+  }
+
+  #[tokio::main]
+  async fn main() {
+      let input = RunAgentInput::new("thread-1", "run-1");
+      let events: Vec<Event> = run(Greeter, input).collect().await;
+      assert_eq!(events.last().map(Event::event_type), Some(EventType::RunFinished));
+  }
+  ```
+
+  Drop the `.map(…expect…)`, the `?` on an item and any `Ok(event)` pattern.
+  `axum::SseResponse::stream` takes that stream, so `response.stream(runner.run(input))`
+  is unchanged. A run-owned stream that can fail, which `stream` also accepted, now goes
+  to the new `SseResponse::try_stream`; a source error there still ends the run as
+  `RUN_ERROR` and trips the cancellation token. `stream_frames` is unchanged.
+- `ToolCallHandle::result` takes `impl Into<ToolContent>`, so a multimodal result needs no
+  raw `emit`: `call.result(vec![InputContent::text("…"), …])`. A `String` or `&str` argument
+  compiles as before. `&String`, `Box<str>` and `Cow<str>`, which `impl Into<String>`
+  accepted, need `.as_str()` or `.to_string()`.
+- A request that `Thread::send`, `send_message`, `run` or `resume_many` refuses before
+  dispatch says why in its variant in two cases: `client::Error::UnansweredToolCalls(ids)`
+  for tool calls without a result, and `client::Error::PendingInterrupts(ids)` for
+  interrupts without an answer. Both were `Error::Request(text)`. The message text is
+  unchanged; a match on `Error::Request` no longer sees these two.
+- `MessageUpdate`, `ReasoningUpdate`, `SubagentUpdate`, `RunDiagnostic`, `RunReport`,
+  `ResumeSubmission` and `Subagent` in `client` are `#[non_exhaustive]`. They are still
+  read field by field; a struct pattern needs `..`, and code outside the crate can no
+  longer build one with a struct literal.
+- `ExecutionCapabilities.max_iterations` and `max_execution_time` are `Option<u64>`, as
+  the schema's `minimum: 0` says; they were `Option<i64>`. A negative number, which some
+  frameworks send for "no limit", now reads as `None` instead of being kept, so it is
+  never written back.
+- `SubAgentInfo` is renamed `SubagentInfo`, the AG-UI 1.0 name. The old name stays as a
+  deprecated type alias, because an alias costs nothing here.
+- `RunContext::cancel_token()` is renamed `cancellation_token()`, the name
+  `Runner::cancellation_token()` already had. The old name stays as a deprecated method
+  that calls the new one.
+- Added, and not breaking: `Interrupt::with_message`, `with_tool_call_id` and
+  `with_response_schema`; `RunContext::tool_call_with(ToolCallStartEvent)` with
+  `ToolCallStartEvent::with_parent_message_id`, for a call that names the message that
+  requested it; `RunContext::set_result` and `add_usage`, which the driver writes as
+  `result` and `usage` on the terminal event.
 
 ## Verify the upgrade
 

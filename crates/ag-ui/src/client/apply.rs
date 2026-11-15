@@ -213,6 +213,7 @@ pub enum ReasoningChangeKind {
 /// the reusable half, for display. Key transient UI by the id; persist
 /// nothing by it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Subagent {
     /// The invocation's id, as every event it produced carries it.
     pub run_id: SubagentRunId,

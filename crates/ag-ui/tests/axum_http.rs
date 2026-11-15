@@ -95,7 +95,7 @@ impl Agent for Endless {
     type State = ();
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let _ = self.token.send(ctx.cancel_token());
+        let _ = self.token.send(ctx.cancellation_token());
 
         let mut message = ctx.assistant_message()?;
         for index in 0..10_000 {
@@ -117,7 +117,7 @@ impl Agent for Prompt {
     type State = ();
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let _ = self.token.send(ctx.cancel_token());
+        let _ = self.token.send(ctx.cancellation_token());
         ctx.say("done")?;
         Ok(RunOutcome::Success)
     }
@@ -147,7 +147,7 @@ impl Agent for Waiting {
     type State = ();
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let _ = self.token.send(ctx.cancel_token());
+        let _ = self.token.send(ctx.cancellation_token());
         ctx.say("thinking…")?;
         sleep(Duration::from_secs(60)).await;
         Ok(RunOutcome::Success)

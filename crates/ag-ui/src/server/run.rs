@@ -22,7 +22,6 @@
 //! # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
 //! # rt.block_on(async {
 //! let events: Vec<Event> = run(Greeter, RunAgentInput::new("thread-1", "run-1"))
-//!     .map(|event| event.expect("the stream should not break"))
 //!     .collect()
 //!     .await;
 //!
@@ -38,16 +37,16 @@ use std::task::{Context, Poll};
 
 use crate::{
     Event, RunAgentInput, RunErrorEvent, RunFinishedEvent, RunId, RunOutcome, RunStartedEvent,
-    ThreadId,
+    ThreadId, TokenUsage,
 };
-use futures_channel::mpsc::{self, UnboundedReceiver};
+use futures_channel::mpsc;
 use futures_core::Stream;
 use futures_util::StreamExt as _;
 
 use crate::server::agent::Agent;
 use crate::server::cancel::CancellationToken;
-use crate::server::context::{RunContext, decode_state};
-use crate::server::emit::EventSink;
+use crate::server::context::{RunContext, Terminal, decode_state};
+use crate::server::emit::{EventReceiver, EventSink};
 use crate::server::error::{Error, Result};
 use crate::server::transform::{StreamTransformer, TransformerChain};
 
@@ -55,7 +54,7 @@ use crate::server::transform::{StreamTransformer, TransformerChain};
 /// token.
 ///
 /// [`Runner`] is the same thing with knobs.
-pub fn run<A: Agent>(agent: A, input: RunAgentInput) -> impl Stream<Item = Result<Event>> + Send {
+pub fn run<A: Agent>(agent: A, input: RunAgentInput) -> impl Stream<Item = Event> + Send {
     Runner::new(agent).run(input)
 }
 
@@ -175,11 +174,25 @@ impl<A: Agent> Runner<A> {
     /// `RUN_FINISHED` / `RUN_ERROR` last — including when the agent body does
     /// nothing, and when it returns `Err` through a `?`.
     ///
+    /// The stream yields [`Event`], not `Result<Event>`: whatever goes wrong
+    /// inside a run is reported in the stream, as `RUN_ERROR`, so there is no
+    /// error left for an item to carry.
+    ///
     /// A panic inside the agent is not caught; it unwinds through whoever is
     /// polling the stream, as it would through any other future. Use the
     /// transport's own panic handling if you need a response body for that
     /// case.
-    pub fn run(self, input: RunAgentInput) -> impl Stream<Item = Result<Event>> + Send {
+    pub fn run(self, input: RunAgentInput) -> impl Stream<Item = Event> + Send {
+        let (driver, events) = self.parts(input);
+        RunStream {
+            driver: Some(Box::pin(driver)),
+            events,
+        }
+    }
+
+    /// The two halves of a run: the future that drives the agent, and the
+    /// read end of what it emits. [`run`](Self::run) joins them in one stream.
+    fn parts(self, input: RunAgentInput) -> (impl Future<Output = ()> + Send, EventReceiver) {
         let Self {
             agent,
             chain,
@@ -190,10 +203,10 @@ impl<A: Agent> Runner<A> {
         let (tx, rx) = mpsc::unbounded();
         let sink =
             EventSink::new(tx, chain, cancel).with_event_buffer_capacity(event_buffer_capacity);
-        RunStream {
-            driver: Some(Box::pin(drive(agent, input, sink, echo_input))),
-            rx,
-        }
+        (
+            drive(agent, input, sink, echo_input),
+            EventReceiver::new(rx),
+        )
     }
 }
 
@@ -223,7 +236,7 @@ async fn drive<A: Agent>(agent: A, input: RunAgentInput, mut sink: EventSink, ec
     // Decoded before the match so the borrow of `input` ends here: the context
     // takes the input by value on the next line.
     let decoded = decode_state::<A::State>(&input.state);
-    let outcome = match decoded {
+    let (outcome, terminal) = match decoded {
         Ok(state) => {
             let mut ctx = RunContext::from_parts(input, state, sink);
             let outcome = agent.run(&mut ctx).await;
@@ -231,19 +244,22 @@ async fn drive<A: Agent>(agent: A, input: RunAgentInput, mut sink: EventSink, ec
                 // The agent emitted its own terminal event through `emit`.
                 return;
             }
-            sink = ctx.into_sink();
-            outcome
+            let terminal;
+            (sink, terminal) = ctx.into_parts();
+            (outcome, terminal)
         }
-        Err(error) => Err(error),
+        Err(error) => (Err(error), Terminal::default()),
     };
 
-    terminate(&mut sink, outcome, &thread_id, &run_id);
+    terminate(&mut sink, outcome, terminal, &thread_id, &run_id);
 }
 
-/// Emits exactly one terminal event.
+/// Emits exactly one terminal event, carrying the result and usage the agent
+/// reported through its context.
 fn terminate(
     sink: &mut EventSink,
     outcome: Result<RunOutcome>,
+    terminal: Terminal,
     thread_id: &ThreadId,
     run_id: &RunId,
 ) {
@@ -254,20 +270,24 @@ fn terminate(
     if matches!(outcome, Ok(RunOutcome::Cancelled) | Err(Error::Cancelled)) {
         sink.close_active_subagents(&Error::Cancelled);
     }
+    let usage = terminal.usage();
+    let finished = |outcome| {
+        let mut finished =
+            RunFinishedEvent::new(thread_id.clone(), run_id.clone()).with_outcome(outcome);
+        finished.result = terminal.result.clone();
+        finished.usage = usage.clone();
+        Event::from(finished)
+    };
     let event = match outcome {
         Ok(outcome) => match outcome.validate() {
-            Ok(()) => RunFinishedEvent::new(thread_id.clone(), run_id.clone())
-                .with_outcome(outcome)
-                .into(),
-            Err(error) => error_event(&Error::Protocol(error)),
+            Ok(()) => finished(outcome),
+            Err(error) => error_event(&Error::Protocol(error), usage.clone()),
         },
         // A deliberate stop is a closed run, provided all open entities were
         // closed. If a raw emit left one open, the verifier rejects
         // RUN_FINISHED and the fallback below reports RUN_ERROR instead.
-        Err(Error::Cancelled) => RunFinishedEvent::new(thread_id.clone(), run_id.clone())
-            .with_outcome(RunOutcome::Cancelled)
-            .into(),
-        Err(error) => error_event(&error),
+        Err(Error::Cancelled) => finished(RunOutcome::Cancelled),
+        Err(error) => error_event(&error, usage.clone()),
     };
 
     let Err(rejected) = sink.emit_forced(event) else {
@@ -278,14 +298,14 @@ fn terminate(
     // one that ends badly, so say what went wrong instead. `RUN_ERROR` is
     // exempt from the open-at-finish rule for exactly this reason.
     if !rejected.is_disconnected() && !sink.is_terminated() {
-        let _ = sink.emit_forced(error_event(&rejected));
+        let _ = sink.emit_forced(error_event(&rejected, usage));
     }
 }
 
-fn error_event(error: &Error) -> Event {
-    RunErrorEvent::new(error.to_string())
-        .with_code(error.code())
-        .into()
+fn error_event(error: &Error, usage: Option<Vec<TokenUsage>>) -> Event {
+    let mut event = RunErrorEvent::new(error.to_string()).with_code(error.code());
+    event.usage = usage;
+    event.into()
 }
 
 /// The stream half: drains queued events, and polls the agent when there are
@@ -295,11 +315,11 @@ fn error_event(error: &Error) -> Event {
 /// projection — one allocation per run.
 struct RunStream<F> {
     driver: Option<Pin<Box<F>>>,
-    rx: UnboundedReceiver<Event>,
+    events: EventReceiver,
 }
 
 impl<F: Future<Output = ()>> Stream for RunStream<F> {
-    type Item = Result<Event>;
+    type Item = Event;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
@@ -307,8 +327,8 @@ impl<F: Future<Output = ()>> Stream for RunStream<F> {
             // Events first: everything the agent has already emitted goes out
             // before it is polled again, which is what keeps a slow agent's
             // early output flowing.
-            match this.rx.poll_next_unpin(cx) {
-                Poll::Ready(Some(event)) => return Poll::Ready(Some(Ok(event))),
+            match this.events.poll_next_unpin(cx) {
+                Poll::Ready(Some(event)) => return Poll::Ready(Some(event)),
                 // The driver dropped its sender, or overflow closed the queue.
                 Poll::Ready(None) => {
                     // Overflow closes the queue even if an agent ignored its
@@ -332,13 +352,14 @@ impl<F: Future<Output = ()>> Stream for RunStream<F> {
     }
 }
 
-/// A run-owned source error means execution has ended. External subscriptions
-/// use a separate transport path, where source errors cannot claim a run failed.
+/// A run-owned source error means execution has ended, so it becomes the
+/// run's `RUN_ERROR` and nothing after it is read. External subscriptions use
+/// a separate transport path, where source errors cannot claim a run failed.
 #[cfg(feature = "axum")]
 pub(crate) fn terminal_error_events<S>(
     events: S,
     cancellation: Option<CancellationToken>,
-) -> impl Stream<Item = Result<Event>> + Send
+) -> impl Stream<Item = Event> + Send
 where
     S: Stream<Item = Result<Event>> + Send + 'static,
 {
@@ -347,7 +368,7 @@ where
         async move {
             let mut events = events?;
             match events.next().await {
-                Some(Ok(event)) => Some((Ok(event), Some(events))),
+                Some(Ok(event)) => Some((event, Some(events))),
                 Some(Err(error)) => {
                     if let Some(token) = cancellation {
                         token.cancel();
@@ -355,7 +376,7 @@ where
                     drop(events);
                     let event =
                         Event::from(RunErrorEvent::new(error.to_string()).with_code(error.code()));
-                    Some((Ok(event), None))
+                    Some((event, None))
                 }
                 None => None,
             }

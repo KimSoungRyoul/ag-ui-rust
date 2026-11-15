@@ -33,7 +33,8 @@ async fn http_transport_accepts_sse_media_type_with_case_and_parameters() {
             }),
         );
         let (transport, server) = start(app).await;
-        let mut events = transport.run(RunAgentInput::new("t", "r")).await.unwrap();
+        let stream = transport.run(RunAgentInput::new("t", "r")).await.unwrap();
+        let mut events = Box::pin(stream.into_events(|_| {}));
         assert!(matches!(
             events.next().await,
             Some(Ok(ag_ui::Event::RunStarted(_)))

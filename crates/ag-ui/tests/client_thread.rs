@@ -7,7 +7,9 @@ use std::sync::{
 };
 use std::task::Poll;
 
-use ag_ui::client::transport::{ReplayTransport, Transport, TransportFuture, boxed_stream};
+use ag_ui::client::transport::{
+    EventStream, ReplayTransport, Transport, TransportFuture, TransportStream,
+};
 use ag_ui::client::{Error, RunEnd, SubagentStatus, SubmissionStatus, Thread, Update};
 use ag_ui::{Event, Interrupt, Message, ResumeEntry, RunAgentInput, TextMessageRole};
 use futures_util::{
@@ -43,6 +45,55 @@ fn answers() -> Vec<ResumeEntry> {
         ResumeEntry::resolved("first", json!({"approved":true})),
         ResumeEntry::cancelled("second"),
     ]
+}
+
+#[tokio::test]
+async fn a_refused_request_says_what_is_outstanding_without_its_text_being_read() {
+    // Paused on two interrupts: a run that answers neither is refused.
+    let mut thread = Thread::new(script(pause()), "t");
+    thread.send("go").unwrap().collect_report().await;
+    for refused in [thread.send("again").err(), thread.run().err()] {
+        let Some(Error::PendingInterrupts(ids)) = refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(ids, ["first", "second"]);
+    }
+    assert_eq!(
+        thread.send("again").unwrap_err().to_string(),
+        "request rejected: pending interrupts must be answered with resume_many"
+    );
+
+    // A tool call nobody answered: every way of starting a run names it.
+    let call = Message::Assistant(ag_ui::AssistantMessage {
+        id: "m-1".into(),
+        tool_calls: Some(vec![
+            ag_ui::ToolCall::new("call-1", "pick_file", "{}"),
+            ag_ui::ToolCall::new("call-2", "pick_file", "{}"),
+        ]),
+        ..Default::default()
+    });
+    let mut thread = Thread::<_>::builder(script(success()), "t")
+        .messages(vec![call])
+        .build()
+        .unwrap();
+    for refused in [
+        thread.send("go").err(),
+        thread.run().err(),
+        thread
+            .send_message(Message::tool("m-2", "call-1", "a.pdf"))
+            .err(),
+    ] {
+        match refused {
+            Some(Error::UnansweredToolCalls(ids)) => {
+                assert_eq!(ids.last().map(|id| id.as_str()), Some("call-2"))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(
+        thread.send("go").unwrap_err().to_string(),
+        "request rejected: unanswered tool calls must be answered with tool messages, or abandoned, before another run: call-1, call-2"
+    );
 }
 
 #[tokio::test]
@@ -451,12 +502,14 @@ impl Transport for PendingTransport {
         } else {
             Box::pin(async move {
                 let start = Event::run_started(input.thread_id, input.run_id);
-                Ok(boxed_stream(futures_util::stream::iter([Ok(start)]).chain(
-                    futures_util::stream::poll_fn(move |_| {
-                        let _ = &guard;
-                        Poll::Pending
-                    }),
-                )))
+                Ok(TransportStream::typed(
+                    futures_util::stream::iter([Ok(start)]).chain(futures_util::stream::poll_fn(
+                        move |_| {
+                            let _ = &guard;
+                            Poll::Pending
+                        },
+                    )),
+                ))
             })
         }
     }
@@ -539,14 +592,18 @@ impl Transport for AfterSuccess {
             )),
             Ok(Event::run_finished_success(input.thread_id, input.run_id)),
         ];
-        let rest = if self.connection_fails {
-            boxed_stream(futures_util::stream::iter([Err(Error::Transport(
+        let rest: EventStream = if self.connection_fails {
+            Box::pin(futures_util::stream::iter([Err(Error::Transport(
                 "connection reset".into(),
             ))]))
         } else {
-            boxed_stream(futures_util::stream::pending())
+            Box::pin(futures_util::stream::pending())
         };
-        Box::pin(async move { Ok(boxed_stream(futures_util::stream::iter(events).chain(rest))) })
+        Box::pin(async move {
+            Ok(TransportStream::typed(
+                futures_util::stream::iter(events).chain(rest),
+            ))
+        })
     }
 }
 

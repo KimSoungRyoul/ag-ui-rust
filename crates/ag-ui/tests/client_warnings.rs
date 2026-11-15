@@ -7,9 +7,7 @@
 use std::cell::RefCell;
 
 use ag_ui::RunAgentInput;
-use ag_ui::client::transport::{
-    RawTransportFuture, Transport, TransportFuture, boxed_raw_stream, enforce_events,
-};
+use ag_ui::client::transport::{Transport, TransportFuture, TransportStream, enforce_events};
 use ag_ui::client::{RunEnd, RunReport, RunStream, Thread, Update};
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, json};
@@ -19,12 +17,12 @@ struct Wire(Vec<Value>);
 
 impl Transport for Wire {
     fn run(&self, _: RunAgentInput) -> TransportFuture {
-        panic!("a thread reads raw events")
-    }
-
-    fn run_raw(&self, _: RunAgentInput) -> RawTransportFuture {
         let events = self.0.clone();
-        Box::pin(async move { Ok(boxed_raw_stream(stream::iter(events.into_iter().map(Ok)))) })
+        Box::pin(async move {
+            Ok(TransportStream::json(stream::iter(
+                events.into_iter().map(Ok),
+            )))
+        })
     }
 }
 

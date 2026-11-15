@@ -35,11 +35,7 @@ impl Agent for TwoTools {
 }
 
 async fn collect(runner: Runner<impl Agent>) -> Vec<Event> {
-    runner
-        .run(RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await
+    runner.run(RunAgentInput::new("t", "r")).collect().await
 }
 
 #[tokio::test]
@@ -475,11 +471,7 @@ impl Agent for AnswersEarlierCalls {
 
 /// The calls whose results reached the consumer, and how the run ended.
 async fn answered(runner: Runner<AnswersEarlierCalls>) -> (Vec<String>, EventType) {
-    let events: Vec<Event> = runner
-        .run(resumed_input())
-        .map(|event| event.expect("the run stream should not break"))
-        .collect()
-        .await;
+    let events: Vec<Event> = runner.run(resumed_input()).collect().await;
     let answered = events
         .iter()
         .filter_map(|event| match event {

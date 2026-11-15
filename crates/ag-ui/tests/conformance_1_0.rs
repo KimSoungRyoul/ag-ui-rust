@@ -36,8 +36,7 @@ use std::sync::{Arc, Mutex};
 
 use ag_ui::client::apply::Applier;
 use ag_ui::client::transport::{
-    RawTransportFuture, Transport, TransportFuture, boxed_raw_stream, boxed_stream, decode_events,
-    decode_raw_events, enforce_events,
+    Transport, TransportFuture, TransportStream, decode_raw_events, enforce_events,
 };
 use ag_ui::client::{ChunkNormalizer, Error, Thread, Verifier};
 use ag_ui::server::EventVerifier;
@@ -273,12 +272,7 @@ impl Wire {
 impl Transport for Wire {
     fn run(&self, input: RunAgentInput) -> TransportFuture {
         let chunks = self.chunks(input);
-        Box::pin(async move { Ok(boxed_stream(decode_events(chunks))) })
-    }
-
-    fn run_raw(&self, input: RunAgentInput) -> RawTransportFuture {
-        let chunks = self.chunks(input);
-        Box::pin(async move { Ok(boxed_raw_stream(decode_raw_events(chunks))) })
+        Box::pin(async move { Ok(TransportStream::json(decode_raw_events(chunks))) })
     }
 }
 

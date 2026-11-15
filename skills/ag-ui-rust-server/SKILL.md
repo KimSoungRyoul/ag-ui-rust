@@ -63,8 +63,9 @@ async fn main() {
 ```
 
 `RUN_STARTED` and the terminal `RUN_FINISHED` / `RUN_ERROR` are the driver's, not yours.
-`run(agent, input)` returns a `Stream` of events and owns the agent's future — draining the
-stream *is* running the agent, so there is no `spawn` and nothing to configure.
+`run(agent, input)` returns a `Stream<Item = Event>` and owns the agent's future — draining the
+stream *is* running the agent, so there is no `spawn` and nothing to configure. The items are
+plain events, not `Result`s: a failure inside the run is its `RUN_ERROR`.
 
 ## Emitting
 

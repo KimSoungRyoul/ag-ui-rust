@@ -2,9 +2,7 @@
 #![cfg(all(feature = "client", feature = "sse"))]
 
 use ag_ui::client::RemoteAgent;
-use ag_ui::client::transport::{
-    RawTransportFuture, Transport, TransportFuture, boxed_raw_stream, decode_events,
-};
+use ag_ui::client::transport::{Transport, TransportFuture, TransportStream, decode_events};
 use ag_ui::{Event, RunAgentInput};
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, json};
@@ -14,12 +12,8 @@ struct RawTransport(Value);
 
 impl Transport for RawTransport {
     fn run(&self, _: RunAgentInput) -> TransportFuture {
-        panic!("the shared boundary must request raw JSON")
-    }
-
-    fn run_raw(&self, _: RunAgentInput) -> RawTransportFuture {
         let event = self.0.clone();
-        Box::pin(async move { Ok(boxed_raw_stream(stream::once(async { Ok(event) }))) })
+        Box::pin(async move { Ok(TransportStream::json(stream::once(async { Ok(event) }))) })
     }
 }
 

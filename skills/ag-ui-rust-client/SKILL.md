@@ -209,12 +209,17 @@ lifecycle pair to the actual request IDs. Use literal replay to test mismatches,
 `set_next_run_id` to choose a known request ID. `with_runs` supplies multiple fixtures;
 clones share fixtures and recorded requests.
 
-`Transport::run(&self, RunAgentInput) -> TransportFuture` returns a `'static` event future;
-clone what it needs instead of borrowing self. `&T`, `Box<T>` and `Arc<T>` implement Transport
-when `T` does. Native event futures/streams are Send, wasm aliases are local.
-`RemoteAgent::run_events(params)` and `HttpAgent::run_events(params)` expose raw events
-without state handling. `decode_events` and `boxed_stream` adapt byte streams. Use
-`Error::transport(error)` for custom transport errors.
+`Transport::run(&self, RunAgentInput) -> TransportFuture` is the trait's only method. Its
+`'static` future resolves to a `TransportStream`; clone what it needs instead of borrowing
+self. Build the stream with `TransportStream::json(values)` for wire JSON
+(`decode_raw_events` turns SSE body chunks into values) or `TransportStream::typed(events)`
+for events built as `Event` in this process. The transport checks nothing: the client
+applies schema enforcement, the optional-null registry and legacy translation to JSON, and
+delivers typed events without the schema walk unless the stream is `.enforced()`. `&T`,
+`Box<T>` and `Arc<T>` implement Transport when `T` does. Native futures/streams are Send,
+wasm aliases are local. `RemoteAgent::run_events(params)` and `HttpAgent::run_events(params)`
+expose checked events without state handling; `TransportStream::into_json` gives a proxy
+the original JSON. Use `Error::transport(error)` for custom transport errors.
 
 HTTP `.connect_timeout` bounds setup; `.timeout` bounds the entire streamed run.
 `HttpAgent::builder` exposes both alongside headers and a configured reqwest Client.
