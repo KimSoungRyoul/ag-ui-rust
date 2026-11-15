@@ -417,6 +417,12 @@ pub struct Applier {
     /// The same for reasoning messages: what `REASONING_MESSAGE_START` opened
     /// and `REASONING_MESSAGE_END` has not closed.
     open_reasoning: Open,
+    /// The owner the first `TEXT_MESSAGE_START` for an id gave it, where the
+    /// conversation held that id as a reasoning or an activity message, so
+    /// the text went into that message or nowhere. The ordering rules keep
+    /// text apart from reasoning and record that owner for the id as a text
+    /// message's, which is whose a tool call naming the id as its parent is.
+    claimed: HashMap<MessageId, Option<SubagentRunId>>,
     state: Value,
     thread_id: Option<ThreadId>,
     run_id: Option<RunId>,
@@ -444,6 +450,7 @@ impl Applier {
             tool_calls: HashMap::new(),
             open_text: Open::default(),
             open_reasoning: Open::default(),
+            claimed: HashMap::new(),
             state: Value::Object(JsonObject::new()),
             thread_id: None,
             run_id: None,
@@ -946,7 +953,10 @@ impl Applier {
         name: Option<String>,
         owner: Option<SubagentRunId>,
     ) -> Changed {
-        if self.by_id.contains_key(&id) {
+        if let Some(held) = self.message(&id) {
+            if matches!(held, Message::Reasoning(_) | Message::Activity(_)) {
+                self.claimed.entry(id.clone()).or_insert(owner);
+            }
             // An activity message has no text to append to, so the id opens
             // nothing: its content is left as it is, as in the reference
             // client.
@@ -1044,10 +1054,24 @@ impl Applier {
             // id is the only id available to name it. So does one whose
             // parent is not an assistant message and cannot carry a call: a
             // reasoning message a reply shares its id with, say. The
-            // reference client does the same. Unattributed, such a call
-            // belongs to whoever the message it named does.
-            (_, named) => {
-                let inherited = || self.messages.get(named?)?.subagent_run_id().cloned();
+            // reference client does the same.
+            //
+            // Unattributed, such a call is whoever's the ordering rules make
+            // it: the owner they record for the parent as a text message.
+            // That is the named message's own, or, for an id the
+            // conversation holds as reasoning or activity, the owner the
+            // text start that shared it claimed. None claimed it: the parent
+            // agent's.
+            (parent, named) => {
+                let inherited = || {
+                    let held = self.messages.get(named?)?;
+                    match held {
+                        Message::Reasoning(_) | Message::Activity(_) => {
+                            self.claimed.get(parent.as_ref()?).cloned().flatten()
+                        }
+                        _ => held.subagent_run_id().cloned(),
+                    }
+                };
                 let owner = owner.or_else(inherited);
                 (MessageId::new(format!("{tool_call_id}-message")), owner)
             }

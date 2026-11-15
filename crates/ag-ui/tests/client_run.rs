@@ -892,11 +892,16 @@ async fn a_thread_can_be_seeded_with_history_and_run_without_a_new_message() {
     assert_eq!(request.state, json!({ "seeded": true }));
 }
 
+/// The applier keeps what it has somewhere to keep, and drops the rest; a
+/// `Thread` says what it dropped. Before, this was `Error::Protocol`
+/// ("TOOL_CALL_ARGS for unknown tool call ToolCallId(\"nope\")"), which a
+/// `Thread` made fatal.
 #[test]
-fn a_tool_call_argument_delta_for_an_unknown_call_is_an_error() {
+fn a_tool_call_argument_delta_for_an_unknown_call_changes_nothing() {
     let mut applier = Applier::new();
-    let error = applier
+    let changed = applier
         .apply(&Event::tool_call_args(ToolCallId::new("nope"), "{}"))
-        .expect_err("there is nowhere to put the arguments");
-    assert!(error.to_string().contains("unknown tool call"));
+        .expect("there is nowhere to put the arguments, which is not an error");
+    assert_eq!(changed, Changed::Nothing);
+    assert!(applier.messages().is_empty());
 }

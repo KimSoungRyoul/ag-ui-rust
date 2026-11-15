@@ -629,9 +629,9 @@ impl Transport for GoesQuiet {
 
 #[tokio::test]
 async fn an_expired_interrupt_is_declined_and_the_thread_moves_past_it() {
-    // An unreadable expiry is refused an answer as an elapsed one is, so it
-    // needs the same way out.
-    for (expires_at, refused) in [(PAST, "expired"), ("not-a-timestamp", "invalid expiry")] {
+    // An expiry the thread cannot read is not evidence of expiry, and is
+    // answered (`client_thread.rs`); one that has passed needs a way out.
+    for (expires_at, refused) in [(PAST, "expired")] {
         let transport = ReplayTransport::with_runs([
             vec![
                 Event::run_started("t", "r"),

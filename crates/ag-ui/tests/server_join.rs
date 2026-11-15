@@ -599,21 +599,34 @@ fn a_message_opened_again_keeps_what_it_held_before() {
 
 #[test]
 fn a_snapshot_sent_with_a_message_open_is_where_its_content_starts_again() {
+    let start = || Event::text_message_start("a1", TextMessageRole::Assistant);
     let cases = [
         // The snapshot carries the open message, rewritten: a client takes
-        // the snapshot's copy and adds what follows to it.
+        // the snapshot's copy and adds what follows to it. Only what followed
+        // the snapshot is restated.
         (
             vec![Message::assistant("a1", "Rewritten.")],
-            "Rewritten. More.",
+            Some("Rewritten. More."),
+            vec![
+                Event::messages_snapshot(vec![Message::assistant("a1", "Rewritten.")]),
+                start(),
+                Event::text_message_content("a1", " More"),
+            ],
         ),
-        // The snapshot leaves it out: a client drops the message, and what
-        // follows starts it afresh.
-        (Vec::new(), " More."),
+        // The snapshot leaves it out: a client drops the message and what
+        // follows, since a snapshot closes nothing and resurrects nothing. So
+        // the joiner is given the message open, and then the snapshot that
+        // drops it.
+        (
+            Vec::new(),
+            None,
+            vec![start(), Event::messages_snapshot(Vec::new())],
+        ),
     ];
-    for (snapshot, in_the_end) in cases {
+    for (snapshot, in_the_end, after_run_started) in cases {
         let run = [
             Event::run_started(THREAD, RUN),
-            Event::text_message_start("a1", TextMessageRole::Assistant),
+            start(),
             Event::text_message_content("a1", "Hello"),
             Event::messages_snapshot(snapshot),
             Event::text_message_content("a1", " More"),
@@ -622,22 +635,51 @@ fn a_snapshot_sent_with_a_message_open_is_where_its_content_starts_again() {
             Event::run_finished_success(THREAD, RUN),
         ];
         let whole = read(&[], &run, true);
-        assert_eq!(whole.text_of("a1"), Some(in_the_end));
+        assert_eq!(whole.text_of("a1"), in_the_end);
 
         let (sent, rest) = run.split_at(5);
         let progress = progress_after(&[], sent);
         let folded = read(&[], sent, false);
         let prelude = progress.prelude().messages(folded.messages()).into_events();
-        assert_eq!(
-            prelude[2..],
-            [
-                Event::text_message_start("a1", TextMessageRole::Assistant),
-                Event::text_message_content("a1", " More"),
-            ],
-            "only what followed the snapshot is restated"
-        );
+        assert_eq!(prelude[1..], after_run_started);
         let joined = read(&[], &[prelude.as_slice(), rest].concat(), true);
         assert_eq!(joined.messages(), whole.messages());
+
+        // A message list that still holds the message, from a store that
+        // kept it, is no different: the message is taken out of it.
+        if in_the_end.is_none() {
+            let kept = [Message::assistant("a1", "Hello More")];
+            let prelude = progress.prelude().messages(kept).into_events();
+            assert_eq!(prelude[1..], after_run_started);
+        }
+    }
+}
+
+#[test]
+fn a_tool_call_a_snapshot_dropped_while_open_is_dropped_on_the_joiner_too() {
+    // The snapshot restates the message without the call that is streaming
+    // its arguments: a client holds the message and not the call.
+    let run = [
+        Event::run_started(THREAD, RUN),
+        Event::text_message_start("a1", TextMessageRole::Assistant),
+        Event::text_message_content("a1", "Searching."),
+        Event::text_message_end("a1"),
+        call("c1", "search", "a1"),
+        Event::tool_call_args("c1", r#"{"q":"#),
+        Event::messages_snapshot(vec![Message::assistant("a1", "Searching.")]),
+        Event::tool_call_args("c1", r#""rust"}"#),
+        Event::tool_call_end("c1"),
+        Event::run_finished_success(THREAD, RUN),
+    ];
+    let whole = read(&[], &run, true);
+    assert_eq!(whole.messages(), [Message::assistant("a1", "Searching.")]);
+    for at in 7..run.len() {
+        let (sent, rest) = run.split_at(at);
+        let progress = progress_after(&[], sent);
+        let folded = read(&[], sent, false);
+        let prelude = progress.prelude().messages(folded.messages()).into_events();
+        let joined = read(&[], &[prelude.as_slice(), rest].concat(), true);
+        assert_eq!(joined.messages(), whole.messages(), "joined after {at}");
     }
 }
 
