@@ -165,6 +165,7 @@ cargo test --doc --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo run --locked -p xtask -- drift-check
 cargo run --locked -p xtask -- drift-check --local
+cargo run --locked -p xtask -- docs-check
 prek run --all-files
 ```
 
