@@ -233,7 +233,7 @@ struct Waiting {
 /// The calls one side has made and waits on, by `functionCallId`.
 ///
 /// It is the same table in both directions: an agent keeps one for its
-/// `callRendererFunction` calls ([`RendererCalls`](crate::agent::RendererCalls)
+/// `callRendererFunction` calls (`agent::RendererCalls`
 /// is built on it), and a renderer host keeps one for its `callAgentFunction`
 /// calls.
 ///

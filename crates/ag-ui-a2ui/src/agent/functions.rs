@@ -241,8 +241,9 @@ pub struct AgentFunctionCall {
     /// The arguments, as resolved values.
     ///
     /// From a router that checks schemas
-    /// ([`RendererMessageRouter::checking_schemas`]) they have been held to
-    /// the function's `args` schema, and what the schema gives a default the
+    /// (`RendererMessageRouter::checking_schemas`, which the
+    /// `schema-validation` feature has) they have been held to the
+    /// function's `args` schema, and what the schema gives a default the
     /// call left out is filled in. From any other router they are as the
     /// renderer sent them, and checking them is the function's own business.
     pub args: Map<String, Value>,

@@ -707,7 +707,7 @@ where
 /// to run a function of a catalog. From v1.0.
 ///
 /// The renderer answers with a `rendererFunctionResponse` that copies
-/// `function_call_id`. [`RendererCalls`](crate::agent::RendererCalls) makes
+/// `function_call_id`. With the `agent` feature, `agent::RendererCalls` makes
 /// the call and keeps track of it until then.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -751,7 +751,7 @@ impl CallRendererFunction {
 ///
 /// The agent answers with an `agentFunctionResponse` that copies
 /// `function_call_id`.
-/// [`RendererMessageRouter`](crate::agent::RendererMessageRouter) reads one
+/// With the `agent` feature, `agent::RendererMessageRouter` reads one
 /// and says which function of the agent it is for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -19,8 +19,7 @@
 //! with it [`SurfacePainter::settle`](super::SurfacePainter::settle) and
 //! `paint`, rather than drop the call or put it where no frontend reads it.
 //! A call travels by a transport that carries A2UI messages as they are, such
-//! as A2A, where a data part holds any message
-//! ([`adapters::a2a`](crate::adapters::a2a)).
+//! as A2A, where a data part holds any message (`adapters::a2a`).
 //!
 //! A failure is a different object, never an empty envelope: a result that
 //! carried the key would be read as a surface. A tool that could not produce a
@@ -66,8 +65,14 @@ pub fn wrap_as_operations_envelope(operations: &[AgentMessage]) -> Result<String
 ///
 /// Returns [`Error::Json`](crate::Error::Json) if an operation cannot be
 /// serialized, and [`Error::Validation`](crate::Error::Validation) when one
-/// is a function call, which the envelope has no place for: see the
-/// [module documentation](self#function-calls).
+/// is a function call (`callRendererFunction`, `agentFunctionResponse`),
+/// which the envelope has no place for. AG-UI's middleware knows the four
+/// operations that change a surface (`A2UIMessageType`,
+/// `middlewares/a2ui-middleware/src/types.ts:155-161` at
+/// `ag-ui-protocol/ag-ui` commit `2330368a`) and names no function call, so
+/// this adapter has no mapping for one and invents none: the batch is refused,
+/// and the call is neither dropped nor put where no frontend reads it. See
+/// [the adapter's documentation](super#function-calls).
 pub fn operations_envelope(operations: &[AgentMessage]) -> Result<Value> {
     let calls: Vec<ValidationError> = operations
         .iter()
