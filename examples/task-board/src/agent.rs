@@ -64,8 +64,15 @@ impl Agent for TaskBoard {
         // What the frontend holds. The agent stores nothing between runs, so
         // the answer is in the conversation the client sent: the adapter
         // replays the operations its tool results carry. A conversation that
-        // does not replay is one with nothing on screen.
-        let painter = SurfacePainter::from_history(ctx.messages()).unwrap_or_default();
+        // does not replay is not one with nothing on screen: treating it as
+        // one would create the surface again over whatever is there, and hide
+        // the defect that broke the replay. The run fails, and says so,
+        // before it does anything else.
+        let painter = SurfacePainter::from_history(ctx.messages()).map_err(|error| {
+            Error::agent(format!(
+                "the conversation's A2UI surfaces do not replay: {error}"
+            ))
+        })?;
 
         // Only this request's answer counts, so the pending decision is read
         // before anything is emitted. `Copy`ing the status out ends the borrow
