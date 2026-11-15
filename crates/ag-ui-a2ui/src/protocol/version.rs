@@ -26,6 +26,12 @@
 //! assert_eq!(version.as_str(), "v0.9.1");
 //! assert_eq!(A2uiVersion::parse("v0.8"), None);
 //!
+//! // The versions and the operations are slices, so either list can grow.
+//! let versions: &'static [A2uiVersion] = A2uiVersion::ALL;
+//! let operations: &'static [Operation] = Operation::ALL;
+//! assert!(versions.contains(&A2uiVersion::DEFAULT));
+//! assert_eq!(version.operations(), operations);
+//!
 //! // A version-dependent question is a method, not a string comparison.
 //! assert!(version.operations().contains(&Operation::UpdateDataModel));
 //! assert!(A2uiVersion::V0_9.accepts(version), "v0.9.1 may update a v0.9 surface");
@@ -41,7 +47,26 @@ use super::operation::{EnvelopeField, Operation};
 use crate::error::Error;
 
 /// Supported A2UI server-message profiles. Candidate v1.0 RPC is excluded.
+///
+/// Non-exhaustive, so that a version can be added without breaking a `match`
+/// written outside this crate: such a `match` needs a wildcard arm. Ask the
+/// version a question ([`A2uiVersion::operations`], [`A2uiVersion::accepts`])
+/// rather than matching on it where one fits.
+///
+/// ```compile_fail,E0004
+/// use ag_ui_a2ui::A2uiVersion;
+///
+/// // No wildcard arm. This would stop compiling the day a version is added,
+/// // so it does not compile today either.
+/// fn discriminator(version: A2uiVersion) -> &'static str {
+///     match version {
+///         A2uiVersion::V0_9 => "v0.9",
+///         A2uiVersion::V0_9_1 => "v0.9.1",
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum A2uiVersion {
     /// v0.9 wire discriminator, also accepted by the v0.9.1 schema.
     V0_9,
@@ -58,7 +83,10 @@ enum Family {
 
 impl A2uiVersion {
     /// Every version this crate speaks, oldest first.
-    pub const ALL: [Self; 2] = [Self::V0_9, Self::V0_9_1];
+    ///
+    /// A slice rather than an array: an array's length is part of its type,
+    /// so adding a version would change the type of this constant.
+    pub const ALL: &'static [Self] = &[Self::V0_9, Self::V0_9_1];
 
     /// The version a constructor stamps when the caller names none.
     pub const DEFAULT: Self = Self::V0_9;
@@ -77,14 +105,15 @@ impl A2uiVersion {
     /// supported version the wire does not use (`0.9`, `V0.9`).
     pub fn parse(discriminator: &str) -> Option<Self> {
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|version| version.as_str() == discriminator)
     }
 
     /// The operations a message of this version may carry, in envelope order.
     pub fn operations(self) -> &'static [Operation] {
         match self.family() {
-            Family::V0_9 => &Operation::ALL,
+            Family::V0_9 => Operation::ALL,
         }
     }
 
@@ -172,7 +201,7 @@ mod tests {
 
     #[test]
     fn every_version_round_trips_through_its_discriminator() {
-        for version in A2uiVersion::ALL {
+        for &version in A2uiVersion::ALL {
             assert_eq!(A2uiVersion::parse(version.as_str()), Some(version));
             assert_eq!(version.as_str().parse::<A2uiVersion>().unwrap(), version);
             assert_eq!(version.to_string(), version.as_str());
@@ -210,12 +239,12 @@ mod tests {
 
     #[test]
     fn the_v0_9_family_shares_surfaces_operations_and_envelopes() {
-        for created in A2uiVersion::ALL {
-            for message in A2uiVersion::ALL {
+        for &created in A2uiVersion::ALL {
+            for &message in A2uiVersion::ALL {
                 assert!(created.accepts(message), "{created} surface, {message}");
             }
             assert_eq!(created.operations(), Operation::ALL);
-            for operation in Operation::ALL {
+            for &operation in Operation::ALL {
                 let fields = created.envelope(operation);
                 assert_eq!(
                     fields[0],

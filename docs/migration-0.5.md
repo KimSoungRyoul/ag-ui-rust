@@ -263,6 +263,11 @@ These are on `main` and not yet in a published version.
   `SurfaceStore::lifecycle`; and `Validator::validate_json_updates`, which validates raw
   messages against a prior `SurfaceStore`. `Operation`, `SurfaceStore`, `SurfaceState`
   and `Lifecycle` are also re-exported at the crate root.
+- `A2uiVersion` is `#[non_exhaustive]`, as is the new `Operation`, so that A2UI v1.0 can
+  add a version and operations without another break. A `match` on `A2uiVersion` outside
+  the crate needs a wildcard arm. For the same reason `A2uiVersion::ALL` and
+  `Operation::ALL` are slices (`&'static [Self]`), not arrays whose length is part of
+  their type.
 - `StreamParser::process_chunk` returns `Error::Validation` carrying a `child_cycle`
   for a reference loop, as its documentation said. It returned `Error::Parse` when the
   loop was closed by a later message, was seen in a message still open, or validation

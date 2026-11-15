@@ -17,7 +17,11 @@ use super::catalog::PropType;
 pub(crate) type EnvelopeField = (&'static str, PropType, bool);
 
 /// One agent → renderer operation: the payload key of a message.
+///
+/// Non-exhaustive, so that an operation can be added without breaking a
+/// `match` written outside this crate: such a `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum Operation {
     /// `createSurface`: allocate a surface and fix its catalog.
     CreateSurface,
@@ -31,7 +35,10 @@ pub enum Operation {
 
 impl Operation {
     /// Every operation, in envelope order.
-    pub const ALL: [Self; 4] = [
+    ///
+    /// A slice rather than an array: an array's length is part of its type,
+    /// so adding an operation would change the type of this constant.
+    pub const ALL: &'static [Self] = &[
         Self::CreateSurface,
         Self::UpdateComponents,
         Self::UpdateDataModel,
@@ -51,7 +58,8 @@ impl Operation {
     /// Reads a payload key. `None` for a key that names no operation.
     pub fn parse(key: &str) -> Option<Self> {
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|operation| operation.as_str() == key)
     }
 
@@ -62,7 +70,8 @@ impl Operation {
     /// message carrying two operations is reported by the envelope check.
     pub fn of(message: &Value) -> Option<Self> {
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|operation| message.get(operation.as_str()).is_some())
     }
 }
@@ -81,7 +90,7 @@ mod tests {
 
     #[test]
     fn every_operation_round_trips_through_its_key() {
-        for operation in Operation::ALL {
+        for &operation in Operation::ALL {
             assert_eq!(Operation::parse(operation.as_str()), Some(operation));
             assert_eq!(operation.to_string(), operation.as_str());
         }

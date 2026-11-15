@@ -1209,7 +1209,11 @@ fn reference_wording(error: &ValidationError, message: &Value) -> Option<String>
             "Validation failed: {:?} is not a valid A2UI message; it must contain exactly one of \
              {}",
             message.as_object()?.keys().collect::<Vec<_>>(),
-            Operation::ALL.map(Operation::as_str).join(", ")
+            Operation::ALL
+                .iter()
+                .map(|operation| operation.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         (ErrorCode::MissingField, ["version"]) => {
             "Validation failed: 'version' is a required property".into()
