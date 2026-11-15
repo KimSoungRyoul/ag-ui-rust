@@ -1,8 +1,9 @@
 //! Versioned data and lifecycle regressions independent of the legacy toolkit suite.
+use ag_ui_a2ui::binding::MAX_VALUE_DEPTH;
 use ag_ui_a2ui::surface::SurfaceStore;
 use ag_ui_a2ui::{
-    AgentMessage, AgentPayload, Catalog, Component, DataModel, DataModelUpdate, ModelValue,
-    Validator,
+    AgentMessage, AgentPayload, Catalog, Component, DataModel, DataModelUpdate, Error, ErrorCode,
+    ModelValue, Validator,
 };
 use serde_json::{Value, json};
 
@@ -65,6 +66,81 @@ fn invalid_pointer_or_growth_limit_is_atomic() {
         .apply("/new/path", &DataModelUpdate::Set(Value::Null))
         .unwrap();
     assert_eq!(model.lookup("/new/path").unwrap(), Some(&ModelValue::Null));
+}
+
+/// A path `segments` levels deep, alternating object keys and array indexes so
+/// the walk passes through both kinds of container.
+fn deep_path(segments: usize) -> String {
+    (0..segments)
+        .map(|i| if i % 2 == 0 { "/a" } else { "/0" })
+        .collect()
+}
+
+#[test]
+fn a_path_one_segment_past_the_depth_cap_is_rejected_and_one_at_it_applies() {
+    // Every segment is a level of nesting in the model, and the path arrives as
+    // one flat string, so no JSON parse limit has bounded it.
+    let mut model = DataModel::from(json!({"kept": true}));
+    let before = model.clone();
+    let too_deep = deep_path(MAX_VALUE_DEPTH + 1);
+    for update in [DataModelUpdate::Set(json!(1)), DataModelUpdate::Remove] {
+        let error = model.apply(&too_deep, &update).unwrap_err();
+        assert!(matches!(error, Error::Pointer { .. }), "{error}");
+        assert_eq!(model, before);
+    }
+    let error = model.lookup(&too_deep).unwrap_err();
+    assert!(matches!(error, Error::Pointer { .. }), "{error}");
+
+    // The boundary is pinned rather than probed from far away: one segment
+    // fewer is a path the model accepts, through objects and arrays alike.
+    let deepest = deep_path(MAX_VALUE_DEPTH);
+    model
+        .apply(&deepest, &DataModelUpdate::Set(json!("bottom")))
+        .unwrap();
+    assert_eq!(
+        model.lookup(&deepest).unwrap(),
+        Some(&ModelValue::String("bottom".into()))
+    );
+    let exported = model.to_json().unwrap();
+    assert_eq!(exported.pointer(&deepest), Some(&json!("bottom")));
+    assert_eq!(exported["kept"], json!(true));
+    model.apply(&deepest, &DataModelUpdate::Remove).unwrap();
+    assert_eq!(model.lookup(&deepest).unwrap(), None);
+}
+
+#[test]
+fn an_over_deep_update_from_the_wire_is_an_ordinary_error() {
+    let path = deep_path(MAX_VALUE_DEPTH + 1);
+
+    // Model output reaches the data model through the validator...
+    let catalog = Catalog::basic();
+    let report = Validator::new(&catalog).validate_json_messages(&[
+        json!({"version": "v0.9", "createSurface": {"surfaceId": "s", "catalogId": "c"}}),
+        json!({"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": [
+            {"id": "root", "component": "Text", "text": "hi"}
+        ]}}),
+        json!({"version": "v0.9", "updateDataModel": {"surfaceId": "s", "path": path, "value": 1}}),
+    ]);
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.code == ErrorCode::InvalidValue && error.path == "messages[2]"),
+        "{:?}",
+        report.errors
+    );
+
+    // ...and replayed history through the surface store, which stays as it was.
+    let mut store = SurfaceStore::new();
+    store
+        .apply(&AgentMessage::create_surface("s", "c"))
+        .unwrap();
+    let before = store.clone();
+    let error = store
+        .apply(&AgentMessage::update_data_model("s", path, json!(1)))
+        .unwrap_err();
+    assert!(matches!(error, Error::Pointer { .. }), "{error}");
+    assert_eq!(store, before);
 }
 
 #[test]

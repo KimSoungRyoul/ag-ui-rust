@@ -148,8 +148,9 @@
 //! output by who produced it:
 //!
 //! ```
-//! # use ag_ui::RunOutcome;
-//! # use ag_ui::server::{Agent, Result, RunContext};
+//! # use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+//! # use ag_ui::server::{Agent, Result, RunContext, run};
+//! # use futures_util::StreamExt;
 //! # struct Supervisor;
 //! impl Agent for Supervisor {
 //!     type State = ();
@@ -160,13 +161,22 @@
 //!         {
 //!             let mut estimator = planner.subagent("estimator")?;   // nested
 //!             estimator.say("About a day each.")?;
-//!         }                                                          // SUBAGENT_FINISHED
+//!             estimator.finish()?;                                   // SUBAGENT_FINISHED
+//!         }
 //!         planner.finish_with(serde_json::json!({ "tasks": 2 }))?;
 //!
 //!         ctx.say("Plan ready.")?;                                   // the parent's own
 //!         Ok(RunOutcome::Success)
 //!     }
 //! }
+//! # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+//! # rt.block_on(async {
+//! # let events: Vec<Event> = run(Supervisor, RunAgentInput::new("thread-1", "run-1"))
+//! #     .map(|event| event.expect("the stream should not break"))
+//! #     .collect()
+//! #     .await;
+//! # assert_eq!(events.last().map(Event::event_type), Some(EventType::RunFinished));
+//! # });
 //! ```
 //!
 //! What a consumer sees is a producer-side choice, because a client older than

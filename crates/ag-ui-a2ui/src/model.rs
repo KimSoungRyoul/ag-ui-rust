@@ -1,5 +1,6 @@
 //! Lossless local A2UI data model. Undefined slots are never sent as JSON values.
 
+use crate::binding::MAX_VALUE_DEPTH;
 use crate::message::DataModelUpdate;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -141,7 +142,8 @@ impl DataModel {
         self.root.to_json()
     }
     /// Looks up an absolute JSON Pointer. Missing and undefined return `None`;
-    /// explicit null returns `Some(ModelValue::Null)`.
+    /// explicit null returns `Some(ModelValue::Null)`. A malformed path, or one
+    /// of more than [`MAX_VALUE_DEPTH`] segments, is an [`Error::Pointer`].
     pub fn lookup(&self, path: &str) -> Result<Option<&ModelValue>> {
         let tokens = tokens(path)?;
         let mut node = &self.root;
@@ -162,7 +164,8 @@ impl DataModel {
     }
     /// Applies an update atomically. Missing/null containers are created and
     /// numeric paths create arrays. Sparse gaps are undefined. Implicit array
-    /// growth is bounded by [`DEFAULT_ARRAY_GROWTH_LIMIT`] per update.
+    /// growth is bounded by [`DEFAULT_ARRAY_GROWTH_LIMIT`] per update, and a
+    /// path of more than [`MAX_VALUE_DEPTH`] segments is an [`Error::Pointer`].
     pub fn apply(&mut self, path: &str, value: &DataModelUpdate) -> Result<()> {
         self.apply_with_array_growth_limit(path, value, DEFAULT_ARRAY_GROWTH_LIMIT)
     }
@@ -193,6 +196,15 @@ fn tokens(path: &str) -> Result<Vec<String>> {
     }
     if !path.starts_with('/') {
         return Err(Error::pointer(path, "expected an absolute JSON Pointer"));
+    }
+    // Every segment is a level of nesting in the model, which its derived
+    // `Clone`, `Drop` and export recurse over. Counted before decoding: an
+    // escaped slash is `~1`, so each `/` starts exactly one segment.
+    if path.bytes().filter(|&byte| byte == b'/').count() > MAX_VALUE_DEPTH {
+        return Err(Error::pointer(
+            path,
+            format!("path has more than {MAX_VALUE_DEPTH} segments"),
+        ));
     }
     path[1..]
         .split('/')
@@ -226,62 +238,60 @@ fn index(token: &str, path: &str) -> Result<usize> {
         .parse()
         .map_err(|_| Error::pointer(path, "array index is too large"))
 }
+/// Walks to the target with a loop, not a stack frame per segment: the path is
+/// remote input.
 fn apply(
-    node: &mut ModelValue,
+    root: &mut ModelValue,
     tokens: &[String],
     value: &DataModelUpdate,
     path: &str,
     remaining: &mut usize,
 ) -> Result<()> {
-    let Some((token, rest)) = tokens.split_first() else {
-        *node = match value {
-            DataModelUpdate::Set(v) => v.clone().into(),
-            DataModelUpdate::Remove => ModelValue::Undefined,
-        };
-        return Ok(());
-    };
-    if matches!(node, ModelValue::Undefined | ModelValue::Null) {
-        *node = if is_numeric(token) {
-            ModelValue::Array(Vec::new())
-        } else {
-            ModelValue::Object(BTreeMap::new())
-        };
-    }
-    match node {
-        ModelValue::Object(map) => {
-            if rest.is_empty() && matches!(value, DataModelUpdate::Remove) {
-                map.remove(token);
-                return Ok(());
-            }
-            apply(
-                map.entry(token.clone()).or_insert(ModelValue::Undefined),
-                rest,
-                value,
-                path,
-                remaining,
-            )
+    let mut node = root;
+    for (position, token) in tokens.iter().enumerate() {
+        let last = position + 1 == tokens.len();
+        if matches!(node, ModelValue::Undefined | ModelValue::Null) {
+            *node = if is_numeric(token) {
+                ModelValue::Array(Vec::new())
+            } else {
+                ModelValue::Object(BTreeMap::new())
+            };
         }
-        ModelValue::Array(array) => {
-            let i = index(token, path)?;
-            if i >= array.len() {
-                let len = i
-                    .checked_add(1)
-                    .ok_or_else(|| Error::pointer(path, "array index is too large"))?;
-                let added = len - array.len();
-                if added > *remaining {
-                    return Err(Error::pointer(
-                        path,
-                        "implicit array growth exceeds the configured slot budget",
-                    ));
+        node = match node {
+            ModelValue::Object(map) => {
+                if last && matches!(value, DataModelUpdate::Remove) {
+                    map.remove(token);
+                    return Ok(());
                 }
-                array
-                    .try_reserve(added)
-                    .map_err(|e| Error::pointer(path, e))?;
-                *remaining -= added;
-                array.resize(len, ModelValue::Undefined);
+                map.entry(token.clone()).or_insert(ModelValue::Undefined)
             }
-            apply(&mut array[i], rest, value, path, remaining)
-        }
-        _ => Err(Error::pointer(path, "path walks through a scalar value")),
+            ModelValue::Array(array) => {
+                let i = index(token, path)?;
+                if i >= array.len() {
+                    let len = i
+                        .checked_add(1)
+                        .ok_or_else(|| Error::pointer(path, "array index is too large"))?;
+                    let added = len - array.len();
+                    if added > *remaining {
+                        return Err(Error::pointer(
+                            path,
+                            "implicit array growth exceeds the configured slot budget",
+                        ));
+                    }
+                    array
+                        .try_reserve(added)
+                        .map_err(|e| Error::pointer(path, e))?;
+                    *remaining -= added;
+                    array.resize(len, ModelValue::Undefined);
+                }
+                &mut array[i]
+            }
+            _ => return Err(Error::pointer(path, "path walks through a scalar value")),
+        };
     }
+    *node = match value {
+        DataModelUpdate::Set(v) => v.clone().into(),
+        DataModelUpdate::Remove => ModelValue::Undefined,
+    };
+    Ok(())
 }

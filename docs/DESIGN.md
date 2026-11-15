@@ -221,8 +221,10 @@ the subagent and sets a scope on the sink; while it is open, every attributable 
 arrives untagged is tagged, whichever emitter produced it, and an event the agent tagged
 explicitly is left alone. The handle that represents the scope dereferences to the run
 context, the way a step guard does, so the same messages, tool calls and nested subagents
-open through it with no new API, and `Drop` emits `SUBAGENT_FINISHED` on the early return
-a `?` produces. Two scopes cannot be open at once — a borrow-check error, as everything
+open through it with no new API. Its end is explicit — `finish`, `fail` or `suspend` — because
+`Drop` cannot tell success from failure: on the early return a `?` produces it only restores
+the enclosing attribution, and the `RUN_ERROR` that follows is the one terminator allowed to
+leave a subagent open. Two scopes cannot be open at once — a borrow-check error, as everything
 overlapping is here — and the genuinely concurrent case is emitted by hand with explicit
 tags, exactly as interleaved parallel tool calls already are.
 

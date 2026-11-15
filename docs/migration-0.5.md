@@ -156,6 +156,18 @@ updated to read text from `ToolContent`, including ordered parts; A2UI protocol
 authoring and validation remain in that crate. The A2UI source proposed for
 upstream is reviewed separately from PR #2778.
 
+## Changes after alpha.3 (unreleased)
+
+These are on `main` and not yet in a published version.
+
+- `MultiAgentCapabilities` reads and writes its sub-agent list under the AG-UI 1.0
+  key `subagents`. Alpha.3 and earlier used `subAgents`, which 1.0 peers do not read;
+  that spelling is no longer read here either. The Rust field is still `sub_agents`.
+- An A2UI data-model path has at most `binding::MAX_VALUE_DEPTH` (256) segments.
+  `DataModel::apply` and `DataModel::lookup` return `Error::Pointer` for a longer one,
+  so `SurfaceStore`, history recovery and the validator report an over-deep
+  `updateDataModel` path as an ordinary error. No error variant is added.
+
 ## Verify the upgrade
 
 Test the application against its own real agent and transport. The workspace's

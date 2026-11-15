@@ -210,6 +210,55 @@ jobs:
       - run: cargo check --all-targets -p ag-ui-a2ui --all-features
       - run: cargo check --all-targets -p ag-ui --features axum
 
+  # Every example built as the only package in the build, the way
+  # `cargo run -p <example>` builds it. Every other job builds the workspace,
+  # and cargo unifies features across the members it builds: e2e and
+  # review-desk enable `ag-ui-a2ui/ag-ui-server`, which turns `ag-ui-a2ui`'s
+  # `ag-ui` feature on for everyone. task-board and board-watch used items
+  # behind that feature without enabling it, and stopped compiling on their
+  # own when it left `ag-ui-a2ui`'s defaults, while every job here stayed green.
+  #
+  # Twice per package, because `--all-targets` alone does not catch it.
+  # Dev-dependencies unify too: board-watch's dev-dependency on ag-ui-e2e turns
+  # the feature back on, and `--all-targets` passed while its binary did not
+  # compile. The plain check reads the package's own `[dependencies]` and
+  # nothing else; `--all-targets` then covers the tests.
+  #
+  # The packages are read off `examples/` rather than listed, so a new example
+  # is covered without anyone remembering to edit this job.
+  examples:
+    name: examples (each package alone)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: every example builds with only the features it enables
+        run: |
+          set -uo pipefail
+          packages=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.workspace_root as $root | .packages[]
+                | select(.manifest_path | startswith($root + "/examples/")) | .name') || exit 2
+          # An empty list would check nothing and pass.
+          if [ -z "$packages" ]; then
+            echo "::error::no packages found under examples/ — this check would pass without checking anything"
+            exit 2
+          fi
+          status=0
+          check_alone() {
+            echo "--- cargo check -p $* ---"
+            if ! cargo check -p "$@"; then
+              echo "::error title=Example does not build alone::cargo check -p $* failed. Inside the workspace other members' features are unified in; built alone, the example gets only what its own Cargo.toml enables. Enable the feature it uses on its own dependency line."
+              status=1
+            fi
+          }
+          for package in $packages; do
+            check_alone "$package"
+            check_alone "$package" --all-targets
+          done
+          exit $status
+
   renderer-interop:
     name: official A2UI renderer core
     runs-on: ubuntu-latest

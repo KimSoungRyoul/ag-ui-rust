@@ -189,7 +189,8 @@ impl Agent for Janitor {
         let mut deleter = ctx.subagent_with(SubagentStartedEvent::new("deleter-1", "deleter"))?;
         if approved {
             deleter.say("Deleted.")?;
-            return Ok(RunOutcome::Success);   // Drop closes it as a success
+            deleter.finish()?;   // SUBAGENT_FINISHED, outcome success: Drop never assumes it
+            return Ok(RunOutcome::Success);
         }
         deleter.say("May I?")?;
         let interrupt = Interrupt::new("approve-delete", "tool_approval")

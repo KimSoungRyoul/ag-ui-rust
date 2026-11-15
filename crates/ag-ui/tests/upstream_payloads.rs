@@ -529,7 +529,7 @@ fn capability_caps_stay_integers_on_the_wire() {
 #[test]
 fn the_whole_capability_snapshot_round_trips() {
     // AgentCapabilitiesSchema, every category populated, in this crate's order.
-    let payload = r#"{"identity":{"name":"Weather","type":"langgraph","description":"Forecasts","version":"1.2.0","provider":"acme","documentationUrl":"https://acme.example/docs","metadata":{"tier":"beta"}},"transport":{"streaming":true,"websocket":false,"httpBinary":false,"pushNotifications":false,"resumable":true},"tools":{"supported":true,"items":[{"name":"get_weather","description":"Look it up","parameters":{"type":"object"}}],"parallelCalls":true,"clientProvided":true},"output":{"structuredOutput":true,"supportedMimeTypes":["application/json"]},"state":{"snapshots":true,"deltas":true,"memory":false,"persistentState":true},"multiAgent":{"supported":true,"delegation":true,"handoffs":false,"subAgents":[{"name":"geocoder","description":"Resolves place names"}]},"reasoning":{"supported":true,"streaming":true,"encrypted":false},"multimodal":{"input":{"image":true,"audio":false,"video":false,"pdf":true,"file":true},"output":{"image":false,"audio":false}},"execution":{"codeExecution":false,"sandboxed":false,"maxIterations":25,"maxExecutionTime":120000},"humanInTheLoop":{"supported":true,"approvals":true,"interventions":false,"feedback":true,"interrupts":true,"approveWithEdits":true},"custom":{"vendor":"acme"}}"#;
+    let payload = r#"{"identity":{"name":"Weather","type":"langgraph","description":"Forecasts","version":"1.2.0","provider":"acme","documentationUrl":"https://acme.example/docs","metadata":{"tier":"beta"}},"transport":{"streaming":true,"websocket":false,"httpBinary":false,"pushNotifications":false,"resumable":true},"tools":{"supported":true,"items":[{"name":"get_weather","description":"Look it up","parameters":{"type":"object"}}],"parallelCalls":true,"clientProvided":true},"output":{"structuredOutput":true,"supportedMimeTypes":["application/json"]},"state":{"snapshots":true,"deltas":true,"memory":false,"persistentState":true},"multiAgent":{"supported":true,"delegation":true,"handoffs":false,"subagents":[{"name":"geocoder","description":"Resolves place names"}]},"reasoning":{"supported":true,"streaming":true,"encrypted":false},"multimodal":{"input":{"image":true,"audio":false,"video":false,"pdf":true,"file":true},"output":{"image":false,"audio":false}},"execution":{"codeExecution":false,"sandboxed":false,"maxIterations":25,"maxExecutionTime":120000},"humanInTheLoop":{"supported":true,"approvals":true,"interventions":false,"feedback":true,"interrupts":true,"approveWithEdits":true},"custom":{"vendor":"acme"}}"#;
 
     let capabilities: AgentCapabilities =
         serde_json::from_str(payload).expect("the capability snapshot must parse");
@@ -541,6 +541,43 @@ fn the_whole_capability_snapshot_round_trips() {
         capabilities.identity.as_ref().unwrap().kind.as_deref(),
         Some("langgraph")
     );
+}
+
+#[test]
+fn subagents_use_the_1_0_key_and_the_old_spelling_is_not_read() {
+    // The 1.0 schema names the list `subagents`; `rename_all = "camelCase"`
+    // alone would spell it `subAgents`, the key the upstream invalid fixture
+    // pins.
+    let valid =
+        include_str!("fixtures/ag-ui-1.0/fixtures/MultiAgentCapabilities/valid/subagents.json");
+    let multi_agent: MultiAgentCapabilities =
+        serde_json::from_str(valid).expect("the official valid fixture must parse");
+    assert_eq!(
+        multi_agent.sub_agents,
+        Some(vec![
+            SubAgentInfo {
+                name: "a".into(),
+                description: None
+            },
+            SubAgentInfo {
+                name: "b".into(),
+                description: Some("B".into())
+            },
+        ])
+    );
+    assert_eq!(
+        serde_json::to_value(&multi_agent).unwrap(),
+        serde_json::from_str::<Value>(valid).unwrap()
+    );
+
+    // Unknown keys are tolerated in every capability category, so the old
+    // spelling still parses; it just declares no sub-agents and writes none.
+    let old: MultiAgentCapabilities = serde_json::from_str(include_str!(
+        "fixtures/ag-ui-1.0/fixtures/MultiAgentCapabilities/invalid/old-subagents-key.json"
+    ))
+    .expect("an unknown key must not fail the document");
+    assert_eq!(old.sub_agents, None);
+    assert_eq!(serde_json::to_value(&old).unwrap(), json!({}));
 }
 
 #[test]
