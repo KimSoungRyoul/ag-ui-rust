@@ -54,3 +54,14 @@ cargo test --doc --workspace --all-features
 
 Hygiene is `prek run --all-files`, which is what CI runs. The rest — the design rationale, the
 upstream analysis, the spec drift check — is in `README.md` and `docs/`.
+
+Work starts from an issue, and the branch carries its number: `<issue>-<type>-<slug>`, for example
+`20-fix-subagents-key`. The `prepare-commit-msg` hook then prefixes every commit with `[#20]`, and
+with the type when the subject does not already start with one — `fix(core): …` is kept and becomes
+`[#20] fix(core): …`. `prek install` once per clone turns the hooks on. Three things to know:
+
+- A worktree made by a tool may come out named `worktree-<name>`. Rename the branch
+  (`git branch -m 20-fix-subagents-key`), or the hook finds no issue number and adds nothing.
+- The prefix only links. Closing the issue still takes `Closes #20` in the pull request.
+- Commit messages written for the upstream copy must not carry the prefix: `#20` there is somebody
+  else's issue.
