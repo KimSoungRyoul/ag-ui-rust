@@ -1,4 +1,4 @@
-//! What an agent framework delegates A2UI to (feature `agent`).
+//! What an agent framework delegates A2UI to (feature `agent`, on by default).
 //!
 //! The framework owns the model call. This layer supplies everything around
 //! it: the instructions that go into the prompt, the reading of the answer,
@@ -7,6 +7,9 @@
 //! here calls a model, awaits, spawns or does network I/O, so it fits any
 //! framework, executor and transport.
 //!
+//! It is the one generation path of the crate: one prompt snippet, one reader
+//! for each output format, one retry decision.
+//!
 //! | Piece | What it is |
 //! |---|---|
 //! | [`CatalogConfig`] | A catalog the agent registered, and the transformers it applies before a model or a validator sees it. |
@@ -14,7 +17,7 @@
 //! | [`A2uiGenerator`] | What the agent knows for its whole life: catalogs, examples, format. Built once. |
 //! | [`A2uiRequestProcessor`] | Everything one request needs: the active catalogs, the prompt snippet, and the reading of an answer, whole or streamed. |
 //! | [`OutputFormat`] | The notation a model writes in. [`DirectJson`] is the one implemented. |
-//! | [`RendererState`] | The agent's mirror of the renderer's surfaces, on the one surface state machine. |
+//! | [`RendererState`] | The agent's mirror of the renderer's surfaces: the protocol's own [`MessageProcessor`](crate::processor::MessageProcessor), with the active catalogs registered. |
 //! | [`RetryDriver`] | Says "done", "ask again with this feedback" or "give up". The caller makes the call. |
 //! | [`ResponseStream`], [`StreamedAnswer`] | An answer read as it arrives. |
 //!

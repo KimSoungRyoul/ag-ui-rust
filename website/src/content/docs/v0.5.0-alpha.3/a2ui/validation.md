@@ -34,7 +34,7 @@ ordinary weather data into a layout.
 
 ```rust
 use ag_ui_a2ui::schema_validation::SurfaceValidator;
-use ag_ui_a2ui::toolkit::schema::SchemaBundle;
+use ag_ui_a2ui::schema::SchemaBundle;
 use serde_json::json;
 use std::collections::BTreeMap;
 

@@ -25,11 +25,12 @@
 
 use serde_json::Value;
 
-use crate::constants::DEFAULT_SURFACE_ID;
+use crate::agent::{DirectJson, OutputFormat, RawPart};
+use crate::constants::{A2UI_CLOSE_TAG, A2UI_OPEN_TAG, DEFAULT_SURFACE_ID};
+use crate::error::Error;
 use crate::protocol::message::{AgentMessage, Component};
 use crate::protocol::operation::Operation;
 use crate::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
-use crate::toolkit::parser::unwrap_response;
 
 /// One entry of conversation history, oldest first in a slice.
 ///
@@ -210,17 +211,26 @@ fn try_extract_operations(message: &HistoryMessage) -> crate::Result<Vec<AgentMe
     if let Ok(value) = serde_json::from_str::<Value>(content) {
         collect_from_value(&value, &mut out)?;
     }
-    if content.contains(crate::constants::A2UI_OPEN_TAG) {
-        for part in unwrap_response(content)? {
-            if let Some(raw) = part.raw {
-                let value: Value = serde_json::from_str(&raw)?;
-                if is_operations_envelope(&value) {
-                    out.extend(unwrap_operations_envelope(&value)?)
-                } else if value.is_array() {
-                    out.extend(serde_json::from_value::<Vec<AgentMessage>>(value)?)
-                } else {
-                    out.push(serde_json::from_value(value)?)
-                }
+    if content.contains(A2UI_OPEN_TAG) {
+        // The blocks are found the way the agent layer finds them in a
+        // model's answer. What a transcript holds was sent, so a block is
+        // read strictly: closed, and JSON as it stands.
+        for part in DirectJson::new().unwrap(content) {
+            let RawPart::Block { raw, closed } = part else {
+                continue;
+            };
+            if !closed {
+                return Err(Error::parse(format!(
+                    "A2UI close tag '{A2UI_CLOSE_TAG}' not found in a message of the history."
+                )));
+            }
+            let value: Value = serde_json::from_str(&raw)?;
+            if is_operations_envelope(&value) {
+                out.extend(unwrap_operations_envelope(&value)?)
+            } else if value.is_array() {
+                out.extend(serde_json::from_value::<Vec<AgentMessage>>(value)?)
+            } else {
+                out.push(serde_json::from_value(value)?)
             }
         }
     }

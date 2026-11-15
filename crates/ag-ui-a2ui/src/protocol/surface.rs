@@ -11,9 +11,10 @@
 //! `updateComponents` and `updateDataModel` act on a live surface and leave it
 //! live; every other combination is an error. [`SurfaceStore`] is the one
 //! implementation of that machine. Whole-stream validation, validation against
-//! prior state, the stateful schema validator, history replay, the author and
-//! the streaming parser all move a surface through [`SurfaceStore::apply`], so
-//! they cannot disagree about what a stream of messages means.
+//! prior state, the message processor, the stateful schema validator, history
+//! replay and the agent layer, reading an answer whole or as it streams, all
+//! move a surface through [`SurfaceStore::apply`], so they cannot disagree
+//! about what a stream of messages means.
 //!
 //! # Where a component came from
 //!

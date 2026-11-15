@@ -6,8 +6,8 @@
 
 use crate::agent::format::RawPart;
 
-pub(super) const OPEN_TAG: &str = "<a2ui-json>";
-pub(super) const CLOSE_TAG: &str = "</a2ui-json>";
+pub(super) const OPEN_TAG: &str = crate::constants::A2UI_OPEN_TAG;
+pub(super) const CLOSE_TAG: &str = crate::constants::A2UI_CLOSE_TAG;
 const OPEN_NAME: &str = "<a2ui-json";
 const CLOSE_NAME: &str = "</a2ui-json";
 

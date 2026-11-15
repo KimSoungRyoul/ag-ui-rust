@@ -20,7 +20,9 @@ use crate::protocol::version::A2uiVersion;
 /// the document, at the load and again after every transformer, so the two
 /// always agree, and [`Catalog::document`] of the summary is this document.
 ///
-/// Cloning is cheap: the two are shared.
+/// The document is held once: the summary keeps the document it was read
+/// from, and this is that one. Cloning is cheap, since both are shared, and a
+/// renderer state that checks against the catalog shares the summary too.
 #[derive(Debug, Clone)]
 pub struct CatalogDocument {
     inner: Arc<Inner>,
@@ -28,8 +30,9 @@ pub struct CatalogDocument {
 
 #[derive(Debug)]
 struct Inner {
-    document: Value,
-    catalog: Catalog,
+    /// The allocation `catalog` holds as the document it was read from.
+    document: Arc<Value>,
+    catalog: Arc<Catalog>,
     version: A2uiVersion,
 }
 
@@ -160,13 +163,23 @@ impl CatalogDocument {
         document.insert("catalogId".into(), Value::String(id));
         let document = Value::Object(document);
         let catalog = Catalog::from_schema(&document)?;
-        Ok(Self {
+        Ok(Self::of(catalog, document, version))
+    }
+
+    /// `catalog` as read from `document`, which it keeps; that copy is the
+    /// one held.
+    fn of(catalog: Catalog, document: Value, version: A2uiVersion) -> Self {
+        let document = catalog
+            .shared_document()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(document));
+        Self {
             inner: Arc::new(Inner {
                 document,
-                catalog,
+                catalog: Arc::new(catalog),
                 version,
             }),
-        })
+        }
     }
 
     /// Reads a catalog document from a file. See [`CatalogDocument::load`]
@@ -229,26 +242,25 @@ impl CatalogDocument {
         &self.inner.document
     }
 
+    /// The summary, shared: what a message processor registers.
+    pub(crate) fn shared_catalog(&self) -> Arc<Catalog> {
+        self.inner.catalog.clone()
+    }
+
     /// A copy whose document `change` has rewritten.
     ///
     /// The summary is read again from the rewritten document, as it was at
     /// the load, so the two cannot disagree and [`Catalog::document`] is the
     /// document this value shows.
     fn changed(&self, change: impl FnOnce(&mut Value)) -> Self {
-        let mut document = self.inner.document.clone();
+        let mut document = Value::clone(&self.inner.document);
         change(&mut document);
         // A rule removes entries from an object that carries its id, which is
         // all a catalog needs to be read. Were a rule ever to leave less, the
         // catalog would allow nothing rather than everything.
         let catalog =
             Catalog::from_schema(&document).unwrap_or_else(|_| Catalog::empty(self.catalog_id()));
-        Self {
-            inner: Arc::new(Inner {
-                document,
-                catalog,
-                version: self.inner.version,
-            }),
-        }
+        Self::of(catalog, document, self.inner.version)
     }
 }
 
@@ -559,8 +571,13 @@ mod tests {
         assert_eq!(pruned.catalog_id(), "test/shapes");
         assert_eq!(pruned.version(), A2uiVersion::V0_9);
 
-        // The summary is the pruned document's, and says so.
+        // The summary is the pruned document's, and says so. It is the one
+        // copy of the document that is held.
         assert_eq!(pruned.catalog().document(), Some(pruned.document()));
+        assert!(std::ptr::eq(
+            pruned.catalog().document().unwrap(),
+            pruned.document()
+        ));
         assert_eq!(
             &Catalog::from_schema(pruned.document()).unwrap(),
             pruned.catalog()
