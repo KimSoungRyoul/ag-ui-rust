@@ -39,6 +39,17 @@
 //! names an explicitly opened message opens it a second time. Both are for the
 //! ordering rules to reject; this module only reports what the chunk stood
 //! for.
+//!
+//! # What the synthesized events carry
+//!
+//! A chunk's metadata goes on every event synthesized from it, and its
+//! `rawEvent` on the content event. Its `timestamp` goes on none: the
+//! synthesized events are not the chunk (`basic/processing`, "Where
+//! middleware sits"). A chunk without a `delta` still stands for a content
+//! event, with an empty delta, when it carries a `rawEvent`, or metadata on a
+//! continuation: without one, a final chunk reporting a finish reason would
+//! never reach the item it continues (`basic/patterns/streaming`, "Chunk
+//! metadata").
 
 // Each caller uses its own part of this API: a consumer and the ordering
 // rules expand, a transformer tracks. With one of them compiled out, its part
@@ -50,11 +61,13 @@
 
 use std::fmt;
 
+use serde_json::Value;
+
 use crate::{
-    Event, MessageId, ReasoningMessageChunkEvent, ReasoningMessageContentEvent,
-    ReasoningMessageStartEvent, SubagentRunId, TextMessageChunkEvent, TextMessageContentEvent,
-    TextMessageRole, TextMessageStartEvent, ToolCallArgsEvent, ToolCallChunkEvent, ToolCallId,
-    ToolCallStartEvent,
+    BaseEvent, Event, JsonObject, MessageId, ReasoningMessageChunkEvent,
+    ReasoningMessageContentEvent, ReasoningMessageStartEvent, SubagentRunId, TextMessageChunkEvent,
+    TextMessageContentEvent, TextMessageRole, TextMessageStartEvent, ToolCallArgsEvent,
+    ToolCallChunkEvent, ToolCallId, ToolCallStartEvent,
 };
 
 /// Whose lane: a subagent's, or the parent agent's when `None`.
@@ -265,6 +278,59 @@ impl<'a> Chunk<'a> {
     }
 }
 
+/// What the events a chunk stands for keep of its base fields.
+///
+/// AG-UI 1.0 carries a chunk's metadata and `rawEvent` through expansion
+/// intact, and not its `timestamp`. The metadata applies to every event
+/// synthesized from the chunk; merged key by key, stamping it on a start and
+/// its content is the same as stamping it once. 1.0 does not say which event
+/// carries the one provider payload. It rides the content event, which is
+/// what the producer sent, as in the reference client; the start is
+/// expansion's own.
+struct Carried {
+    metadata: Option<JsonObject>,
+    raw_event: Option<Value>,
+}
+
+impl Carried {
+    fn new(base: BaseEvent) -> Self {
+        Self {
+            metadata: base.metadata,
+            raw_event: base.raw_event.filter(|raw| !raw.is_null()),
+        }
+    }
+
+    /// The base of the synthesized start: the metadata alone.
+    fn start(&self) -> BaseEvent {
+        BaseEvent {
+            metadata: self.metadata.clone(),
+            ..BaseEvent::default()
+        }
+    }
+
+    /// The delta and base of the content event the chunk stands for.
+    ///
+    /// A chunk without a delta stands for one with an empty delta when it
+    /// carries what only a content event can deliver: a provider payload, or,
+    /// on a continuation, metadata, which has no start to ride. Otherwise it
+    /// stands for no content.
+    fn content(self, delta: Option<String>, opened: bool) -> Option<(String, BaseEvent)> {
+        let delta = match delta {
+            Some(delta) => delta,
+            None if self.raw_event.is_some() || (!opened && self.metadata.is_some()) => {
+                String::new()
+            }
+            None => return None,
+        };
+        let base = BaseEvent {
+            timestamp: None,
+            raw_event: self.raw_event,
+            metadata: self.metadata,
+        };
+        Some((delta, base))
+    }
+}
+
 /// Where a chunk landed.
 struct Placed {
     id: String,
@@ -393,16 +459,17 @@ impl Streams {
     ) -> Result<(), ChunkError> {
         let placed = self.place(&Chunk::text(&chunk), &mut |stream| out.push(stream.end()))?;
         let id = MessageId::new(placed.id);
+        let carried = Carried::new(chunk.base);
         if placed.opened {
             let mut start = TextMessageStartEvent::new(id.clone(), chunk.role.unwrap_or_default());
             start.name = chunk.name;
-            start.base = chunk.base.clone();
+            start.base = carried.start();
             start.subagent_run_id = placed.owner.clone();
             out.push(start.into());
         }
-        if let Some(delta) = chunk.delta {
+        if let Some((delta, base)) = carried.content(chunk.delta, placed.opened) {
             let mut content = TextMessageContentEvent::new(id, delta);
-            content.base = chunk.base;
+            content.base = base;
             content.subagent_run_id = placed.owner;
             out.push(content.into());
         }
@@ -416,18 +483,19 @@ impl Streams {
     ) -> Result<(), ChunkError> {
         let placed = self.place(&Chunk::tool(&chunk), &mut |stream| out.push(stream.end()))?;
         let id = ToolCallId::new(placed.id);
+        let carried = Carried::new(chunk.base);
         if placed.opened {
             // `place` opened the stream, so the chunk named its tool.
             let name = chunk.tool_call_name.unwrap_or_default();
             let mut start = ToolCallStartEvent::new(id.clone(), name);
             start.parent_message_id = chunk.parent_message_id;
-            start.base = chunk.base.clone();
+            start.base = carried.start();
             start.subagent_run_id = placed.owner.clone();
             out.push(start.into());
         }
-        if let Some(delta) = chunk.delta {
+        if let Some((delta, base)) = carried.content(chunk.delta, placed.opened) {
             let mut args = ToolCallArgsEvent::new(id, delta);
-            args.base = chunk.base;
+            args.base = base;
             args.subagent_run_id = placed.owner;
             out.push(args.into());
         }
@@ -443,15 +511,16 @@ impl Streams {
             out.push(stream.end());
         })?;
         let id = MessageId::new(placed.id);
+        let carried = Carried::new(chunk.base);
         if placed.opened {
             let mut start = ReasoningMessageStartEvent::new(id.clone());
-            start.base = chunk.base.clone();
+            start.base = carried.start();
             start.subagent_run_id = placed.owner.clone();
             out.push(start.into());
         }
-        if let Some(delta) = chunk.delta {
+        if let Some((delta, base)) = carried.content(chunk.delta, placed.opened) {
             let mut content = ReasoningMessageContentEvent::new(id, delta);
-            content.base = chunk.base;
+            content.base = base;
             content.subagent_run_id = placed.owner;
             out.push(content.into());
         }
@@ -765,6 +834,127 @@ mod tests {
         }
         assert_eq!(tracked.open.len(), 1, "the parent's call is still open");
         assert!(tracked.holder(Kind::Tool, "c1").is_some());
+    }
+
+    /// One chunk of each kind: opening, with an id and a tool name, or
+    /// continuing, with neither.
+    fn each_kind(open: bool, delta: Option<&str>) -> [Event; 3] {
+        let delta = delta.map(str::to_owned);
+        [
+            Event::text_message_chunk(open.then(|| "m1".into()), delta.clone()),
+            Event::tool_call_chunk(
+                open.then(|| "c1".into()),
+                open.then(|| "search".into()),
+                delta.clone(),
+            ),
+            Event::reasoning_message_chunk(open.then(|| "r1".into()), delta),
+        ]
+    }
+
+    fn expanded(events: impl IntoIterator<Item = Event>) -> Vec<Event> {
+        let mut streams = Streams::default();
+        let mut out = Vec::new();
+        for event in events {
+            streams.expand(event, &mut out).unwrap();
+        }
+        streams.finish(&mut out);
+        out
+    }
+
+    fn delta(event: &Event) -> Option<&str> {
+        match event {
+            Event::TextMessageContent(e) => Some(&e.delta),
+            Event::ToolCallArgs(e) => Some(&e.delta),
+            Event::ReasoningMessageContent(e) => Some(&e.delta),
+            _ => None,
+        }
+    }
+
+    fn object(value: Value) -> JsonObject {
+        value.as_object().expect("an object").clone()
+    }
+
+    #[test]
+    fn a_continuation_that_carries_only_metadata_stands_for_an_empty_content_event() {
+        let finish = object(serde_json::json!({"finishReason": "stop"}));
+        for (open, last) in each_kind(true, Some("a"))
+            .into_iter()
+            .zip(each_kind(false, None))
+        {
+            let out = expanded([open, last.with_metadata(finish.clone())]);
+            let [_, _, content, end] = out.as_slice() else {
+                panic!("start, content, content, end: {out:?}");
+            };
+            assert_eq!(delta(content), Some(""));
+            assert_eq!(content.metadata(), Some(&finish));
+            assert!(end.base().is_empty(), "an end carries nothing of a chunk");
+        }
+    }
+
+    #[test]
+    fn a_chunk_without_a_delta_stands_for_content_only_when_it_carries_something_for_it() {
+        for (open, last) in each_kind(true, Some("a"))
+            .into_iter()
+            .zip(each_kind(false, None))
+        {
+            assert_eq!(
+                expanded([open, last]).len(),
+                3,
+                "a bare continuation adds nothing"
+            );
+        }
+        // An opener's metadata rides its start.
+        let note = object(serde_json::json!({"k": 1}));
+        for open in each_kind(true, None) {
+            let out = expanded([open.with_metadata(note.clone())]);
+            let [start, _end] = out.as_slice() else {
+                panic!("start, end: {out:?}");
+            };
+            assert_eq!(start.metadata(), Some(&note));
+        }
+    }
+
+    #[test]
+    fn the_synthesized_events_carry_metadata_and_the_raw_event_but_not_the_timestamp() {
+        let note = object(serde_json::json!({"k": 1}));
+        let raw = serde_json::json!({"provider": "acme"});
+        let stamp = |chunk: Event| {
+            chunk
+                .with_timestamp(1_700_000_000_000)
+                .with_raw_event(raw.clone())
+                .with_metadata(note.clone())
+        };
+        let on_start = BaseEvent {
+            metadata: Some(note.clone()),
+            ..BaseEvent::default()
+        };
+        let on_content = BaseEvent {
+            timestamp: None,
+            raw_event: Some(raw.clone()),
+            metadata: Some(note.clone()),
+        };
+        // With a delta or without: the provider payload needs a content event
+        // to ride either way.
+        for opener in each_kind(true, Some("a"))
+            .into_iter()
+            .chain(each_kind(true, None))
+        {
+            let out = expanded([stamp(opener)]);
+            let [start, content, end] = out.as_slice() else {
+                panic!("start, content, end: {out:?}");
+            };
+            assert_eq!(start.base(), &on_start);
+            assert_eq!(content.base(), &on_content);
+            assert!(end.base().is_empty());
+        }
+        for (open, last) in each_kind(true, Some("a"))
+            .into_iter()
+            .zip(each_kind(false, None))
+        {
+            let out = expanded([open, stamp(last)]);
+            assert_eq!(delta(&out[2]), Some(""));
+            assert_eq!(out[2].base(), &on_content);
+        }
     }
 
     #[test]

@@ -242,15 +242,68 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn temp_path() -> std::path::PathBuf {
+    /// Where one test keeps its baseline: a file in a directory of its own,
+    /// removed when dropped.
+    struct TempPath {
+        dir: std::path::PathBuf,
+        file: std::path::PathBuf,
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.file
+        }
+    }
+
+    impl AsRef<Path> for TempPath {
+        fn as_ref(&self) -> &Path {
+            &self.file
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// The directory is named after the process and a counter. Under nextest
+    /// every test is a process of its own, so the name repeats whenever a
+    /// process id does.
+    fn temp_path() -> TempPath {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
+        scratch(std::env::temp_dir().join(format!(
             "xtask-baseline-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        )))
+    }
+
+    /// An empty `dir` and the baseline's path in it. What an earlier process
+    /// left under the same name is removed first, or a test that asserts
+    /// nothing was written would find another test's file.
+    fn scratch(dir: std::path::PathBuf) -> TempPath {
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir.join("events.json")
+        let file = dir.join("events.json");
+        TempPath { dir, file }
+    }
+
+    #[test]
+    fn a_scratch_directory_starts_empty_and_goes_with_its_path() {
+        let dir =
+            std::env::temp_dir().join(format!("xtask-baseline-{}-reused", std::process::id()));
+        // What a test in an earlier process with this id would have left.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("events.json"), "{}").unwrap();
+
+        let path = scratch(dir.clone());
+        assert!(!path.exists(), "the earlier file is gone");
+        std::fs::write(&path, "{}").unwrap();
+        drop(path);
+        assert!(!dir.exists(), "the directory is removed with the path");
     }
 
     fn baseline(events: Vec<Event>) -> Baseline {

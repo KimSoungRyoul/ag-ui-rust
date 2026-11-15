@@ -109,7 +109,7 @@ where
 /// The distinct warnings remembered in one run. Past this many, a new warning
 /// is still delivered but not remembered, so what a producer can make the
 /// boundary hold stays bounded however long the run.
-const REMEMBERED: usize = 256;
+pub(crate) const REMEMBERED: usize = 256;
 
 /// The boundary with its warnings in the stream, each ahead of the event it
 /// concerns and each text once per run. An error is the last item.

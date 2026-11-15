@@ -52,6 +52,32 @@
 //! # Ok::<(), ag_ui::client::Error>(())
 //! ```
 //!
+//! # What the synthesized events carry
+//!
+//! A chunk's `metadata` goes on every event synthesized from it, so it merges
+//! into the item; its `rawEvent` goes on the content event; its `timestamp` on
+//! none, since the synthesized events are not the chunk. A continuation that
+//! carries only metadata, such as a final chunk reporting a finish reason,
+//! stands for a content event with an empty delta, which is how the metadata
+//! reaches the item. So does a chunk that carries a `rawEvent` and no delta.
+//!
+//! ```
+//! use ag_ui::client::chunks::normalize_all;
+//! use ag_ui::{Event, MessageId};
+//! use serde_json::json;
+//!
+//! let finish = json!({ "finishReason": "stop" }).as_object().unwrap().clone();
+//! let events = normalize_all([
+//!     Event::text_message_chunk(Some(MessageId::new("msg-1")), Some("Done.".into())),
+//!     Event::text_message_chunk(None, None).with_metadata(finish.clone()),
+//! ])?;
+//!
+//! let Event::TextMessageContent(last) = &events[2] else { panic!("{events:?}") };
+//! assert_eq!(last.delta, "");
+//! assert_eq!(last.base.metadata, Some(finish));
+//! # Ok::<(), ag_ui::client::Error>(())
+//! ```
+//!
 //! # The two spellings do not mix
 //!
 //! An item opened by a chunk is continued and closed in chunk form, and one
