@@ -691,12 +691,14 @@ These are on `main` and not yet in a published version.
   (`requested`); `RunReport::runs` lists them in stream order.
 - A `Thread`, `client::Verifier`, `client::verify_all` and `server::EventVerifier` read
   several runs in sequence on one stream, as AG-UI 1.0 allows: a `RUN_STARTED` after
-  `RUN_FINISHED` or after `RUN_ERROR` begins the next run. Messages accumulate and state
-  persists across runs; what a run had open does not carry over, so a new run may open
-  a step, or announce a subagent, of the same name. In alpha.3 the verifiers rejected
-  that `RUN_STARTED` ("arrived after the run had already finished", `Rule::RunEnded`),
-  and a `Thread` stopped reading at the first run's terminal event. A hosted run still
-  sends one run: its sink refuses every emit after a terminal event, as before.
+  `RUN_FINISHED` or after `RUN_ERROR` begins the next run. Messages accumulate, reasoning
+  messages among them, and state persists across runs; what a run had open does not
+  carry over, so a new run may open a step, or announce a subagent, of the same name,
+  and a message a failed run left half-written stays as it is. In alpha.3 the verifiers
+  rejected that `RUN_STARTED` ("arrived after the run had already finished",
+  `Rule::RunEnded`), and a `Thread` stopped reading at the first run's terminal event. A
+  hosted run still sends one run: its sink refuses every emit after a terminal event, as
+  before.
 - A `Thread` reads to the end of the stream after `RUN_ERROR` too, since another run may
   follow. `Update::Error` and `Update::RunEnded` arrive at the `RUN_ERROR`, and
   `Update::Done(RunEnd::Failed { .. })` when the transport ends the stream; alpha.3
