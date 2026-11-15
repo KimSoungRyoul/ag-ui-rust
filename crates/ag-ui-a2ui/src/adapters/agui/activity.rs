@@ -11,7 +11,6 @@
 //! activity holds. It needs no server: it turns a batch of operations into the
 //! tool result and the events, and whatever sends events sends them.
 //!
-//!
 //! The rules for which message id a paint goes under, and the lines of AG-UI's
 //! middleware they follow, are in the documentation of [`SurfacePainter`].
 
@@ -286,6 +285,8 @@ impl SurfacePainter {
     /// A state stays on screen until something is painted in its place. A
     /// call that ends without a surface (every attempt was rejected, or the
     /// answer that stood drew nothing) says so with [`SurfaceStatus::Failed`].
+    /// One that has no painter at hand, because it failed before it would
+    /// paint, gives the event with `SurfacePainter::new().status(id, &failed)`.
     ///
     /// ```
     /// use ag_ui::Event;

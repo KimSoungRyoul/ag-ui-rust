@@ -1127,7 +1127,8 @@ These are on `main` and not yet in a published version.
   `SurfacePainter::settle` and `paint`, `surfaces_in` and `latest_surface` pass it
   over: it is not applied, no activity is sent for it, and it is not what a
   conversation touched last. The tool result still carries the batch as sent, and a
-  batch of nothing else gives a tool result and no activity. alpha.3's
+  batch of nothing else gives a tool result and no activity. The `render_a2ui`
+  arguments that `paint` sends name the first surface the batch changed. alpha.3's
   `find_prior_surface_in` replayed the one surface the last operation named, and gave
   `None` when that operation was such a delete. `SurfaceStore::apply` on its own still
   refuses one.
@@ -1140,7 +1141,9 @@ These are on `main` and not yet in a published version.
   run, and under `a2ui-surface-<surface id>-<tool call id>` for each surface of a
   batch of several. alpha.3 sent no activity. A state stays until something is painted
   in its place, so a call that ends without a surface says so with
-  `SurfaceStatus::Failed`.
+  `SurfaceStatus::Failed`. `SurfacePainter::from_history` notes a state that an
+  activity in the messages shows; only a client's list holds activities, so a
+  painter made from a server's request notes none.
 - `adapters::a2a::renderer_capabilities` reads data parts only, a part whose `kind` is
   `data` or one written without a `kind` that has `data`, and passes over a data part
   whose `data.metadata` is not an object: what is inside a part's data is the
