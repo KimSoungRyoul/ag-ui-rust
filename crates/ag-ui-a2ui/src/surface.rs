@@ -56,6 +56,14 @@ impl SurfaceStore {
     pub fn surfaces(&self) -> impl Iterator<Item = &SurfaceState> {
         self.surfaces.values()
     }
+    /// The surface an update or delete may target: created, and not deleted since.
+    pub(crate) fn live(&self, id: &str) -> Result<&SurfaceState> {
+        self.get(id).filter(|s| !s.deleted).ok_or_else(|| {
+            Error::parse(format!(
+                "surface {id:?} must be created before updating or deleting it"
+            ))
+        })
+    }
     /// Atomically applies one operation. Prior messages are never rolled back.
     pub fn apply(&mut self, message: &AgentMessage) -> Result<()> {
         if !matches!(message.version.as_str(), "v0.9" | "v0.9.1") {
@@ -83,15 +91,7 @@ impl SurfaceStore {
             );
             return Ok(());
         }
-        let mut next = self
-            .get(id)
-            .filter(|s| !s.deleted)
-            .cloned()
-            .ok_or_else(|| {
-                Error::parse(format!(
-                    "surface {id:?} must be created before updating or deleting it"
-                ))
-            })?;
+        let mut next = self.live(id)?.clone();
         // v0.9.1 explicitly accepts either discriminator within the same profile.
         match &message.payload {
             AgentPayload::UpdateComponents(update) => {

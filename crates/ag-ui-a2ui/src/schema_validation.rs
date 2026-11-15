@@ -142,6 +142,18 @@ fn bounded_diagnostic(message: &str) -> String {
     result
 }
 
+/// For `…/oneOf/1/type` (or `anyOf`, through any `$ref`s), the combinator
+/// `…/oneOf` and the branch `1` whose own `type` the value failed.
+fn type_only_branch(keyword: &str) -> Option<(&str, usize)> {
+    let mut branch = keyword.strip_suffix("/type")?;
+    while let Some(rest) = branch.strip_suffix("/$ref") {
+        branch = rest;
+    }
+    let at = branch.rfind("/oneOf/").max(branch.rfind("/anyOf/"))?;
+    let index = branch[at + "/oneOf/".len()..].parse().ok()?;
+    Some((&branch[..at + "/oneOf".len()], index))
+}
+
 fn at_or_below(path: &str, ancestor: &str) -> bool {
     path.strip_prefix(ancestor)
         .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
@@ -186,8 +198,34 @@ fn schema_diagnostics(
                 })
         })
         .collect();
+    // A oneOf/anyOf branch that fails on the value's JSON type alone is an
+    // alternative the value never tried to be: the template form of a child
+    // list, when the value is an array. Report the branch it did try.
+    let untried: Vec<_> = selected
+        .iter()
+        .map(|(keyword, _, _)| type_only_branch(keyword))
+        .collect();
+    let tried_another = |combinator: &str, branch: usize| {
+        selected
+            .iter()
+            .zip(&untried)
+            .any(|((keyword, _, _), other)| {
+                let Some(index) = keyword
+                    .strip_prefix(combinator)
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .and_then(|rest| rest.split('/').next())
+                    .and_then(|index| index.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                index != branch && *other != Some((combinator, index))
+            })
+    };
     let mut results = Vec::new();
-    for (keyword, location, description) in &selected {
+    for ((keyword, location, description), untried) in selected.iter().zip(&untried) {
+        if untried.is_some_and(|(combinator, branch)| tried_another(combinator, branch)) {
+            continue;
+        }
         // Failed allOf branches also emit secondary unevaluated-property errors.
         if keyword.ends_with("/unevaluatedProperties")
             && selected.iter().any(|(other, path, _)| {

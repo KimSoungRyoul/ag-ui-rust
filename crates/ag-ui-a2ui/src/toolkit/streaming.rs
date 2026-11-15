@@ -1767,6 +1767,20 @@ mod tests {
     }
 
     #[test]
+    fn a_child_nested_inline_is_an_error_no_further_input_can_fix() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+        let chunk = format!(
+            r#"{UPDATE_OPEN}[{{"id":"root","component":"Row","children":[{{"id":"t","component":"Text","text":"hi"}}]}}]}}}}"#
+        );
+        let error = parser.process_chunk(&chunk).unwrap_err();
+        assert!(
+            error.to_string().contains("top-level components list"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn a_reference_loop_across_messages_is_an_error() {
         let mut parser = parser();
         feed(&mut parser, &["<a2ui-json>[", CREATE]);

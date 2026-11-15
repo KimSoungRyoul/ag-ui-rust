@@ -196,7 +196,10 @@ fn a_surface_that_cannot_be_fixed_ships_as_an_error_envelope() {
     assert!(value.get(A2UI_OPERATIONS_KEY).is_none(), "{value}");
     assert_eq!(value["error"], "Could not build the surface.");
     assert_eq!(value["code"], "VALIDATION_FAILED");
-    assert_eq!(value["path"], "components[0].child");
+    assert_eq!(
+        value["path"],
+        "messages[1].updateComponents.components[0].child"
+    );
     assert_eq!(value["details"][0]["code"], "unresolved_child");
 
     // So the next turn does not offer the surface that was never built as the
