@@ -59,15 +59,19 @@ These differ on purpose. Outside `crates/ag-ui/src`, nothing compares this repos
 the copy at all (the check only notices the copy itself moving), so a test or manifest change
 that belongs with a source fix has to travel with it.
 
-- `crates/ag-ui/tests/{client_conformance_1_0,client_thread_1_0,tool_content_1_0}.rs` read
-  the 1.0 conformance corpus vendored under `crates/ag-ui/tests/fixtures/`; upstream reads
-  the monorepo's own `spec/1.0/` instead.
+- The tests that read the 1.0 conformance corpus read the copy vendored under
+  `crates/ag-ui/tests/fixtures/ag-ui-1.0/`, whose `SOURCE.json` records the upstream commit
+  and which `xtask corpus-check` compares with it; upstream reads the monorepo's own
+  `spec/1.0/` instead. `conformance_1_0.rs` runs every stream and `fixtures_1_0.rs` every
+  schema fixture as a table, and exist only here, with `tests/fixtures/local/`.
+  `client_conformance_1_0.rs`, `client_thread_1_0.rs`, `tool_content_1_0.rs`,
+  `optional_null_input.rs` and `upstream_payloads.rs` read single files from it.
 - `crates/ag-ui/Cargo.toml` — the description. The `yoke-derive` pin that also differed
   went in #29.
 - `crates/ag-ui/README.md` — install instructions for crates.io and this repository's
   guides; upstream's points at path dependencies and its migration proposal.
-- `xtask/` — this repository's drift check, baseline and `upstream-sync`. Upstream carries
-  an earlier fork of the drift check with a local-source protocol check.
+- `xtask/` — this repository's drift check, baseline, `upstream-sync` and `corpus-check`.
+  Upstream carries an earlier fork of the drift check with a local-source protocol check.
 - `e2e/` — here it also covers A2UI, the website, the skills and live models, and
   `e2e/tests/json_map_order.rs` checks A2UI data-model updates too. Upstream carries the
   AG-UI-only subset.

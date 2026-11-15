@@ -1,0 +1,39 @@
+{
+  "$note": "Where this directory was copied from. Updated by hand when re-vendoring; read by tests/conformance_1_0.rs, tests/fixtures_1_0.rs and `cargo run -p xtask -- corpus-check`.",
+  "source": {
+    "repo": "ag-ui-protocol/ag-ui",
+    "commit": "2330368a2a74573902858867072406638ba3073d",
+    "commit_date": "2026-11-15",
+    "fetched_at": "2026-11-15"
+  },
+  "trees": [
+    {
+      "local": "streams",
+      "path": "spec/1.0/conformance/streams",
+      "tree": "36faadc4c40b0458e9bd0118ce007ca5087c028d"
+    },
+    {
+      "local": "fixtures",
+      "path": "spec/1.0/fixtures",
+      "tree": "b82df621331ec6954998f394289dcf5f79e5a70c"
+    }
+  ],
+  "files": [
+    {
+      "local": "CONFORMANCE.md",
+      "path": "spec/1.0/conformance/README.md",
+      "blob": "76d0cab4d7166844a4698a3c99c618b026540963"
+    },
+    {
+      "local": "LICENSE",
+      "path": "LICENSE",
+      "blob": "b77bf2ab726c6e7cb5a81a9d3b7dc38266ebfd3d"
+    }
+  ],
+  "excluded": [
+    {
+      "path": "spec/1.0/conformance/streams/unknown-enum-value-role-fatal.json",
+      "reason": "It pins an admitted gap in the reference client, which fails a run on an unrecognised role where the specification says to strip it. This SDK follows the specification; tests/fixtures/local/streams/unknown-enum-value-role-stripped.json asserts the rule."
+    }
+  ]
+}

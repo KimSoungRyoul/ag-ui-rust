@@ -15,7 +15,7 @@
 //! | [`DuplicateStart`] | opening a message, reasoning block, tool call, step or subagent whose id is already open — or a subagent id that already finished in this run |
 //! | [`NotOpen`] | content or a terminator for something that was never opened, including `SUBAGENT_FINISHED` / `SUBAGENT_ERROR` for a subagent that is not active |
 //! | [`UnknownId`] | `TOOL_CALL_RESULT` for a call id neither this run nor the history it continues introduced, or a `parentSubagentRunId` that was never started |
-//! | [`OutOfOrder`] | `TOOL_CALL_RESULT` before the call's `TOOL_CALL_END` |
+//! | [`OutOfOrder`] | `TOOL_CALL_RESULT` before the call's `TOOL_CALL_END`; a first event that is neither `RUN_STARTED` nor `RUN_ERROR` |
 //! | [`OpenAtFinish`] | `RUN_FINISHED` while a message, reasoning block, tool call, step or subagent is open |
 //! | [`OwnerMismatch`] | a tagged continuation, terminator or re-open whose `subagentRunId` is not the one that opened the entity — a message, reasoning block, tool call, activity, or the entity a `REASONING_ENCRYPTED_VALUE` names; a tool call tagged with one subagent whose parent message belongs to another |
 //!
@@ -124,6 +124,9 @@ mod enabled {
     /// named precisely.
     #[derive(Debug, Default, Clone)]
     pub struct Verifier {
+        /// Whether the stream has opened: with `RUN_STARTED` or `RUN_ERROR`,
+        /// or because a harness with no run driver stands in for one.
+        opened: bool,
         started: bool,
         ended: bool,
         messages: HashMap<MessageId, Owner>,
@@ -172,10 +175,28 @@ mod enabled {
             self.seed_owners(history, false);
         }
 
+        /// Treats the stream as opened, for a sink the run driver is not
+        /// behind: `RunContext::new` emits no `RUN_STARTED`.
+        pub(crate) fn assume_opened(&mut self) {
+            self.opened = true;
+        }
+
         /// Checks `event` against the state machine and folds it in.
         pub fn observe(&mut self, event: &Event) -> Result<(), VerificationError> {
             if self.ended {
                 return Err(self.fail(event, Rule::RunEnded, "the run already ended"));
+            }
+            // A stream opens with RUN_STARTED, or with RUN_ERROR for a run
+            // that failed before it began. Nothing else comes first.
+            if !self.opened {
+                if !matches!(event, Event::RunStarted(_) | Event::RunError(_)) {
+                    return Err(self.fail(
+                        event,
+                        Rule::OutOfOrder,
+                        "the run has not started: RUN_STARTED or RUN_ERROR comes first",
+                    ));
+                }
+                self.opened = true;
             }
 
             match event {
@@ -861,6 +882,9 @@ mod disabled {
 
         #[inline]
         pub(crate) fn seed(&mut self, _history: &[Message]) {}
+
+        #[inline]
+        pub(crate) fn assume_opened(&mut self) {}
 
         #[inline]
         pub(crate) fn observe(&mut self, _event: &Event) -> Result<(), VerificationError> {

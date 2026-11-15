@@ -2,6 +2,7 @@
 //!
 //! Run with `cargo run -p xtask -- <subcommand>`.
 
+mod corpus;
 mod docs_check;
 mod drift;
 mod upstream_copy;
@@ -32,6 +33,10 @@ SUBCOMMANDS
                            ag-ui-protocol/ag-ui) with the sync point recorded
                            in UPSTREAM.md, and list the local commits since it.
                            Needs the network.
+    corpus-check           Compare the vendored AG-UI 1.0 conformance corpus
+                           under crates/ag-ui/tests/fixtures/ag-ui-1.0 with the
+                           upstream commit its SOURCE.json records, and say
+                           whether upstream has moved since. Needs the network.
 
 DRIFT-CHECK OPTIONS
     --local                Also compare the vendored schema at
@@ -54,7 +59,8 @@ UPSTREAM-SYNC OPTIONS
 EXIT CODES
     0  no drift
     1  drift found (or, with --upstream, the baseline is stale; for
-       upstream-sync, the copy moved or the version is reserved)
+       upstream-sync, the copy moved or the version is reserved; for
+       corpus-check, the copy differs from its record or upstream moved)
     2  the check could not run
 ";
 
@@ -83,6 +89,8 @@ fn dispatch(args: &[String]) -> Result<u8, String> {
         "drift-check" => drift::run(parse_drift_args(options)?),
         "docs-check" => docs_check::run(options),
         "upstream-sync" => upstream_copy::run(parse_sync_args(options)?),
+        "corpus-check" if options.is_empty() => corpus::run(),
+        "corpus-check" => Err("corpus-check takes no options.".to_owned()),
         other => Err(format!(
             "unknown subcommand `{other}`.\nRun `cargo run -p xtask -- --help` for the list."
         )),

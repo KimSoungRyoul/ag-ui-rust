@@ -33,7 +33,10 @@
 //! 3. `TEXT_MESSAGE_CONTENT` and `TEXT_MESSAGE_END` require an open message
 //!    with the same id, and `TEXT_MESSAGE_START` may not re-open an id that is
 //!    already open.
-//! 4. The same, for `TOOL_CALL_*` and for `REASONING_MESSAGE_*`.
+//! 4. The same, for `TOOL_CALL_*`, for `REASONING_MESSAGE_*`, and for the
+//!    block `REASONING_START` and `REASONING_END` bracket. A block and the
+//!    message inside it may share an id, so each has its own open set: content
+//!    naming a block's id has no open message to land in.
 //! 5. `TOOL_CALL_RESULT` may not answer a call that has not ended.
 //! 6. `STEP_FINISHED` requires a matching `STEP_STARTED`, and step names do not
 //!    nest with themselves.
@@ -114,6 +117,8 @@ pub struct Verifier {
     text: Vec<(MessageId, Owner)>,
     tool: Vec<(ToolCallId, Owner)>,
     reasoning: Vec<(MessageId, Owner)>,
+    /// Open reasoning blocks: what `REASONING_START` opens.
+    blocks: Vec<(MessageId, Owner)>,
     /// Open steps, keyed by owner as well as name.
     steps: Vec<(Owner, StepName)>,
     /// Every text message ever introduced and who owns it: the first writer.
@@ -249,24 +254,37 @@ impl Verifier {
                     .insert(e.message_id.clone(), e.subagent_run_id.clone());
             }
 
-            // The block and the message inside it share an id and claim the
-            // same owner: `REASONING_START` under one subagent and
-            // `REASONING_MESSAGE_START` under another is a contradiction. The
-            // block's bracketing is not otherwise tracked (rule 4 is about the
-            // message), only its ownership.
+            // A block is bracketed like everything else, in its own open set.
+            // When it shares an id with the message inside it, the two claim
+            // the same owner: `REASONING_START` under one subagent and
+            // `REASONING_MESSAGE_START` under another is a contradiction.
             Event::ReasoningStart(e) => {
-                self.claim(kind, &e.message_id, &e.subagent_run_id, true)?;
+                let owner = self.claim(kind, &e.message_id, &e.subagent_run_id, true)?;
+                self.not_already_open(
+                    self.blocks.iter().map(|(id, _)| id),
+                    &e.message_id,
+                    "reasoning block",
+                    kind,
+                )?;
+                self.blocks.push((e.message_id.clone(), owner));
             }
             Event::ReasoningEnd(e) => {
-                if let Some(owner) = self.reasoning_owners.get(&e.message_id) {
-                    Self::expect_owner(
+                match self.blocks.iter().find(|(open, _)| open == &e.message_id) {
+                    None => {
+                        return Err(Error::protocol(format!(
+                            "{kind} for reasoning block {:?}, which was never opened",
+                            e.message_id.as_str()
+                        )));
+                    }
+                    Some((_, owner)) => Self::expect_owner(
                         kind,
                         "reasoning message",
                         e.message_id.as_str(),
                         owner,
                         &e.subagent_run_id,
-                    )?;
+                    )?,
                 }
+                self.blocks.retain(|(open, _)| open != &e.message_id);
             }
             Event::ReasoningMessageStart(e) => {
                 let owner = self.claim(kind, &e.message_id, &e.subagent_run_id, true)?;
@@ -644,6 +662,12 @@ impl Verifier {
         if let Some((id, _)) = self.reasoning.first() {
             return Err(Error::protocol(format!(
                 "{what} arrived while reasoning message {:?} was still open",
+                id.as_str()
+            )));
+        }
+        if let Some((id, _)) = self.blocks.first() {
+            return Err(Error::protocol(format!(
+                "{what} arrived while reasoning block {:?} was still open",
                 id.as_str()
             )));
         }

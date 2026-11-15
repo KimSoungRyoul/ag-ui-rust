@@ -175,11 +175,14 @@ then prefixes each commit with it, as in `[#20] fix: read and write the 1.0 key`
 
 The client and server runtimes use executor-neutral futures. HTTP and axum are
 optional. CI checks Rust 1.85, wasm feature builds, dependency boundaries, docs,
-and the vendored AG-UI 1.0 schema and event baseline.
+the vendored AG-UI 1.0 schema and event baseline, and the upstream 1.0 conformance
+corpus, run as table tests.
 
 ## License
 
-MIT. Vendored A2UI schemas and conformance fixtures retain their Apache-2.0 license.
+MIT. Vendored A2UI schemas and conformance fixtures retain their Apache-2.0 license, and
+the vendored AG-UI 1.0 conformance corpus its upstream MIT notice
+(`crates/ag-ui/tests/fixtures/ag-ui-1.0/LICENSE`).
 
 Dependency security is checked with `cargo audit --deny warnings` on every CI run,
 daily against current RustSec advisories, and before release and registry publishing.

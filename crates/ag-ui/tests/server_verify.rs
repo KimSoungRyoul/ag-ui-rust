@@ -162,6 +162,54 @@ fn a_second_run_started_is_rejected() {
 }
 
 #[test]
+fn a_stream_opens_with_run_started_or_run_error() {
+    // AG-UI 1.0, "The run": a producer must not emit any other event first.
+    // The upstream stream `first-event-not-run-started-fatal`.
+    use ag_ui::server::EventVerifier;
+    for first in [
+        Event::text_message_start("m1", TextMessageRole::Assistant),
+        Event::custom("early", serde_json::json!(1)),
+        Event::raw(serde_json::json!({})),
+        Event::run_finished_success("t", "r"),
+    ] {
+        let error = EventVerifier::new()
+            .observe(&first)
+            .expect_err("nothing but RUN_STARTED or RUN_ERROR opens a stream");
+        assert_eq!(error.rule, Rule::OutOfOrder, "{first:?}");
+        assert!(
+            error
+                .detail
+                .contains("RUN_STARTED or RUN_ERROR comes first")
+        );
+    }
+
+    // A run can fail before it begins.
+    let mut verifier = EventVerifier::new();
+    verifier.observe(&Event::run_error("unreachable")).unwrap();
+
+    // A rejected first event does not open the stream.
+    let mut verifier = EventVerifier::new();
+    verifier.observe(&Event::step_started("plan")).unwrap_err();
+    verifier.observe(&Event::run_started("t", "r")).unwrap();
+    verifier.observe(&Event::step_started("plan")).unwrap();
+}
+
+#[test]
+fn the_test_harness_stands_in_for_the_driver_that_emits_run_started() {
+    // `RunContext::new` has no driver behind it, so an agent's first event is
+    // accepted there, and a RUN_STARTED emitted by hand still is, once.
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::step_started("plan"))
+        .expect("the harness takes the first event");
+    ctx.emit(Event::run_started("t", "r"))
+        .expect("a hand-written start");
+    let error = ctx
+        .emit(Event::run_started("t", "r"))
+        .expect_err("but not a second one");
+    assert_eq!(rule(error), Rule::DuplicateRunStarted);
+}
+
+#[test]
 fn finishing_with_a_message_open_is_rejected() {
     let (mut ctx, _events) = context();
     ctx.emit(Event::text_message_start("m1", TextMessageRole::Assistant))
