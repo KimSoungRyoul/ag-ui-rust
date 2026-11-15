@@ -37,6 +37,21 @@ fn required_properties_and_enums_report_the_matching_component_branch() {
 }
 
 #[test]
+fn unexpected_properties_are_reported_once_per_component() {
+    let schema =
+        SchemaValidator::new(&SchemaBundle::basic().unwrap(), &Default::default()).unwrap();
+    let message = json!({"version":"v0.9.1","updateComponents":{"surfaceId":"s","components":[
+        {"id":"root","component":"Text","text":"hi","bogus":1,"more":2}
+    ]}});
+    let Err(Error::Validation { errors }) = schema.validate_message(&message) else {
+        panic!("expected a schema failure");
+    };
+    assert_eq!(errors.0.len(), 1, "{errors}");
+    assert_eq!(errors.0[0].path, "/updateComponents/components/0");
+    assert!(errors.0[0].message.contains("'bogus', 'more'"), "{errors}");
+}
+
+#[test]
 fn diagnostics_do_not_change_acceptance_and_fallbacks_are_bounded() {
     let schema =
         SchemaValidator::new(&SchemaBundle::basic().unwrap(), &Default::default()).unwrap();

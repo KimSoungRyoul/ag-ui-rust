@@ -2,7 +2,8 @@
 
 use crate::toolkit::schema::SchemaBundle;
 use crate::{Error, ErrorCode, Result, ValidationError};
-use jsonschema::output::{ErrorDescription, OutputUnit};
+use jsonschema::Evaluation;
+use jsonschema::output::ErrorDescription;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -53,16 +54,24 @@ impl SchemaValidator {
             "https://a2ui.org/specification/v0_9/catalog.json",
             &bundle.catalog,
         )?;
-        let mut options = jsonschema::options()
+        // Each document keeps the draft its own `$schema` declares. An unknown
+        // `$schema` is a meta-schema the retriever would have to fetch, so it
+        // fails here rather than reaching the network.
+        let registry = jsonschema::Registry::new()
+            .retriever(NoExternalResources)
+            .extend(
+                registry
+                    .into_iter()
+                    .map(|(id, document)| (id, jsonschema::Resource::from_contents(document))),
+            )
+            .and_then(jsonschema::RegistryBuilder::prepare)
+            .map_err(Error::catalog)?;
+        let compiled = jsonschema::options()
             .with_draft(jsonschema::Draft::Draft202012)
-            .with_retriever(NoExternalResources);
-        for (id, document) in registry {
-            options = options.with_resource(
-                id,
-                jsonschema::Resource::from_contents(document).map_err(Error::catalog)?,
-            );
-        }
-        let compiled = options.build(&bundle.s2c).map_err(Error::catalog)?;
+            .with_retriever(NoExternalResources)
+            .with_registry(&registry)
+            .build(&bundle.s2c)
+            .map_err(Error::catalog)?;
         Ok(Self { compiled })
     }
     /// Revalidates a complete observed surface, including prior component definitions
@@ -108,10 +117,7 @@ impl SchemaValidator {
         if errors.is_empty() {
             return Ok(());
         }
-        let details = match self.compiled.apply(message).basic() {
-            jsonschema::BasicOutput::Invalid(details) => schema_diagnostics(message, &details),
-            jsonschema::BasicOutput::Valid(_) => Vec::new(),
-        };
+        let details = schema_diagnostics(message, &self.compiled.evaluate(message));
         Err(Error::Validation {
             errors: if details.is_empty() {
                 errors
@@ -120,7 +126,7 @@ impl SchemaValidator {
                     .map(|error| {
                         ValidationError::new(
                             ErrorCode::InvalidValue,
-                            error.instance_path.to_string(),
+                            error.instance_path().to_string(),
                             bounded_diagnostic(&error.masked().to_string()),
                         )
                     })
@@ -147,20 +153,37 @@ fn at_or_below(path: &str, ancestor: &str) -> bool {
         .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
 }
 
-fn schema_diagnostics(
-    instance: &Value,
-    details: &std::collections::VecDeque<OutputUnit<ErrorDescription>>,
-) -> Vec<ValidationError> {
-    let details: Vec<_> = details
-        .iter()
-        .map(|error| {
-            (
-                error.keyword_location().as_str(),
-                error.instance_location().as_str(),
-                error.error_description(),
-            )
-        })
-        .collect();
+/// Every error in the evaluation tree, in pre-order, keyed by its evaluation
+/// path (the keywords followed from the root, `$ref`s included). The branch
+/// matching below reads `oneOf`/`anyOf` indices off that path, so the absolute
+/// schema location `Evaluation::iter_errors` reports would not do.
+fn evaluation_errors(evaluation: &Evaluation) -> Vec<(&str, &str, &ErrorDescription)> {
+    let mut errors = Vec::new();
+    let mut stack = vec![evaluation.root()];
+    while let Some(unit) = stack.pop() {
+        let path = unit.evaluation_path().as_str();
+        for error in unit.errors() {
+            errors.push((path, unit.instance_location().as_str(), error));
+        }
+        // `unevaluatedProperties` already names every offending property in
+        // its own error. Its children are the per-property subschema results
+        // (`False schema does not allow …` for each one), which would only
+        // repeat that error one property at a time.
+        if path.ends_with("/unevaluatedProperties") {
+            continue;
+        }
+        let start = stack.len();
+        stack.extend(unit.children());
+        stack[start..].reverse();
+    }
+    errors
+}
+
+fn schema_diagnostics(instance: &Value, evaluation: &Evaluation) -> Vec<ValidationError> {
+    if evaluation.flag().valid {
+        return Vec::new();
+    }
+    let details = evaluation_errors(evaluation);
     // Discriminator failures belong to other catalog branches. Scope exclusions
     // by instance because another component may match that same schema branch.
     let unrelated: Vec<_> = details
