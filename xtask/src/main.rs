@@ -17,9 +17,11 @@ USAGE
     cargo run -p xtask -- <subcommand> [options]
 
 SUBCOMMANDS
-    drift-check            Compare the Rust event types against the vendored
-                           snapshot of the AG-UI 1.0 schema.
-                           Offline and deterministic; this is the CI gate.
+    drift-check            Compare the Rust protocol types — the event union and
+                           every other $defs shape: capabilities, messages,
+                           content parts, outcomes, tools, patches — against the
+                           vendored snapshot of the AG-UI 1.0 schema.
+                           Offline and deterministic.
     docs-check             Check the skills, the plugin manifests and the
                            skills' sources.md against the repository: the
                            workspace version, the README's dependency blocks,
@@ -27,12 +29,15 @@ SUBCOMMANDS
                            examples/. Offline; exits 1 on a stale statement.
 
 DRIFT-CHECK OPTIONS
-    --local               Compare the vendored schema at
+    --local               Also compare the vendored schema at
                            crates/ag-ui/src/protocol/schema-1.0.json with the
-                           reviewed baseline and Rust event types. Offline.
+                           reviewed baseline. Offline; this is the CI gate.
     --upstream             Additionally fetch upstream and report whether the
                            vendored baseline itself has gone stale. Needs the
                            network, so keep it out of the required CI job.
+    --draft                Additionally fetch upstream's spec/draft/schema.json
+                           and report what it adds to 1.0. Informational: it
+                           never changes the exit code. Needs the network.
     --refresh              Re-fetch upstream and rewrite the vendored baseline,
                            recording the upstream commit and the fetch date.
                            This is how a human accepts an upstream change.
@@ -79,17 +84,29 @@ fn parse_drift_args(options: &[String]) -> Result<drift::Args, String> {
         match option.as_str() {
             "--local" => parsed.local = true,
             "--upstream" => parsed.upstream = true,
+            "--draft" => parsed.draft = true,
             "--refresh" => parsed.refresh = true,
             other => {
                 return Err(format!(
                     "unknown option `{other}` for drift-check.\n\
-                     Valid options are --local, --upstream and --refresh."
+                     Valid options are --local, --upstream, --draft and --refresh."
                 ));
             }
         }
     }
-    if parsed.local && (parsed.refresh || parsed.upstream) {
-        return Err("--local cannot be combined with --upstream or --refresh".to_owned());
+    if parsed.local && (parsed.refresh || parsed.upstream || parsed.draft) {
+        return Err(
+            "--local is the offline gate and cannot be combined with --upstream, --draft or \
+             --refresh"
+                .to_owned(),
+        );
+    }
+    if parsed.refresh && parsed.draft {
+        return Err(
+            "--refresh rewrites the 1.0 baseline and reports nothing else; run \
+             `drift-check --draft` on its own."
+                .to_owned(),
+        );
     }
     if parsed.refresh && parsed.upstream {
         return Err("--refresh already re-reads upstream; drop --upstream.\n\

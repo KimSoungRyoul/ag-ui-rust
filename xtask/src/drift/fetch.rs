@@ -1,11 +1,12 @@
 //! Fetching the upstream source of truth.
 //!
-//! Only `--refresh` and `--upstream` come here. The offline check that CI gates
-//! on never touches the network.
+//! Only `--refresh`, `--upstream` and `--draft` come here. The offline check
+//! that CI gates on never touches the network.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::drift::baseline::{Source, UPSTREAM_PATH, UPSTREAM_REPO};
+use crate::drift::baseline::{DRAFT_PATH, Source, UPSTREAM_PATH, UPSTREAM_REPO};
+use crate::drift::schema::{ID_1_0, ID_DRAFT};
 
 const USER_AGENT: &str = "ag-ui-rust-xtask-drift-check";
 
@@ -15,17 +16,27 @@ pub struct Fetched {
     pub source: Source,
 }
 
-/// Resolves the newest commit touching the frozen schema, then reads the file at
-/// exactly that commit, so the recorded SHA always describes the recorded text.
+/// The frozen 1.0 schema.
 pub fn schema_json() -> Result<Fetched, String> {
+    schema_at(UPSTREAM_PATH, ID_1_0)
+}
+
+/// The draft that follows 1.0. Read for `--draft`, never for a baseline.
+pub fn draft_schema_json() -> Result<Fetched, String> {
+    schema_at(DRAFT_PATH, ID_DRAFT)
+}
+
+/// Resolves the newest commit touching `path`, then reads the file at exactly
+/// that commit, so the recorded SHA always describes the recorded text.
+fn schema_at(path: &str, id: &str) -> Result<Fetched, String> {
     let commits = get(&format!(
-        "https://api.github.com/repos/{UPSTREAM_REPO}/commits?path={UPSTREAM_PATH}&per_page=1"
+        "https://api.github.com/repos/{UPSTREAM_REPO}/commits?path={path}&per_page=1"
     ))?;
     let commits: serde_json::Value = serde_json::from_str(&commits)
         .map_err(|e| format!("GitHub returned a commit list that is not JSON: {e}"))?;
     let head = commits
         .get(0)
-        .ok_or_else(|| format!("no commits found for {UPSTREAM_PATH} in {UPSTREAM_REPO}"))?;
+        .ok_or_else(|| format!("no commits found for {path} in {UPSTREAM_REPO}"))?;
     let commit = head
         .get("sha")
         .and_then(|v| v.as_str())
@@ -41,16 +52,15 @@ pub fn schema_json() -> Result<Fetched, String> {
         .unwrap_or("")
         .to_string();
 
-    let url = format!("https://raw.githubusercontent.com/{UPSTREAM_REPO}/{commit}/{UPSTREAM_PATH}");
+    let url = format!("https://raw.githubusercontent.com/{UPSTREAM_REPO}/{commit}/{path}");
     let text = get(&url)?;
-    looks_like_schema(&text)
-        .map_err(|why| format!("{url} did not return {UPSTREAM_PATH}: {why}"))?;
+    looks_like_schema(&text, id).map_err(|why| format!("{url} did not return {path}: {why}"))?;
 
     Ok(Fetched {
         text,
         source: Source {
             repo: UPSTREAM_REPO.to_string(),
-            path: UPSTREAM_PATH.to_string(),
+            path: path.to_string(),
             commit,
             commit_date,
             fetched_at: today_utc(),
@@ -66,7 +76,7 @@ pub fn schema_json() -> Result<Fetched, String> {
 /// CDN in front of raw.githubusercontent.com, or a body that was cut short
 /// before the interesting part. Left alone, all of those reach `extract()`,
 /// which reports the far less helpful "`enum EventType` not found".
-fn looks_like_schema(text: &str) -> Result<(), String> {
+fn looks_like_schema(text: &str, id: &str) -> Result<(), String> {
     let head = text.trim_start();
     if head.is_empty() {
         return Err("the response body was empty".to_string());
@@ -78,9 +88,9 @@ fn looks_like_schema(text: &str) -> Result<(), String> {
             snippet(head)
         ));
     }
-    if !text.contains("https://ag-ui.com/spec/1.0/schema.json") || !text.contains("\"$defs\"") {
+    if !text.contains(id) || !text.contains("\"$defs\"") {
         return Err(format!(
-            "the response does not contain the AG-UI 1.0 schema identity and definitions \
+            "the response does not contain the schema identity and definitions for {id} \
              (or it was truncated). {} bytes, starting: {}",
             text.len(),
             snippet(head)
@@ -167,39 +177,57 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{civil_from_days, looks_like_schema};
+    use super::{ID_1_0, ID_DRAFT, civil_from_days, looks_like_schema};
 
     #[test]
     fn accepts_the_frozen_schema() {
         let source = include_str!("../../../crates/ag-ui/src/protocol/schema-1.0.json");
-        assert!(looks_like_schema(source).is_ok());
+        assert!(looks_like_schema(source, ID_1_0).is_ok());
+    }
+
+    /// The draft is a different file; 1.0 served in its place is not it.
+    #[test]
+    fn rejects_the_frozen_schema_where_the_draft_was_asked_for() {
+        let source = include_str!("../../../crates/ag-ui/src/protocol/schema-1.0.json");
+        let error = looks_like_schema(source, ID_DRAFT).unwrap_err();
+        assert!(error.contains(ID_DRAFT), "{error}");
     }
 
     #[test]
     fn rejects_an_html_error_page() {
-        let error =
-            looks_like_schema("<!DOCTYPE html>\n<title>404 Not Found</title>\n").unwrap_err();
+        let error = looks_like_schema("<!DOCTYPE html>\n<title>404 Not Found</title>\n", ID_1_0)
+            .unwrap_err();
         assert!(error.contains("markup, not JSON Schema"), "{error}");
         assert!(error.contains("<!DOCTYPE html>"), "{error}");
     }
 
     #[test]
     fn rejects_a_proxy_interstitial_with_leading_whitespace() {
-        let error =
-            looks_like_schema("\n\n  <html><body>Sign in to continue</body></html>").unwrap_err();
+        let error = looks_like_schema(
+            "\n\n  <html><body>Sign in to continue</body></html>",
+            ID_1_0,
+        )
+        .unwrap_err();
         assert!(error.contains("markup, not JSON Schema"), "{error}");
     }
 
     #[test]
     fn rejects_an_empty_body() {
-        assert!(looks_like_schema("   \n  ").unwrap_err().contains("empty"));
+        assert!(
+            looks_like_schema("   \n  ", ID_1_0)
+                .unwrap_err()
+                .contains("empty")
+        );
     }
 
     /// A body cut short before the definitions is not a usable schema.
     #[test]
     fn rejects_a_response_truncated_before_definitions() {
-        let error =
-            looks_like_schema("{\"$id\":\"https://ag-ui.com/spec/1.0/schema.json\"}").unwrap_err();
+        let error = looks_like_schema(
+            "{\"$id\":\"https://ag-ui.com/spec/1.0/schema.json\"}",
+            ID_1_0,
+        )
+        .unwrap_err();
         assert!(error.contains("schema identity and definitions"), "{error}");
     }
 

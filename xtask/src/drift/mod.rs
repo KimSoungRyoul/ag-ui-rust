@@ -1,20 +1,26 @@
 //! Protocol drift detection between the frozen AG-UI 1.0 JSON Schema and this
-//! repo's Rust event types.
+//! repo's Rust protocol types.
 //!
-//! Why this exists: the Rust event types are hand-written. Nothing in the
+//! Why this exists: the Rust protocol types are hand-written. Nothing in the
 //! compiler links them to the protocol schema, so upstream can
 //! add an event type and this SDK will keep building, keep passing its tests,
 //! and silently not speak the protocol any more. That is exactly how the
 //! previous community SDK fell ten event types behind without anyone noticing.
 //!
-//! The link is this check:
+//! The link is this check. It compares the event union (this file) and every
+//! other `$defs` shape — capabilities, messages, content parts, outcomes,
+//! tools, patches ([`shapes`]):
 //!
-//! * `drift-check` — offline, deterministic, the CI gate. Compares the vendored
-//!   baseline in `xtask/baseline/` against the Rust source, read as text.
-//! * `drift-check --local` — compares the schema in this checkout with the
-//!   reviewed baseline, including shape signatures, then checks the Rust types.
+//! * `drift-check` — offline, deterministic. Compares the vendored baseline in
+//!   `xtask/baseline/` against the Rust source, read as text.
+//! * `drift-check --local` — the CI gate, and offline too. Compares the schema
+//!   in this checkout with the reviewed baseline, including shape signatures,
+//!   then checks the Rust types; everything `drift-check` checks, and more.
 //! * `drift-check --upstream` — additionally asks GitHub whether the baseline
 //!   itself has gone stale. A failed freshness check exits as unavailable.
+//! * `drift-check --draft` — additionally reports what upstream's unreleased
+//!   `spec/draft/` schema adds to 1.0. Informational: never changes the exit
+//!   code, except that a failed fetch exits as unavailable.
 //! * `drift-check --refresh` — re-captures the baseline. How a human accepts an
 //!   upstream protocol change.
 
@@ -22,6 +28,7 @@ pub mod baseline;
 pub mod fetch;
 pub mod rust_src;
 pub mod schema;
+pub mod shapes;
 pub mod text;
 pub mod upstream;
 
@@ -34,6 +41,9 @@ use rust_src::{RustEvent, RustSurface};
 const BASELINE: &str = "xtask/baseline/events.json";
 /// Where the Rust event types live, relative to the repo root.
 const EVENT_DIR: &str = "crates/ag-ui/src/event";
+/// Where the other protocol types live: the crate root, read flat, so the
+/// client and server runtimes in its subdirectories stay out of it.
+const TYPES_DIR: &str = "crates/ag-ui/src";
 /// The AG-UI 1.0 schema vendored with the standalone SDK.
 const LOCAL_SCHEMA: &str = "crates/ag-ui/src/protocol/schema-1.0.json";
 
@@ -47,6 +57,8 @@ pub struct Args {
     pub local: bool,
     /// Also check whether the vendored baseline is stale (needs network).
     pub upstream: bool,
+    /// Also report what the upstream draft adds to 1.0 (needs network).
+    pub draft: bool,
     /// Re-capture the baseline from upstream (needs network).
     pub refresh: bool,
 }
@@ -116,6 +128,17 @@ pub fn run(args: Args) -> Result<u8, String> {
 
     let report = compare(&baseline, &rust);
     print!("{}", render(&baseline, &rust, &report));
+
+    // Everything that is not an event: the crate root's protocol types, plus
+    // the event module, which declares the enums some shapes are made of.
+    let types_dir = root.join(TYPES_DIR);
+    let types = rust_src::scan_types(&[(&types_dir, false), (&event_dir, true)], &root)?;
+    let shape_report = shapes::compare(&baseline.shapes, &types);
+    print!(
+        "{}",
+        shapes::render(&shape_report, &format!("{TYPES_DIR}/*.rs, {EVENT_DIR}"))
+    );
+
     if !pinned_changes.is_empty() {
         println!("\nLOCAL SCHEMA DIFFERS FROM REVIEWED BASELINE");
         for change in &pinned_changes {
@@ -128,6 +151,7 @@ pub fn run(args: Args) -> Result<u8, String> {
 
     // A new schema shape must not silently weaken the local schema check.
     let mut exit = if report.is_clean()
+        && shape_report.is_clean()
         && pinned_changes.is_empty()
         && (!args.local || report.warnings.is_empty())
     {
@@ -152,6 +176,19 @@ pub fn run(args: Args) -> Result<u8, String> {
                 ));
             }
         }
+    }
+
+    if args.draft {
+        println!();
+        let draft = fetch::draft_schema_json()
+            .and_then(|fetched| {
+                let extracted = schema::extract_as(&fetched.text, schema::ID_DRAFT)?;
+                Ok(Baseline::from_upstream(&extracted, fetched.source))
+            })
+            .map_err(|e| {
+                format!("the draft report could not run (the comparison above still stands): {e}")
+            })?;
+        print!("{}", render_draft(&baseline, &draft));
     }
 
     Ok(exit)
@@ -231,6 +268,12 @@ fn check_upstream(baseline: &Baseline) -> Result<Freshness, String> {
 
 /// Human-readable differences between two snapshots of the schema surface.
 fn diff_baselines(old: &Baseline, new: &Baseline) -> Vec<String> {
+    diff_surfaces(old, new, "upstream")
+}
+
+/// [`diff_baselines`], saying where the newer snapshot came from: `upstream`,
+/// or `in the draft` for `--draft`.
+fn diff_surfaces(old: &Baseline, new: &Baseline, place: &str) -> Vec<String> {
     let mut out = Vec::new();
     if old.root_signature != new.root_signature {
         out.push(format!(
@@ -259,12 +302,12 @@ fn diff_baselines(old: &Baseline, new: &Baseline) -> Vec<String> {
     for field in &new.base_event_fields {
         match old.base_event_fields.iter().find(|f| f.name == field.name) {
             None => out.push(format!(
-                "~ BaseEvent.{} was added upstream ({})",
+                "~ BaseEvent.{} was added {place} ({})",
                 field.name,
                 optionality(field.required)
             )),
             Some(was) if was.required != field.required => out.push(format!(
-                "~ BaseEvent.{} is now {} upstream (was {})",
+                "~ BaseEvent.{} is now {} {place} (was {})",
                 field.name,
                 optionality(field.required),
                 optionality(was.required)
@@ -274,17 +317,17 @@ fn diff_baselines(old: &Baseline, new: &Baseline) -> Vec<String> {
     }
     for field in &old.base_event_fields {
         if !new.base_event_fields.iter().any(|f| f.name == field.name) {
-            out.push(format!("~ BaseEvent.{} was removed upstream", field.name));
+            out.push(format!("~ BaseEvent.{} was removed {place}", field.name));
         }
     }
     for event in &new.event_types {
         if !old.event_types.contains(event) {
-            out.push(format!("+ {event} was added upstream"));
+            out.push(format!("+ {event} was added {place}"));
         }
     }
     for event in &old.event_types {
         if !new.event_types.contains(event) {
-            out.push(format!("- {event} was removed upstream"));
+            out.push(format!("- {event} was removed {place}"));
         }
     }
     for event in &new.events {
@@ -297,13 +340,13 @@ fn diff_baselines(old: &Baseline, new: &Baseline) -> Vec<String> {
         for field in &event.fields {
             match before.fields.iter().find(|f| f.name == field.name) {
                 None => out.push(format!(
-                    "~ {}.{} was added upstream ({})",
+                    "~ {}.{} was added {place} ({})",
                     event.event_type,
                     field.name,
                     optionality(field.required)
                 )),
                 Some(was) if was.required != field.required => out.push(format!(
-                    "~ {}.{} is now {} upstream (was {})",
+                    "~ {}.{} is now {} {place} (was {})",
                     event.event_type,
                     field.name,
                     optionality(field.required),
@@ -315,10 +358,64 @@ fn diff_baselines(old: &Baseline, new: &Baseline) -> Vec<String> {
         for field in &before.fields {
             if !event.fields.iter().any(|f| f.name == field.name) {
                 out.push(format!(
-                    "~ {}.{} was removed upstream",
+                    "~ {}.{} was removed {place}",
                     event.event_type, field.name
                 ));
             }
+        }
+    }
+    // A shape added or removed whole is already a `$defs` line above; these
+    // say what moved inside the ones on both sides.
+    for (name, shape) in &new.shapes {
+        let Some(before) = old.shapes.get(name) else {
+            continue;
+        };
+        for field in &shape.fields {
+            match before.fields.iter().find(|f| f.name == field.name) {
+                None => out.push(format!(
+                    "~ {name}.{} was added {place} ({})",
+                    field.name,
+                    optionality(field.required)
+                )),
+                Some(was) if was.required != field.required => out.push(format!(
+                    "~ {name}.{} is now {} {place} (was {})",
+                    field.name,
+                    optionality(field.required),
+                    optionality(was.required)
+                )),
+                Some(was) if was.kind != field.kind => out.push(format!(
+                    "~ {name}.{} is now {} {place} (was {})",
+                    field.name,
+                    field.kind.as_deref().unwrap_or("?"),
+                    was.kind.as_deref().unwrap_or("?")
+                )),
+                Some(_) => {}
+            }
+        }
+        for field in &before.fields {
+            if !shape.fields.iter().any(|f| f.name == field.name) {
+                out.push(format!("~ {name}.{} was removed {place}", field.name));
+            }
+        }
+        let members = |shape: &shapes::Shape| {
+            shape
+                .union
+                .iter()
+                .flat_map(|union| union.members.iter().map(|member| member.tag.clone()))
+                .collect::<Vec<_>>()
+        };
+        let (was, now) = (members(before), members(shape));
+        for tag in now.iter().filter(|tag| !was.contains(tag)) {
+            out.push(format!("~ {name} member `{tag}` was added {place}"));
+        }
+        for tag in was.iter().filter(|tag| !now.contains(tag)) {
+            out.push(format!("~ {name} member `{tag}` was removed {place}"));
+        }
+        for value in shape.values.iter().filter(|v| !before.values.contains(v)) {
+            out.push(format!("~ {name} value `{value}` was added {place}"));
+        }
+        for value in before.values.iter().filter(|v| !shape.values.contains(v)) {
+            out.push(format!("~ {name} value `{value}` was removed {place}"));
         }
     }
     out
@@ -364,6 +461,17 @@ struct FieldDelta {
 
 impl FieldDelta {
     fn between(upstream: &[baseline::Field], rust: &[rust_src::RustField]) -> Self {
+        Self::between_with(upstream, rust, &rust_wire_kind)
+    }
+
+    /// [`FieldDelta::between`], placing Rust types on the wire with `kind`
+    /// instead of the fixed table — the shape comparison also knows every
+    /// struct and enum it scanned.
+    fn between_with(
+        upstream: &[baseline::Field],
+        rust: &[rust_src::RustField],
+        kind: &dyn Fn(&str) -> Option<String>,
+    ) -> Self {
         Self {
             missing: upstream
                 .iter()
@@ -387,7 +495,7 @@ impl FieldDelta {
                 .filter_map(|field| {
                     let expected = field.kind.as_ref()?;
                     let found = rust.iter().find(|candidate| candidate.name == field.name)?;
-                    let actual = rust_wire_kind(&found.ty)?;
+                    let actual = kind(&found.ty)?;
                     (actual != *expected).then(|| (field.name.clone(), expected.clone(), actual))
                 })
                 .collect(),
@@ -396,7 +504,7 @@ impl FieldDelta {
                 .filter_map(|field| {
                     let expected = field.kind.as_ref()?;
                     let found = rust.iter().find(|candidate| candidate.name == field.name)?;
-                    rust_wire_kind(&found.ty)
+                    kind(&found.ty)
                         .is_none()
                         .then(|| (field.name.clone(), expected.clone(), found.ty.clone()))
                 })
@@ -422,7 +530,9 @@ impl FieldDelta {
     }
 }
 
-fn rust_wire_kind(ty: &str) -> Option<String> {
+/// A Rust type with `Option<>`/`Box<>` and whitespace taken off, so the name
+/// that decides its wire kind is what is left.
+fn unwrapped(ty: &str) -> String {
     let ty = ty.trim().replace(char::is_whitespace, "");
     let mut name = ty.as_str();
     while let Some(inner) = name
@@ -432,7 +542,23 @@ fn rust_wire_kind(ty: &str) -> Option<String> {
     {
         name = inner;
     }
-    if name.starts_with("Vec<") || name.ends_with("::Patch") || name == "Patch" {
+    name.to_owned()
+}
+
+/// [`unwrapped`], without a module path: the name a type was declared under.
+fn bare_type(ty: &str) -> String {
+    let name = unwrapped(ty);
+    name.rsplit("::").next().unwrap_or(&name).to_owned()
+}
+
+fn rust_wire_kind(ty: &str) -> Option<String> {
+    let name = unwrapped(ty);
+    let name = name.as_str();
+    if name.starts_with("Vec<")
+        || name.ends_with("::Patch")
+        || name == "Patch"
+        || name == "JsonPatch"
+    {
         return Some("array".into());
     }
     if name.starts_with("BTreeMap<") || name.starts_with("HashMap<") || name.starts_with("Map<") {
@@ -453,8 +579,9 @@ fn rust_wire_kind(ty: &str) -> Option<String> {
         | "ReasoningEncryptedValueSubtype"
         | "ToolResultRole" => "string",
         "bool" => "boolean",
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "usize" => "integer",
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => "integer",
+        // What the schema spells `"type": "integer", "minimum": 0`.
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => "integer>=0",
         "f32" | "f64" | "Number" => "number",
         "Value" => "any",
         "JsonObject" | "RunAgentInput" | "RunOutcome" | "SubagentOutcome" | "TokenUsage"
@@ -822,6 +949,57 @@ fn render_upstream(baseline: &Baseline, freshness: &Freshness) -> String {
     out
 }
 
+/// What the unreleased draft adds to the baseline. Informational: the draft
+/// is not normative, so this never fails anything.
+fn render_draft(baseline: &Baseline, draft: &Baseline) -> String {
+    let mut out = format!(
+        "DRAFT — {} (informational)\n  {}@{} ({}), against the 1.0 baseline\n",
+        draft.source.path,
+        draft.source.repo,
+        short(&draft.source.commit),
+        draft.source.commit_date
+    );
+    let changes = diff_surfaces(baseline, draft, "in the draft");
+    // The per-definition fingerprints only say *that* a definition moved; the
+    // lines that say *how* come first, the fingerprints as one list after.
+    let (defs, lines): (Vec<_>, Vec<_>) = changes
+        .iter()
+        .partition(|line| line.get(2..).is_some_and(|rest| rest.starts_with("$defs.")));
+    if changes.is_empty() {
+        out.push_str("\n  The draft does not differ from the 1.0 baseline.\n");
+        return out;
+    }
+    if !lines.is_empty() {
+        out.push_str(&format!(
+            "\n  What a 1.1 implementation would take on — {}:\n\n",
+            lines.len()
+        ));
+        for line in &lines {
+            out.push_str(&format!("    {line}\n"));
+        }
+    }
+    for (mark, verb) in [('~', "changed"), ('+', "added"), ('-', "removed")] {
+        let names = defs
+            .iter()
+            .filter(|line| line.starts_with(mark))
+            .filter_map(|line| line.get(2..)?.strip_prefix("$defs.")?.split(' ').next())
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            out.push('\n');
+            out.push_str(&text::wrap(
+                &format!("$defs {verb}: {}", names.join(", ")),
+                "  ",
+                80,
+            ));
+        }
+    }
+    out.push_str(
+        "\n  Not a failure: the draft is not normative, and this report never changes the\n  \
+         exit code.\n",
+    );
+    out
+}
+
 /// Prints how the extractor read what upstream did not spell out.
 ///
 /// Only where a human is deciding something: accepting a refresh, or reading a
@@ -929,6 +1107,7 @@ mod tests {
             events,
             root_signature: String::new(),
             schema_signatures: std::collections::BTreeMap::new(),
+            shapes: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1246,6 +1425,92 @@ mod tests {
                 "~ BaseEvent.gone was removed upstream",
             ]
         );
+    }
+
+    /// `--local` and `--upstream` must say what moved inside a non-event
+    /// shape, not only that its fingerprint changed.
+    #[test]
+    fn baseline_diff_names_a_shape_field_that_moved() {
+        let source = include_str!("../../../crates/ag-ui/src/protocol/schema-1.0.json");
+        let mut changed: serde_json::Value = serde_json::from_str(source).unwrap();
+        let multi_agent = &mut changed["$defs"]["MultiAgentCapabilities"]["properties"];
+        let subagents = multi_agent["subagents"].take();
+        multi_agent.as_object_mut().unwrap().remove("subagents");
+        multi_agent["subAgents"] = subagents;
+        changed["$defs"]["ExecutionCapabilities"]["properties"]["maxIterations"]
+            .as_object_mut()
+            .unwrap()
+            .remove("minimum");
+        changed["$defs"]["Role"]["enum"]
+            .as_array_mut()
+            .unwrap()
+            .push("critic".into());
+        let provenance = Source {
+            repo: baseline::UPSTREAM_REPO.into(),
+            path: baseline::UPSTREAM_PATH.into(),
+            commit: "working-tree".into(),
+            commit_date: String::new(),
+            fetched_at: "test".into(),
+        };
+        let pinned = Baseline::from_upstream(&schema::extract(source).unwrap(), provenance.clone());
+        let local =
+            Baseline::from_upstream(&schema::extract(&changed.to_string()).unwrap(), provenance);
+        let differences = diff_baselines(&pinned, &local);
+        for expected in [
+            "~ MultiAgentCapabilities.subAgents was added upstream (optional)",
+            "~ MultiAgentCapabilities.subagents was removed upstream",
+            "~ ExecutionCapabilities.maxIterations is now integer upstream (was integer>=0)",
+            "~ Role value `critic` was added upstream",
+            // ...and each still moves its fingerprint, as before.
+            "~ $defs.Role shape changed",
+        ] {
+            assert!(
+                differences.iter().any(|line| line.starts_with(expected)),
+                "{expected}\n{differences:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_draft_report_lists_what_moved_and_never_fails() {
+        let source = include_str!("../../../crates/ag-ui/src/protocol/schema-1.0.json");
+        let one = schema::extract(source).unwrap();
+        let mut draft: serde_json::Value = serde_json::from_str(source).unwrap();
+        draft["$id"] = schema::ID_DRAFT.into();
+        draft["$defs"]["ToolCall"]["properties"]["encryptedValueType"] =
+            serde_json::json!({"type": "string"});
+        draft["$defs"]["ToolCallResultEvent"]["properties"]["error"] =
+            serde_json::json!({"type": "string"});
+        let draft = schema::extract_as(&draft.to_string(), schema::ID_DRAFT).unwrap();
+        let source_of = |path: &str| Source {
+            repo: baseline::UPSTREAM_REPO.into(),
+            path: path.into(),
+            commit: "0123456789abcdef".into(),
+            commit_date: "2026-11-01".into(),
+            fetched_at: "test".into(),
+        };
+        let pinned = Baseline::from_upstream(&one, source_of(baseline::UPSTREAM_PATH));
+        let draft = Baseline::from_upstream(&draft, source_of(baseline::DRAFT_PATH));
+
+        let text = render_draft(&pinned, &draft);
+        assert!(text.contains("DRAFT — spec/draft/schema.json"), "{text}");
+        assert!(
+            text.contains("~ ToolCall.encryptedValueType was added in the draft (optional)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("~ TOOL_CALL_RESULT.error was added in the draft (optional)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("$defs changed: ToolCall, ToolCallResultEvent"),
+            "{text}"
+        );
+        // The draft's own name is not a difference.
+        assert!(!text.contains("root"), "{text}");
+
+        let same = render_draft(&pinned, &pinned);
+        assert!(same.contains("does not differ"), "{same}");
     }
 
     #[test]

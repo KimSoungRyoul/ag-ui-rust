@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use super::shapes::Shape;
+
 /// One wire field, with the schema's requiredness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
@@ -32,5 +34,7 @@ pub struct Upstream {
     /// Stable fingerprints of every normative `$defs` shape, including nested
     /// unions and field types that the Rust text scanner cannot classify.
     pub schema_signatures: BTreeMap<String, String>,
+    /// Every `$defs` entry outside the event union, keyed by name.
+    pub shapes: BTreeMap<String, Shape>,
     pub notes: Vec<String>,
 }

@@ -1,17 +1,34 @@
-//! Reads the frozen AG-UI 1.0 JSON Schema as the normative event surface.
+//! Reads the frozen AG-UI 1.0 JSON Schema as the normative event surface, and
+//! every other `$defs` shape beside it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use super::baseline;
+use super::shapes::{Member, Shape, Union};
 use super::upstream::{Field, Upstream, UpstreamEvent};
 
+/// `$id` of the frozen AG-UI 1.0 schema.
+pub const ID_1_0: &str = "https://ag-ui.com/spec/1.0/schema.json";
+/// `$id` of the unreleased draft that follows it. Same layout, so the same
+/// reader serves both.
+pub const ID_DRAFT: &str = "https://ag-ui.com/spec/draft/schema.json";
+
+/// Definitions that make up the event union itself. The event comparison
+/// owns them; every other `$defs` entry is a shape.
+const EVENT_MACHINERY: &[&str] = &["Event", "EventType", "BaseEvent"];
+
 pub fn extract(text: &str) -> Result<Upstream, String> {
+    extract_as(text, ID_1_0)
+}
+
+/// Reads a schema that must declare `id`.
+pub fn extract_as(text: &str, id: &str) -> Result<Upstream, String> {
     let document: Value = serde_json::from_str(text)
         .map_err(|error| format!("protocol schema is invalid JSON: {error}"))?;
-    if document.get("$id").and_then(Value::as_str) != Some("https://ag-ui.com/spec/1.0/schema.json")
-    {
-        return Err("expected the frozen AG-UI 1.0 schema $id".to_owned());
+    if document.get("$id").and_then(Value::as_str) != Some(id) {
+        return Err(format!("expected the schema $id {id}"));
     }
     if document.get("$ref").and_then(Value::as_str) != Some("#/$defs/Event") {
         return Err("the schema root must reference #/$defs/Event".to_owned());
@@ -89,9 +106,24 @@ pub fn extract(text: &str) -> Result<Upstream, String> {
         ));
     }
     let mut root = document.clone();
-    root.as_object_mut()
-        .expect("a schema with $defs must be an object")
-        .remove("$defs");
+    let root_object = root
+        .as_object_mut()
+        .expect("a schema with $defs must be an object");
+    root_object.remove("$defs");
+    // The identity is checked above, so leaving it out of the fingerprint
+    // loses nothing — and lets the draft's root compare equal to 1.0's when
+    // only its name differs.
+    root_object.remove("$id");
+    let mut machinery = EVENT_MACHINERY
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<BTreeSet<_>>();
+    machinery.extend(events.iter().filter_map(|event| event.schema.clone()));
+    let shapes = defs
+        .iter()
+        .filter(|(name, _)| !machinery.contains(*name))
+        .map(|(name, definition)| Ok((name.clone(), shape(definition, defs)?)))
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
     Ok(Upstream {
         event_types,
         base_fields,
@@ -101,8 +133,114 @@ pub fn extract(text: &str) -> Result<Upstream, String> {
             .iter()
             .map(|(name, shape)| (name.clone(), signature(shape)))
             .collect(),
+        shapes,
         notes: Vec::new(),
     })
+}
+
+/// One non-event definition, read as far as a Rust type can be compared
+/// with it: its own kind, its properties, its union members, its values.
+fn shape(definition: &Value, defs: &serde_json::Map<String, Value>) -> Result<Shape, String> {
+    let has_fields = definition.get("properties").is_some() || definition.get("allOf").is_some();
+    Ok(Shape {
+        kind: wire_kind(definition, defs),
+        fields: if has_fields {
+            fields(definition, defs, &[])?
+                .into_iter()
+                .map(|field| baseline::Field {
+                    name: field.name,
+                    required: field.required,
+                    kind: Some(field.kind),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        union: union(definition, defs),
+        values: definition
+            .get("enum")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+/// A `oneOf` whose branches all name definitions, with the property that
+/// tells them apart: the one every member pins to a string constant.
+fn union(definition: &Value, defs: &serde_json::Map<String, Value>) -> Option<Union> {
+    let names = definition
+        .get("oneOf")?
+        .as_array()?
+        .iter()
+        .map(|branch| {
+            branch
+                .get("$ref")?
+                .as_str()?
+                .strip_prefix("#/$defs/")
+                .map(str::to_owned)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let first = defs.get(names.first()?)?;
+    let candidates = first
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let discriminator = candidates
+        .into_iter()
+        .find(|property| {
+            names.iter().all(|name| {
+                defs.get(name)
+                    .and_then(|member| own_const(member, property, defs))
+                    .is_some()
+            })
+        })
+        .unwrap_or_default();
+    Some(Union {
+        members: names
+            .iter()
+            .map(|name| Member {
+                schema: name.clone(),
+                tag: defs
+                    .get(name)
+                    .and_then(|member| own_const(member, &discriminator, defs))
+                    .unwrap_or_default(),
+            })
+            .collect(),
+        discriminator,
+    })
+}
+
+/// The string constant a definition pins `property` to, looking through
+/// `allOf` only when the definition does not say so itself.
+fn own_const(
+    definition: &Value,
+    property: &str,
+    defs: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    if let Some(constant) = definition
+        .pointer(&format!("/properties/{property}/const"))
+        .and_then(Value::as_str)
+    {
+        return Some(constant.to_owned());
+    }
+    definition
+        .get("allOf")?
+        .as_array()?
+        .iter()
+        .find_map(|part| {
+            let part = match part.get("$ref").and_then(Value::as_str) {
+                Some(reference) => defs.get(reference.strip_prefix("#/$defs/")?)?,
+                None => part,
+            };
+            own_const(part, property, defs)
+        })
 }
 
 /// FNV-1a over a canonical JSON representation. This is a drift fingerprint,
@@ -180,6 +318,15 @@ fn wire_kind(shape: &Value, defs: &serde_json::Map<String, Value>) -> String {
         return format!("unsupported-ref:{reference}");
     }
     if let Some(ty) = shape.get("type").and_then(Value::as_str) {
+        // A count with `minimum: 0` is a different contract from a signed
+        // integer: a Rust `i64` there accepts what the schema rejects.
+        let unsigned = shape
+            .get("minimum")
+            .and_then(Value::as_f64)
+            .is_some_and(|minimum| minimum >= 0.0);
+        if ty == "integer" && unsigned {
+            return "integer>=0".to_owned();
+        }
         return ty.to_owned();
     }
     if let Some(constant) = shape.get("const") {
@@ -305,6 +452,65 @@ mod tests {
         changed["$ref"] = Value::String("#/$defs/RunAgentInput".into());
         let error = extract(&changed.to_string()).unwrap_err();
         assert!(error.contains("schema root"), "{error}");
+    }
+
+    #[test]
+    fn every_non_event_definition_is_read_as_a_shape() {
+        let schema = include_str!("../../../crates/ag-ui/src/protocol/schema-1.0.json");
+        let surface = extract(schema).unwrap();
+        // The event union owns its own definitions.
+        for owned in ["Event", "EventType", "BaseEvent", "RunStartedEvent"] {
+            assert!(!surface.shapes.contains_key(owned), "{owned}");
+        }
+        let multi_agent = &surface.shapes["MultiAgentCapabilities"];
+        assert_eq!(multi_agent.kind, "object");
+        let subagents = multi_agent
+            .fields
+            .iter()
+            .find(|field| field.name == "subagents")
+            .unwrap();
+        assert!(!subagents.required);
+        assert_eq!(subagents.kind.as_deref(), Some("array"));
+
+        // Fields arrive through `allOf`, mixins included.
+        let developer = &surface.shapes["DeveloperMessage"];
+        for name in ["id", "role", "content", "name", "metadata", "subagentRunId"] {
+            assert!(
+                developer.fields.iter().any(|field| field.name == name),
+                "{name}"
+            );
+        }
+
+        let message = surface.shapes["Message"].union.as_ref().unwrap();
+        assert_eq!(message.discriminator, "role");
+        assert_eq!(message.members[0].schema, "DeveloperMessage");
+        assert_eq!(message.members[0].tag, "developer");
+        let patch = surface.shapes["JsonPatchOperation"].union.as_ref().unwrap();
+        assert_eq!(patch.discriminator, "op");
+
+        assert_eq!(surface.shapes["Role"].values.len(), 7);
+        let execution = &surface.shapes["ExecutionCapabilities"];
+        assert!(
+            execution
+                .fields
+                .iter()
+                .any(|field| field.name == "maxIterations"
+                    && field.kind.as_deref() == Some("integer>=0"))
+        );
+    }
+
+    #[test]
+    fn the_draft_is_read_under_its_own_identity_only() {
+        let schema = include_str!("../../../crates/ag-ui/src/protocol/schema-1.0.json");
+        let mut draft: Value = serde_json::from_str(schema).unwrap();
+        draft["$id"] = Value::String(ID_DRAFT.into());
+        let draft = draft.to_string();
+        assert!(extract(&draft).unwrap_err().contains(ID_1_0));
+        let read = extract_as(&draft, ID_DRAFT).unwrap();
+        // Nothing but the name differs, so nothing else may.
+        let one = extract(schema).unwrap();
+        assert_eq!(read.root_signature, one.root_signature);
+        assert_eq!(read.schema_signatures, one.schema_signatures);
     }
 
     #[test]

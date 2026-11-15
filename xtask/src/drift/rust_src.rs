@@ -14,6 +14,10 @@
 //! It also reads the `BaseEvent` envelope on its own. That struct is not an
 //! event type — it is flattened into every payload — so it belongs to none of
 //! the shapes above, and its fields are inherited by every event.
+//!
+//! [`scan_types`] reads the same source more plainly, for everything that is
+//! not an event: every struct and enum, with its serde wire names, so the
+//! capabilities, messages, outcomes, tools and patches can be compared too.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -130,6 +134,7 @@ pub fn scan(dir: &Path, repo_root: &Path) -> Result<RustSurface, String> {
                         rename_all.as_deref(),
                         rename_fields.as_deref(),
                         &rel,
+                        BareVariant::EventTag,
                     );
                     // `type` is a common discriminator, and the event union is
                     // not the only thing that uses it — `SubagentOutcome` is
@@ -255,6 +260,126 @@ pub fn scan(dir: &Path, repo_root: &Path) -> Result<RustSurface, String> {
     })
 }
 
+/// A struct or enum declared in the scanned source.
+#[derive(Debug, Clone)]
+pub struct RustType {
+    pub name: String,
+    /// Repo-relative file it was found in.
+    pub file: String,
+    pub def: RustDef,
+}
+
+#[derive(Debug, Clone)]
+pub enum RustDef {
+    /// Named fields, as they appear on the wire. Empty for a tuple struct.
+    Struct(Vec<RustField>),
+    Enum {
+        /// `#[serde(tag = "...")]`, when the enum is internally tagged.
+        tag: Option<String>,
+        variants: Vec<RustVariant>,
+    },
+}
+
+/// One enum variant, named as it appears on the wire.
+#[derive(Debug, Clone)]
+pub struct RustVariant {
+    pub wire: String,
+    /// The type a newtype variant wraps.
+    pub payload: Option<String>,
+    /// Fields declared inline; `Some(vec![])` for a unit variant, `None` for
+    /// a newtype variant, whose fields are its payload's.
+    pub fields: Option<Vec<RustField>>,
+}
+
+/// Every type [`scan_types`] found, by name.
+#[derive(Debug, Clone, Default)]
+pub struct RustTypes {
+    pub types: Vec<RustType>,
+    /// Repo-relative paths scanned, sorted.
+    pub files: Vec<String>,
+}
+
+impl RustTypes {
+    /// The one type declared under `name`. Two declarations are an error
+    /// rather than a guess: a private helper enum that shares a name with the
+    /// public one would otherwise be compared in its place.
+    pub fn get(&self, name: &str) -> Result<&RustType, String> {
+        let mut found = self.types.iter().filter(|ty| ty.name == name);
+        match (found.next(), found.next()) {
+            (Some(ty), None) => Ok(ty),
+            (None, _) => Err(format!("no struct or enum named `{name}` was found")),
+            (Some(first), Some(second)) => Err(format!(
+                "`{name}` is declared more than once ({} and {})",
+                first.file, second.file
+            )),
+        }
+    }
+}
+
+/// Scans every struct and enum under `dirs`. Each entry says whether to
+/// descend into subdirectories: the crate root is read flat, so the client
+/// and server runtimes beneath it — which declare types of their own — stay
+/// out of a comparison that is about the protocol types.
+pub fn scan_types(dirs: &[(&Path, bool)], repo_root: &Path) -> Result<RustTypes, String> {
+    let mut files = Vec::new();
+    for (dir, recursive) in dirs {
+        if *recursive {
+            collect_rs_files(dir, &mut files)?;
+        } else {
+            collect_flat_rs_files(dir, &mut files)?;
+        }
+    }
+    files.sort();
+    files.dedup();
+
+    let mut types = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let rel = relative(path, repo_root);
+        for item in scan_items(&strip_comments(&blank_lifetimes(&text))) {
+            let def = match item.kind {
+                ItemKind::Struct => RustDef::Struct(
+                    parse_fields(&item.body, container_rename_all(&item.attrs)).fields,
+                ),
+                ItemKind::Enum => {
+                    let args = serde_args(&item.attrs);
+                    let rename_fields = args
+                        .iter()
+                        .find_map(|arg| arg_value(arg, "rename_all_fields"));
+                    let variants = parse_variants(
+                        &item.body,
+                        container_rename_all(&item.attrs).as_deref(),
+                        rename_fields.as_deref(),
+                        &rel,
+                        BareVariant::Verbatim,
+                    );
+                    RustDef::Enum {
+                        tag: args.iter().find_map(|arg| arg_value(arg, "tag")),
+                        variants: variants
+                            .into_iter()
+                            .map(|member| RustVariant {
+                                wire: member.tag,
+                                payload: member.payload,
+                                fields: member.inline_fields,
+                            })
+                            .collect(),
+                    }
+                }
+                ItemKind::Macro | ItemKind::Other => continue,
+            };
+            types.push(RustType {
+                name: item.name,
+                file: rel.clone(),
+                def,
+            });
+        }
+    }
+    Ok(RustTypes {
+        types,
+        files: files.iter().map(|p| relative(p, repo_root)).collect(),
+    })
+}
+
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for entry in entries {
@@ -262,6 +387,17 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
         if path.is_dir() {
             collect_rs_files(&path, out)?;
         } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn collect_flat_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
             out.push(path);
         }
     }
@@ -555,12 +691,22 @@ struct UnionMember {
     file: String,
 }
 
-/// Reads the variants of a `#[serde(tag = "type")]` enum.
+/// How a variant with no `rename` and no container `rename_all` is named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BareVariant {
+    /// SCREAMING_SNAKE, the AG-UI event tag form; see [`parse_variants`].
+    EventTag,
+    /// The variant name itself, which is what serde does.
+    Verbatim,
+}
+
+/// Reads the variants of an enum, usually a `#[serde(tag = "type")]` one.
 fn parse_variants(
     body: &str,
     rename_all: Option<&str>,
     rename_all_fields: Option<&str>,
     file: &str,
+    bare: BareVariant,
 ) -> Vec<UnionMember> {
     let mut out = Vec::new();
     let mut attrs: Vec<String> = Vec::new();
@@ -604,18 +750,25 @@ fn parse_variants(
         }
         // An explicit rename wins; otherwise apply the container rule to the
         // variant name. Serde's own default is the bare variant name, but the
-        // AG-UI wire form is always SCREAMING_SNAKE, so that is what an
-        // unannotated variant is read as rather than reported as drift.
+        // AG-UI event wire form is always SCREAMING_SNAKE, so that is what an
+        // unannotated event variant is read as rather than reported as drift.
         let tag = args
             .iter()
             .find_map(|a| arg_value(a, "rename"))
-            .unwrap_or_else(|| match rename_all {
+            .unwrap_or_else(|| match (rename_all, bare) {
                 // serde applies `rename_all` to the snake_case form of the name.
-                Some(rule) => {
+                (Some(rule), _) => {
                     apply_rename_all(&pascal_to_screaming_snake(&name).to_lowercase(), rule)
                 }
-                None => pascal_to_screaming_snake(&name),
+                (None, BareVariant::EventTag) => pascal_to_screaming_snake(&name),
+                (None, BareVariant::Verbatim) => name.clone(),
             });
+        // A `rename_all` on the variant itself names the fields inside it,
+        // and wins over the container's `rename_all_fields`.
+        let field_rule = args
+            .iter()
+            .find_map(|a| arg_value(a, "rename_all"))
+            .or_else(|| rename_all_fields.map(str::to_string));
 
         let after = line[name.len()..].trim_start();
         let (payload, inline, next) = if after.starts_with('(') {
@@ -634,10 +787,7 @@ fn parse_variants(
             let open = pos + body[pos..line_end].find('{').unwrap_or(0);
             match match_delim(body, open) {
                 Some(close) => {
-                    let parsed = parse_fields(
-                        &body[open + 1..close],
-                        rename_all_fields.map(str::to_string),
-                    );
+                    let parsed = parse_fields(&body[open + 1..close], field_rule);
                     (None, Some(parsed.fields), close + 1)
                 }
                 None => (None, None, line_end + 1),
@@ -1239,6 +1389,132 @@ pub struct TextMessageChunkEvent {
                 ty: "Option<MessageId>".into(),
             }]
         );
+    }
+
+    /// Scans one source file with [`scan_types`].
+    fn scan_types_str(src: &str) -> RustTypes {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+        let dir = std::env::temp_dir().join(format!(
+            "xtask-types-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("types.rs"), src).unwrap();
+        // Read flat, so a type below the root is not seen.
+        std::fs::write(
+            dir.join("nested/hidden.rs"),
+            "pub struct Hidden { pub a: u8 }",
+        )
+        .unwrap();
+        let types = scan_types(&[(dir.as_path(), false)], &dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        types
+    }
+
+    fn variants(types: &RustTypes, name: &str) -> (Option<String>, Vec<RustVariant>) {
+        match &types.get(name).unwrap().def {
+            RustDef::Enum { tag, variants } => (tag.clone(), variants.clone()),
+            RustDef::Struct(_) => panic!("{name} is a struct"),
+        }
+    }
+
+    #[test]
+    fn scan_types_reads_structs_and_enums_with_their_wire_names() {
+        let types = scan_types_str(
+            r#"
+#[serde(rename_all = "camelCase")]
+pub struct MultiAgentCapabilities {
+    #[serde(rename = "subagents", default, skip_serializing_if = "Option::is_none")]
+    pub sub_agents: Option<Vec<SubAgentInfo>>,
+    pub parallel_calls: bool,
+}
+
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Developer,
+    Assistant,
+}
+
+pub enum Subtype {
+    #[serde(rename = "tool-call")]
+    ToolCall,
+    Message,
+}
+
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SubagentOutcome {
+    Success,
+    #[serde(rename_all = "camelCase")]
+    Suspended { interrupt_ids: Option<Vec<String>> },
+}
+
+#[serde(tag = "role", rename_all = "lowercase")]
+pub enum Message {
+    User(UserMessage),
+}
+"#,
+        );
+        assert_eq!(types.files.len(), 1, "{:?}", types.files);
+        assert!(types.get("Hidden").is_err());
+
+        let RustDef::Struct(fields) = &types.get("MultiAgentCapabilities").unwrap().def else {
+            panic!("a struct");
+        };
+        assert_eq!(
+            fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            ["subagents", "parallelCalls"]
+        );
+
+        let (tag, role) = variants(&types, "Role");
+        assert_eq!(tag, None);
+        assert_eq!(
+            role.iter().map(|v| v.wire.as_str()).collect::<Vec<_>>(),
+            ["developer", "assistant"]
+        );
+
+        // serde's default for an unannotated variant is its own name, not the
+        // SCREAMING_SNAKE an event tag would be.
+        let (_, subtype) = variants(&types, "Subtype");
+        assert_eq!(
+            subtype.iter().map(|v| v.wire.as_str()).collect::<Vec<_>>(),
+            ["tool-call", "Message"]
+        );
+
+        // A variant's own `rename_all` names the fields inside it.
+        let (tag, outcome) = variants(&types, "SubagentOutcome");
+        assert_eq!(tag.as_deref(), Some("type"));
+        assert_eq!(outcome[1].wire, "suspended");
+        assert_eq!(
+            outcome[1].fields.as_ref().unwrap()[0].name,
+            "interruptIds",
+            "{outcome:?}"
+        );
+        assert_eq!(outcome[0].fields.as_deref(), Some(&[][..]));
+
+        let (tag, message) = variants(&types, "Message");
+        assert_eq!(tag.as_deref(), Some("role"));
+        assert_eq!(message[0].payload.as_deref(), Some("UserMessage"));
+        assert!(message[0].fields.is_none());
+    }
+
+    #[test]
+    fn a_name_declared_twice_is_ambiguous_not_guessed() {
+        let types = scan_types_str(
+            r#"
+pub struct Wire { pub a: u8 }
+
+fn deserialize() {
+    #[derive(Deserialize)]
+    struct Wire { b: u8 }
+}
+"#,
+        );
+        let error = types.get("Wire").unwrap_err();
+        assert!(error.contains("more than once"), "{error}");
     }
 
     #[test]
