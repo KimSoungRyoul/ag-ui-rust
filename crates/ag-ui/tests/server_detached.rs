@@ -546,6 +546,41 @@ async fn a_continuation_answers_a_call_the_history_made_and_filters_as_configure
     assert_eq!(shown.tool_call_name, "search");
 }
 
+#[tokio::test]
+async fn the_run_continued_is_the_last_one_the_events_start() {
+    // The stream's history: an earlier run, which failed with a subagent
+    // active. Then the run the first driver left.
+    let earlier = [
+        Event::run_started("t", "earlier"),
+        Event::subagent_started("helper", "helper"),
+        Event::run_error("it failed"),
+    ];
+    let left = stopped_mid_run(Runner::new(Stalls), input());
+    let sent = [earlier.as_slice(), left.as_slice()].concat();
+
+    // What the earlier run left active ended with it, and is not this run's
+    // to close.
+    let rest = continued(Runner::new(Finishes), input(), &sent).await;
+    assert_eq!(rest.last(), Some(&Event::run_finished_success("t", "r")));
+    #[cfg(feature = "verify")]
+    ag_ui::server::EventVerifier::new()
+        .replay(&[sent.as_slice(), rest.as_slice()].concat())
+        .expect("two runs in sequence, each well formed");
+
+    // The input names the run that is continued, not one before it.
+    let other = refusal(RunAgentInput::new("t", "earlier"), &sent);
+    assert!(matches!(other, Error::Protocol(_)), "{other}");
+
+    // Between two runs there is none to continue, whichever is named.
+    for named in ["earlier", "r"] {
+        let between = refusal(RunAgentInput::new("t", named), &earlier);
+        let Error::Verification(error) = &between else {
+            panic!("{between}");
+        };
+        assert_eq!(error.rule, ag_ui::server::Rule::RunEnded);
+    }
+}
+
 /// `continue_run`'s error, without the halves an `Ok` would carry.
 fn refusal(input: RunAgentInput, sent: &[Event]) -> Error {
     let refused: Result<(_, EventReceiver)> = Runner::new(Finishes).continue_run(input, sent);

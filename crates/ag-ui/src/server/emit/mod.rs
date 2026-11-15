@@ -273,6 +273,13 @@ impl EventSink {
             self.state_manager.set_published(state);
         }
         match event {
+            // What was sent may hold the runs that came before the one being
+            // continued. Each starts with nothing active; the state a client
+            // holds carries over.
+            Event::RunStarted(_) => {
+                self.terminated = false;
+                self.active_subagents.clear();
+            }
             Event::SubagentStarted(started) => {
                 if !self.active_subagents.contains(&started.subagent_run_id) {
                     self.active_subagents.push(started.subagent_run_id.clone());

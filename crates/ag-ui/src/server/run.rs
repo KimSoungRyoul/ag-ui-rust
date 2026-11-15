@@ -316,9 +316,11 @@ impl<A: Agent> Runner<A> {
     /// already sent.
     ///
     /// `sent` is every event of the run that went out, in order, as stored.
-    /// `input` is the request the run is continued from: the thread and run
-    /// ids of the run, the `messages` it started with, and the state as it
-    /// stands now, which the agent reads as its own.
+    /// It may begin with the runs that came before on the same stream; the
+    /// run continued is the last one it starts. `input` is the request the
+    /// run is continued from: the thread and run ids of the run, the
+    /// `messages` it started with, and the state as it stands now, which
+    /// the agent reads as its own.
     ///
     /// The driver emits no `RUN_STARTED`, and it ends the run with exactly
     /// one terminal event, as any driver does. What it emits continues the
@@ -394,10 +396,11 @@ impl<A: Agent> Runner<A> {
     /// continue:
     ///
     /// - [`Error::Verification`] when `sent` holds no `RUN_STARTED`, when
-    ///   the run it holds already ended, or, with the `verify` feature, when
-    ///   an event in it breaks the ordering rules: the error is that event's;
+    ///   the last run it starts already ended, or, with the `verify`
+    ///   feature, when an event in it breaks the ordering rules: the error
+    ///   is that event's;
     /// - [`Error::Protocol`] when `input` names another thread or run than
-    ///   the `RUN_STARTED` in `sent`.
+    ///   the last `RUN_STARTED` in `sent`.
     pub fn continue_run(
         self,
         input: RunAgentInput,
@@ -414,7 +417,12 @@ impl<A: Agent> Runner<A> {
             sink.replay(event)?;
             minted.note(&input.run_id, event);
             match event {
-                Event::RunStarted(event) if started.is_none() => started = Some(event),
+                // The run to continue is the last one `sent` starts: the
+                // ones before it are the stream's history.
+                Event::RunStarted(event) => {
+                    started = Some(event);
+                    ended = None;
+                }
                 Event::RunFinished(_) | Event::RunError(_) => ended = Some(event.event_type()),
                 _ => {}
             }

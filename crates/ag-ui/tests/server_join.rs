@@ -678,6 +678,77 @@ fn a_finished_subagent_is_restated_only_as_the_parent_of_an_active_one() {
 }
 
 #[tokio::test]
+async fn on_a_stream_of_several_runs_the_progress_is_that_of_the_run_that_is_open() {
+    // One stream, two runs. The first failed with a step and a message open.
+    let stream = [
+        Event::run_started(THREAD, "run-0"),
+        Event::step_started("plan"),
+        Event::text_message_start("a0", TextMessageRole::Assistant),
+        Event::text_message_content("a0", "Half a sent"),
+        Event::run_error("the model went away"),
+        Event::run_started(THREAD, RUN),
+        Event::step_started("plan"),
+        Event::text_message_start("a1", TextMessageRole::Assistant),
+        Event::text_message_content("a1", "Second "),
+        Event::text_message_content("a1", "try."),
+        Event::text_message_end("a1"),
+        Event::step_finished("plan"),
+        Event::run_finished_success(THREAD, RUN),
+    ];
+    let whole = read(&[], &stream, true);
+
+    // Between the runs: the first one, what it abandoned and how it ended.
+    let between = progress_after(&[], &stream[..5]);
+    assert!(between.has_started() && between.has_ended());
+    assert_eq!(between.open().count(), 2);
+    assert_eq!(between.prelude().into_events(), stream[..5]);
+
+    // The next run starts with nothing open.
+    let restarted = progress_after(&[], &stream[..6]);
+    assert!(restarted.has_started() && !restarted.has_ended());
+    assert_eq!(restarted.open().count(), 0);
+    assert_eq!(
+        restarted.prelude().into_events(),
+        [Event::run_started(THREAD, RUN)]
+    );
+
+    // Joined in the second run: its `RUN_STARTED`, the conversation with
+    // what the first run left in it, and what the second has open.
+    let (sent, rest) = stream.split_at(9);
+    let progress = progress_after(&[], sent);
+    let folded = read(&[], sent, false);
+    let prelude = progress.prelude().messages(folded.messages()).into_events();
+    assert_eq!(
+        prelude,
+        [
+            Event::run_started(THREAD, RUN),
+            Event::messages_snapshot(vec![
+                Message::assistant("a0", "Half a sent"),
+                Message::assistant("a1", ""),
+            ]),
+            Event::step_started("plan"),
+            Event::text_message_start("a1", TextMessageRole::Assistant),
+            Event::text_message_content("a1", "Second "),
+        ]
+    );
+    let joined = [prelude.as_slice(), rest].concat();
+    assert_eq!(read(&[], &joined, true).messages(), whole.messages());
+    let (as_thread, end) = read_as_thread(&[], joined).await;
+    assert_eq!(as_thread, whole.messages());
+    assert_eq!(end, RunEnd::Success { result: None });
+
+    // Once it has ended, the prelude ends with its terminal event.
+    let ended = progress_after(&[], &stream);
+    assert_eq!(
+        ended.prelude().into_events(),
+        [
+            Event::run_started(THREAD, RUN),
+            Event::run_finished_success(THREAD, RUN),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_run_that_ended_is_joined_with_its_terminal_event() {
     let questions = vec![Interrupt::new("approve", "tool_approval")];
     let sent = [

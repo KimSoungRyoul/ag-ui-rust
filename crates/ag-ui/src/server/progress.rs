@@ -245,6 +245,12 @@ use crate::{
 /// builds its own events has its verifier. Without the feature nothing is
 /// checked and the fold takes what it is given.
 ///
+/// A stream may carry several runs in sequence. The progress is then that
+/// of the run that is open, or of the last one when none is: a
+/// `RUN_STARTED` after a terminal event begins the next run with nothing
+/// open. The runs before it are history, and what they produced is in the
+/// conversation.
+///
 /// See the [module docs](self) for what a prelude is and how it treats the
 /// messages it is given.
 #[derive(Clone, Debug, Default)]
@@ -425,14 +431,15 @@ impl RunProgress {
         events.into_iter().try_for_each(|event| self.observe(event))
     }
 
-    /// Whether the run has sent its `RUN_STARTED`.
+    /// Whether the run has sent its `RUN_STARTED`: the run that is open, or
+    /// the last one of a stream that carried several.
     pub fn has_started(&self) -> bool {
         self.started.is_some()
     }
 
-    /// Whether the run has sent a terminal event. Nothing follows one but a
-    /// late `RUN_ERROR`, and a client that joins now is sent the prelude
-    /// alone.
+    /// Whether that run has sent a terminal event, so that no run is open.
+    /// A client that joins now is sent the prelude alone, until a
+    /// `RUN_STARTED` begins the next run.
     pub fn has_ended(&self) -> bool {
         !self.ended.is_empty()
     }
@@ -514,6 +521,14 @@ impl RunProgress {
     fn record(&mut self, event: &Event, chunked: bool) {
         match event {
             Event::RunStarted(e) => {
+                // The next run on the same stream. What the run before it
+                // left open ended with it; the ids it used stay in use.
+                if self.has_ended() {
+                    self.started = None;
+                    self.ended.clear();
+                    self.open.clear();
+                    self.subagents.clear();
+                }
                 if let Some(input) = &e.input {
                     self.seen.conversation(&input.messages);
                 }
@@ -1092,8 +1107,9 @@ mod tests {
         Event::text_message_chunk(id.map(MessageId::new), Some(delta.to_owned()))
     }
 
-    /// Runs that open and close everything, in both spellings, with two
-    /// lanes at once, and one that fails with things open.
+    /// Streams that open and close everything, in both spellings, with two
+    /// lanes at once, and one whose first run fails with things open before
+    /// two more runs follow it.
     fn runs() -> Vec<Vec<Event>> {
         let s1 = |event: Event| event.with_subagent_run_id("s1");
         vec![
@@ -1144,7 +1160,18 @@ mod tests {
                 Event::step_started("plan"),
                 Event::text_message_start("m1", TextMessageRole::Assistant),
                 chunk(Some("m2"), "a"),
+                Event::subagent_started("s1", "helper"),
                 Event::run_error("gone"),
+                // The next run on the same stream: nothing is open, and the
+                // names the failed run used are free.
+                Event::run_started("t", "r2"),
+                Event::step_started("plan"),
+                Event::subagent_started("s1", "helper"),
+                Event::subagent_finished_success("s1"),
+                Event::step_finished("plan"),
+                Event::run_finished_success("t", "r2"),
+                Event::run_started("t", "r3"),
+                Event::text_message_start("m1", TextMessageRole::Assistant),
             ],
         ]
     }

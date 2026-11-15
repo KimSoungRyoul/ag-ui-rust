@@ -193,10 +193,12 @@ mod enabled {
         /// else: in another process, or after the one that was driving it
         /// stopped. Replay what was sent, then [`observe`](Self::observe)
         /// what is sent next. The continuation sends no `RUN_STARTED`: the
-        /// one that was sent is among the events replayed, and a second is
-        /// rejected.
+        /// one that was sent is among the events replayed, and a second
+        /// inside the same run is rejected.
         ///
-        /// [`seed`](Self::seed) the history first when the run has one.
+        /// [`seed`](Self::seed) the history first when the run has one. What
+        /// is replayed may also begin with the runs that came before on the
+        /// same stream: the checks then stand in the last run it starts.
         ///
         /// ```
         /// # use ag_ui::{Event, TextMessageRole};
