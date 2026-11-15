@@ -28,3 +28,5 @@ prek run --all-files                          # what CI runs
   hook adds nothing.
 - The prefix only links. Close the issue with `Closes #20` in the pull request.
 - Commits for the upstream copy carry no prefix: `#20` there is another project's issue.
+- Keep a pull request description short: `As-is` and `To-be`, each with a concrete example.
+- Then list the changed files as a tree, one phrase per file, and the checks that were run.
