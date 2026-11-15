@@ -158,17 +158,39 @@ mod binary {
         ));
     }
 
+    /// The numbers the `encode::protobuf` docs state. Upstream generates its
+    /// 1.0 `events.proto` from this schema, one `oneof` arm per event type;
+    /// the pre-1.0 file had 21 of them, and the rest of the crate's 36 are the
+    /// retired `THINKING_*` events.
     #[test]
-    fn the_upstream_proto_covers_only_twenty_one_of_the_thirty_six_events() {
-        assert_eq!(COVERED_EVENT_TYPES.len(), 21);
+    fn the_pre_1_0_proto_list_is_twenty_one_of_the_thirty_one_schema_event_types() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../src/protocol/schema-1.0.json")).unwrap();
+        let in_schema: Vec<&str> = schema["$defs"]["EventType"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap())
+            .collect();
+        assert_eq!(in_schema.len(), 31);
+
+        let retired: Vec<&str> = EventType::ALL
+            .iter()
+            .map(EventType::as_str)
+            .filter(|name| !in_schema.contains(name))
+            .collect();
         assert_eq!(EventType::ALL.len(), 36);
-        assert!(is_covered(EventType::TextMessageStart));
-        assert!(is_covered(EventType::SubagentStarted));
-        // The reason the binary path is a stub.
+        assert_eq!(retired.len(), 5);
+        assert!(
+            retired.iter().all(|name| name.starts_with("THINKING_")),
+            "{retired:?}"
+        );
+
+        assert_eq!(COVERED_EVENT_TYPES.len(), 21);
+        for event_type in COVERED_EVENT_TYPES {
+            assert!(in_schema.contains(&event_type.as_str()), "{event_type}");
+        }
         assert!(!is_covered(EventType::ToolCallResult));
-        assert!(!is_covered(EventType::ReasoningMessageContent));
-        assert!(!is_covered(EventType::ActivitySnapshot));
-        assert!(!is_covered(EventType::ThinkingStart));
     }
 }
 

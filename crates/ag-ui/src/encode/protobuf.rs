@@ -1,14 +1,16 @@
 //! The AG-UI binary transport — **not implemented**.
 //!
-//! This module exists so that a build with the `protobuf` feature can still
-//! negotiate and name the media type, and so the reason it does nothing is
-//! written down next to the code rather than discovered at runtime.
+//! This module exists so that a build with the `protobuf` feature can name the
+//! media type, and so the reason it does nothing is written down next to the
+//! code rather than discovered at runtime. [`ProtobufFormatter`] reports the
+//! binary media type and refuses every event; negotiation never picks that
+//! media type, with or without this feature.
 //!
 //! # Why there is no encoder here
 //!
 //! The binary transport is defined by `events.proto` in the upstream
 //! `@ag-ui/proto` package. When this module was written, its `Event` message
-//! was a `oneof` over **21** of the protocol's **36** event types:
+//! was a `oneof` over **21** of the **36** event types this crate defines:
 //!
 //! `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`,
 //! `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
@@ -25,31 +27,40 @@
 //! `TOOL_CALL_RESULT`. An agent that reasons, reports activities, or returns a
 //! tool result — which is most of them — could not express its stream in that
 //! format. Encoding such a run would have meant silently dropping events, so
-//! this crate declines to encode any.
+//! this crate declined to encode any. [`COVERED_EVENT_TYPES`] still lists the
+//! 21, as a record of that file.
 //!
-//! That reason no longer holds. Upstream now generates `events.proto` from
-//! the AG-UI 1.0 JSON Schema, and its `oneof` covers all 31 1.0 event types;
-//! only the deprecated `THINKING_*` events are absent. Whether to write an encoder
-//! against it is open ([#46](https://github.com/KimSoungRyoul/ag-ui-rust/issues/46));
-//! until then this module, [`COVERED_EVENT_TYPES`] included, still describes
-//! the earlier file.
+//! That reason is gone. Upstream now generates `events.proto` from the AG-UI
+//! 1.0 JSON Schema, and both its `EventType` enum and its `oneof` cover all 31
+//! 1.0 event types. Only the five deprecated `THINKING_*` events, which 1.0
+//! retired, are absent.
 //!
-//! Generating the Rust types would also mean either a `build.rs` that requires
-//! `protoc` on every consumer's machine or checked-in generated code that
-//! drifts from upstream — a cost that decision has to weigh.
+//! The encoder is still not written
+//! ([#46](https://github.com/KimSoungRyoul/ag-ui-rust/issues/46)), for two
+//! reasons:
+//!
+//! - Nothing would ask for it. The stock TypeScript client, `HttpAgent` in
+//!   `@ag-ui/client`, sends `Accept: text/event-stream`, so a server that
+//!   could encode protobuf would still not be asked to.
+//! - It is a second encoding to keep in step with a generated schema, for a
+//!   path nobody has asked this SDK for. Generating the Rust types means
+//!   either a `build.rs` that requires `protoc` on every consumer's machine or
+//!   checked-in generated code to refresh each time upstream regenerates.
+//!
+//! An encoder can be added behind this same feature later without a breaking
+//! change.
 //!
 //! # What to do instead
 //!
 #![cfg_attr(
     feature = "sse",
-    doc = "Use [`sse`](crate::encode::sse), which carries all 36 event types. Revisit"
+    doc = "Use [`sse`](crate::encode::sse), which carries every event type this crate defines."
 )]
 #![cfg_attr(
     not(feature = "sse"),
-    doc = "Use the `sse` module — enable the `sse` feature — which carries all 36",
-    doc = "event types. Revisit"
+    doc = "Use the `sse` module — enable the `sse` feature — which carries every event",
+    doc = "type this crate defines."
 )]
-//! this module with that decision.
 
 use crate::encode::{EventStreamFormatter, PROTOBUF_MEDIA_TYPE};
 use crate::error::{Error, Result};
@@ -57,7 +68,7 @@ use crate::event::{Event, EventType};
 
 /// Placeholder for the binary formatter.
 ///
-/// [`content_type`](EventStreamFormatter::content_type) reports the negotiated
+/// [`content_type`](EventStreamFormatter::content_type) reports the binary
 /// media type, but [`encode`](EventStreamFormatter::encode) always fails with
 /// [`Error::UnsupportedTransport`] — see the [module docs](self) for why.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,7 +121,9 @@ pub const COVERED_EVENT_TYPES: &[EventType] = &[
     EventType::SubagentError,
 ];
 
-/// Whether the binary transport can represent `event_type`.
+/// Whether the pre-1.0 upstream `events.proto` could represent `event_type`:
+/// whether it is in [`COVERED_EVENT_TYPES`]. Every 1.0 event type has a
+/// representation in the 1.0 file.
 pub fn is_covered(event_type: EventType) -> bool {
     COVERED_EVENT_TYPES.contains(&event_type)
 }
