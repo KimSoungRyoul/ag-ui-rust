@@ -148,10 +148,12 @@ impl TransportStream {
     ///
     /// They are delivered as given: nothing is checked against the schema and
     /// nothing is removed, because an [`Event`] holds nothing this version
-    /// does not know. Two things still happen, so a consumer sees one contract
-    /// whichever form fed it: a retired `THINKING_*` event is translated as its
-    /// wire form would be, and a newer declared protocol version is reported.
-    /// Call [`enforced`](Self::enforced) to have every event checked instead.
+    /// does not know. What 1.0 retired is still translated as its wire form
+    /// would be, so a consumer sees one contract whichever form fed it: a
+    /// `THINKING_*` event, and a `binary` content part in a message snapshot,
+    /// an input echo or a tool result. A newer declared protocol version is
+    /// still reported. Call [`enforced`](Self::enforced) to have every event
+    /// checked instead.
     ///
     #[cfg_attr(feature = "server", doc = "```")]
     #[cfg_attr(not(feature = "server"), doc = "```ignore")]

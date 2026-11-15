@@ -193,6 +193,91 @@ async fn a_thread_gets_the_warnings_a_typed_stream_can_cause() {
     assert_eq!(thread.reasoning().len(), 1);
 }
 
+/// The events and the warnings a transport's stream comes to.
+async fn read(transport: Typed) -> (Vec<Event>, Vec<String>) {
+    let stream = transport.run(RunAgentInput::new("t", "r")).await.unwrap();
+    let mut warnings = Vec::new();
+    let events = stream
+        .into_events(|warning| warnings.push(warning))
+        .map(Result::unwrap)
+        .collect()
+        .await;
+    (events, warnings)
+}
+
+#[tokio::test]
+async fn a_typed_stream_translates_a_retired_binary_part_as_the_wire_does() {
+    let snapshot: Event = serde_json::from_value(json!({
+        "type": "MESSAGES_SNAPSHOT",
+        "messages": [{"id": "u1", "role": "user", "content": [
+            {"type": "text", "text": "look"},
+            {"type": "binary", "mimeType": "image/png", "url": "https://example.com/a.png"},
+            // Only an `id`: no 1.0 source can say it, so the boundary drops it.
+            {"type": "binary", "mimeType": "video/mp4", "id": "upload-7"}
+        ]}]
+    }))
+    .unwrap();
+    let result: Event = serde_json::from_value(json!({
+        "type": "TOOL_CALL_RESULT", "messageId": "t1", "toolCallId": "c1",
+        "content": [
+            {"type": "binary", "mimeType": "text/csv", "url": "https://example.com/rows.csv"}
+        ]
+    }))
+    .unwrap();
+    let mut echo = Event::run_started("t", "r");
+    let Event::RunStarted(started) = &mut echo else {
+        unreachable!()
+    };
+    let mut input = RunAgentInput::new("t", "r");
+    input.messages = serde_json::from_value(json!([{"id": "u0", "role": "user", "content": [
+        {"type": "binary", "mimeType": "audio/wav", "data": "UklGRg=="}
+    ]}]))
+    .unwrap();
+    started.input = Some(Box::new(input));
+    let script = [
+        echo,
+        snapshot,
+        result,
+        Event::run_finished_success("t", "r"),
+    ];
+
+    // The typed lane and the wire lane agree, event for event and warning for
+    // warning.
+    let (typed, typed_warnings) = read(Typed::new(script.clone())).await;
+    let (wire, wire_warnings) = read(Typed::new(script.clone()).enforced()).await;
+    assert_eq!(typed, wire);
+    assert_eq!(typed_warnings, wire_warnings);
+    assert_ne!(
+        typed, script,
+        "the retired parts must not arrive as they were"
+    );
+
+    assert_eq!(
+        typed_warnings,
+        [
+            "translated retired binary content part at /input/messages/0/content/0 to audio",
+            "translated retired binary content part at /messages/0/content/1 to image",
+            "unrecognised union member \"binary\" at /messages/0/content/2",
+            "translated retired binary content part at /content/0 to document",
+        ]
+    );
+    let delivered = serde_json::to_value(&typed).unwrap();
+    assert_eq!(
+        delivered[0]["input"]["messages"][0]["content"][0]["type"],
+        "audio"
+    );
+    assert_eq!(delivered[1]["messages"][0]["content"][1]["type"], "image");
+    assert_eq!(
+        delivered[1]["messages"][0]["content"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(delivered[2]["content"][0]["type"], "document");
+    // An event that carries nothing retired is not touched at all.
+    assert_eq!(typed[3], script[3]);
+}
+
 #[tokio::test]
 async fn into_json_is_what_a_proxy_forwards() {
     // Wire JSON comes back untouched, unknown fields included.

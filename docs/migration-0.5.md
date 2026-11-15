@@ -345,9 +345,10 @@ These are on `main` and not yet in a published version.
   A transport that returned typed events replaces `Ok(boxed_stream(events))`, or
   `Ok(Box::pin(events) as EventStream)`, with `Ok(TransportStream::typed(events))`. Such
   events used to be serialized, walked against the schema and deserialized again, one by
-  one. They are now delivered as given, except that a retired `THINKING_*` event is still
-  translated and a newer `protocolVersion` still reported, so the warnings a typed stream
-  can cause still reach a `Thread`. `TransportStream::typed(events).enforced()` restores
+  one. They are now delivered as given, with what 1.0 retired still translated as it is on
+  the wire (a `THINKING_*` event, and an event that carries a `binary` content part) and a
+  newer `protocolVersion` still reported, so the warnings a typed stream can cause still
+  reach a `Thread`. `TransportStream::typed(events).enforced()` restores
   the full check, and `ReplayTransport` does that, so tests written against it behave as
   before. A caller of `transport.run_raw(input)` writes
   `transport.run(input).await?.into_json()`; a caller that read typed events from

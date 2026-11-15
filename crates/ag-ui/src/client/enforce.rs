@@ -20,8 +20,8 @@ use futures_core::Stream;
 use futures_util::StreamExt;
 use serde_json::Value;
 
-use crate::Event;
 use crate::client::error::{Error, Result};
+use crate::{Event, InputContent, Message, ToolContent, UserContent};
 
 /// What the boundary hands on: an event, or a warning about something it
 /// removed or translated.
@@ -156,9 +156,10 @@ where
 }
 
 /// Typed events under the same contract as [`checked`], minus the schema
-/// walk: an `Event` holds nothing to remove. A retired `THINKING_*` event
-/// still takes the wire path, so there is one translation, and a newer
-/// declared protocol version is still reported.
+/// walk: an `Event` holds nothing to remove. What 1.0 retired still takes the
+/// wire path, so there is one translation: a `THINKING_*` event, and an event
+/// carrying a `binary` content part. A newer declared protocol version is
+/// still reported.
 pub(crate) fn typed<S>(events: S) -> impl Stream<Item = Result<Checked>>
 where
     S: Stream<Item = Result<Event>>,
@@ -204,7 +205,8 @@ impl<S> Boundary<S> {
         }
     }
 
-    /// Hands on one typed event as it is, unless 1.0 retired it.
+    /// Hands on one typed event as it is, unless it is, or carries, something
+    /// 1.0 retired.
     fn typed(&mut self, event: Event) {
         let mut warnings = Vec::new();
         if matches!(event, Event::RunStarted(_)) {
@@ -212,7 +214,7 @@ impl<S> Boundary<S> {
             self.delivered.clear();
             self.legacy = Legacy::default();
         }
-        if !event.is_deprecated() {
+        if !event.is_deprecated() && !carries_legacy_content(&event) {
             note_version(&event, &mut warnings);
             self.warn(warnings);
             self.out.push_back(Ok(Checked::Event(event)));
@@ -254,6 +256,39 @@ impl<S> Boundary<S> {
     fn fail(&mut self, error: Error) {
         self.out.push_back(Err(error));
         self.done = true;
+    }
+}
+
+/// Whether a typed event holds a retired `binary` content part in one of the
+/// places the wire path translates it: the messages of `MESSAGES_SNAPSHOT`
+/// and of the `RUN_STARTED` input echo, and the content of `TOOL_CALL_RESULT`.
+fn carries_legacy_content(event: &Event) -> bool {
+    let binary = |parts: &[InputContent]| {
+        parts
+            .iter()
+            .any(|part| matches!(part, InputContent::Binary(_)))
+    };
+    let in_messages = |messages: &[Message]| {
+        messages.iter().any(|message| match message {
+            Message::User(user) => {
+                matches!(&user.content, UserContent::Parts(parts) if binary(parts))
+            }
+            Message::Tool(tool) => {
+                matches!(&tool.content, ToolContent::Parts(parts) if binary(parts))
+            }
+            _ => false,
+        })
+    };
+    match event {
+        Event::MessagesSnapshot(snapshot) => in_messages(&snapshot.messages),
+        Event::RunStarted(started) => started
+            .input
+            .as_ref()
+            .is_some_and(|input| in_messages(&input.messages)),
+        Event::ToolCallResult(result) => {
+            matches!(&result.content, ToolContent::Parts(parts) if binary(parts))
+        }
+        _ => false,
     }
 }
 
