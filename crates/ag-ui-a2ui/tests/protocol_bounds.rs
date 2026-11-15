@@ -266,3 +266,190 @@ fn a_data_model_holds_a_bounded_number_of_slots_no_message_wrote() {
         assert_eq!(held(&processor), 60_000, "{version}: nothing applied");
     }
 }
+
+/// A surface of `version` on its basic catalog, with one Text, after
+/// `updates` to its data model.
+fn surface_after(version: A2uiVersion, updates: &[AgentMessage]) -> SurfaceState {
+    let catalog = Catalog::basic_for(version);
+    let mut store = SurfaceStore::new();
+    let mut messages = vec![
+        AgentMessage::create_surface("s", catalog.catalog_id.clone()),
+        AgentMessage::update_components(
+            "s",
+            vec![Component::new("root", "Text").with("text", json!("hi"))],
+        ),
+    ];
+    messages.extend(updates.iter().cloned());
+    for message in messages {
+        store.apply(&message.with_version(version)).unwrap();
+    }
+    store.get("s").unwrap().clone()
+}
+
+/// The replay of `surface`, applied on a store and, as JSON, on a processor
+/// that holds nothing: each must hold `surface` again. Gives the replay as
+/// JSON.
+fn replays(surface: &SurfaceState) -> Vec<Value> {
+    let version = surface.spoken_version();
+    let replay = surface.replay();
+    let mut store = SurfaceStore::new();
+    for message in &replay {
+        store.apply(message).unwrap();
+    }
+    assert_eq!(store.get("s"), Some(surface));
+
+    let wire: Vec<Value> = replay
+        .iter()
+        .map(|message| serde_json::to_value(message).unwrap())
+        .collect();
+    let mut processor = MessageProcessor::new();
+    processor.register(Catalog::basic_for(version)).unwrap();
+    for message in &wire {
+        if let Err(rejection) = processor.process(message) {
+            panic!("{version}: {message}: {}", rejection.error);
+        }
+    }
+    assert_eq!(
+        processor.surfaces().get("s").unwrap().data_model,
+        surface.data_model,
+        "{version}"
+    );
+    wire
+}
+
+/// A list that grew to a far index holds the slots before it undefined. A
+/// replay writes what the model holds, not one message per slot it does not.
+#[test]
+fn a_replay_is_as_large_as_the_values_a_surface_holds() {
+    for version in [A2uiVersion::V0_9, A2uiVersion::V1_0] {
+        let set = |path: &str, value: Value| AgentMessage::update_data_model("s", path, value);
+        let remove = |path: &str| AgentMessage::remove_data_model_value("s", path);
+        let mut updates = vec![
+            // A list grown to the last index, and two lists in one path.
+            set("/far/10000", json!("last")),
+            set("/grid/3/9000", json!({"cell": [1, null]})),
+            // A list written whole, then a slot removed from it.
+            set("/kept", json!(["a", null, "c", "d"])),
+            remove("/kept/2"),
+            // A list whose last slot is removed.
+            set("/tail", json!([1, 2, 3])),
+            remove("/tail/2"),
+        ];
+        if version.removal_pads() {
+            // Removing past the end pads the list out to the index.
+            updates.push(remove("/padded/9999"));
+        }
+        let surface = surface_after(version, &updates);
+        let held = surface.data_model.undefined_slots();
+        assert!(held > 19_000, "{version}: {held}");
+
+        let wire = replays(&surface);
+        let bytes = serde_json::to_string(&wire).unwrap().len();
+        assert!(wire.len() <= 16, "{version}: {} messages", wire.len());
+        assert!(
+            bytes < 4_000,
+            "{version}: {bytes} bytes for {held} undefined slots"
+        );
+    }
+}
+
+/// Removing the root of a v0.9 data model leaves it undefined, and the
+/// replay says so instead of leaving the empty object a new surface starts
+/// with.
+#[test]
+fn a_removed_root_replays_as_removed() {
+    let removed = surface_after(
+        A2uiVersion::V0_9,
+        &[
+            AgentMessage::update_data_model("s", "/", json!({"a": 1})),
+            AgentMessage::remove_data_model_value("s", "/"),
+        ],
+    );
+    assert_eq!(
+        removed.data_model.root(),
+        &ag_ui_a2ui::ModelValue::Undefined
+    );
+    replays(&removed);
+}
+
+/// A model nests deeper than one message may: a path of up to 256 segments,
+/// and a value under it. Its replay splits the model where a message would
+/// nest past what a processor takes.
+#[test]
+fn a_deep_data_model_replays_as_messages_a_processor_accepts() {
+    let path = |segments: usize| -> String { (0..segments).map(|at| format!("/k{at}")).collect() };
+    let nested = |levels: usize| {
+        let mut value = json!("bottom");
+        for at in 0..levels {
+            value = if at % 2 == 0 {
+                json!([value])
+            } else {
+                json!({"n": value})
+            };
+        }
+        value
+    };
+    for version in [A2uiVersion::V0_9, A2uiVersion::V1_0] {
+        for (segments, levels) in [(60, 0), (60, 40), (200, 40), (256, 46), (10, 46)] {
+            let surface = surface_after(
+                version,
+                &[
+                    AgentMessage::update_data_model("s", path(segments), nested(levels)),
+                    AgentMessage::update_data_model("s", "/side", json!([1, 2])),
+                ],
+            );
+            let wire = replays(&surface);
+            assert!(
+                wire.len() <= 2 + (segments + levels) / 20,
+                "{segments}+{levels}: {}",
+                wire.len()
+            );
+        }
+    }
+}
+
+/// Whatever updates built a model, its replay holds it again.
+#[test]
+fn any_data_model_replays_as_it_is() {
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut roll = |sides: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % sides as u64) as usize
+    };
+    let segments = ["a", "b", "0", "1", "4", "30"];
+    let values = [
+        json!(1),
+        json!(null),
+        json!([1, null, 3]),
+        json!({"x": [0, 1]}),
+        json!([]),
+        json!({}),
+    ];
+    for version in [A2uiVersion::V0_9, A2uiVersion::V1_0] {
+        for _ in 0..60 {
+            let mut updates = Vec::new();
+            for _ in 0..12 {
+                let path: String = (0..1 + roll(4))
+                    .map(|_| format!("/{}", segments[roll(segments.len())]))
+                    .collect();
+                updates.push(if roll(3) == 0 {
+                    AgentMessage::remove_data_model_value("s", path)
+                } else {
+                    AgentMessage::update_data_model("s", path, values[roll(values.len())].clone())
+                });
+            }
+            // Apply what applies; a write through a scalar is refused.
+            let catalog = Catalog::basic_for(version);
+            let mut store = SurfaceStore::new();
+            store
+                .apply(&AgentMessage::create_surface("s", catalog.catalog_id).with_version(version))
+                .unwrap();
+            for update in updates {
+                let _ = store.apply(&update.with_version(version));
+            }
+            replays(store.get("s").unwrap());
+        }
+    }
+}

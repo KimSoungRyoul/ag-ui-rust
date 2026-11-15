@@ -30,12 +30,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::binding::Scope;
+use super::binding::{MAX_VALUE_DEPTH, Scope};
 use super::catalog::{Catalog, ComponentRef};
 use super::message::{
     AgentMessage, AgentPayload, ClientDataModel, Component, CreateSurface, UpdateComponents,
 };
-use super::model::{DataModel, ModelValue};
+use super::model::{DataModel, MAX_LIST_INDEX, ModelValue};
 use super::validate::MAX_DEPTH;
 use super::version::A2uiVersion;
 use crate::constants::ROOT_ID;
@@ -134,10 +134,34 @@ impl SurfaceState {
     /// nothing: its creation, every component, and its data.
     ///
     /// That is what a transport sends when one message has to stand on its
-    /// own, such as a snapshot. The data model is written at the root; a slot
-    /// of a list that was removed is written as `null` and then removed again,
-    /// since a JSON array cannot leave it out. A surface that was deleted ends
-    /// in its `deleteSurface`.
+    /// own, such as a snapshot. A surface that was deleted ends in its
+    /// `deleteSurface`.
+    ///
+    /// # How the data model is written
+    ///
+    /// At the root, in one message, as far as JSON can say it and a
+    /// [`MessageProcessor`](crate::processor::MessageProcessor) takes it; the
+    /// rest in a message of its own for each part, after it. What the replay
+    /// writes follows the values the model holds, not the slots no message
+    /// wrote:
+    ///
+    /// - A list with undefined slots (a JSON array cannot leave one out) is
+    ///   written by whichever of two forms takes fewer messages. Either the
+    ///   elements up to its first undefined slot, then each later element at
+    ///   its index, which leaves the slots between undefined as a renderer
+    ///   leaves them, and for an undefined last slot a placeholder written
+    ///   there and removed. Or the whole list with `null` in each undefined
+    ///   slot, then a removal of each. Only the second form can write a list
+    ///   longer than [`MAX_LIST_INDEX`](super::model::MAX_LIST_INDEX) allows
+    ///   an index, and only it can write a `null` element after a gap on a
+    ///   v1.0 surface, where a written `null` removes.
+    /// - A part of the model too deep for one message, which a processor
+    ///   refuses past [`MAX_DEPTH`], is written at its own path. Parts start
+    ///   at fixed depths, so that a model built by any path of up to
+    ///   [`MAX_VALUE_DEPTH`](super::binding::MAX_VALUE_DEPTH) segments is
+    ///   written by paths no longer than that.
+    /// - A removed root, which a v0.9 model holds as undefined, is removed
+    ///   again.
     ///
     /// ```
     /// use ag_ui_a2ui::{AgentMessage, Component, SurfaceStore};
@@ -180,20 +204,12 @@ impl SurfaceState {
                 self.components.clone(),
             )));
         }
-        let mut holes = Vec::new();
-        if let Some(data) = as_json(self.data_model.root(), "", &mut holes) {
-            messages.push(versioned(AgentMessage::update_data_model(
-                &self.surface_id,
-                "/",
-                data,
-            )));
-        }
-        for hole in holes {
-            messages.push(versioned(AgentMessage::remove_data_model_value(
-                &self.surface_id,
-                hole,
-            )));
-        }
+        let null_removes = self.spoken_version().null_removes();
+        messages.extend(
+            data_messages(&self.surface_id, self.data_model.root(), null_removes)
+                .into_iter()
+                .map(versioned),
+        );
         if self.deleted {
             messages.push(versioned(AgentMessage::delete_surface(&self.surface_id)));
         }
@@ -404,39 +420,196 @@ impl<'a> Iterator for Outline<'a> {
     }
 }
 
-/// A model value as JSON. A removed slot of a list becomes `null` and its
-/// path is added to `holes`; a removed field is left out; an absent value is
-/// `None`.
-fn as_json(value: &ModelValue, path: &str, holes: &mut Vec<String>) -> Option<Value> {
-    Some(match value {
-        ModelValue::Undefined => return None,
-        ModelValue::Null => Value::Null,
-        ModelValue::Bool(flag) => Value::Bool(*flag),
-        ModelValue::Number(number) => Value::Number(number.clone()),
-        ModelValue::String(text) => Value::String(text.clone()),
-        ModelValue::Array(slots) => Value::Array(
+/// How many levels a value may nest below an `updateDataModel`'s `value` in a
+/// message a processor takes: the message is at depth 1, the operation at 2,
+/// the value at 3, and nothing may be deeper than [`MAX_DEPTH`].
+const VALUE_LEVELS: usize = MAX_DEPTH - 3;
+
+/// Whether a replay writes a container that is `depth` segments below the
+/// root in a message of its own, as the start of a part.
+///
+/// Parts start every [`VALUE_LEVELS`] counting up from [`MAX_VALUE_DEPTH`],
+/// the longest path a write may name, so that the deepest part of a model
+/// any write built starts at a path no longer than that, and no message
+/// nests deeper than a processor takes. A write that starts elsewhere, at the
+/// root or at an element of a list, reaches the next start within
+/// [`VALUE_LEVELS`].
+fn starts_a_part(depth: usize) -> bool {
+    (1..=MAX_VALUE_DEPTH).contains(&depth) && (MAX_VALUE_DEPTH - depth) % VALUE_LEVELS == 0
+}
+
+/// One step of a data model's replay.
+enum Write<'a> {
+    /// Write `value`, which is `depth` segments below the root, at `path`.
+    Value {
+        path: String,
+        depth: usize,
+        value: &'a ModelValue,
+    },
+    /// Make the list at `path` `len` long, its last slot undefined: write a
+    /// placeholder in that slot and remove it.
+    Length { path: String, len: usize },
+}
+
+/// The messages that write `root` on a surface whose data model holds
+/// nothing. `null_removes` is the surface version's
+/// [`A2uiVersion::null_removes`]. See [`SurfaceState::replay`].
+fn data_messages(surface_id: &str, root: &ModelValue, null_removes: bool) -> Vec<AgentMessage> {
+    // As a v0.9 model holds a removed root.
+    if matches!(root, ModelValue::Undefined) {
+        return vec![AgentMessage::remove_data_model_value(surface_id, "/")];
+    }
+    let pointer = |path: &str| {
+        if path.is_empty() {
+            "/".to_string()
+        } else {
+            path.to_string()
+        }
+    };
+    let mut messages = Vec::new();
+    let mut writes = std::collections::VecDeque::from([Write::Value {
+        path: String::new(),
+        depth: 0,
+        value: root,
+    }]);
+    while let Some(write) = writes.pop_front() {
+        match write {
+            Write::Value { path, depth, value } => {
+                let mut removals = Vec::new();
+                let mut part = Part {
+                    null_removes,
+                    writes: &mut writes,
+                    removals: &mut removals,
+                };
+                let json = part.json(value, &path, depth);
+                messages.push(AgentMessage::update_data_model(
+                    surface_id,
+                    pointer(&path),
+                    json,
+                ));
+                messages.extend(
+                    removals
+                        .into_iter()
+                        .map(|path| AgentMessage::remove_data_model_value(surface_id, path)),
+                );
+            }
+            Write::Length { path, len } => {
+                let last = format!("{path}/{}", len - 1);
+                messages.push(AgentMessage::update_data_model(
+                    surface_id,
+                    &last,
+                    Value::Bool(false),
+                ));
+                messages.push(AgentMessage::remove_data_model_value(surface_id, last));
+            }
+        }
+    }
+    messages
+}
+
+/// What writing one part of a model as JSON leaves to do: later writes, and
+/// the removals that follow this one.
+struct Part<'a, 'w> {
+    null_removes: bool,
+    writes: &'w mut std::collections::VecDeque<Write<'a>>,
+    removals: &'w mut Vec<String>,
+}
+
+impl<'a> Part<'a, '_> {
+    /// `value`, `depth` segments below the root at `path`, as JSON. What JSON
+    /// cannot say there, or a message cannot nest, is left to later writes.
+    fn json(&mut self, value: &'a ModelValue, path: &str, depth: usize) -> Value {
+        match value {
+            // Never written itself: a slot is left as one, a field left out.
+            ModelValue::Undefined | ModelValue::Null => Value::Null,
+            ModelValue::Bool(flag) => Value::Bool(*flag),
+            ModelValue::Number(number) => Value::Number(number.clone()),
+            ModelValue::String(text) => Value::String(text.clone()),
+            ModelValue::Object(fields) => Value::Object(
+                fields
+                    .iter()
+                    .filter(|(_, field)| !matches!(field, ModelValue::Undefined))
+                    .filter_map(|(key, field)| {
+                        let at = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+                        let json = self.child(field, at, depth + 1)?;
+                        Some((key.clone(), json))
+                    })
+                    .collect(),
+            ),
+            ModelValue::Array(slots) => self.list(slots, path, depth),
+        }
+    }
+
+    /// A child at `path` as JSON, or `None` when it starts a part of its own,
+    /// which is then written after this one.
+    fn child(&mut self, value: &'a ModelValue, path: String, depth: usize) -> Option<Value> {
+        let holds_something = match value {
+            ModelValue::Array(slots) => !slots.is_empty(),
+            ModelValue::Object(fields) => !fields.is_empty(),
+            _ => false,
+        };
+        if holds_something && starts_a_part(depth) {
+            self.writes.push_back(Write::Value { path, depth, value });
+            return None;
+        }
+        Some(self.json(value, &path, depth))
+    }
+
+    /// A list, in the form of [`SurfaceState::replay`] that takes fewer
+    /// messages when it has undefined slots.
+    fn list(&mut self, slots: &'a [ModelValue], path: &str, depth: usize) -> Value {
+        let undefined = |slot: &ModelValue| matches!(slot, ModelValue::Undefined);
+        let Some(first_gap) = slots.iter().position(undefined) else {
+            return self.elements(slots, path, depth);
+        };
+        let gaps = slots.iter().filter(|slot| undefined(slot)).count();
+        let later = &slots[first_gap + 1..];
+        let ends_in_a_gap = slots.last().is_some_and(undefined);
+        let by_index = later.iter().filter(|slot| !undefined(slot)).count()
+            + if ends_in_a_gap { 2 } else { 0 };
+        let indexable = slots.len() <= MAX_LIST_INDEX + 1
+            && !(self.null_removes && later.iter().any(|slot| matches!(slot, ModelValue::Null)));
+        if !indexable || gaps <= by_index {
+            // The whole list, `null` in each gap, and each gap removed.
+            for (index, slot) in slots.iter().enumerate() {
+                if undefined(slot) {
+                    self.removals.push(format!("{path}/{index}"));
+                }
+            }
+            return self.elements(slots, path, depth);
+        }
+        // The elements before the first gap, then each later one at its index.
+        for (index, slot) in later.iter().enumerate() {
+            if !undefined(slot) {
+                self.writes.push_back(Write::Value {
+                    path: format!("{path}/{}", first_gap + 1 + index),
+                    depth: depth + 1,
+                    value: slot,
+                });
+            }
+        }
+        if ends_in_a_gap {
+            self.writes.push_back(Write::Length {
+                path: path.to_string(),
+                len: slots.len(),
+            });
+        }
+        self.elements(&slots[..first_gap], path, depth)
+    }
+
+    /// The elements of a list as a JSON array, an undefined one as `null`.
+    fn elements(&mut self, slots: &'a [ModelValue], path: &str, depth: usize) -> Value {
+        Value::Array(
             slots
                 .iter()
                 .enumerate()
                 .map(|(index, slot)| {
-                    let at = format!("{path}/{index}");
-                    as_json(slot, &at, holes).unwrap_or_else(|| {
-                        holes.push(at);
-                        Value::Null
-                    })
+                    self.child(slot, format!("{path}/{index}"), depth + 1)
+                        .unwrap_or(Value::Null)
                 })
                 .collect(),
-        ),
-        ModelValue::Object(fields) => Value::Object(
-            fields
-                .iter()
-                .filter_map(|(key, field)| {
-                    let at = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
-                    Some((key.clone(), as_json(field, &at, holes)?))
-                })
-                .collect(),
-        ),
-    })
+        )
+    }
 }
 
 /// Where a surface id is in its life, as the messages applied so far leave it.
