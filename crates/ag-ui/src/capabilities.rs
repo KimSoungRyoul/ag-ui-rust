@@ -150,8 +150,9 @@ pub struct MultiAgentCapabilities {
     /// The agent can hand the conversation over entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoffs: Option<bool>,
-    /// Sub-agents this agent can invoke.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Sub-agents this agent can invoke. AG-UI 1.0 spells the key `subagents`;
+    /// the earlier `subAgents` is not read.
+    #[serde(rename = "subagents", default, skip_serializing_if = "Option::is_none")]
     pub sub_agents: Option<Vec<SubAgentInfo>>,
 }
 
