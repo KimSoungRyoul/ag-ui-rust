@@ -1,34 +1,9 @@
 //! The direct JSON format: the model writes A2UI messages themselves.
 //!
-//! A payload is a JSON array of messages between `<a2ui-json>` and
-//! `</a2ui-json>` tags, with conversational text around it:
-//!
-//! ```text
-//! Here is your form.
-//! <a2ui-json>
-//! [{"version": "v0.9", "createSurface": {…}}, {"version": "v0.9", "updateComponents": {…}}]
-//! </a2ui-json>
-//! ```
-//!
-//! Reading it is mostly reading JSON, so what this module adds is what may be
-//! repaired before reading, because a model that writes almost-JSON is the
-//! common case: a trailing comma, a curly quote picked up from prose, one
-//! message where a list was asked for, a Markdown fence around the payload,
-//! the tags written as inline code, an opening tag left out.
-//!
-//! ```
-//! use ag_ui_a2ui::agent::{DirectJson, OutputFormat, RawPart};
-//!
-//! let format = DirectJson::new();
-//! let answer = "Done.\n<a2ui-json>\n```json\n[{\"deleteSurface\": {\"surfaceId\": \"s\"},},]\n```\n</a2ui-json>";
-//!
-//! let parts = format.unwrap(answer);
-//! assert_eq!(parts[0], RawPart::Text("Done.".into()));
-//! let RawPart::Block { raw, closed: true } = &parts[1] else { panic!() };
-//! let messages = format.compile(raw, true)?;
-//! assert_eq!(messages[0]["deleteSurface"]["surfaceId"], "s");
-//! # Ok::<(), ag_ui_a2ui::Error>(())
-//! ```
+//! `blocks` finds the `<a2ui-json>` blocks in an answer, `json` reads the
+//! almost-JSON inside one, `reader` does both as an answer arrives, and
+//! `prompt` writes the instructions. [`DirectJson`] puts them behind
+//! [`OutputFormat`].
 
 mod blocks;
 mod json;
@@ -50,7 +25,37 @@ use crate::protocol::operation::Operation;
 /// asked to: [`DirectJson::holding_components_until_closed`].
 const COMPONENTS: &str = "components";
 
-/// The direct JSON format. See the [module documentation](self).
+/// The direct JSON format: the model writes the A2UI messages themselves.
+///
+/// A payload is a JSON array of messages between `<a2ui-json>` and
+/// `</a2ui-json>` tags, with conversational text around it:
+///
+/// ```text
+/// Here is your form.
+/// <a2ui-json>
+/// [{"version": "v0.9", "createSurface": {…}}, {"version": "v0.9", "updateComponents": {…}}]
+/// </a2ui-json>
+/// ```
+///
+/// Reading it is mostly reading JSON, so what the format adds is what may be
+/// repaired before reading, because a model that writes almost-JSON is the
+/// common case: a trailing comma, a curly quote picked up from prose, one
+/// message where a list was asked for, a Markdown fence around the payload,
+/// the tags written as inline code, an opening tag left out.
+///
+/// ```
+/// use ag_ui_a2ui::agent::{DirectJson, OutputFormat, RawPart};
+///
+/// let format = DirectJson::new();
+/// let answer = "Done.\n<a2ui-json>\n```json\n[{\"deleteSurface\": {\"surfaceId\": \"s\"},},]\n```\n</a2ui-json>";
+///
+/// let parts = format.unwrap(answer);
+/// assert_eq!(parts[0], RawPart::Text("Done.".into()));
+/// let RawPart::Block { raw, closed: true } = &parts[1] else { panic!() };
+/// let messages = format.compile(raw, true)?;
+/// assert_eq!(messages[0]["deleteSurface"]["surfaceId"], "s");
+/// # Ok::<(), ag_ui_a2ui::Error>(())
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DirectJson {
     allowed_messages: Option<Vec<Operation>>,

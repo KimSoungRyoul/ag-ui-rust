@@ -4,36 +4,6 @@
 //! finds the blocks and says what the open one holds so far; the stream
 //! decides what of that is ready, applies it to the renderer state, and hands
 //! it on.
-//!
-//! # What is emitted, and when
-//!
-//! - Text outside a block is emitted as it arrives.
-//! - A message is emitted, and applied to the state, as soon as it reads and
-//!   the state accepts it. Only `updateComponents` and `updateDataModel` are
-//!   emitted while they are still arriving, and again, whole, each time a
-//!   chunk changes them: a renderer applying each in turn ends up holding what
-//!   the closed block holds. Any other message waits until its text has
-//!   closed, and the messages after it wait with it.
-//! - A message that reads but that the state does not accept yet is not ready:
-//!   half a component can parse and still not be a component the catalog
-//!   describes. It is held, and the block is rejected when it closes if the
-//!   message is still not accepted.
-//! - When a block closes, the messages it still holds are applied and the
-//!   trees of the surfaces it touched are checked in full.
-//!
-//! # What a failure leaves behind
-//!
-//! A streamed answer cannot be all or nothing: by the time a block is
-//! rejected, the caller has been handed the parts before it, and a renderer
-//! that was sent them holds them. So the stream keeps to a rule that can be
-//! relied on instead: **the state holds exactly the messages that were
-//! emitted**, in the order they were emitted, whether [`ResponseStream::feed`]
-//! returned them or a [`ResponseError`] carried them. Closing a block that is
-//! rejected applies none of the messages the block had not emitted yet.
-//!
-//! A caller that did not forward the parts, or that can tell its renderer to
-//! discard them, goes back with [`ResponseStream::rewind`], which puts the
-//! state back as it was when the stream was opened.
 
 use serde_json::Value;
 
@@ -83,10 +53,38 @@ impl Default for StreamOptions {
 /// [`A2uiRequestProcessor::open_stream`](super::A2uiRequestProcessor::open_stream).
 /// The stream owns the text buffers of one answer. The renderer state is the
 /// caller's, and is passed to every call: pass the state the stream was opened
-/// on, each time.
+/// on, each time. The stream is the same for every format: the format's reader
+/// finds the blocks, and the stream decides what of them is ready.
 ///
-/// See the [module documentation](self) for what is emitted when, and for what
-/// a failure leaves in the state.
+/// # What is emitted, and when
+///
+/// - Text outside a block is emitted as it arrives.
+/// - A message is emitted, and applied to the state, as soon as it reads and
+///   the state accepts it. Only `updateComponents` and `updateDataModel` are
+///   emitted while they are still arriving, and again, whole, each time a
+///   chunk changes them: a renderer applying each in turn ends up holding what
+///   the closed block holds. Any other message waits until its text has
+///   closed, and the messages after it wait with it.
+/// - A message that reads but that the state does not accept yet is not ready:
+///   half a component can parse and still not be a component the catalog
+///   describes. It is held, and the block is rejected when it closes if the
+///   message is still not accepted.
+/// - When a block closes, the messages it still holds are applied and the
+///   trees of the surfaces it touched are checked in full.
+///
+/// # What a failure leaves behind
+///
+/// A streamed answer cannot be all or nothing: by the time a block is
+/// rejected, the caller has been handed the parts before it, and a renderer
+/// that was sent them holds them. So the stream keeps to a rule that can be
+/// relied on instead: **the state holds exactly the messages that were
+/// emitted**, in the order they were emitted, whether [`ResponseStream::feed`]
+/// returned them or a [`ResponseError`] carried them. Closing a block that is
+/// rejected applies none of the messages the block had not emitted yet.
+///
+/// A caller that did not forward the parts, or that can tell its renderer to
+/// discard them, goes back with [`ResponseStream::rewind`], which puts the
+/// state back as it was when the stream was opened.
 #[derive(Debug)]
 pub struct ResponseStream {
     reader: Box<dyn AnswerReader>,

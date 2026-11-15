@@ -1,25 +1,5 @@
 //! The catalogs an agent registers, and what it does to them before a model
 //! or a validator sees them.
-//!
-//! A [`CatalogDocument`] is one catalog read under one protocol version: the
-//! JSON document a model is shown, and the [`Catalog`] summary the validator
-//! reads, kept together so the two cannot describe different catalogs. A
-//! [`CatalogConfig`] is what an agent registers: a document as it was
-//! published, and the [`CatalogTransformer`]s the agent applies to it.
-//!
-//! ```
-//! use ag_ui_a2ui::A2uiVersion;
-//! use ag_ui_a2ui::agent::CatalogConfig;
-//!
-//! // The official basic catalog, cut down to what this agent wants drawn.
-//! let config = CatalogConfig::basic(A2uiVersion::V0_9_1)?
-//!     .keeping_components(["Column", "Text", "Button"])
-//!     .keeping_functions(["formatString"]);
-//!
-//! assert_eq!(config.catalog().catalog().components.len(), 18);
-//! assert_eq!(config.transformed().catalog().components.len(), 3);
-//! # Ok::<(), ag_ui_a2ui::Error>(())
-//! ```
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -314,6 +294,20 @@ impl CatalogTransformer {
 /// The published document is kept untouched, so one renderer's session cannot
 /// narrow the next one's. What a session works with is
 /// [`CatalogConfig::transformed`].
+///
+/// ```
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::agent::CatalogConfig;
+///
+/// // The official basic catalog, cut down to what this agent wants drawn.
+/// let config = CatalogConfig::basic(A2uiVersion::V0_9_1)?
+///     .keeping_components(["Column", "Text", "Button"])
+///     .keeping_functions(["formatString"]);
+///
+/// assert_eq!(config.catalog().catalog().components.len(), 18);
+/// assert_eq!(config.transformed().catalog().components.len(), 3);
+/// # Ok::<(), ag_ui_a2ui::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatalogConfig {
     catalog: CatalogDocument,

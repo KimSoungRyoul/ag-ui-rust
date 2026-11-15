@@ -1,33 +1,5 @@
 //! What a renderer says it can draw, and which of the agent's catalogs that
 //! makes active.
-//!
-//! A renderer sends its capabilities in the metadata of a transport message,
-//! keyed by protocol version:
-//!
-//! ```json
-//! {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": ["…"], "inlineCatalogs": [ … ]}}}
-//! ```
-//!
-//! [`RendererCapabilities::from_metadata`] reads that, and [`resolve_catalogs`]
-//! is the negotiation: every catalog the renderer names and the agent holds
-//! becomes active, in the renderer's order of preference.
-//!
-//! ```
-//! use ag_ui_a2ui::A2uiVersion;
-//! use ag_ui_a2ui::agent::{CatalogConfig, RendererCapabilities, resolve_catalogs};
-//! use serde_json::json;
-//!
-//! let registered = [CatalogConfig::basic(A2uiVersion::V0_9_1)?];
-//! let metadata = json!({"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [
-//!     "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
-//!     "a/catalog/this/agent/does/not/hold",
-//! ]}}});
-//!
-//! let capabilities = RendererCapabilities::from_metadata(Some(&metadata), A2uiVersion::V0_9_1)?;
-//! let active = resolve_catalogs(&registered, capabilities.as_ref(), false)?;
-//! assert_eq!(active.len(), 1);
-//! # Ok::<(), ag_ui_a2ui::Error>(())
-//! ```
 
 use serde_json::{Map, Value};
 
@@ -60,6 +32,34 @@ fn capabilities_key(version: A2uiVersion) -> &'static str {
 /// reads one version's entry out of transport metadata, and by
 /// [`resolve_catalogs`], which reads the entry of the registered catalogs'
 /// version.
+///
+/// A renderer sends its capabilities in the metadata of a transport message,
+/// keyed by protocol version:
+///
+/// ```json
+/// {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": ["…"], "inlineCatalogs": [ … ]}}}
+/// ```
+///
+/// [`RendererCapabilities::from_metadata`] reads that, and [`resolve_catalogs`]
+/// is the negotiation: every catalog the renderer names and the agent holds
+/// becomes active, in the renderer's order of preference.
+///
+/// ```
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::agent::{CatalogConfig, RendererCapabilities, resolve_catalogs};
+/// use serde_json::json;
+///
+/// let registered = [CatalogConfig::basic(A2uiVersion::V0_9_1)?];
+/// let metadata = json!({"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [
+///     "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
+///     "a/catalog/this/agent/does/not/hold",
+/// ]}}});
+///
+/// let capabilities = RendererCapabilities::from_metadata(Some(&metadata), A2uiVersion::V0_9_1)?;
+/// let active = resolve_catalogs(&registered, capabilities.as_ref(), false)?;
+/// assert_eq!(active.len(), 1);
+/// # Ok::<(), ag_ui_a2ui::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct RendererCapabilities {
     entries: Map<String, Value>,

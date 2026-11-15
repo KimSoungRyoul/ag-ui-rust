@@ -1,42 +1,4 @@
 //! Deciding what to do with a model's answer, without calling the model.
-//!
-//! A [`RetryDriver`] is told what the model answered and says one of three
-//! things: the answer stands, ask again with this feedback, or give up. The
-//! caller makes every call to the model, on whatever executor and client it
-//! has; nothing here awaits, sleeps or does I/O.
-//!
-//! ```
-//! use ag_ui_a2ui::A2uiVersion;
-//! use ag_ui_a2ui::agent::{A2uiGenerator, CatalogConfig, RendererCapabilities, RetryDriver, Verdict};
-//!
-//! let generator = A2uiGenerator::new(vec![CatalogConfig::basic(A2uiVersion::V0_9)?]);
-//! let renderer = RendererCapabilities::supporting(
-//!     A2uiVersion::V0_9,
-//!     ["https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"],
-//! );
-//! let processor = generator.create_processor(Some(&renderer))?;
-//! let mut state = processor.create_state();
-//! let mut retry = RetryDriver::new(&processor, 3);
-//!
-//! // The first answer names a component the catalog does not have.
-//! let bad = r#"<a2ui-json>[
-//!   {"version": "v0.9", "createSurface": {"surfaceId": "s",
-//!     "catalogId": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}},
-//!   {"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": [
-//!     {"id": "root", "component": "Sparkline"}]}}
-//! ]</a2ui-json>"#;
-//! let Verdict::Retry(feedback) = retry.judge(bad, &mut state) else { panic!() };
-//! assert!(state.surface("s").is_none(), "a rejected answer leaves the state as it was");
-//! let next_prompt = feedback.prompt("Show a greeting.");
-//! assert!(next_prompt.contains("[unknown_component] at messages[1].updateComponents.components[0].component"));
-//!
-//! // The corrected one stands, and is in the state.
-//! let good = bad.replace(r#""component": "Sparkline""#, r#""component": "Text", "text": "Hello""#);
-//! let Verdict::Done(parts) = retry.judge(&good, &mut state) else { panic!() };
-//! assert_eq!(parts.len(), 1);
-//! assert!(state.surface("s").is_some());
-//! # Ok::<(), ag_ui_a2ui::Error>(())
-//! ```
 
 use super::format::ResponsePart;
 use super::processor::A2uiRequestProcessor;
@@ -46,9 +8,47 @@ use crate::protocol::validate::{ErrorCode, ValidationError};
 
 /// Judges a model's answers to one request, one attempt after another.
 ///
+/// The driver is told what the model answered and says one of three things:
+/// the answer stands, ask again with this feedback, or give up. The caller
+/// makes every call to the model, on whatever executor and client it has;
+/// nothing here awaits, sleeps or does I/O.
+///
 /// The driver owns a copy of the processor, which is cheap, and borrows
 /// nothing, so it can be kept in the same struct as the state across `.await`
 /// points.
+///
+/// ```
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::agent::{A2uiGenerator, CatalogConfig, RendererCapabilities, RetryDriver, Verdict};
+///
+/// let generator = A2uiGenerator::new(vec![CatalogConfig::basic(A2uiVersion::V0_9)?]);
+/// let renderer = RendererCapabilities::supporting(
+///     A2uiVersion::V0_9,
+///     ["https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"],
+/// );
+/// let processor = generator.create_processor(Some(&renderer))?;
+/// let mut state = processor.create_state();
+/// let mut retry = RetryDriver::new(&processor, 3);
+///
+/// // The first answer names a component the catalog does not have.
+/// let bad = r#"<a2ui-json>[
+///   {"version": "v0.9", "createSurface": {"surfaceId": "s",
+///     "catalogId": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}},
+///   {"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": [
+///     {"id": "root", "component": "Sparkline"}]}}
+/// ]</a2ui-json>"#;
+/// let Verdict::Retry(feedback) = retry.judge(bad, &mut state) else { panic!() };
+/// assert!(state.surface("s").is_none(), "a rejected answer leaves the state as it was");
+/// let next_prompt = feedback.prompt("Show a greeting.");
+/// assert!(next_prompt.contains("[unknown_component] at messages[1].updateComponents.components[0].component"));
+///
+/// // The corrected one stands, and is in the state.
+/// let good = bad.replace(r#""component": "Sparkline""#, r#""component": "Text", "text": "Hello""#);
+/// let Verdict::Done(parts) = retry.judge(&good, &mut state) else { panic!() };
+/// assert_eq!(parts.len(), 1);
+/// assert!(state.surface("s").is_some());
+/// # Ok::<(), ag_ui_a2ui::Error>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct RetryDriver {
     processor: A2uiRequestProcessor,

@@ -1,56 +1,4 @@
 //! The agent's mirror of the surfaces a renderer holds.
-//!
-//! A [`RendererState`] runs the agent's outbound messages through the one
-//! surface state machine, [`SurfaceStore`], so a message is checked against
-//! everything the renderer has already received: an update must name a surface
-//! that exists, a component is held to the catalog its surface was created
-//! with, and a cycle is found across the whole surface rather than within one
-//! message.
-//!
-//! How long a state lives is the one difference between the two ways an agent
-//! shows UI:
-//!
-//! - In a **chat**, each turn shows new UI, so each turn uses a new state.
-//! - In a **canvas**, turns update the same surfaces, so one state lives for
-//!   the whole conversation and every turn is read against it.
-//!
-//! # Two checks
-//!
-//! A message is checked when it is applied ([`RendererState::apply`]): its
-//! envelope, its surface's life, and each component against the catalog. What
-//! can only be judged once every message of an answer has arrived is left to
-//! [`RendererState::check_trees`]: that each surface has its root, and that
-//! every child reference and binding resolves. A component may name a child
-//! that a later message adds, so asking earlier would reject a tree for being
-//! unfinished.
-//!
-//! ```
-//! use ag_ui_a2ui::A2uiVersion;
-//! use ag_ui_a2ui::agent::{CatalogDocument, RendererState};
-//! use serde_json::json;
-//!
-//! let catalog = CatalogDocument::basic(A2uiVersion::V0_9)?;
-//! let id = catalog.catalog_id().to_string();
-//! let mut state = RendererState::new(vec![catalog])?;
-//!
-//! let touched = state.apply(&[
-//!     json!({"version": "v0.9", "createSurface": {"surfaceId": "main", "catalogId": id}}),
-//!     json!({"version": "v0.9", "updateComponents": {"surfaceId": "main", "components": [
-//!         {"id": "root", "component": "Text", "text": "Hello"},
-//!     ]}}),
-//! ])?;
-//! state.check_trees(&touched)?;
-//! assert_eq!(state.surface("main").unwrap().components.len(), 1);
-//!
-//! // A rejected call changes nothing.
-//! let before = state.clone();
-//! let unknown = json!({"version": "v0.9", "updateComponents": {"surfaceId": "main", "components": [
-//!     {"id": "extra", "component": "Sparkline"},
-//! ]}});
-//! assert!(state.apply(&[unknown]).is_err());
-//! assert_eq!(state, before);
-//! # Ok::<(), ag_ui_a2ui::Error>(())
-//! ```
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -89,8 +37,59 @@ impl ActiveCatalog {
 
 /// The surfaces a renderer holds, as the agent's messages leave them.
 ///
+/// A state runs the agent's outbound messages through the one surface state
+/// machine, [`SurfaceStore`], so a message is checked against everything the
+/// renderer has already received: an update must name a surface that exists, a
+/// component is held to the catalog its surface was created with, and a cycle
+/// is found across the whole surface rather than within one message.
+///
+/// How long a state lives is the one difference between the two ways an agent
+/// shows UI:
+///
+/// - In a **chat**, each turn shows new UI, so each turn uses a new state.
+/// - In a **canvas**, turns update the same surfaces, so one state lives for
+///   the whole conversation and every turn is read against it.
+///
 /// Cloning copies the surfaces; the catalogs are shared. Two states are equal
 /// when they hold the same catalogs and the same surfaces.
+///
+/// # Two checks
+///
+/// A message is checked when it is applied ([`RendererState::apply`]): its
+/// envelope, its surface's life, and each component against the catalog. What
+/// can only be judged once every message of an answer has arrived is left to
+/// [`RendererState::check_trees`]: that each surface has its root, and that
+/// every child reference and binding resolves. A component may name a child
+/// that a later message adds, so asking earlier would reject a tree for being
+/// unfinished.
+///
+/// ```
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::agent::{CatalogDocument, RendererState};
+/// use serde_json::json;
+///
+/// let catalog = CatalogDocument::basic(A2uiVersion::V0_9)?;
+/// let id = catalog.catalog_id().to_string();
+/// let mut state = RendererState::new(vec![catalog])?;
+///
+/// let touched = state.apply(&[
+///     json!({"version": "v0.9", "createSurface": {"surfaceId": "main", "catalogId": id}}),
+///     json!({"version": "v0.9", "updateComponents": {"surfaceId": "main", "components": [
+///         {"id": "root", "component": "Text", "text": "Hello"},
+///     ]}}),
+/// ])?;
+/// state.check_trees(&touched)?;
+/// assert_eq!(state.surface("main").unwrap().components.len(), 1);
+///
+/// // A rejected call changes nothing.
+/// let before = state.clone();
+/// let unknown = json!({"version": "v0.9", "updateComponents": {"surfaceId": "main", "components": [
+///     {"id": "extra", "component": "Sparkline"},
+/// ]}});
+/// assert!(state.apply(&[unknown]).is_err());
+/// assert_eq!(state, before);
+/// # Ok::<(), ag_ui_a2ui::Error>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct RendererState {
     catalogs: Arc<[ActiveCatalog]>,
@@ -236,6 +235,9 @@ impl RendererState {
     /// A component the root cannot reach is not an error here, as it is not in
     /// [`Validator`]: the protocol has no message that removes one component,
     /// so replacing part of a canvas always leaves such components behind.
+    /// Its bindings are not held to a scope either. A row of a list that was
+    /// replaced still has its relative paths, and no list above it any more to
+    /// give them a scope; nothing draws it, so nothing resolves them.
     ///
     /// # Errors
     ///
@@ -271,12 +273,32 @@ impl RendererState {
                 continue;
             };
             let summary = catalog.document.catalog();
-            report.errors.extend(
-                Validator::new(summary)
-                    .validate_stored(&self.store, surface)
-                    .errors,
-            );
             let origin = self.store.origin(surface_id);
+            let found = Validator::new(summary).validate_stored(&self.store, surface);
+            // Where the validator located each component the root cannot
+            // reach: in the message that wrote it, else by its position.
+            let left_behind: Vec<String> = surface
+                .components
+                .iter()
+                .enumerate()
+                .filter(|(_, component)| found.unreachable.contains(&component.id))
+                .map(|(position, component)| {
+                    origin
+                        .and_then(|origin| origin.component(&component.id))
+                        .unwrap_or_else(|| format!("components[{position}]"))
+                })
+                .collect();
+            report
+                .errors
+                .extend(found.errors.into_iter().filter(|error| {
+                    error.code != ErrorCode::UnresolvedBinding
+                        || !left_behind.iter().any(|component| {
+                            error
+                                .path
+                                .strip_prefix(component.as_str())
+                                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+                        })
+                }));
             for violation in summary.composition_violations(&surface.components) {
                 // `components[3].children[0]`: the position in the surface,
                 // then where in that component. Name the message instead when

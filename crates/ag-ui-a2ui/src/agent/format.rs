@@ -163,9 +163,18 @@ pub trait AnswerReader: fmt::Debug + Send + Sync {
 
 /// One way of asking a model for A2UI, and of reading its answer.
 ///
+/// Everything a format does is about notation: the instructions that go into
+/// the prompt, where its blocks begin and end in an answer, and what one block
+/// says as raw A2UI messages. It never checks a message against a catalog or
+/// a renderer state. The request processor does that, the same way for every
+/// format, so a new format adds no second validation path and no second retry
+/// loop.
+///
 /// A format holds configuration only. The buffers of an answer that is still
 /// arriving belong to the [`AnswerReader`] it opens, so one format serves any
 /// number of answers at once.
+///
+/// This crate implements one format, [`DirectJson`](super::DirectJson).
 pub trait OutputFormat: fmt::Debug + Send + Sync {
     /// A short name for the format, for diagnostics.
     fn name(&self) -> &'static str;
