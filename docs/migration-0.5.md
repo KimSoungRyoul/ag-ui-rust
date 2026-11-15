@@ -1168,6 +1168,7 @@ These are on `main` and not yet in a published version.
   | `CatalogContext { catalog_id, schema }` | `CatalogContext::new(schema)`, which takes the id from the schema's `catalogId` |
   | `match retry.judge(..) { Verdict::Done(..) => .., Verdict::Retry(..) => .., Verdict::GiveUp(error) => return Err(error) }` | The same with `_ => return Err(Error::parse("a verdict this agent does not know"))`: a verdict a later version adds is one the loop cannot act on |
   | `match part { StreamPart::Text(..) => .., StreamPart::A2ui(..) => .., StreamPart::Rejected(..) => .. }` | The same with `_ => {}` |
+
 - `FilterToolCalls` filters a conversation the stream restates by the same names as the
   tool-call events. A `MESSAGES_SNAPSHOT`, and the request echoed on `RUN_STARTED`, go out
   without a filtered call, without the encrypted value that call carries and without the
@@ -1191,11 +1192,13 @@ These are on `main` and not yet in a published version.
   `ToolResultToState` know the calls that `sent` opened. A continuation can finish and
   answer a call the earlier driver left open under `FilterToolCalls`, and a
   `ToolResultToState` promotes its result; before, the filter dropped those events and
-  the run ended in `RUN_ERROR` (`open-at-finish`). A `TOOL_CALL_CHUNK` that names no id
-  continues the chunk stream `sent` left open in its lane, as it does for a consumer, and
-  goes the way that call goes. A call the earlier driver's filter removed is not in
-  `sent`, so its events are dropped with `Ok`; a continuation that goes on streaming one
-  by chunks has to give its id on each chunk.
+  the run ended in `RUN_ERROR` (`open-at-finish`). A call the earlier driver's filter
+  removed is not in `sent`, so its events are dropped with `Ok`. The filter does not take
+  up the chunk streams `sent` left open: a continuation that keeps streaming a call by
+  chunks names the call's id on its first chunk, and the chunks after it may name none. A
+  `TOOL_CALL_CHUNK` with no id before that is dropped with `Ok`, because the filter
+  cannot tell whose it is: the earlier driver may have been streaming a call its filter
+  removed in the same lane, and `sent` does not show it.
 - `ToolResultToState` promotes the result of a call the run did not open itself: one the
   request's history holds unanswered, and one a `MESSAGES_SNAPSHOT` introduced. Alpha.3
   promoted only the result of a call started in the same run, so a resumed run's result

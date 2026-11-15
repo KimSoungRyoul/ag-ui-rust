@@ -734,12 +734,11 @@ async fn a_continuation_finishes_a_call_the_first_driver_s_filter_removed() {
 }
 
 /// The call the first driver left open, streamed by chunks: it opened the
-/// call with a chunk that names the call and the tool, and the continuation
-/// goes on with chunks that name neither, as the chunked form has it. They
-/// continue the chunk stream the events sent left open, as they do for a
-/// consumer, and go out with the call.
+/// call with a chunk that names the call and the tool. The continuation
+/// names the call on its first chunk and goes on with chunks that name no
+/// id, as within any single run, and all of it goes out with the call.
 #[tokio::test]
-async fn a_filter_lets_a_continuation_finish_a_chunked_call_with_chunks_that_name_no_id() {
+async fn a_filter_lets_a_continuation_finish_a_chunked_call_whose_first_chunk_names_it() {
     let sent = [
         Event::run_started("t", "r"),
         Event::tool_call_chunk(
@@ -749,7 +748,8 @@ async fn a_filter_lets_a_continuation_finish_a_chunked_call_with_chunks_that_nam
         ),
     ];
     let finishing = vec![
-        Event::tool_call_chunk(None, None, Some(r#""rust""#.into())),
+        Event::tool_call_chunk(Some("c1".into()), None, Some(r#""ru"#.into())),
+        Event::tool_call_chunk(None, None, Some(r#"st""#.into())),
         Event::tool_call_chunk(None, None, Some("}".into())),
         Event::tool_call_result("m1", "c1", "1 hit"),
     ];
@@ -789,6 +789,88 @@ async fn a_filter_lets_a_continuation_finish_a_chunked_call_with_chunks_that_nam
                 .collect();
             assert_eq!(args, r#"{"q":"rust"}"#);
         }
+    }
+}
+
+/// The first driver streamed two calls by chunks in one lane, and its filter
+/// removed the second. The events sent leave the first call's stream open
+/// and say nothing of the second, so a chunk of the continuation that names
+/// no id may be meant for either: it is dropped, and so are the chunks that
+/// follow one naming the removed call. None of them reaches the wire or the
+/// arguments of the call that was sent, and each emit returns `Ok`. A chunk
+/// naming the call that was sent takes it up again.
+#[tokio::test]
+async fn a_chunk_that_names_no_id_does_not_continue_what_the_first_driver_left_open() {
+    struct StreamsTwoCalls;
+    impl Agent for StreamsTwoCalls {
+        type State = ();
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            ctx.emit(Event::tool_call_chunk(
+                Some("c1".into()),
+                Some("search".into()),
+                Some("A".into()),
+            ))?;
+            ctx.emit(Event::tool_call_chunk(
+                Some("c2".into()),
+                Some("internal_debug".into()),
+                Some("B".into()),
+            ))?;
+            std::future::pending().await
+        }
+    }
+    let chunk = |id: Option<&str>, delta: &str| {
+        Event::tool_call_chunk(id.map(ag_ui::ToolCallId::new), None, Some(delta.into()))
+    };
+
+    let filter = FilterToolCalls::deny(["internal_debug"]);
+    let first = Runner::new(StreamsTwoCalls).transformer(filter.clone());
+    let sent = stopped_mid_run(first, input());
+    assert_eq!(
+        sent,
+        [
+            Event::run_started("t", "r"),
+            Event::tool_call_chunk(Some("c1".into()), Some("search".into()), Some("A".into())),
+        ]
+    );
+
+    let continuing = vec![
+        chunk(None, "C"),
+        chunk(Some("c2"), "D"),
+        chunk(None, "E"),
+        chunk(Some("c1"), "F"),
+        chunk(None, "G"),
+    ];
+    let outcomes = Outcomes::default();
+    let agent = Reports {
+        events: continuing.clone(),
+        outcomes: Arc::clone(&outcomes),
+    };
+    let rest = continued(Runner::new(agent).transformer(filter), input(), &sent).await;
+    assert_eq!(
+        rest,
+        [
+            chunk(Some("c1"), "F"),
+            chunk(None, "G"),
+            Event::run_finished_success("t", "r"),
+        ]
+    );
+    assert_eq!(*outcomes.lock().unwrap(), vec![Ok(()); continuing.len()]);
+
+    #[cfg(feature = "client")]
+    {
+        let run = [sent.as_slice(), rest.as_slice()].concat();
+        ag_ui::client::verify_all(&run).expect("one well-formed run");
+        let expanded = ag_ui::client::normalize_all(run).expect("normalizes");
+        let args: Vec<(&str, &str)> = expanded
+            .iter()
+            .filter_map(|event| match event {
+                Event::ToolCallArgs(args) => {
+                    Some((args.tool_call_id.as_str(), args.delta.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(args, [("c1", "A"), ("c1", "F"), ("c1", "G")]);
     }
 }
 

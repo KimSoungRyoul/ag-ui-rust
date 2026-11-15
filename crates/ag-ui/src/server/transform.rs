@@ -266,11 +266,14 @@ enum Verdict {
 /// run reports for such a call, and the end a continuation gives it, go the
 /// way the call went.
 ///
-/// In a run that another driver began, a chunk that names no id continues
-/// the chunk stream the events sent left open in its lane, as it does for a
-/// consumer, and is judged by that call's name. A call the earlier filter
-/// removed is not among those events, so a continuation that goes on
-/// streaming one by chunks has to name its id on each chunk.
+/// In a run that another driver began, the filter does not take up the
+/// chunk streams the events sent left open. The earlier driver may have
+/// been streaming a call its filter removed in the same lane, and the
+/// events sent do not show it, so a chunk that names no id cannot be told
+/// from one meant for that call. A continuation that keeps streaming a call
+/// by chunks names the call's id on its first chunk, and the chunks after it
+/// continue that call, as within any single run. A chunk that names no id
+/// before that is dropped.
 #[derive(Clone, Debug)]
 pub struct FilterToolCalls {
     mode: FilterMode,
@@ -281,7 +284,8 @@ pub struct FilterToolCalls {
     /// The producer's open streams, including calls removed from the output.
     /// A bare chunk must be resolved here, before filtering can make it look
     /// like a continuation of a different call to the consumer. In a run
-    /// another driver began, they start as the events sent left them.
+    /// another driver began, they start empty: the events sent are not the
+    /// producer's stream.
     streams: Streams,
 }
 
@@ -442,6 +446,31 @@ impl FilterToolCalls {
             _ => false,
         }
     }
+
+    /// Follows the producer's open streams through an event.
+    ///
+    /// A chunk that names a call and not its tool, in a lane that is not
+    /// assembling that call, is taken to open the call's stream there: it
+    /// is how a continuation takes up a call the events sent left open, and
+    /// the chunks with no id after it are that call's, whatever the lane
+    /// held before. The open-stream model opens no stream without a tool's
+    /// name, so the one the filter knows is filled in, or an empty one for
+    /// a call nothing named, whose chunks are dropped all the same.
+    fn follow(&mut self, event: &Event) {
+        if let Event::ToolCallChunk(chunk) = event {
+            if let (Some(id), None) = (&chunk.tool_call_id, &chunk.tool_call_name) {
+                let tag = &chunk.subagent_run_id;
+                if assembling(&self.streams, Kind::Tool, id.as_str(), tag).is_none() {
+                    let mut opening = chunk.clone();
+                    let name = self.call_names.get(id).cloned().unwrap_or_default();
+                    opening.tool_call_name = Some(name);
+                    self.streams.track(&Event::ToolCallChunk(opening));
+                    return;
+                }
+            }
+        }
+        self.streams.track(event);
+    }
 }
 
 impl StreamTransformer for FilterToolCalls {
@@ -454,10 +483,10 @@ impl StreamTransformer for FilterToolCalls {
     /// A call the earlier driver of the run opened is judged by its name
     /// like a new one, so a continuation can finish and answer it.
     ///
-    /// The chunk streams the events sent left open are followed from there,
-    /// as a consumer follows them: a chunk that names no id continues the
-    /// call a consumer has open in its lane, and goes the way that call
-    /// goes.
+    /// The chunk streams the events sent left open are not taken up: what
+    /// was sent is not what the earlier producer had open. A chunk that
+    /// names no id is dropped until a chunk of this driver names the call it
+    /// continues.
     fn replay(&mut self, sent: &[Event]) {
         for event in sent {
             match event {
@@ -477,7 +506,6 @@ impl StreamTransformer for FilterToolCalls {
                 }
                 _ => {}
             }
-            self.streams.track(event);
         }
     }
 
@@ -486,7 +514,7 @@ impl StreamTransformer for FilterToolCalls {
 
         // Observe the unfiltered input. A removed start still changes where
         // the producer's later ID-less chunks belong.
-        self.streams.track(&event);
+        self.follow(&event);
 
         if drop {
             return Vec::new();
@@ -1488,13 +1516,21 @@ mod tests {
     /// stream in its lane.
     #[test]
     fn an_event_dropped_for_an_unknown_call_ends_the_chunk_stream_in_its_lane() {
-        let open = Event::tool_call_chunk(Some("c1".into()), Some("search".into()), None);
+        let open = || Event::tool_call_chunk(Some("c1".into()), Some("search".into()), None);
         let bare = || Event::tool_call_chunk(None, None, Some("{}".into()));
 
         let mut filter = FilterToolCalls::deny(["nope"]);
-        assert_eq!(filter.transform(open.clone()), [open]);
+        assert_eq!(filter.transform(open()), [open()]);
         assert_eq!(filter.transform(bare()), [bare()]);
         assert_eq!(filter.transform(Event::tool_call_args("c9", "{}")), []);
+        assert_eq!(filter.transform(bare()), []);
+
+        // A chunk that names such a call takes up its stream, so the chunks
+        // with no id after it are its own, and not the call that passes.
+        let mut filter = FilterToolCalls::deny(["nope"]);
+        assert_eq!(filter.transform(open()), [open()]);
+        let unknown = Event::tool_call_chunk(Some("c9".into()), None, Some("{}".into()));
+        assert_eq!(filter.transform(unknown), []);
         assert_eq!(filter.transform(bare()), []);
     }
 
@@ -1559,11 +1595,12 @@ mod tests {
         assert_eq!(filter.transform(hidden), []);
     }
 
-    /// What was sent names calls, and leaves a chunk stream open in a lane:
-    /// a chunk that names no id continues that stream, as it does for a
-    /// consumer, and goes the way its call goes.
+    /// What was sent names calls, which the filter learns, and leaves a
+    /// chunk stream open, which it does not take up: the earlier producer
+    /// may have had another stream open in that lane, one its filter
+    /// removed. A chunk that names the call takes it up.
     #[test]
-    fn a_filter_learns_the_calls_that_were_sent_and_the_chunk_streams_left_open() {
+    fn a_filter_learns_the_calls_that_were_sent_and_not_their_chunk_streams() {
         let sent = [
             Event::run_started("t", "r"),
             Event::tool_call_start("c1", "search"),
@@ -1576,8 +1613,9 @@ mod tests {
 
         let mut filter = FilterToolCalls::allow(["search", "lookup"]);
         filter.replay(&sent);
-        assert_eq!(filter.transform(bare()), [bare()]);
+        assert_eq!(filter.transform(bare()), []);
         assert_eq!(filter.transform(named()), [named()]);
+        assert_eq!(filter.transform(bare()), [bare()]);
         assert_eq!(filter.transform(args()), [args()]);
         // The explicit event ended the chunk stream in its lane: a chunk
         // that names no id has nothing left to continue.
@@ -1586,8 +1624,8 @@ mod tests {
         // Each call is judged by its own name.
         let mut filter = FilterToolCalls::deny(["lookup"]);
         filter.replay(&sent);
-        assert_eq!(filter.transform(bare()), []);
         assert_eq!(filter.transform(named()), []);
+        assert_eq!(filter.transform(bare()), []);
         assert_eq!(filter.transform(args()), [args()]);
     }
 
