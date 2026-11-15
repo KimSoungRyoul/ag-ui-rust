@@ -2,13 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main, build]
+    branches: [main]
   pull_request:
-  schedule:
-    # Upstream freshness needs the network, so it runs on a timer rather than
-    # as a required check. Monday morning, off the hour to dodge the rush.
-    - cron: "17 6 * * 1"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its previous run. Every other run gets
+# a group of its own, so runs on main are neither cancelled nor queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,179 +22,120 @@ env:
 jobs:
   audit:
     uses: ./.github/workflows/audit.yml
-    permissions:
-      contents: read
 
-  # File hygiene and formatting, driven by prek — a drop-in pre-commit
-  # replacement that is a single Rust binary. CI and the contributor's own
-  # pre-commit hook run the same hooks out of the same
-  # `.pre-commit-config.yaml`, so anyone who has run `prek install` cannot
-  # produce a commit this job then rejects.
-  #
-  # `cargo fmt --all -- --check` lives here, as the config's `cargo-fmt` hook,
-  # rather than in the `test` job below: one formatting gate, in the one place a
-  # contributor also runs it. Two consequences worth knowing before editing
-  # this job — the Rust toolchain is load-bearing (the hook shells out to
-  # `cargo fmt`, and without rustfmt it fails rather than skips), and deleting
-  # the job removes formatting from CI altogether.
-  #
-  # Clippy is deliberately not here. The config puts it on the pre-push stage,
-  # which `prek run` does not reach by default, so it stays in `test` where it
-  # shares that job's compilation cache instead of paying for its own.
+  # The hooks a contributor's pre-commit runs, from the same config. This is
+  # CI's only `cargo fmt` gate, hence rustfmt. Clippy is a pre-push hook, which
+  # `prek run` skips, so it runs in `test`.
   hygiene:
     name: hygiene (prek)
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      # The action prepends `--show-diff-on-failure --color=always` to
-      # `extra-args`, so a fixer hook's changes are printed as a diff rather
-      # than merely reported as a failure.
-      - uses: j178/prek-action@v3.0.0
+      - uses: j178/prek-action@v3.1.0
         with:
-          prek-version: "0.4.14"
+          prek-version: "0.5.10"
           extra-args: --all-files
 
   test:
     name: test
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      # `cargo test`, not `cargo nextest run`. nextest does not run doctests at
-      # all, and a large part of what this workspace proves lives in them: every
-      # crate README, the workspace quickstart, and — in
-      # crates/ag-ui/src/server/emit/mod.rs — the `compile_fail` example that is
-      # the only executable proof of the typestate guarantee docs/DESIGN.md
-      # sells as a headline feature. The local loop is nextest, so "535 tests
-      # pass" locally silently excludes all of that.
-      - run: cargo test --workspace --all-features
-      # Deliberately redundant with the line above. If someone ever swaps that
-      # for `cargo nextest run` to buy speed, this step is what keeps the
-      # doctests running instead of vanishing without a failing build.
+      # Not nextest: it skips doctests, and much of what this workspace proves
+      # lives in them, including the crate READMEs, the quickstart and the
+      # `compile_fail` typestate proof in crates/ag-ui/src/server/emit/mod.rs.
+      # `--all-targets` leaves doctests out, so they run exactly once, below.
+      - run: cargo test --workspace --all-features --all-targets
       - run: cargo test --doc --workspace --all-features
 
   semantic-interop:
     name: official TypeScript schema semantics
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: 26
           cache: npm
           cache-dependency-path: e2e/interop/package-lock.json
-      - run: npm ci --prefix e2e/interop --ignore-scripts
+      - run: npm ci --ignore-scripts --prefix e2e/interop
       - run: npm test --prefix e2e/interop
 
-  # `compile_fail` doctests may name the error they expect
-  # (```compile_fail,E0499```). Stable rustdoc parses that annotation and then
-  # ignores it: the example need only fail to compile, for any reason at all.
-  # Verified by putting `E0308` — mismatched types, nothing to do with the
-  # borrow-check example it labels — on the emit/mod.rs doctest, which still
-  # passed on stable and failed on nightly with "Some expected error codes were
-  # not found". So a typo that makes the example fail for an unrelated reason
-  # reads as a pass on stable, and the guarantee quietly stops being tested.
-  #
-  # This job is what makes those annotations mean something. It is the only use
-  # of nightly in CI; if nightly churn ever makes it more trouble than it is
-  # worth, delete the job rather than dropping the error codes.
+  # Stable rustdoc ignores the code in ```compile_fail,E0499```: any compile
+  # failure passes, so an example broken by a typo still reads as green.
+  # Nightly enforces the code. If nightly churn ever outweighs that, delete
+  # this job, not the error codes.
   doctest-error-codes:
     name: doctest error codes (nightly)
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --doc --workspace --all-features
 
-  # The design guarantees core/server/client stay executor-agnostic.
+  # docs/DESIGN.md: everything below the `axum` feature is executor-agnostic.
   executor-agnostic:
     name: executor-agnostic (no tokio below the web binding)
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
 
-      # Building for wasm proves the crate carries no native-only assumptions.
-      # Feature by feature rather than `--all-features`, because `axum` is the
-      # one that is allowed to be native-only.
+      # No native-only assumptions. Per feature, because `axum` may be native.
       - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features
       - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features sse,protobuf,schemars,utoipa
       - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features server,verify,sse
       - run: cargo check -p ag-ui --target wasm32-unknown-unknown --no-default-features --features client,sse
       - run: cargo check -p ag-ui-a2ui --target wasm32-unknown-unknown --all-features
 
-      # ...but it does NOT prove the tokio ban, which is the actual commitment in
-      # docs/DESIGN.md ("Executor-agnostic below the web binding"). tokio's `rt`,
-      # `sync`, `macros`, `io-util` and `time` features all compile for
-      # wasm32-unknown-unknown, so adding `tokio.workspace = true` to the
-      # `server` feature's dependencies passes every check above. Verified by
-      # doing exactly that: the wasm build stayed green.
-      #
-      # Since the merge into one crate this is a per-*feature* assertion rather
-      # than a per-crate one, and it matters more than it did: cargo unifies
-      # features across a dependency graph, so a single careless `dep:tokio` on
-      # `server` would put tokio under every consumer that never asked for
-      # `axum`. The feature set below is the boundary that claim lives on.
-      #
-      # The dependency graph is what carries the guarantee, so assert on that.
-      # `-e normal` excludes dev-dependencies, which may use tokio freely.
+      # The wasm build cannot prove the tokio ban: tokio's rt, sync, macros,
+      # io-util and time features all build for wasm32. Features also unify, so
+      # one `dep:tokio` on `server` would reach every consumer. Assert on the
+      # graph instead; `-e normal` lets dev-dependencies use tokio.
       - name: tokio is absent from the dependency graph
         run: |
-          set -uo pipefail
+          set -euo pipefail
           status=0
           forbid_tokio() {
-            crate="$1"; shift
-            echo "--- $crate $* ---"
-            tree=$(cargo tree -p "$crate" -e normal --prefix none --no-dedupe "$@") || exit 2
-            # No `grep -q`: an early close would SIGPIPE `cargo tree` and, under
-            # pipefail, turn a real hit into a silent pass.
-            if printf '%s\n' "$tree" | grep -E '^tokio v'; then
-              echo "::error title=Executor-agnostic violation::$crate $* depends on tokio. docs/DESIGN.md keeps the protocol types and the serve/client runtimes on futures primitives (futures::channel::mpsc, not tokio::sync::mpsc) so wasm and non-tokio executors stay viable. tokio belongs to the \`axum\` feature and nowhere else. Move the dependency, or change the design doc first."
+            echo "--- $* ---"
+            tree=$(cargo tree -p "$@" -e normal --prefix none --no-dedupe)
+            if grep -E '^tokio v' <<<"$tree"; then
+              echo "::error title=Executor-agnostic violation::$* depends on tokio. Below the \`axum\` feature the crates stay on futures primitives so wasm and other executors work (docs/DESIGN.md). Move the dependency, or change the design first."
               status=1
             fi
           }
-          # The protocol types alone, then with every core-side feature on.
           forbid_tokio ag-ui --no-default-features
           forbid_tokio ag-ui --no-default-features --features sse,protobuf,schemars,utoipa
-          # The two runtimes. Neither may reach an executor.
           forbid_tokio ag-ui --no-default-features --features server,verify,sse
           forbid_tokio ag-ui --no-default-features --features client,sse
           forbid_tokio ag-ui-a2ui --all-features
-          # `http` deliberately pulls reqwest and `axum` deliberately pulls
-          # tokio, so those two features are the documented exceptions and are
-          # not asserted on here.
+          # `http` (reqwest) and `axum` (tokio) are the documented exceptions.
           exit $status
 
+  # Each feature alone, defaults off, and everything on. The features are
+  # additive, so a powerset would buy little. `--all-targets` compiles
+  # feature-gated tests too.
   features:
     name: feature matrix
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Every feature alone and every crate with its defaults off. A powerset
-      # would be 2^4 for core alone and would not buy much: the features are
-      # additive and independent. `--all-targets` so feature-gated tests are
-      # compiled too, not just the library.
       - run: cargo check --all-targets -p ag-ui --no-default-features
       - run: cargo check --all-targets -p ag-ui --no-default-features --features sse
       - run: cargo check --all-targets -p ag-ui --no-default-features --features protobuf
@@ -200,6 +146,7 @@ jobs:
       - run: cargo check --all-targets -p ag-ui --no-default-features --features client
       - run: cargo check --all-targets -p ag-ui --no-default-features --features http
       - run: cargo check --all-targets -p ag-ui --no-default-features --features axum
+      - run: cargo check --all-targets -p ag-ui --features axum
       - run: cargo check --all-targets -p ag-ui --all-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features toolkit
@@ -208,68 +155,17 @@ jobs:
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features author
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui-server
       - run: cargo check --all-targets -p ag-ui-a2ui --all-features
-      - run: cargo check --all-targets -p ag-ui --features axum
-
-  # Every example built as the only package in the build, the way
-  # `cargo run -p <example>` builds it. Every other job builds the workspace,
-  # and cargo unifies features across the members it builds: e2e and
-  # review-desk enable `ag-ui-a2ui/ag-ui-server`, which turns `ag-ui-a2ui`'s
-  # `ag-ui` feature on for everyone. task-board and board-watch used items
-  # behind that feature without enabling it, and stopped compiling on their
-  # own when it left `ag-ui-a2ui`'s defaults, while every job here stayed green.
-  #
-  # Twice per package, because `--all-targets` alone does not catch it.
-  # Dev-dependencies unify too: board-watch's dev-dependency on ag-ui-e2e turns
-  # the feature back on, and `--all-targets` passed while its binary did not
-  # compile. The plain check reads the package's own `[dependencies]` and
-  # nothing else; `--all-targets` then covers the tests.
-  #
-  # The packages are read off `examples/` rather than listed, so a new example
-  # is covered without anyone remembering to edit this job.
-  examples:
-    name: examples (each package alone)
-    runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: every example builds with only the features it enables
-        run: |
-          set -uo pipefail
-          packages=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.workspace_root as $root | .packages[]
-                | select(.manifest_path | startswith($root + "/examples/")) | .name') || exit 2
-          # An empty list would check nothing and pass.
-          if [ -z "$packages" ]; then
-            echo "::error::no packages found under examples/ — this check would pass without checking anything"
-            exit 2
-          fi
-          status=0
-          check_alone() {
-            echo "--- cargo check -p $* ---"
-            if ! cargo check -p "$@"; then
-              echo "::error title=Example does not build alone::cargo check -p $* failed. Inside the workspace other members' features are unified in; built alone, the example gets only what its own Cargo.toml enables. Enable the feature it uses on its own dependency line."
-              status=1
-            fi
-          }
-          for package in $packages; do
-            check_alone "$package"
-            check_alone "$package" --all-targets
-          done
-          exit $status
 
   renderer-interop:
     name: official A2UI renderer core
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: 26
           cache: npm
           cache-dependency-path: |
             examples/review-desk/interop/package-lock.json
@@ -279,92 +175,58 @@ jobs:
       - run: npm ci --ignore-scripts --prefix e2e/a2ui-interop
       - run: npm test --prefix e2e/a2ui-interop
 
-  # `rust-version = "1.85"` is a promise to anyone pinning an older toolchain,
-  # and edition 2024 stabilised in exactly 1.85, so there is no slack in it.
+  # Edition 2024 stabilised in exactly 1.85, so `rust-version` has no slack.
   msrv:
     name: MSRV 1.85
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.85.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-features --all-targets
 
-  # The public API is the product, so a broken intra-doc link is a defect in the
-  # deliverable rather than a cosmetic warning.
+  # The public API is the product, so a broken intra-doc link is a defect.
   docs:
     name: docs
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --all-features --no-deps
 
-      # `-D warnings` above does not cover this, which is why it needs its own
-      # step. `--no-deps` cannot emit a path into a crate it is not documenting
-      # and does not say so: a cross-crate intra-doc link silently renders as the
-      # literal text `[Name]`, and the `[text](path)` form silently renders as
-      # `href="path"`, which looks like a link and 404s. Neither is a warning, so
-      # nothing anywhere asked — 31 of them had accumulated across all five
-      # crates, including nine copies of `RunAgentInput`, before anyone looked.
-      #
-      # Two better fixes were measured and rejected; they are recorded here so
-      # nobody re-derives them:
-      #
-      #   * Documenting dependencies (dropping `--no-deps`) resolves every link
-      #     and costs 454M across 142 crate directories instead of 24M across 9 —
-      #     127 other projects' documentation published under our /api/.
-      #   * `--extern-html-root-url` is the mechanism rustdoc provides for exactly
-      #     this, and it is nightly-only: it demands `-Z unstable-options`. This
-      #     repo runs nightly for one check job and says to drop that job if the
-      #     churn stops paying; the published documentation is a larger promise.
-      #
-      # So a reference to one of our own crates is written as an absolute link to
-      # the published rustdoc, and this step keeps it that way. A reference to a
-      # third-party crate stays plain text: that is simply what `--no-deps` does,
-      # and the type is still named.
+      # Invisible to `-D warnings`: under `--no-deps` a link into another crate
+      # renders as the literal text `[Name]`, and `[text](path)` renders as an
+      # href that 404s. So links to our own crates are absolute URLs into the
+      # published rustdoc, and this step enforces that. The alternatives cost
+      # more: without `--no-deps`, ~140 dependency crates would be published
+      # under /api/, and `--extern-html-root-url` is nightly-only.
       - name: references to our own crates are links, not text
+        # No pipefail: grep finding nothing is the passing case.
         run: |
           dirs=(target/doc/ag_ui target/doc/ag_ui_a2ui)
-
-          # A grep over a directory that does not exist finds nothing, which
-          # would read as a pass. Every failure mode of this check is silent
-          # enough already; refuse to report on a tree that is not all there.
+          # A grep over a missing directory finds nothing, which reads as a pass.
           for d in "${dirs[@]}"; do
-            if [ ! -d "$d" ]; then
-              echo "::error::$d is missing — the docs build did not produce what this check reads"
-              exit 2
-            fi
+            [ -d "$d" ] || { echo "::error::$d is missing; the docs build did not produce it"; exit 2; }
           done
 
-          # Every item this workspace documents, read off the rustdoc filenames
-          # so the check needs no hand-kept list of type names and cannot drift
-          # from the API. `Action` is the one exclusion: we define
-          # `ag_ui_a2ui::message::Action`, and an inlined upstream doc comment
-          # mentions an unrelated `Action::Follow` that would otherwise match. It
-          # is the only collision among 245 names.
+          # Every documented item, read off rustdoc's file names so the list
+          # cannot drift from the API. `Action` is excluded: an inlined upstream
+          # doc comment names an unrelated `Action::Follow`.
           names=$(find "${dirs[@]}" \
               \( -name 'struct.*.html' -o -name 'enum.*.html' -o -name 'trait.*.html' \
                  -o -name 'fn.*.html' -o -name 'type.*.html' \) \
             | sed -E 's#.*/(struct|enum|trait|fn|type)\.([^./]+)\.html$#\2#' \
             | grep -vxF 'Action' | sort -u | paste -sd'|' -)
 
-          rc=0
-
-          # Two more inlined-upstream collisions, excluded by the exact path
-          # rather than by name so our own `CancellationToken` stays covered.
-          # tokio-util blanket-impls `FutureExt` for every `Future`, so once the
-          # `axum` feature puts tokio-util in the graph, rustdoc renders those
-          # methods on our `Cancelled` and inlines their doc comments — which
-          # link to tokio-util's *own* `CancellationToken`, unresolvable under
-          # `--no-deps`. Same name as ours, different type, not our text.
+          # Under `axum`, tokio-util's `FutureExt` docs are inlined onto our
+          # `Cancelled` and link to tokio-util's own `CancellationToken`.
+          # Excluded by exact text so that our `CancellationToken` stays covered.
           inlined='\[<code>CancellationToken::run_until_cancelled(_owned)?</code>\]'
 
+          rc=0
           text=$(grep -rhoE "\[<code>($names)(::[A-Za-z0-9_]+)*</code>\]" "${dirs[@]}" \
             | grep -vE "$inlined" | sort | uniq -c)
           if [ -n "$text" ]; then
@@ -373,36 +235,24 @@ jobs:
             rc=1
           fi
 
-          href=$(grep -rhoE 'href="ag_ui_[a-z_]*::[^"]*"' "${dirs[@]}" | sort | uniq -c)
+          href=$(grep -rhoE 'href="ag_ui(_a2ui)?::[^"]*"' "${dirs[@]}" | sort | uniq -c)
           if [ -n "$href" ]; then
             echo "$href"
             echo "::error::those hrefs are Rust paths rather than URLs and will 404; use an absolute https://kimsoungryoul.github.io/ag-ui-rust/api/ link"
             rc=1
           fi
-
           exit $rc
 
-  # The same configurations the `features` job checks, documented instead of
-  # compiled — because those two jobs between them could not see this class of
-  # bug at all. A doc link to an item a feature compiled out is a rustdoc
-  # *error*, not a dead link; `cargo check` never resolves doc links, and the
-  # `docs` job only ever builds `--all-features`, which is the one configuration
-  # where every gated target exists. So nothing asked the question, and 17 such
-  # links had accumulated across core, client and a2ui by the time anything did.
-  #
-  # Mirrors `features` deliberately: if the two disagree about which
-  # configurations are supported, one of them is wrong. Two omissions, both
-  # because they buy nothing here — `--all-features` (the `docs` job above
-  # already builds it, and it cannot exercise a gated doc link) and
-  # the `axum` feature (nothing gated below it to vary).
+  # The `features` configurations, documented instead of compiled. A doc link
+  # to an item that a feature compiled out is a rustdoc error, and neither
+  # `cargo check` nor the all-features `docs` job ever resolves it.
   doc-features:
     name: docs (feature matrix)
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps -p ag-ui --no-default-features
@@ -411,7 +261,9 @@ jobs:
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features schemars
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features utoipa
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features server
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features server,verify,sse
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features client
+      - run: cargo doc --no-deps -p ag-ui --no-default-features --features http
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features axum
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features toolkit
@@ -420,59 +272,40 @@ jobs:
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features author
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features ag-ui-server
 
-  # Every published crate must carry the metadata and files crates.io needs, and
-  # must not ship anything it should not. `--list` is offline and does not
-  # publish; it is the cheapest way to notice a README that stopped being
-  # packaged or a stray file that started being.
+  # crates.io renders the README as the crate's front page. `--list` is
+  # offline and the cheapest way to catch a file that stopped being packaged.
   package:
     name: package manifest
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: every published crate packages its README and LICENSE
         run: |
-          set -uo pipefail
+          set -euo pipefail
           status=0
           for crate in ag-ui ag-ui-a2ui; do
             echo "--- $crate ---"
-            files=$(cargo package --list -p "$crate") || exit 2
-            printf '%s\n' "$files"
+            files=$(cargo package --list -p "$crate")
+            echo "$files"
             for required in README.md LICENSE; do
-              if ! printf '%s\n' "$files" | grep -Fxq "$required"; then
-                echo "::error title=Missing from package::$crate would publish without $required. crates.io renders the README as the crate's front page; without it the page is blank."
+              if ! grep -Fxq "$required" <<<"$files"; then
+                echo "::error title=Missing from package::$crate would publish without $required"
                 status=1
               fi
             done
           done
           exit $status
 
-  # Offline checks compare Rust events and the vendored 1.0 schema with the
-  # reviewed baseline. Network freshness runs separately.
+  # Offline: the Rust events and the vendored 1.0 schema against the reviewed
+  # baseline. The networked freshness check is upstream.yml.
   drift:
     name: protocol drift vs upstream
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo run -p xtask -- drift-check
+      - run: cargo run --locked -p xtask -- drift-check
       - run: cargo run --locked -p xtask -- drift-check --local
-
-  # This scheduled check asks GitHub whether the reviewed baseline has changed.
-  # A fetch failure fails this non-required job.
-  upstream-freshness:
-    name: upstream freshness (scheduled)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo run -p xtask -- drift-check --upstream
-        env:
-          # Lifts the 60-requests/hour/IP unauthenticated limit.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

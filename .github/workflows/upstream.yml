@@ -1,0 +1,27 @@
+name: Upstream freshness
+
+# Asks GitHub whether the reviewed protocol baseline has gone stale. It needs
+# the network, so it runs on a timer rather than as a pull-request check.
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Monday, off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  upstream-freshness:
+    name: upstream freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --locked -p xtask -- drift-check --upstream
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # lifts the 60 requests/hour anonymous limit
