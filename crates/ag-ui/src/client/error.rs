@@ -40,6 +40,11 @@ pub enum Error {
     #[error("protocol violation: {0}")]
     Protocol(String),
 
+    /// The stream is valid, but uses something this client does not handle —
+    /// a later run on the same stream, which it leaves unread.
+    #[error("not supported by this client: {0}")]
+    Unsupported(String),
+
     /// An RFC 6902 patch could not be applied.
     ///
     /// The target document is left exactly as it was: [`json_patch::patch`]

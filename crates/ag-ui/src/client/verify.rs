@@ -24,9 +24,12 @@
 //!
 //! # The rules
 //!
-//! 1. `RUN_STARTED` opens the stream, and does so exactly once. Only `RAW` and
-//!    `CUSTOM` may precede it.
-//! 2. `RUN_FINISHED` and `RUN_ERROR` close it. Nothing may follow.
+//! 1. `RUN_STARTED` opens the stream, and does so exactly once — or
+//!    `RUN_ERROR` does, for a run that failed before it began. Nothing else
+//!    may come first, `RAW` and `CUSTOM` included.
+//! 2. `RUN_FINISHED` and `RUN_ERROR` close it. Nothing may follow, except one
+//!    `RUN_ERROR` after `RUN_FINISHED`: a failure that surfaced after the run
+//!    reported success, which fails the run.
 //! 3. `TEXT_MESSAGE_CONTENT` and `TEXT_MESSAGE_END` require an open message
 //!    with the same id, and `TEXT_MESSAGE_START` may not re-open an id that is
 //!    already open.
@@ -101,6 +104,9 @@ fn describe(owner: &Owner) -> String {
 pub struct Verifier {
     started: bool,
     finished: bool,
+    /// Whether `RUN_ERROR` closed it. A run that finished can still fail,
+    /// once; a run that failed takes nothing more.
+    failed: bool,
     /// What is open, by id, with the owner that opened it — several at once
     /// is legal, the same id twice is not. `Vec` rather than a map so a
     /// complaint names whichever was opened first, which is the one a human
@@ -149,18 +155,26 @@ impl Verifier {
         let kind = event.event_type();
 
         if self.finished {
+            // A failure that surfaced after the run reported success — a
+            // transport error while flushing, say. The run has failed.
+            if kind == EventType::RunError && !self.failed {
+                self.failed = true;
+                return Ok(());
+            }
             return Err(Error::protocol(format!(
                 "{kind} arrived after the run had already finished"
             )));
         }
 
         // RAW and CUSTOM are outside the protocol's vocabulary by definition,
-        // so they are outside its ordering too.
-        if matches!(kind, EventType::Raw | EventType::Custom) {
+        // so they are outside its ordering too — once the run is open.
+        if self.started && matches!(kind, EventType::Raw | EventType::Custom) {
             return Ok(());
         }
 
-        if !self.started && kind != EventType::RunStarted {
+        // A run can fail before it begins, so RUN_ERROR may open the stream
+        // too. Nothing else may.
+        if !self.started && !matches!(kind, EventType::RunStarted | EventType::RunError) {
             return Err(Error::protocol(format!(
                 "{kind} arrived before RUN_STARTED"
             )));
@@ -398,6 +412,7 @@ impl Verifier {
                 // A failing run is allowed to abandon whatever it had open —
                 // that is what failing means.
                 self.finished = true;
+                self.failed = true;
             }
 
             // Chunk events are self-contained; expanding them into brackets is
@@ -416,7 +431,8 @@ impl Verifier {
     /// finished the run — a truncated response, which otherwise looks exactly
     /// like a short answer.
     pub fn finish(&self) -> Result<()> {
-        if !self.started {
+        // A stream that opened with RUN_ERROR never started, and is complete.
+        if !self.started && !self.finished {
             return Err(Error::protocol("the stream ended before RUN_STARTED"));
         }
         if !self.finished {

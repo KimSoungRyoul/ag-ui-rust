@@ -165,7 +165,8 @@ pub struct StateViewError {
 /// One retained diagnostic, independent of the terminal outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunDiagnostic {
-    /// A stable broad category (`state`, `protocol`, `patch`, `transport`, or `run`).
+    /// A stable broad category (`state`, `protocol`, `patch`, `transport`, `run`,
+    /// or `unsupported`).
     pub kind: &'static str,
     /// Human-readable cause.
     pub message: String,
@@ -737,6 +738,7 @@ impl<T: Transport, S> Thread<T, S> {
             dispatched: false,
             abort: AbortHandle::default(),
             end: None,
+            finished: None,
             diagnostics: Vec::new(),
             diagnostics_omitted: 0,
             initial_ids,
@@ -935,6 +937,9 @@ pub struct RunStream<'a, T, S = Value> {
     dispatched: bool,
     abort: AbortHandle,
     end: Option<RunEnd>,
+    /// What `RUN_FINISHED` reported, held until the stream ends: a
+    /// `RUN_ERROR` may still follow it and fail the run.
+    finished: Option<(RunOutcome, Option<Value>)>,
     diagnostics: Vec<RunDiagnostic>,
     diagnostics_omitted: usize,
     initial_ids: HashSet<MessageId>,
@@ -969,6 +974,7 @@ impl<T, S> RunStream<'_, T, S> {
             let kind = match &error {
                 Error::State(_) => "state",
                 Error::Protocol(_) | Error::InvalidPatchDocument { .. } => "protocol",
+                Error::Unsupported(_) => "unsupported",
                 Error::Patch { .. } => "patch",
                 Error::Run { .. } => "run",
                 Error::Json(_) | Error::Decode(_) => "decode",
@@ -990,6 +996,7 @@ impl<T, S> RunStream<'_, T, S> {
         self.done = true;
         self.events = None;
         self.prepared = None;
+        self.finished = None;
         self.thread.applier.reset_streams();
         if self.dispatched {
             self.thread.last_run_end = Some(end.clone());
@@ -1043,9 +1050,53 @@ impl<T, S> RunStream<'_, T, S> {
             code: None,
         });
     }
+    /// Ends the run as its `RUN_FINISHED` reported, if one arrived and nothing
+    /// has ended the run since.
+    fn finish_reported(&mut self) -> bool {
+        let Some((outcome, result)) = self.finished.take() else {
+            return false;
+        };
+        if !matches!(outcome, RunOutcome::Cancelled) {
+            self.thread
+                .confirm_interrupt_tool_decisions(&self.started_tool_calls);
+        }
+        match outcome {
+            RunOutcome::Success => {
+                self.thread.submission = None;
+                self.thread.interrupts.clear();
+                self.terminate(RunEnd::Success { result });
+            }
+            RunOutcome::SuccessWithPendingToolCalls {
+                pending_tool_call_ids,
+            } => {
+                self.thread.submission = None;
+                self.thread.interrupts.clear();
+                self.terminate(RunEnd::SuccessWithPendingToolCalls {
+                    result,
+                    pending_tool_call_ids,
+                });
+            }
+            RunOutcome::Interrupt { interrupts } => {
+                self.thread.submission = None;
+                self.thread.interrupts.clone_from(&interrupts);
+                for interrupt in &interrupts {
+                    self.ready.push_back(Update::Interrupt(interrupt.clone()));
+                }
+                self.terminate(RunEnd::Interrupted { interrupts });
+            }
+            RunOutcome::Cancelled => {
+                self.thread.unconfirm();
+                self.stop_subagents();
+                self.terminate(RunEnd::Cancelled);
+            }
+        }
+        true
+    }
 }
 impl<T, S> Drop for RunStream<'_, T, S> {
     fn drop(&mut self) {
+        // A run that reported how it ended keeps that ending.
+        self.finish_reported();
         if self.dispatched && !self.done {
             self.thread.unconfirm();
             self.thread.applier.abort_subagents();
@@ -1103,6 +1154,16 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
         // Pair the terminal with the stream's announced run even when optional
         // ordering verification is disabled. Run errors carry no IDs.
         match &event {
+            // 1.0 lets a later run follow a closed one on the same stream. This
+            // stream reads one run: it ends as reported, and the rest is unread.
+            Event::RunStarted(_) if self.finished.is_some() => {
+                self.diagnostic(Error::Unsupported(
+                    "RUN_STARTED after RUN_FINISHED: a later run on the same stream was not read"
+                        .into(),
+                ));
+                self.finish_reported();
+                return;
+            }
             Event::RunStarted(started) => {
                 if started.thread_id != self.thread.thread_id
                     || started.run_id != self.request_run_id
@@ -1208,41 +1269,10 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
                     }));
                 }
             }
+            // The run is closed, but a RUN_ERROR may still follow and fail
+            // it, so the outcome takes effect when the stream ends.
             Changed::RunFinished { outcome, result } => {
-                if !matches!(outcome, RunOutcome::Cancelled) {
-                    self.thread
-                        .confirm_interrupt_tool_decisions(&self.started_tool_calls);
-                }
-                match outcome {
-                    RunOutcome::Success => {
-                        self.thread.submission = None;
-                        self.thread.interrupts.clear();
-                        self.terminate(RunEnd::Success { result });
-                    }
-                    RunOutcome::SuccessWithPendingToolCalls {
-                        pending_tool_call_ids,
-                    } => {
-                        self.thread.submission = None;
-                        self.thread.interrupts.clear();
-                        self.terminate(RunEnd::SuccessWithPendingToolCalls {
-                            result,
-                            pending_tool_call_ids,
-                        });
-                    }
-                    RunOutcome::Interrupt { interrupts } => {
-                        self.thread.submission = None;
-                        self.thread.interrupts.clone_from(&interrupts);
-                        for interrupt in &interrupts {
-                            self.ready.push_back(Update::Interrupt(interrupt.clone()));
-                        }
-                        self.terminate(RunEnd::Interrupted { interrupts });
-                    }
-                    RunOutcome::Cancelled => {
-                        self.thread.unconfirm();
-                        self.stop_subagents();
-                        self.terminate(RunEnd::Cancelled);
-                    }
-                }
+                self.finished = Some((outcome, result));
             }
             Changed::RunError { message, code } => {
                 self.diagnostic(Error::Run {
@@ -1264,7 +1294,7 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
         this.abort.state.waker.register(cx.waker());
         loop {
             // A terminal already applied wins over a later abort.
-            if !this.done && this.abort.is_aborted() {
+            if !this.done && this.abort.is_aborted() && !this.finish_reported() {
                 if this.dispatched {
                     this.thread.unconfirm();
                     this.stop_subagents();
@@ -1311,7 +1341,15 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
             {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Some(Ok(event))) => this.ingest(event),
+                // After RUN_FINISHED a broken connection truncates nothing:
+                // the run already ended, so the break is only reported.
+                Poll::Ready(Some(Err(error @ Error::Transport(_)))) if this.finished.is_some() => {
+                    this.diagnostic(error);
+                    this.finish_reported();
+                }
                 Poll::Ready(Some(Err(error))) => this.fail(error),
+                // Ended cleanly after RUN_FINISHED: the run is over.
+                Poll::Ready(None) if this.finish_reported() => {}
                 Poll::Ready(None) => {
                     let error = this
                         .verifier
