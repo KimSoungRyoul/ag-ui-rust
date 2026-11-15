@@ -1,5 +1,6 @@
 name: Dependency security
 
+# Daily, so a new RustSec advisory surfaces even when the code has not changed.
 on:
   workflow_call:
   workflow_dispatch:
@@ -14,10 +15,9 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit@0.22.2
-      # Fetch current RustSec advisories, including on unchanged daily builds.
-      # Do not suppress advisories or accept yanked dependencies.
+          tool: cargo-audit@0.23.0
+      # No suppressed advisories, no accepted yanked dependencies.
       - run: cargo audit --deny warnings
