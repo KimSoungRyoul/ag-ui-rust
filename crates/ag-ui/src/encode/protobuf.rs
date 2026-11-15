@@ -10,25 +10,10 @@
 //!
 //! The binary transport is defined by `events.proto` in the upstream
 //! `@ag-ui/proto` package. When this module was written, its `Event` message
-//! was a `oneof` over **21** of the **36** event types this crate defines:
-//!
-//! `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`,
-//! `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
-//! `TOOL_CALL_CHUNK`, `STATE_SNAPSHOT`, `STATE_DELTA`, `MESSAGES_SNAPSHOT`,
-//! `RAW`, `CUSTOM`, `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, `STEP_STARTED`,
-//! `STEP_FINISHED`, `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR`.
-//!
-//! (Upstream's own documentation said 19: the two `*_CHUNK` events had a
-//! `oneof` arm but no `EventType` enum value to select it with, so they could
-//! not be encoded in practice either.)
-//!
-//! The other 15 had no wire representation at all: every `REASONING_*` event,
-//! both `ACTIVITY_*` events, all five deprecated `THINKING_*` events, and
-//! `TOOL_CALL_RESULT`. An agent that reasons, reports activities, or returns a
-//! tool result — which is most of them — could not express its stream in that
-//! format. Encoding such a run would have meant silently dropping events, so
-//! this crate declined to encode any. [`COVERED_EVENT_TYPES`] still lists the
-//! 21, as a record of that file.
+//! was a `oneof` over 21 of the 36 event types this crate defines, with no
+//! `REASONING_*`, `ACTIVITY_*` or `THINKING_*` event and no
+//! `TOOL_CALL_RESULT`. Encoding a run would have meant silently dropping
+//! events, so this crate declined to encode any.
 //!
 //! That reason is gone. Upstream now generates `events.proto` from the AG-UI
 //! 1.0 JSON Schema, and both its `EventType` enum and its `oneof` cover all 31
@@ -64,7 +49,7 @@
 
 use crate::encode::{EventStreamFormatter, PROTOBUF_MEDIA_TYPE};
 use crate::error::{Error, Result};
-use crate::event::{Event, EventType};
+use crate::event::Event;
 
 /// Placeholder for the binary formatter.
 ///
@@ -91,39 +76,4 @@ impl EventStreamFormatter for ProtobufFormatter {
             "this crate has no AG-UI protobuf encoder; use SSE",
         ))
     }
-}
-
-/// The event types the pre-1.0 upstream `events.proto` could represent.
-///
-/// Everything not listed here had no binary encoding in that file. The 1.0
-/// `events.proto` covers every 1.0 event type; see the [module docs](self).
-pub const COVERED_EVENT_TYPES: &[EventType] = &[
-    EventType::TextMessageStart,
-    EventType::TextMessageContent,
-    EventType::TextMessageEnd,
-    EventType::TextMessageChunk,
-    EventType::ToolCallStart,
-    EventType::ToolCallArgs,
-    EventType::ToolCallEnd,
-    EventType::ToolCallChunk,
-    EventType::StateSnapshot,
-    EventType::StateDelta,
-    EventType::MessagesSnapshot,
-    EventType::Raw,
-    EventType::Custom,
-    EventType::RunStarted,
-    EventType::RunFinished,
-    EventType::RunError,
-    EventType::StepStarted,
-    EventType::StepFinished,
-    EventType::SubagentStarted,
-    EventType::SubagentFinished,
-    EventType::SubagentError,
-];
-
-/// Whether the pre-1.0 upstream `events.proto` could represent `event_type`:
-/// whether it is in [`COVERED_EVENT_TYPES`]. Every 1.0 event type has a
-/// representation in the 1.0 file.
-pub fn is_covered(event_type: EventType) -> bool {
-    COVERED_EVENT_TYPES.contains(&event_type)
 }

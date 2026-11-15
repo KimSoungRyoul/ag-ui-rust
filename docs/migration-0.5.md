@@ -464,6 +464,11 @@ These are on `main` and not yet in a published version.
   `ToolCallStartEvent::with_parent_message_id`, for a call that names the message that
   requested it; `RunContext::set_result` and `add_usage`, which the driver writes as
   `result` and `usage` on the terminal event.
+- `encode::protobuf::COVERED_EVENT_TYPES` and `encode::protobuf::is_covered` are removed,
+  and nothing replaces them. In alpha.3 they listed the 21 event types that upstream's
+  pre-1.0 `events.proto` could carry. Upstream's 1.0 `events.proto` covers every 1.0 event
+  type, so there is no gap left to check. `ProtobufFormatter` is unchanged and still
+  refuses to encode.
 
 ## Verify the upgrade
 
