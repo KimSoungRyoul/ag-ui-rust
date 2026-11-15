@@ -490,7 +490,7 @@ impl MessageProcessor {
             let mut rejection = invalid(report.errors);
             // A call that cannot be read is reported by its id, when it has
             // one: there is no call to answer.
-            rejection.call = FunctionCallId::of(message).map(|id| (id, Refused::Malformed));
+            rejection.detail = Detail::of_call(message, Refused::Malformed);
             return Err(rejection);
         }
         if let Some(spoken) = self.version {
@@ -530,10 +530,20 @@ impl MessageProcessor {
         match operation {
             Some(Operation::CallRendererFunction) => {
                 let mut report = ValidationReport::default();
-                self.validator()
-                    .check_renderer_call(store, &locator, message, &mut report);
+                let readable =
+                    self.validator()
+                        .check_renderer_call(store, &locator, message, &mut report);
                 if !report.errors.is_empty() {
-                    return Err(Rejection::refused_call(index, message, report.errors));
+                    return Err(match readable {
+                        true => Rejection::refused_call(index, message, report.errors),
+                        // Not a call a renderer can read: there is none to
+                        // answer, and it is reported by its id.
+                        false => {
+                            let mut rejection = invalid(report.errors);
+                            rejection.detail = Detail::of_call(message, Refused::Malformed);
+                            rejection
+                        }
+                    });
                 }
                 return decode(message);
             }
@@ -841,13 +851,35 @@ pub struct Rejection {
     pub error: Error,
     /// The version the refused message declares, for the reply.
     version: A2uiVersion,
+    /// What only some refusals carry. Boxed, since a rejection is the error
+    /// of a result and most have none of it.
+    detail: Option<Box<Detail>>,
+}
+
+/// What a refusal for a named catalog, or of a function call, carries beside
+/// its error.
+#[derive(Debug, Default)]
+struct Detail {
     /// What a [`RejectionKind::Catalog`] refusal was found as, when a
     /// component or a function call named the catalog: the errors, each where
-    /// the message wrote the name. Empty for any other refusal.
+    /// the message wrote the name.
     named: Vec<ValidationError>,
     /// The `functionCallId` of a refused `callRendererFunction`, and whether
     /// the call could be read.
     call: Option<(String, Refused)>,
+}
+
+impl Detail {
+    /// The detail of a refused `callRendererFunction`, when the message has
+    /// an id to report it by.
+    fn of_call(message: &Value, refused: Refused) -> Option<Box<Self>> {
+        FunctionCallId::of(message).map(|id| {
+            Box::new(Self {
+                named: Vec::new(),
+                call: Some((id, refused)),
+            })
+        })
+    }
 }
 
 /// How far a refused `callRendererFunction` got.
@@ -885,8 +917,7 @@ impl Rejection {
                 .and_then(Value::as_str)
                 .and_then(A2uiVersion::parse)
                 .unwrap_or(A2uiVersion::DEFAULT),
-            named: Vec::new(),
-            call: None,
+            detail: None,
         }
     }
 
@@ -900,7 +931,7 @@ impl Rejection {
                 errors: ValidationErrors(errors),
             },
         );
-        rejection.call = FunctionCallId::of(message).map(|id| (id, Refused::NotRun));
+        rejection.detail = Detail::of_call(message, Refused::NotRun);
         rejection
     }
 
@@ -911,7 +942,10 @@ impl Rejection {
             (RejectionKind::Catalog, Some(first)) => {
                 let error = Error::catalog(first.message.clone());
                 let mut rejection = Self::new(kind, index, message, error);
-                rejection.named = errors;
+                rejection.detail = Some(Box::new(Detail {
+                    named: errors,
+                    call: None,
+                }));
                 rejection
             }
             _ => Self::new(
@@ -959,7 +993,9 @@ impl Rejection {
     /// # Ok::<(), ag_ui_a2ui::Error>(())
     /// ```
     pub fn named_catalogs(&self) -> &[ValidationError] {
-        &self.named
+        self.detail
+            .as_deref()
+            .map_or(&[], |detail| detail.named.as_slice())
     }
 
     /// The validation errors of the refusal; none for a
@@ -1004,7 +1040,11 @@ impl Rejection {
         let mut extensions = Map::new();
         // A refused function call is reported by the id of the call, which
         // takes the place of a surface.
-        if let Some((function_call_id, _)) = &self.call {
+        if let Some((function_call_id, _)) = self
+            .detail
+            .as_deref()
+            .and_then(|detail| detail.call.as_ref())
+        {
             extensions.insert(
                 "functionCallId".to_string(),
                 Value::String(function_call_id.clone()),
@@ -1084,7 +1124,11 @@ impl Rejection {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn renderer_response(&self) -> Option<RendererMessage> {
-        let (function_call_id, Refused::NotRun) = self.call.as_ref()? else {
+        let (function_call_id, Refused::NotRun) = self
+            .detail
+            .as_deref()
+            .and_then(|detail| detail.call.as_ref())?
+        else {
             return None;
         };
         let message = self

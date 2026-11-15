@@ -146,6 +146,18 @@ impl Ordered {
         }
     }
 
+    /// Sets `key` on an object: in place where the object has it, and last
+    /// where it does not. Nothing happens to a value that is not an object.
+    pub(crate) fn set_last(&mut self, key: &str, value: Self) {
+        let Self::Object(fields) = self else {
+            return;
+        };
+        match fields.iter_mut().find(|(own, _)| own == key) {
+            Some((_, held)) => *held = value,
+            None => fields.push((key.to_string(), value)),
+        }
+    }
+
     /// The value under `key`, of an object that has it.
     pub(crate) fn field(&self, key: &str) -> Option<&Self> {
         match self {

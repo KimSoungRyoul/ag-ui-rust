@@ -42,6 +42,8 @@
 
 #[path = "conformance_agent/mod.rs"]
 mod agent_tier;
+#[path = "conformance_core/rpc.rs"]
+mod core_rpc;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -81,8 +83,6 @@ enum Why {
     /// ones in their place; this crate had ports of that design and removed
     /// them when its agent layer took over (#41).
     Superseded,
-    /// It tests A2UI v1.0, which #42 adds.
-    V1_0,
     /// It tests the v0.8 wire format, which this crate does not speak.
     V0_8,
     /// It tests a renderer, and this crate does not render.
@@ -98,7 +98,6 @@ impl Why {
             Why::Formats => agent_tier::NEEDS_FORMAT,
             Why::Timing => "later: timing (#75)",
             Why::Superseded => "superseded: the SDK design before the agent layer",
-            Why::V1_0 => "later: A2UI v1.0 (#42)",
             Why::V0_8 => "out of scope: v0.8",
             Why::Renderer => "out of scope: renderer",
             Why::NotApplicable => "not applicable",
@@ -190,14 +189,14 @@ const SUITES: &[Suite] = &[
     run("core/composition_constraints.yaml", [9, 1, 0, 0]),
     run("core/index_function.yaml", [1, 0, 3, 0]),
     run("core/validation_result.yaml", [0, 0, 7, 0]),
-    skip("core/rpc_functions.yaml", 33, Why::V1_0, "callRendererFunction and its response"),
-    skip("core/agent_function_routing.yaml", 43, Why::V1_0, "routing function calls to the agent with callAgentFunction"),
+    run("core/rpc_functions.yaml", [18, 0, 15, 0]),
 
     // --- core tier: not this crate's -------------------------------------------------------------
     skip("core/validator_v0_8.yaml", 27, Why::V0_8, "validation of v0.8 messages"),
     skip("core/message_processor_v0_8.yaml", 9, Why::V0_8, "the v0.8 message processor"),
     skip("core/agent_to_renderer.yaml", 4, Why::NotApplicable, "a message schema generated from an SDK's own types against the published one; this crate ships the published schema"),
     skip("core/functions.yaml", 116, Why::Renderer, "evaluating the basic catalog functions, which run on the renderer"),
+    skip("core/agent_function_routing.yaml", 43, Why::Renderer, "evaluating a function call in a binding, a check rule or an action, and sending the ones the renderer does not implement to the agent"),
     skip("core/actions.yaml", 18, Why::Renderer, "dispatching a user action from a rendered component"),
     skip("core/error_responses.yaml", 24, Why::Renderer, "the error messages a renderer sends back to the agent"),
     skip("core/node_resolution.yaml", 31, Why::Renderer, "materialising the reactive component node tree"),
@@ -213,10 +212,10 @@ const SUITES: &[Suite] = &[
     agent("agent/renderer_state.yaml", [5, 0, 4, 0]),
     agent("agent/streamed_answer.yaml", [6, 0, 0, 0]),
     agent("agent/direct_json/prompt_generator.yaml", [15, 0, 0, 0]),
-    agent("agent/direct_json/response_parser.yaml", [35, 0, 1, 0]),
-    agent("agent/direct_json/response_streaming.yaml", [92, 7, 40, 0]),
-    agent("agent/direct_json/compiler.yaml", [19, 0, 19, 0]),
-    agent("agent/direct_json/decompiler.yaml", [10, 0, 1, 0]),
+    agent("agent/direct_json/response_parser.yaml", [36, 0, 0, 0]),
+    agent("agent/direct_json/response_streaming.yaml", [93, 7, 39, 0]),
+    agent("agent/direct_json/compiler.yaml", [38, 0, 0, 0]),
+    agent("agent/direct_json/decompiler.yaml", [11, 0, 0, 0]),
     skip("agent/direct_json/scaling.yaml", 7, Why::Timing, "the direct JSON format: parse time against payload size"),
     skip("agent/skill.yaml", 12, Why::Formats, "skill documents generated from a format and its catalogs; the goldens are Express"),
     skip("agent/express/prompt_generator.yaml", 23, Why::Formats, "the Express format: system prompt snippet"),
@@ -232,9 +231,9 @@ const SUITES: &[Suite] = &[
     skip("agent/legacy/parser.yaml", 23, Why::Superseded, "the tag parser; `agent/direct_json/response_parser.yaml` is the suite of the parser that reads the same tags now"),
     skip("agent/legacy/inference_format.yaml", 22, Why::Superseded, "catalog selection and prompt assembly; `agent/catalog_resolution.yaml`, `agent/request_processor.yaml` and `agent/direct_json/prompt_generator.yaml` are the suites of what does that now"),
     skip("agent/legacy/streaming_parser.yaml", 88, Why::Superseded, "the streaming parser, with placeholders for components still to arrive; `agent/direct_json/response_streaming.yaml` is the suite of the stream that replaced it"),
-    agent("agent/multi_catalog_formats.yaml", [9, 0, 26, 0]),
-    skip("agent/agent_functions.yaml", 64, Why::V1_0, "agent functions and the agent's side of renderer messages"),
-    skip("agent/renderer_function_calls.yaml", 30, Why::V1_0, "the agent calling renderer functions"),
+    agent("agent/multi_catalog_formats.yaml", [15, 0, 20, 0]),
+    agent("agent/agent_functions.yaml", [64, 0, 0, 0]),
+    agent("agent/renderer_function_calls.yaml", [30, 0, 0, 0]),
 
     // --- end to end: the agent half parses a transcript, a renderer half draws it ---------------
     agent("e2e/v0_9_1/login_form_action.yaml", [1, 0, 1, 0]),
@@ -870,11 +869,10 @@ fn agent_row(suite: &Suite, cases: usize, tally: &Tally) -> String {
             .sum()
     };
     format!(
-        "| `{}` | {cases} | {} | {} | {} | {} | {} |",
+        "| `{}` | {cases} | {} | {} | {} | {} |",
         suite.path,
         tally.in_v1_0,
         tally.in_v0_9,
-        skipped(agent_tier::NEEDS_V1_0),
         skipped(agent_tier::NEEDS_V0_8),
         skipped(agent_tier::NEEDS_FORMAT),
     )
@@ -976,10 +974,8 @@ fn conformance_suite() {
         "\nAGENT TIER: {} checks ran in v1.0, {} in the v0.9 family\n",
         total.in_v1_0, total.in_v0_9
     );
-    println!(
-        "| Suite | Cases | In v1.0 | In v0.9 | Skipped: v1.0 | Skipped: v0.8 | Skipped: another format |"
-    );
-    println!("|---|---:|---:|---:|---:|---:|---:|");
+    println!("| Suite | Cases | In v1.0 | In v0.9 | Skipped: v0.8 | Skipped: another format |");
+    println!("|---|---:|---:|---:|---:|---:|");
     for row in &agent_rows {
         println!("{row}");
     }
@@ -1129,6 +1125,10 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
         ) => match a2a_skip(action, case) {
             Some(reason) => tally.record(check, Outcome::Skipped(reason.to_string())),
             None => settle(check, run_a2a(action, case), tally),
+        },
+        ("handle_rpc", Format::Current) => match core_rpc::skip(case) {
+            Some(reason) => tally.record(check, Outcome::Skipped(reason)),
+            None => settle(check, core_rpc::run(case), tally),
         },
         (other, _) => tally.record(check, Outcome::Skipped(unsupported_action(other))),
     }

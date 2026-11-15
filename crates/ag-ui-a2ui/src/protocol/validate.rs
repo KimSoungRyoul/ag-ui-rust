@@ -1700,6 +1700,19 @@ impl<'a> Validator<'a> {
                                 ),
                             ));
                         }
+                        // What the declaration says of the arguments' names.
+                        let fault = call
+                            .args
+                            .and_then(Value::as_object)
+                            .filter(|_| self.options.check_component_types)
+                            .and_then(|args| function.argument_fault(args));
+                        if let Some(fault) = fault {
+                            report.errors.push(ValidationError::new(
+                                ErrorCode::InvalidValue,
+                                format!("{}.args", call.location),
+                                fault,
+                            ));
+                        }
                     }
                     // A catalog with nothing in it is one the caller has not
                     // supplied; it defines no function to compare with.
@@ -1734,19 +1747,25 @@ impl<'a> Validator<'a> {
     /// and nothing else, a nested call is one the renderer may make, in the
     /// catalog it names, or the surface's own, or the catalog of the call
     /// when no surface is named, and `@index` has nothing to count.
+    ///
+    /// Gives whether the message is a call at all: its own fields, a name and
+    /// a `catalogId`. A call that reads and is refused is answered; one that
+    /// does not read has no call to answer.
     pub(crate) fn check_renderer_call(
         &self,
         store: &SurfaceStore,
         locator: &str,
         message: &Value,
         report: &mut ValidationReport,
-    ) {
+    ) -> bool {
         let key = Operation::CallRendererFunction.as_str();
         let at = format!("{locator}.{key}");
         let version = stated_version(message);
         let Some(payload) = message.get(key).and_then(Value::as_object) else {
-            return;
+            return true;
         };
+        // Whether the message is a call at all.
+        let mut readable = true;
         let mut invalid = |path: String, reason: String| {
             report
                 .errors
@@ -1754,6 +1773,7 @@ impl<'a> Validator<'a> {
         };
         for field in payload.keys() {
             if !["surfaceId", "functionCallId", "callFunction"].contains(&field.as_str()) {
+                readable = false;
                 invalid(
                     format!("{at}.{field}"),
                     format!("'{field}' is not a field of '{key}'."),
@@ -1761,6 +1781,7 @@ impl<'a> Validator<'a> {
             }
         }
         if payload.get("functionCallId").and_then(Value::as_str) == Some("") {
+            readable = false;
             invalid(
                 format!("{at}.functionCallId"),
                 "'functionCallId' must not be empty: the response copies it.".to_string(),
@@ -1774,20 +1795,21 @@ impl<'a> Validator<'a> {
                     invalid(
                         format!("{at}.surfaceId"),
                         format!(
-                            "surface {surface_id:?} does not exist; a call names a live                                  surface, or none."
+                            "surface {surface_id:?} does not exist; a call names a live surface, \
+                             or none."
                         ),
                     );
-                    return;
+                    return readable;
                 }
             },
             None => None,
         };
         let Some(call) = payload.get("callFunction").and_then(Value::as_object) else {
-            return;
+            return readable;
         };
         let call_at = format!("{at}.callFunction");
         if !call_fields(version, call, &call_at, &mut invalid) {
-            return;
+            return false;
         }
         let name = call
             .get(version.call_key())
@@ -1797,19 +1819,21 @@ impl<'a> Validator<'a> {
             invalid(
                 format!("{call_at}.{}", version.call_key()),
                 format!(
-                    "'{name}' cannot be called with '{key}': the function is one a catalog                      declares, named by an identifier with no '@'."
+                    "'{name}' cannot be called with '{key}': the function is one a catalog \
+                     declares, named by an identifier with no '@'."
                 ),
             );
-            return;
+            return false;
         }
         let Some(catalog_id) = call.get("catalogId").and_then(Value::as_str) else {
             invalid(
                 format!("{call_at}.catalogId"),
                 format!(
-                    "'{key}' requires 'catalogId' on its 'callFunction': the call names the                      catalog that declares '{name}'."
+                    "'{key}' requires 'catalogId' on its 'callFunction': the call names the \
+                     catalog that declares '{name}'."
                 ),
             );
-            return;
+            return false;
         };
         let drawing = match surface {
             Some(surface) => self.drawing(surface),
@@ -1825,28 +1849,29 @@ impl<'a> Validator<'a> {
         else {
             let reason = match self.named(&drawing, catalog_id) {
                 Some(other) => format!(
-                    "Protocol version mismatch: cannot call a function of catalog                      '{catalog_id}' ({}) in a {version} message.",
+                    "Protocol version mismatch: the protocol version of catalog '{catalog_id}' \
+                     ({}) does not match message protocol version {version}.",
                     other.version()
                 ),
                 None => format!("Catalog not found: {catalog_id}"),
             };
             invalid(format!("{call_at}.catalogId"), reason);
-            return;
+            return readable;
         };
         let Some(function) = catalog.functions.get(name) else {
             invalid(
                 call_at.clone(),
                 format!(
-                    "Unrecognized function '{name}': catalog '{catalog_id}' defines no such                      function."
+                    "Function not found: {name}. Catalog '{catalog_id}' defines no such function."
                 ),
             );
-            return;
+            return readable;
         };
         if function.allowed_callers == AllowedCallers::RendererOnly {
             invalid(
                 call_at.clone(),
                 format!(
-                    "Function '{name}' cannot be called by agent (allowedCallers is                      rendererOnly)."
+                    "Function '{name}' cannot be called by agent (allowedCallers is rendererOnly)."
                 ),
             );
         }
@@ -1854,12 +1879,13 @@ impl<'a> Validator<'a> {
             invalid(
                 call_at.clone(),
                 format!(
-                    "Function '{name}' requires user activation, and a call from the agent has                      no user gesture."
+                    "Function '{name}' requires user activation context to execute, and a call \
+                     from the agent has no user gesture."
                 ),
             );
         }
         let Some(args) = call.get("args").and_then(Value::as_object) else {
-            return;
+            return readable;
         };
         if let Some(fault) = function.argument_fault(args) {
             invalid(format!("{call_at}.args"), fault);
@@ -1907,7 +1933,8 @@ impl<'a> Validator<'a> {
                     invalid(
                         format!("{location}.{field}"),
                         format!(
-                            "'{field}' is not a field of a data binding: a binding holds '{}'                              and nothing else.",
+                            "'{field}' is not a field of a data binding: a binding holds '{}' and \
+                             nothing else.",
                             version.path_key()
                         ),
                     );
@@ -1939,11 +1966,14 @@ impl<'a> Validator<'a> {
                 invalid(
                     location.clone(),
                     if nested == "@index" {
-                        "The @index function can only be evaluated inside a collection template                          iteration scope, and the arguments of a function call are resolved                          outside any."
+                        "The @index function can only be evaluated inside a collection template \
+                         iteration scope, and the arguments of a function call are resolved \
+                         outside any."
                             .to_string()
                     } else {
                         format!(
-                            "'{nested}' is not a system function. A2UI {version} defines one,                              '@index'; a function of a catalog has no '@'."
+                            "'{nested}' is not a system function. A2UI {version} defines one, \
+                             '@index'; a function of a catalog has no '@'."
                         )
                     },
                 );
@@ -1968,7 +1998,8 @@ impl<'a> Validator<'a> {
                         invalid(
                             location.clone(),
                             format!(
-                                "Function call '{nested}' names no catalog, and the surface has                                  no default catalog. Give the call a 'catalogId'."
+                                "Function call '{nested}' names no catalog, and the surface has no \
+                                 default catalog. Give the call a 'catalogId'."
                             ),
                         );
                     }
@@ -1982,7 +2013,8 @@ impl<'a> Validator<'a> {
                         invalid(
                             location.clone(),
                             format!(
-                                "Function '{nested}' is agentOnly: the renderer resolves the                                  arguments of a call, and may not call it."
+                                "Function '{nested}' is agentOnly: the renderer resolves the \
+                                 arguments of a call, and may not call it."
                             ),
                         );
                     }
@@ -1990,7 +2022,8 @@ impl<'a> Validator<'a> {
                         invalid(
                             location.clone(),
                             format!(
-                                "Function '{nested}' requires user activation, and a call from                                  the agent has no user gesture."
+                                "Function '{nested}' requires user activation, and a call from the \
+                                 agent has no user gesture."
                             ),
                         );
                     }
@@ -2003,13 +2036,14 @@ impl<'a> Validator<'a> {
                 None => invalid(
                     location.clone(),
                     format!(
-                        "Unrecognized function '{nested}': catalog '{}' defines no such                          function.",
+                        "Unrecognized function '{nested}': catalog '{}' defines no such function.",
                         resolved.catalog_id
                     ),
                 ),
             }
         }
         report.errors.extend(reserved);
+        readable
     }
 
     /// `@index` where no list template gives it an item to count, from v1.0
@@ -2605,7 +2639,8 @@ fn call_fields(
         invalid(
             format!("{location}.catalogId"),
             format!(
-                "'catalogId' of a function call names a catalog by its id, which is a string,                  not {}.",
+                "'catalogId' of a function call names a catalog by its id, which is a string, not \
+                 {}.",
                 type_name(named)
             ),
         );
@@ -2615,7 +2650,8 @@ fn call_fields(
         invalid(
             format!("{location}.args"),
             format!(
-                "'args' of a function call must be an object, not {}. Leave it out for a call                  without arguments.",
+                "'args' of a function call must be an object, not {}. Leave it out for a call \
+                 without arguments.",
                 type_name(args)
             ),
         );
@@ -2626,7 +2662,8 @@ fn call_fields(
             invalid(
                 format!("{location}.{field}"),
                 format!(
-                    "'{field}' is not a field of a function call: a call holds '{name_key}',                      'catalogId' and 'args'."
+                    "'{field}' is not a field of a function call: a call holds '{name_key}', \
+                     'catalogId' and 'args'."
                 ),
             );
             readable = false;
@@ -2643,6 +2680,9 @@ struct Call<'v> {
     name: Cow<'v, str>,
     /// The `catalogId` written beside it.
     catalog_id: Option<&'v Value>,
+    /// The `args` written beside it. None for a call a template wrote, whose
+    /// arguments are not JSON.
+    args: Option<&'v Value>,
     /// The `formatString` call whose template wrote this one, by its place in
     /// the list. Such a call has nowhere to name a catalog.
     written_in: Option<usize>,
@@ -2675,6 +2715,7 @@ fn function_calls<'v>(
                         location: location.clone(),
                         name: Cow::Borrowed(name),
                         catalog_id: map.get("catalogId"),
+                        args: map.get("args"),
                         written_in: None,
                     });
                     let template = map
@@ -2693,6 +2734,7 @@ fn function_calls<'v>(
                                             location: written.clone(),
                                             name: Cow::Owned(name.clone()),
                                             catalog_id: None,
+                                            args: None,
                                             written_in: Some(this),
                                         });
                                         inner.extend(args.iter().rev().map(|(_, value)| value));

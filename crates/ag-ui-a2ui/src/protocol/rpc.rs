@@ -312,24 +312,26 @@ impl PendingCalls {
         }
     }
 
-    /// Why a call under this id cannot be registered now, when it cannot.
+    /// Why a call cannot be registered now, when it cannot: under this id,
+    /// or with `None` under an id [`PendingCalls::next_id`] is yet to give.
     /// [`PendingCalls::register`] makes the same checks; this is for a caller
     /// that has more to check before it registers.
     ///
     /// # Errors
     ///
     /// As [`PendingCalls::register`].
-    pub fn admits(&self, function_call_id: &str) -> Result<(), RpcError> {
+    pub fn admits(&self, function_call_id: Option<&str>) -> Result<(), RpcError> {
         if self.disposed {
             return Err(RpcError::new(
                 code::DISPOSED,
                 "The calls were disposed of; no further call can be made.",
             ));
         }
-        if function_call_id.is_empty() {
+        if function_call_id == Some("") {
             return Err(RpcError::invalid_call("functionCallId must not be empty."));
         }
-        if self.waiting.contains_key(function_call_id) {
+        if let Some(function_call_id) = function_call_id.filter(|id| self.waiting.contains_key(*id))
+        {
             return Err(RpcError::new(
                 code::DUPLICATE,
                 format!("A call with functionCallId '{function_call_id}' is already pending."),
@@ -364,7 +366,7 @@ impl PendingCalls {
                 call.name
             )));
         }
-        self.admits(&call.function_call_id)?;
+        self.admits(Some(&call.function_call_id))?;
         let timeout = call.timeout.or(self.default_timeout);
         self.waiting.insert(
             call.function_call_id,

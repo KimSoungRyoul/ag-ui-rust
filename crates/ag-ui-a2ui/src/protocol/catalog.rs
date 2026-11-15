@@ -1413,8 +1413,14 @@ fn argument_names<'a>(
                     .skip(1)
                     .try_fold(None::<&Value>, |at, segment| {
                         let segment = segment.replace("~1", "/").replace("~0", "~");
+                        // A pointer steps into a list by position.
                         match at {
                             None => root.get(&segment).map(Some),
+                            Some(Value::Array(items)) => segment
+                                .parse::<usize>()
+                                .ok()
+                                .and_then(|position| items.get(position))
+                                .map(Some),
                             Some(at) => at.get(&segment).map(Some),
                         }
                     })

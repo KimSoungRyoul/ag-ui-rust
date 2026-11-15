@@ -5,8 +5,9 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
+use super::functions::AgentFunction;
 use super::ordered::Ordered;
 use crate::error::{Error, Result};
 use crate::protocol::catalog::Catalog;
@@ -46,12 +47,17 @@ struct Inner {
     written: Arc<Ordered>,
     catalog: Arc<Catalog>,
     version: A2uiVersion,
+    /// The functions of the catalog that the agent runs.
+    agent_functions: BTreeSet<String>,
 }
 
-/// Two documents are equal when they are the same JSON under the same version.
+/// Two documents are equal when they are the same JSON under the same version
+/// and the agent runs the same functions of them.
 impl PartialEq for CatalogDocument {
     fn eq(&self, other: &Self) -> bool {
-        self.inner.version == other.inner.version && self.inner.document == other.inner.document
+        self.inner.version == other.inner.version
+            && self.inner.document == other.inner.document
+            && self.inner.agent_functions == other.inner.agent_functions
     }
 }
 
@@ -224,24 +230,236 @@ impl CatalogDocument {
         // A document that states no version is one of the version it was
         // given, and is held to that version's rules.
         let catalog = Catalog::from_schema_as(&document, version)?;
-        Ok(Self::of(catalog, document, written, version))
+        Ok(Self::of(
+            catalog,
+            document,
+            written,
+            version,
+            BTreeSet::new(),
+        ))
     }
 
     /// `catalog` as read from `document`, which it keeps; that copy is the
     /// one held.
-    fn of(catalog: Catalog, document: Value, written: Ordered, version: A2uiVersion) -> Self {
+    fn of(
+        catalog: Catalog,
+        document: Value,
+        written: Ordered,
+        version: A2uiVersion,
+        agent_functions: BTreeSet<String>,
+    ) -> Self {
         let document = catalog
             .shared_document()
             .cloned()
             .unwrap_or_else(|| Arc::new(document));
+        // A function a rule removed is no longer the agent's to run.
+        let agent_functions = agent_functions
+            .into_iter()
+            .filter(|name| catalog.functions.contains_key(name))
+            .collect();
         Self {
             inner: Arc::new(Inner {
                 document,
                 written: Arc::new(written),
                 catalog: Arc::new(catalog),
                 version,
+                agent_functions,
             }),
         }
+    }
+
+    /// A copy of this catalog on which the agent runs `functions`.
+    ///
+    /// A renderer sends a call to a function it has no implementation of to
+    /// the agent, with `callAgentFunction`. Declaring such a function here
+    /// puts it in the catalog document like any other, so a prompt shows it
+    /// and a call to it validates, and marks it as the agent's:
+    /// [`RendererMessageRouter`](super::RendererMessageRouter) hands a call to
+    /// it over, and [`RendererCalls`](super::RendererCalls) refuses to send
+    /// the renderer one. The function is the renderer's to call and no one
+    /// else's (`rendererOnly`), which a declaration that says nothing means.
+    ///
+    /// The `$defs` a function's `args` declare join the catalog's, since a
+    /// document has one definition for a name.
+    /// [`AgentFunction::declared`] takes over a function the catalog already
+    /// declares, and changes nothing in the document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Catalog`] when two of the functions share a name;
+    /// when one takes the name of a function the catalog declares, or
+    /// ([`AgentFunction::declared`]) of one it does not; when the declaration
+    /// taken over is `agentOnly`, which a renderer never calls; when a
+    /// definition of its `args` differs from the catalog's, or another
+    /// function's, of the same name; and when the catalog with the functions
+    /// in it does not read, as when a parameter of a v1.0 catalog is not named
+    /// by an identifier.
+    pub fn with_agent_functions(
+        &self,
+        functions: impl IntoIterator<Item = AgentFunction>,
+    ) -> Result<Self> {
+        let id = self.catalog_id().to_string();
+        let version = self.inner.version;
+        let mut document = Value::clone(&self.inner.document);
+        let mut written = Ordered::clone(&self.inner.written);
+        let mut agent = self.inner.agent_functions.clone();
+        let mut added = false;
+        for function in functions {
+            let name = function.name.clone();
+            if !agent.insert(name.clone()) {
+                return Err(Error::catalog(format!(
+                    "catalog '{id}' was given two agent functions named '{name}'"
+                )));
+            }
+            let declared = self.inner.catalog.functions.get(&name);
+            if function.declared {
+                let Some(declared) = declared else {
+                    return Err(Error::catalog(format!(
+                        "catalog '{id}' declares no function '{name}' for an agent function to \
+                         take over; declare it with its arguments instead"
+                    )));
+                };
+                if declared.allowed_callers == crate::protocol::catalog::AllowedCallers::AgentOnly {
+                    return Err(Error::catalog(format!(
+                        "function '{name}' of catalog '{id}' is agentOnly: a renderer never calls \
+                         it, so it cannot be an agent function"
+                    )));
+                }
+                continue;
+            }
+            if declared.is_some() {
+                return Err(Error::catalog(format!(
+                    "catalog '{id}' already declares a function '{name}': a renderer would run its \
+                     own and never send the call. Take the declaration over with \
+                     AgentFunction::declared, or give the agent function another name"
+                )));
+            }
+            let mut args = function.args.clone();
+            // The definitions the arguments bring join the catalog's.
+            let local = match args.as_object_mut().and_then(|args| args.remove("$defs")) {
+                Some(Value::Object(local)) => local,
+                Some(_) => {
+                    return Err(Error::catalog(format!(
+                        "the '$defs' of agent function '{name}' of catalog '{id}' must be an object"
+                    )));
+                }
+                None => Map::new(),
+            };
+            for (definition, schema) in local {
+                match document.get("$defs").and_then(|defs| defs.get(&definition)) {
+                    Some(held) if *held == schema => {}
+                    Some(_) => {
+                        return Err(Error::catalog(format!(
+                            "agent function '{name}' of catalog '{id}' defines '{definition}' \
+                             differently from the definition of that name the catalog already \
+                             holds: a catalog document has one definition for a name"
+                        )));
+                    }
+                    None => {
+                        if document.get("$defs").is_none() {
+                            document["$defs"] = json!({});
+                            written.set_last("$defs", Ordered::Object(Vec::new()));
+                        }
+                        if let Some(defs) = written.field_mut("$defs") {
+                            defs.set_last(&definition, Ordered::from_value(&schema));
+                        }
+                        document["$defs"][&definition] = schema;
+                    }
+                }
+            }
+            let mut entry = Vec::new();
+            entry.push(("type".to_string(), json!("object")));
+            if let Some(description) = &function.description {
+                entry.push(("description".to_string(), json!(description)));
+            }
+            if let Some(return_type) = &function.return_type {
+                entry.push(("returnType".to_string(), json!(return_type)));
+            }
+            if function.requires_user_activation {
+                entry.push(("requiresUserActivation".to_string(), json!(true)));
+            }
+            let call_key = version.call_key();
+            let properties = Ordered::Object(vec![
+                (
+                    call_key.to_string(),
+                    Ordered::from_value(&json!({"const": name})),
+                ),
+                ("args".to_string(), Ordered::from_value(&args)),
+            ]);
+            let mut entry: Vec<(String, Ordered)> = entry
+                .into_iter()
+                .map(|(key, value)| (key, Ordered::from_value(&value)))
+                .collect();
+            entry.push(("properties".to_string(), properties));
+            entry.push((
+                "required".to_string(),
+                Ordered::from_value(&json!([call_key])),
+            ));
+            let entry = Ordered::Object(entry);
+            match document.get("functions") {
+                None => {
+                    document["functions"] = json!({});
+                    written.set_last("functions", Ordered::Object(Vec::new()));
+                }
+                Some(Value::Object(_)) => {}
+                Some(_) => {
+                    return Err(Error::catalog(format!(
+                        "catalog '{id}' lists its functions as an array; an agent function is \
+                         declared on a catalog that keys them by name"
+                    )));
+                }
+            }
+            document["functions"][&name] = entry.to_value();
+            if let Some(held) = written.field_mut("functions") {
+                held.set_last(&name, entry);
+            }
+            added = true;
+        }
+        // The union the envelope reaches functions through lists them all.
+        let declares_union = document
+            .get("$defs")
+            .and_then(|defs| defs.get("anyFunction"))
+            .is_some();
+        if added && declares_union {
+            let names = written
+                .field("functions")
+                .map(Ordered::keys)
+                .unwrap_or_default();
+            let union = Ordered::Object(vec![(
+                "oneOf".to_string(),
+                Ordered::Array(
+                    names
+                        .into_iter()
+                        .map(|name| {
+                            let name = name.replace('~', "~0").replace('/', "~1");
+                            Ordered::Object(vec![(
+                                "$ref".to_string(),
+                                Ordered::String(format!("#/functions/{name}")),
+                            )])
+                        })
+                        .collect(),
+                ),
+            )]);
+            document["$defs"]["anyFunction"] = union.to_value();
+            if let Some(defs) = written.field_mut("$defs") {
+                defs.set_last("anyFunction", union);
+            }
+        }
+        let catalog = match added {
+            true => Catalog::from_schema_as(&document, version)?,
+            false => Catalog::clone(&self.inner.catalog),
+        };
+        Ok(Self::of(catalog, document, written, version, agent))
+    }
+
+    /// The functions of this catalog that the agent runs, by name.
+    pub fn agent_functions(&self) -> impl Iterator<Item = &str> {
+        self.inner.agent_functions.iter().map(String::as_str)
+    }
+
+    /// Whether the agent runs `name` ([`CatalogDocument::with_agent_functions`]).
+    pub fn is_agent_function(&self, name: &str) -> bool {
+        self.inner.agent_functions.contains(name)
     }
 
     /// Reads a catalog document from a file. See [`CatalogDocument::load`]
@@ -404,7 +622,13 @@ impl CatalogDocument {
         // catalog would allow nothing rather than everything.
         let catalog = Catalog::from_schema_as(&document, self.inner.version)
             .unwrap_or_else(|_| Catalog::empty(self.catalog_id()).with_version(self.inner.version));
-        Self::of(catalog, document, written, self.inner.version)
+        Self::of(
+            catalog,
+            document,
+            written,
+            self.inner.version,
+            self.inner.agent_functions.clone(),
+        )
     }
 }
 
