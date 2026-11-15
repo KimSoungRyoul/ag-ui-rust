@@ -118,7 +118,6 @@ fn a_surface_is_created_whole_and_draws_from_two_catalogs() {
     let basic_catalog = Catalog::basic_for(A2uiVersion::V1_0);
     let drawn: Vec<_> = surface
         .outline(&basic_catalog, &data)
-        .into_iter()
         .map(|placed| (placed.depth, placed.component.id.as_str(), placed.scope))
         .collect();
     assert_eq!(

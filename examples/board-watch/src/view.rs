@@ -103,22 +103,38 @@ pub fn surface_after(
     surface_in_history(&conversation)
 }
 
+/// The most components [`surface_lines`] places before it stops.
+///
+/// An outline can be far larger than the surface it comes from: components
+/// that share children are placed once for every route to them. The watcher
+/// draws a surface an agent it did not write sent, so it takes what fits.
+pub const DRAWN_COMPONENTS: usize = 500;
+
 /// Draws a surface, or `None` if it has no components to draw.
 ///
 /// A real renderer owns a widget toolkit; this asks the surface for its
 /// outline — the components the root reaches, each in the scope its bindings
 /// resolve in, the list template instantiated once per item — and prints the
 /// ones that are text. That is far enough to prove the surface arrived whole.
+/// The outline is walked as far as [`DRAWN_COMPONENTS`], and a last line says
+/// so when the surface has more.
 pub fn surface_lines(surface: &SurfaceState) -> Option<Vec<String>> {
     if surface.components.is_empty() {
         return None;
     }
     let data = surface.data_model.to_json().ok()?;
-    let lines = surface
-        .outline(&Catalog::basic(), &data)
-        .iter()
-        .filter_map(line)
+    let catalog = Catalog::basic();
+    let mut outline = surface.outline(&catalog, &data);
+    let mut lines: Vec<String> = outline
+        .by_ref()
+        .take(DRAWN_COMPONENTS)
+        .filter_map(|placed| line(&placed))
         .collect();
+    if outline.next().is_some() {
+        lines.push(format!(
+            "… more than {DRAWN_COMPONENTS} components; the rest is not drawn"
+        ));
+    }
     Some(lines)
 }
 
@@ -269,6 +285,41 @@ mod tests {
                 .expect("a surface");
             assert_eq!(surface_lines(&second).unwrap(), ["one", "two"]);
         }
+    }
+
+    /// Twenty levels of two components, each naming both of the next: 41
+    /// components, and an outline of two million. The watcher draws what fits
+    /// and says the rest is not drawn.
+    #[test]
+    fn a_surface_whose_outline_is_far_larger_than_itself_is_drawn_in_part() {
+        use ag_ui_a2ui::{AgentMessage, SurfaceStore};
+        use serde_json::json;
+
+        let level = |at: usize| [format!("a{at}"), format!("b{at}")];
+        let mut components =
+            vec![Component::new("root", "Column").with("children", json!(level(1)))];
+        for at in 1..20 {
+            for id in level(at) {
+                components
+                    .push(Component::new(id, "Column").with("children", json!(level(at + 1))));
+            }
+        }
+        for id in level(20) {
+            components.push(Component::new(id, "Text").with("text", json!("leaf")));
+        }
+        let mut store = SurfaceStore::new();
+        store
+            .apply(&AgentMessage::create_surface("wide", "basic"))
+            .unwrap();
+        store
+            .apply(&AgentMessage::update_components("wide", components))
+            .unwrap();
+
+        let lines = surface_lines(store.get("wide").unwrap()).unwrap();
+        let (note, drawn) = lines.split_last().unwrap();
+        assert!(note.starts_with("… more than 500 components"), "{note}");
+        assert!(!drawn.is_empty() && drawn.iter().all(|line| line == "leaf"));
+        assert!(drawn.len() < DRAWN_COMPONENTS);
     }
 
     #[test]

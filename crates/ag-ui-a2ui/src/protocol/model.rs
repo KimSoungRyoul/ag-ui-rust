@@ -17,6 +17,18 @@ use std::collections::BTreeMap;
 /// lists at once (`/a/9999/9999/…`), and when a caller lowers it.
 pub const DEFAULT_ARRAY_GROWTH_LIMIT: usize = 65_536;
 
+/// The most undefined list slots one [`DataModel`] holds, in all its lists
+/// together.
+///
+/// A slot is undefined when no message wrote it: a list grows to the index a
+/// path names with undefined slots before it, and a removed slot stays in its
+/// place, undefined. [`DEFAULT_ARRAY_GROWTH_LIMIT`] bounds what one update
+/// adds; this bounds what the updates add between them, so that the size of
+/// a model follows the size of what it was sent. An update that would take
+/// the model past it is refused, and the model is left as it was. Use
+/// [`DataModel::apply_with_undefined_slot_limit`] to choose another bound.
+pub const DEFAULT_UNDEFINED_SLOT_LIMIT: usize = 65_536;
+
 /// Largest list index a write may name.
 ///
 /// The reference renderers refuse a write to a higher index, so an agent that
@@ -117,6 +129,11 @@ impl ModelValue {
 pub struct DataModel {
     snapshot_version: u32,
     root: ModelValue,
+    /// How many list slots in `root` are undefined. Kept up to date as
+    /// updates are applied; not part of a snapshot, which is read back by
+    /// counting.
+    #[serde(skip)]
+    undefined: usize,
 }
 impl<'de> Deserialize<'de> for DataModel {
     fn deserialize<D: serde::Deserializer<'de>>(
@@ -136,6 +153,7 @@ impl<'de> Deserialize<'de> for DataModel {
         }
         Ok(Self {
             snapshot_version: 1,
+            undefined: undefined_in(&value.root),
             root: value.root,
         })
     }
@@ -147,9 +165,11 @@ impl Default for DataModel {
 }
 impl From<Value> for DataModel {
     fn from(value: Value) -> Self {
+        // JSON has no undefined.
         Self {
             snapshot_version: 1,
             root: value.into(),
+            undefined: 0,
         }
     }
 }
@@ -193,6 +213,11 @@ impl DataModel {
     /// may add no more than [`DEFAULT_ARRAY_GROWTH_LIMIT`] slots in all; that
     /// is this model's own, and with the default it is reached only by a path
     /// that grows several lists at once.
+    ///
+    /// And what the updates add between them is bounded: an update that would
+    /// leave the model holding more than [`DEFAULT_UNDEFINED_SLOT_LIMIT`]
+    /// undefined slots is refused ([`DataModel::undefined_slots`]). An update
+    /// that does not add to them is never refused for them.
     ///
     /// # Removing what is not there
     ///
@@ -242,6 +267,7 @@ impl DataModel {
         if !version.removal_pads() && matches!(value, DataModelUpdate::Remove) {
             if tokens(path)?.is_empty() {
                 self.root = ModelValue::Object(BTreeMap::new());
+                self.undefined = 0;
                 return Ok(());
             }
             if lookup(&self.root, path)?.is_none() {
@@ -259,8 +285,60 @@ impl DataModel {
         value: &DataModelUpdate,
         max_new_slots: usize,
     ) -> Result<()> {
-        self.root = self.updated(path, value, max_new_slots)?;
+        (self.root, self.undefined) =
+            self.updated(path, value, max_new_slots, DEFAULT_UNDEFINED_SLOT_LIMIT)?;
         Ok(())
+    }
+    /// Applies as [`DataModel::apply`] does, with another bound than
+    /// [`DEFAULT_UNDEFINED_SLOT_LIMIT`] on the undefined slots the model may
+    /// hold once the update is applied.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{DataModel, DataModelUpdate};
+    /// use serde_json::json;
+    ///
+    /// let mut model = DataModel::default();
+    /// let one = DataModelUpdate::Set(json!(1));
+    /// // `/a/5` leaves five undefined slots before it, and `/b/5` five more.
+    /// model.apply_with_undefined_slot_limit("/a/5", &one, 8)?;
+    /// assert_eq!(model.undefined_slots(), 5);
+    /// assert!(model.apply_with_undefined_slot_limit("/b/5", &one, 8).is_err());
+    /// assert_eq!(model.undefined_slots(), 5, "a refused update changes nothing");
+    /// // Filling a slot takes one away, whatever the bound.
+    /// model.apply_with_undefined_slot_limit("/a/0", &one, 0)?;
+    /// assert_eq!(model.undefined_slots(), 4);
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`DataModel::apply`], with `max_undefined_slots` in place of the
+    /// default bound.
+    pub fn apply_with_undefined_slot_limit(
+        &mut self,
+        path: &str,
+        value: &DataModelUpdate,
+        max_undefined_slots: usize,
+    ) -> Result<()> {
+        (self.root, self.undefined) =
+            self.updated(path, value, DEFAULT_ARRAY_GROWTH_LIMIT, max_undefined_slots)?;
+        Ok(())
+    }
+    /// How many list slots of the model are undefined: slots before an index
+    /// a write grew a list to, and slots that were removed.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{DataModel, DataModelUpdate};
+    /// use serde_json::json;
+    ///
+    /// let mut model = DataModel::from(json!({"items": ["a", "b"]}));
+    /// model.apply("/items/1", &DataModelUpdate::Remove)?;
+    /// model.apply("/items/4", &DataModelUpdate::Set(json!("e")))?;
+    /// assert_eq!(model.undefined_slots(), 3);
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    pub fn undefined_slots(&self) -> usize {
+        self.undefined
     }
     /// Applies an update as [`DataModel::apply`] does, and reports what it
     /// changed.
@@ -290,25 +368,53 @@ impl DataModel {
     /// # Ok::<(), ag_ui_a2ui::Error>(())
     /// ```
     pub fn apply_reporting(&mut self, path: &str, value: &DataModelUpdate) -> Result<ModelChange> {
-        let after = self.updated(path, value, DEFAULT_ARRAY_GROWTH_LIMIT)?;
+        let (after, undefined) = self.updated(
+            path,
+            value,
+            DEFAULT_ARRAY_GROWTH_LIMIT,
+            DEFAULT_UNDEFINED_SLOT_LIMIT,
+        )?;
         let before = std::mem::replace(&mut self.root, after.clone());
+        self.undefined = undefined;
         Ok(ModelChange { before, after })
     }
-    /// The root this model would have after an update. The model is untouched.
+    /// The root this model would have after an update, and how many of its
+    /// slots would be undefined. The model is untouched.
     fn updated(
         &self,
         path: &str,
         value: &DataModelUpdate,
         max_new_slots: usize,
-    ) -> Result<ModelValue> {
+        max_undefined_slots: usize,
+    ) -> Result<(ModelValue, usize)> {
         let tokens = tokens(path)?;
         let mut next = self.root.clone();
         let mut remaining = max_new_slots;
+        let mut undefined = self.undefined;
         if !tokens.is_empty() && matches!(next, ModelValue::Undefined | ModelValue::Null) {
             next = ModelValue::Object(BTreeMap::new());
         }
-        apply(&mut next, &tokens, value, path, &mut remaining)?;
-        Ok(next)
+        apply(
+            &mut next,
+            &tokens,
+            value,
+            path,
+            &mut remaining,
+            &mut undefined,
+        )?;
+        // Only an update that adds undefined slots is held to the bound, so
+        // a model past it, read from a snapshot or given a lower bound, can
+        // still be filled in.
+        if undefined > max_undefined_slots && undefined > self.undefined {
+            return Err(Error::pointer(
+                path,
+                format!(
+                    "the data model would hold {undefined} undefined list slots, more than the \
+                     {max_undefined_slots} it may hold in all"
+                ),
+            ));
+        }
+        Ok((next, undefined))
     }
 }
 
@@ -416,19 +522,53 @@ fn index(token: &str, path: &str) -> Result<usize> {
         .parse()
         .map_err(|_| Error::pointer(path, "array index is too large"))
 }
+/// How many list slots within `value` are undefined, not counting `value`
+/// itself. A loop and not a stack frame per level.
+fn undefined_in(value: &ModelValue) -> usize {
+    let mut undefined = 0;
+    let mut stack = vec![value];
+    while let Some(value) = stack.pop() {
+        match value {
+            ModelValue::Array(slots) => {
+                for slot in slots {
+                    if matches!(slot, ModelValue::Undefined) {
+                        undefined += 1;
+                    } else {
+                        stack.push(slot);
+                    }
+                }
+            }
+            ModelValue::Object(fields) => stack.extend(fields.values()),
+            _ => {}
+        }
+    }
+    undefined
+}
+
 /// Walks to the target with a loop, not a stack frame per segment: the path is
 /// remote input.
+///
+/// `undefined` is how many list slots of the model are undefined, and is kept
+/// as the walk changes them: slots a list grows by, a slot walked through
+/// that becomes a container, what the written value replaces, and the slot a
+/// removal leaves.
 fn apply(
     root: &mut ModelValue,
     tokens: &[String],
     value: &DataModelUpdate,
     path: &str,
     remaining: &mut usize,
+    undefined: &mut usize,
 ) -> Result<()> {
     let mut node = root;
+    // Whether `node` is a slot of a list, which is what can be undefined.
+    let mut in_list = false;
     for (position, token) in tokens.iter().enumerate() {
         let last = position + 1 == tokens.len();
         if matches!(node, ModelValue::Undefined | ModelValue::Null) {
+            if in_list && matches!(node, ModelValue::Undefined) {
+                *undefined = undefined.saturating_sub(1);
+            }
             *node = if is_numeric(token) {
                 ModelValue::Array(Vec::new())
             } else {
@@ -438,9 +578,12 @@ fn apply(
         node = match node {
             ModelValue::Object(map) => {
                 if last && matches!(value, DataModelUpdate::Remove) {
-                    map.remove(token);
+                    if let Some(removed) = map.remove(token) {
+                        *undefined = undefined.saturating_sub(undefined_in(&removed));
+                    }
                     return Ok(());
                 }
+                in_list = false;
                 map.entry(token.clone()).or_insert(ModelValue::Undefined)
             }
             ModelValue::Array(array) => {
@@ -469,17 +612,24 @@ fn apply(
                         .try_reserve(added)
                         .map_err(|e| Error::pointer(path, e))?;
                     *remaining -= added;
+                    *undefined += added;
                     array.resize(len, ModelValue::Undefined);
                 }
+                in_list = true;
                 &mut array[i]
             }
             _ => return Err(Error::pointer(path, "path walks through a scalar value")),
         };
     }
-    *node = match value {
+    let written = match value {
         DataModelUpdate::Set(v) => v.clone().into(),
         DataModelUpdate::Remove => ModelValue::Undefined,
     };
+    let replaced = std::mem::replace(node, written);
+    let slot = |value: &ModelValue| usize::from(in_list && matches!(value, ModelValue::Undefined));
+    // What the write replaced goes, and a written value is JSON, which holds
+    // nothing undefined.
+    *undefined = undefined.saturating_sub(undefined_in(&replaced) + slot(&replaced)) + slot(node);
     Ok(())
 }
 
@@ -758,5 +908,109 @@ mod tests {
             reporting.apply_reporting(path, update).unwrap();
             assert_eq!(plain, reporting, "{path}");
         }
+    }
+
+    /// The count of undefined slots is kept as each update is applied, not
+    /// counted again. Whatever the updates, it is what counting would give.
+    #[test]
+    fn the_count_of_undefined_slots_is_what_counting_gives() {
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut roll = |sides: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % sides as u64) as usize
+        };
+        let segments = ["a", "b", "0", "1", "3", "7"];
+        let values = [
+            json!(1),
+            json!(null),
+            json!([1, 2]),
+            json!({"x": [0, 1, 2]}),
+            json!([]),
+        ];
+        for version in [A2uiVersion::V0_9, A2uiVersion::V1_0] {
+            let mut model = DataModel::default();
+            for _ in 0..2_000 {
+                let depth = 1 + roll(4);
+                let path: String = (0..depth)
+                    .map(|_| format!("/{}", segments[roll(segments.len())]))
+                    .collect();
+                let path = if roll(20) == 0 { "/".to_string() } else { path };
+                let update = if roll(3) == 0 {
+                    DataModelUpdate::Remove
+                } else {
+                    set(values[roll(values.len())].clone())
+                };
+                let before = model.clone();
+                match model.apply_as(version, &path, &update) {
+                    Ok(()) => {}
+                    Err(_) => assert_eq!(model, before, "{path}"),
+                }
+                assert_eq!(
+                    model.undefined_slots(),
+                    undefined_in(model.root()),
+                    "{version} after {path} {update:?}"
+                );
+            }
+        }
+
+        // A snapshot read back is counted.
+        let mut model = DataModel::default();
+        model.apply("/list/4", &set(json!(1))).unwrap();
+        let read: DataModel =
+            serde_json::from_value(serde_json::to_value(&model).unwrap()).unwrap();
+        assert_eq!(read.undefined_slots(), 4);
+        assert_eq!(read, model);
+    }
+
+    /// Each update may grow its lists up to the per-update budget, and the
+    /// updates together up to the model's bound.
+    #[test]
+    fn the_undefined_slots_of_a_model_are_bounded_in_all_and_not_per_update() {
+        // Six lists grown to the last index a write may name: 60,000
+        // undefined slots, under both bounds.
+        let six = |key: &str| format!("/{key}{}", format!("/{MAX_LIST_INDEX}").repeat(6));
+        let mut model = DataModel::default();
+        model.apply(&six("first"), &set(json!(1))).unwrap();
+        assert_eq!(model.undefined_slots(), 6 * MAX_LIST_INDEX);
+
+        // A second such update is under the per-update budget too, and is
+        // refused for what the model would then hold.
+        let before = model.clone();
+        let refused = reason(model.apply(&six("second"), &set(json!(1))).unwrap_err());
+        assert!(refused.contains("undefined list slots"), "{refused}");
+        assert_eq!(model, before);
+        assert!(
+            model
+                .apply_reporting(&six("second"), &set(json!(1)))
+                .is_err()
+        );
+        for version in [A2uiVersion::V0_9, A2uiVersion::V1_0] {
+            assert!(
+                model
+                    .apply_as(version, &six("second"), &set(json!(1)))
+                    .is_err()
+            );
+        }
+        assert_eq!(model, before);
+
+        // Replacing what holds them gives them back.
+        model.apply("/first", &set(json!("gone"))).unwrap();
+        assert_eq!(model.undefined_slots(), 0);
+        model.apply(&six("second"), &set(json!(1))).unwrap();
+
+        // An update that adds none is not refused, past the bound or not.
+        model
+            .apply_with_undefined_slot_limit("/second/0", &set(json!(2)), 10)
+            .unwrap();
+        assert_eq!(model.undefined_slots(), 6 * MAX_LIST_INDEX - 1);
+        // One that adds some is, past a lower bound.
+        let refused = reason(
+            model
+                .apply_with_undefined_slot_limit("/third/3", &set(json!(1)), 10)
+                .unwrap_err(),
+        );
+        assert!(refused.contains("more than the 10"), "{refused}");
     }
 }
