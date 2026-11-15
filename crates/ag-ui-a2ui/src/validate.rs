@@ -48,10 +48,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::binding::{ModelScope, collect_bindings};
-use crate::catalog::{Catalog, ComponentDef, PropType};
+use crate::catalog::{Catalog, ComponentDef, PropKind, PropType};
 use crate::constants::{PROTOCOL_VERSION, ROOT_ID};
 use crate::error::{Error, Result, ValidationErrors};
-use crate::message::{AgentMessage, Component};
+use crate::message::{AgentMessage, AgentPayload, Component};
 
 /// Deepest nesting accepted by default, for both the component graph and the
 /// raw JSON of a message.
@@ -153,7 +153,9 @@ impl fmt::Display for ErrorCode {
 pub struct ValidationError {
     /// What kind of failure this is.
     pub code: ErrorCode,
-    /// Where it is, e.g. `components[2].component` or `components[0].children[1]`.
+    /// Where it is, e.g. `components[2].component` or `components[0].children[1]`,
+    /// or `messages[1].updateComponents.components[0].child` from the entry
+    /// points that take whole messages.
     pub path: String,
     /// A sentence a human or a model can act on.
     pub message: String,
@@ -192,12 +194,17 @@ pub struct ValidateOptions {
     pub check_component_types: bool,
     /// Whether required properties are enforced.
     pub check_required_props: bool,
-    /// Whether property values must match the JSON type the catalog declares.
+    /// Whether property values must match the JSON type the catalog declares,
+    /// and a literal string be one of the values its `enum` lists.
     ///
-    /// Only properties the catalog pins to one type are checked, and a value the
-    /// renderer resolves — a `{"path": …}` binding or a function call — is never
-    /// checked, because its type on the wire says nothing about the type it
-    /// will have. See [`PropType`].
+    /// Only properties the catalog pins to one type are type-checked, and a
+    /// value the renderer resolves — a `{"path": …}` binding or a function call
+    /// — is never checked, because its type on the wire says nothing about the
+    /// type it will have. See [`PropType`].
+    ///
+    /// Structural properties are outside this switch: a child reference must be
+    /// a component id however this is set, because a child written any other
+    /// way is not in the tree the other checks walk. See [`PropKind`].
     pub check_prop_types: bool,
     /// Whether message envelopes must satisfy the v0.9 wire contract.
     ///
@@ -335,6 +342,8 @@ pub struct Validator<'a> {
 /// A component normalized for validation, from either typed or raw JSON input.
 struct Node<'a> {
     index: usize,
+    /// Where the component is in the caller's input, e.g. `components[2]`.
+    path: String,
     id: Option<&'a str>,
     kind: Option<&'a str>,
     props: Option<&'a Map<String, Value>>,
@@ -348,6 +357,7 @@ impl<'a> Node<'a> {
     fn from_component(index: usize, component: &'a Component) -> Self {
         Self {
             index,
+            path: format!("components[{index}]"),
             id: (!component.id.is_empty()).then_some(component.id.as_str()),
             kind: (!component.component.is_empty()).then_some(component.component.as_str()),
             props: Some(&component.props),
@@ -383,6 +393,7 @@ impl<'a> Node<'a> {
         };
         Self {
             index,
+            path: format!("components[{index}]"),
             id,
             kind,
             props: object,
@@ -391,15 +402,21 @@ impl<'a> Node<'a> {
         }
     }
 
+    /// Locates the component somewhere other than `components[index]`.
+    fn at(mut self, path: String) -> Self {
+        self.path = path;
+        self
+    }
+
     fn component(&self) -> Option<&Component> {
         self.borrowed.or(self.owned.as_ref())
     }
 
     fn locator(&self, suffix: &str) -> String {
         if suffix.is_empty() {
-            format!("components[{}]", self.index)
+            self.path.clone()
         } else {
-            format!("components[{}].{suffix}", self.index)
+            format!("{}.{suffix}", self.path)
         }
     }
 }
@@ -443,7 +460,7 @@ impl<'a> Validator<'a> {
             .map(|(i, c)| Node::from_component(i, c))
             .collect();
         let model = data_model.cloned().map(crate::DataModel::from);
-        self.run(&nodes, model.as_ref())
+        self.run(&nodes, model.as_ref(), "components")
     }
 
     /// Validates graph and bindings against a lossless model, including every
@@ -458,7 +475,7 @@ impl<'a> Validator<'a> {
             .enumerate()
             .map(|(i, component)| Node::from_component(i, component))
             .collect();
-        self.run(&nodes, Some(model))
+        self.run(&nodes, Some(model), "components")
     }
 
     /// Validates raw JSON components, as they arrive from a model.
@@ -477,7 +494,7 @@ impl<'a> Validator<'a> {
             .map(|(i, v)| Node::from_json(i, v))
             .collect();
         let model = data_model.cloned().map(crate::DataModel::from);
-        self.run(&nodes, model.as_ref())
+        self.run(&nodes, model.as_ref(), "components")
     }
 
     /// Validates a whole operation stream.
@@ -511,6 +528,14 @@ impl<'a> Validator<'a> {
     /// None of the three survives deserialization into typed messages, because
     /// all three are properties of the document rather than of any one
     /// component.
+    ///
+    /// Each defect is reported once. Components are checked on the folded
+    /// surface that holds them; a message the store cannot fold — its surface
+    /// was never created, or a component in it has no usable id or type — is
+    /// checked on its own instead. Either way the locator names the message
+    /// and position that wrote the component, e.g.
+    /// `messages[2].updateComponents.components[0].child`, so it is unambiguous
+    /// across messages and surfaces.
     pub fn validate_json_messages(&self, messages: &[Value]) -> ValidationReport {
         let mut message_report = ValidationReport::default();
         for (index, message) in messages.iter().enumerate() {
@@ -533,37 +558,115 @@ impl<'a> Validator<'a> {
             return message_report;
         }
         let mut store = crate::surface::SurfaceStore::new();
+        let mut origins: BTreeMap<String, Origin> = BTreeMap::new();
         for (index, message) in messages.iter().enumerate() {
-            // Preserve raw component diagnostics before serde can normalize fields.
-            if let Some(Value::Array(components)) = message.pointer("/updateComponents/components")
-            {
-                let mut options = self.options.clone();
-                options.require_root = false;
-                options.allow_dangling_children = true;
-                options.check_bindings = false;
-                let report =
-                    Validator::with_options(self.catalog, options).validate_json(components, None);
-                message_report.errors.extend(report.errors);
-            }
-            match serde_json::from_value::<AgentMessage>(message.clone()) {
-                Ok(op) => {
-                    if let Err(error) = store.apply(&op) {
-                        message_report.errors.push(ValidationError::new(
+            let components = message
+                .pointer("/updateComponents/components")
+                .and_then(Value::as_array);
+            let folded = match components {
+                // The store keys components by id, so it cannot hold these, and
+                // serde would only say the message failed to decode. The checks
+                // below locate the component instead; the one thing left to
+                // report here is a surface the message could not have updated.
+                Some(components) if !foldable(components) => {
+                    let surface_id = message
+                        .pointer("/updateComponents/surfaceId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    match store.live(surface_id) {
+                        Ok(_) => {
+                            if let Some(origin) = origins.get_mut(surface_id) {
+                                origin.incomplete = true;
+                            }
+                        }
+                        Err(error) => message_report.errors.push(ValidationError::new(
                             ErrorCode::InvalidValue,
                             format!("messages[{index}]"),
                             error.to_string(),
-                        ));
+                        )),
                     }
+                    false
                 }
-                Err(error) => message_report.errors.push(ValidationError::new(
-                    ErrorCode::InvalidValue,
-                    format!("messages[{index}]"),
-                    error.to_string(),
-                )),
+                _ => match serde_json::from_value::<AgentMessage>(message.clone())
+                    .map_err(|error| error.to_string())
+                    .and_then(|op| {
+                        store
+                            .apply(&op)
+                            .map(|()| op)
+                            .map_err(|error| error.to_string())
+                    }) {
+                    Ok(op) => {
+                        record_origins(&mut origins, index, &op);
+                        true
+                    }
+                    Err(detail) => {
+                        message_report.errors.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            format!("messages[{index}]"),
+                            detail,
+                        ));
+                        false
+                    }
+                },
+            };
+            if let (false, Some(components)) = (folded, components) {
+                // No folded surface will hold these, so they are checked here,
+                // alone: their root and their children may be elsewhere.
+                let options = ValidateOptions {
+                    require_root: false,
+                    allow_dangling_children: true,
+                    check_bindings: false,
+                    ..self.options.clone()
+                };
+                let list = format!("messages[{index}].updateComponents.components");
+                let nodes: Vec<Node<'_>> = components
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| Node::from_json(i, v).at(format!("{list}[{i}]")))
+                    .collect();
+                let report =
+                    Validator::with_options(self.catalog, options).run(&nodes, None, &list);
+                message_report.errors.extend(report.errors);
             }
         }
         for surface in store.surfaces().filter(|surface| !surface.deleted) {
-            let report = self.validate_model(&surface.components, &surface.data_model);
+            let origin = origins.get(&surface.surface_id);
+            let incomplete = origin.is_some_and(|origin| origin.incomplete);
+            // A surface that lost a message is missing what it carried, and
+            // that is already reported: held to the whole-surface contract it
+            // would be reported again, as a missing root or children.
+            if incomplete && surface.components.is_empty() {
+                continue;
+            }
+            let options = if incomplete {
+                ValidateOptions {
+                    require_root: false,
+                    allow_dangling_children: true,
+                    ..self.options.clone()
+                }
+            } else {
+                self.options.clone()
+            };
+            let list = origin.map_or_else(|| "components".to_string(), Origin::list);
+            let nodes: Vec<Node<'_>> = surface
+                .components
+                .iter()
+                .enumerate()
+                .map(|(i, component)| {
+                    let node = Node::from_component(i, component);
+                    match origin.and_then(|origin| origin.components.get(&component.id)) {
+                        Some((message, position)) => node.at(format!(
+                            "messages[{message}].updateComponents.components[{position}]"
+                        )),
+                        None => node,
+                    }
+                })
+                .collect();
+            let report = Validator::with_options(self.catalog, options).run(
+                &nodes,
+                Some(&surface.data_model),
+                &list,
+            );
             message_report.errors.extend(report.errors);
             message_report.unreachable.extend(report.unreachable);
         }
@@ -592,13 +695,20 @@ impl<'a> Validator<'a> {
         Ok(next)
     }
 
-    fn run(&self, nodes: &[Node<'_>], data_model: Option<&crate::DataModel>) -> ValidationReport {
+    /// Every check, over `nodes`. `list` locates the component list itself, for
+    /// the failures that belong to no one component.
+    fn run(
+        &self,
+        nodes: &[Node<'_>],
+        data_model: Option<&crate::DataModel>,
+        list: &str,
+    ) -> ValidationReport {
         let mut report = ValidationReport::default();
 
         if nodes.is_empty() {
             report.errors.push(ValidationError::new(
                 ErrorCode::EmptyComponents,
-                "components",
+                list,
                 "The components list is empty. A surface needs at least a component with \
                  id 'root'.",
             ));
@@ -612,7 +722,7 @@ impl<'a> Validator<'a> {
         if self.options.require_root && !ids.contains_key(self.options.root_id.as_str()) {
             report.errors.push(ValidationError::new(
                 ErrorCode::NoRoot,
-                "components",
+                list,
                 format!(
                     "No component has id '{}'. Exactly one component must use that id; it is \
                      the root the renderer draws from.",
@@ -658,13 +768,14 @@ impl<'a> Validator<'a> {
                 ));
                 continue;
             };
-            if let Some(first) = ids.get(id) {
+            if let Some(&first) = ids.get(id) {
                 report.errors.push(ValidationError::new(
                     ErrorCode::DuplicateId,
                     node.locator("id"),
                     format!(
-                        "Component id '{id}' is already used by components[{first}]. Ids must be \
-                         unique within a surface; rename this one."
+                        "Component id '{id}' is already used by {}. Ids must be unique within a \
+                         surface; rename this one.",
+                        nodes[first].path
                     ),
                 ));
                 continue;
@@ -722,17 +833,21 @@ impl<'a> Validator<'a> {
                     }
                 }
             }
+            check_structure(node, kind, def, report);
             if self.options.check_prop_types {
                 self.check_prop_types(node, kind, def, report);
             }
         }
     }
 
-    /// Property values against the JSON types the catalog declares.
+    /// Property values against the JSON types the catalog declares, and literal
+    /// strings against the values an `enum` lists.
     ///
     /// Walks the *definition* rather than the value, so a property the catalog
     /// says nothing about costs nothing and is never rejected: an unknown
     /// property is the catalog's business (or the schema's), not this check's.
+    /// Structural properties are left to [`check_structure`], which knows what
+    /// shape a reference takes.
     fn check_prop_types(
         &self,
         node: &Node<'_>,
@@ -742,26 +857,44 @@ impl<'a> Validator<'a> {
     ) {
         let Some(props) = node.props else { return };
         for prop in def.props.values() {
-            if prop.value_type == PropType::Unconstrained {
+            if prop.kind.is_structural() {
                 continue;
             }
             let Some(value) = props.get(&prop.name) else {
                 continue;
             };
-            if resolves_at_render_time(value) || prop.value_type.accepts(value) {
+            if resolves_at_render_time(value) {
                 continue;
             }
-            report.errors.push(ValidationError::new(
-                ErrorCode::TypeMismatch,
-                node.locator(&prop.name),
-                format!(
-                    "'{kind}' expects '{}' to be {}, not {}. Write a literal of that type, or \
-                     bind it with {{\"path\": \"/...\"}}.",
-                    prop.name,
-                    prop.value_type.describe(),
-                    type_name(value)
-                ),
-            ));
+            if !prop.value_type.accepts(value) {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::TypeMismatch,
+                    node.locator(&prop.name),
+                    format!(
+                        "'{kind}' expects '{}' to be {}, not {}. Write a literal of that type, \
+                         or bind it with {{\"path\": \"/...\"}}.",
+                        prop.name,
+                        prop.value_type.describe(),
+                        type_name(value)
+                    ),
+                ));
+                continue;
+            }
+            // Only a literal string can be one of an enum's values; anything
+            // else is a type question, settled above.
+            if let Value::String(literal) = value {
+                if !prop.enum_values.is_empty() && !prop.enum_values.contains(literal) {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::InvalidValue,
+                        node.locator(&prop.name),
+                        format!(
+                            "'{kind}' does not accept '{literal}' for '{}'. Use one of: {}.",
+                            prop.name,
+                            prop.enum_values.join(", ")
+                        ),
+                    ));
+                }
+            }
         }
     }
 
@@ -1104,6 +1237,149 @@ fn resolves_at_render_time(value: &Value) -> bool {
         || map.contains_key("functionCall")
 }
 
+/// Structural properties against the shape their [`PropKind`] gives them.
+///
+/// [`ComponentDef::references`] reads a component id wherever one can be and
+/// skips everything else, so a child written inline would drop out of the graph
+/// every later check walks: the payload would pass and the renderer would draw
+/// nothing there. A2UI components are a flat list — the specification's catalog
+/// says children "cannot be defined inline, they must be referred to by ID" — so
+/// this reports each value that is not a reference instead.
+///
+/// Not governed by [`ValidateOptions::check_prop_types`]: whether a value is a
+/// reference decides which children the tree has, and no check downstream is
+/// meaningful without that.
+fn check_structure(node: &Node<'_>, kind: &str, def: &ComponentDef, report: &mut ValidationReport) {
+    let Some(props) = node.props else { return };
+    for prop in def.props.values() {
+        let Some(value) = props.get(&prop.name) else {
+            continue;
+        };
+        let name = prop.name.as_str();
+        match &prop.kind {
+            PropKind::Value => {}
+            PropKind::ComponentRef => {
+                if !value.is_string() {
+                    report.errors.push(not_a_reference(node, kind, name, value));
+                }
+            }
+            PropKind::ChildList => match value {
+                Value::Array(items) => {
+                    for (index, item) in items.iter().enumerate() {
+                        if !item.is_string() {
+                            report.errors.push(not_a_reference(
+                                node,
+                                kind,
+                                &format!("{name}[{index}]"),
+                                item,
+                            ));
+                        }
+                    }
+                }
+                Value::Object(template) if !is_inline_component(value) => {
+                    if let Some(id) = template.get("componentId").filter(|id| !id.is_string()) {
+                        report.errors.push(not_a_reference(
+                            node,
+                            kind,
+                            &format!("{name}.componentId"),
+                            id,
+                        ));
+                    } else if !template.contains_key("componentId")
+                        || !template.get("path").is_some_and(Value::is_string)
+                    {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            node.locator(name),
+                            format!(
+                                "A template in '{name}' of '{kind}' needs both \"componentId\", \
+                                 the id of the component to repeat, and \"path\", the data-model \
+                                 list to repeat it over."
+                            ),
+                        ));
+                    }
+                }
+                _ => report.errors.push(ValidationError::new(
+                    ErrorCode::TypeMismatch,
+                    node.locator(name),
+                    if is_inline_component(value) {
+                        inline_component(kind, name)
+                    } else {
+                        format!(
+                            "'{kind}' expects '{name}' to be an array of component ids or a \
+                             template {{\"componentId\": ..., \"path\": ...}}, not {}.",
+                            type_name(value)
+                        )
+                    },
+                )),
+            },
+            PropKind::ObjectListRefs { ref_keys } => {
+                let Value::Array(items) = value else {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::TypeMismatch,
+                        node.locator(name),
+                        format!(
+                            "'{kind}' expects '{name}' to be an array of objects, not {}.",
+                            type_name(value)
+                        ),
+                    ));
+                    continue;
+                };
+                for (index, item) in items.iter().enumerate() {
+                    let Value::Object(entry) = item else {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::TypeMismatch,
+                            node.locator(&format!("{name}[{index}]")),
+                            format!(
+                                "'{kind}' expects each entry of '{name}' to be an object, not {}.",
+                                type_name(item)
+                            ),
+                        ));
+                        continue;
+                    };
+                    for key in ref_keys {
+                        if let Some(id) = entry.get(key).filter(|id| !id.is_string()) {
+                            report.errors.push(not_a_reference(
+                                node,
+                                kind,
+                                &format!("{name}[{index}].{key}"),
+                                id,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A value where a component id belongs, located at `location`.
+fn not_a_reference(node: &Node<'_>, kind: &str, location: &str, value: &Value) -> ValidationError {
+    let message = if is_inline_component(value) {
+        inline_component(kind, location)
+    } else {
+        format!(
+            "'{kind}' expects '{location}' to be a component id (a string), not {}.",
+            type_name(value)
+        )
+    };
+    ValidationError::new(ErrorCode::TypeMismatch, node.locator(location), message)
+}
+
+fn inline_component(kind: &str, location: &str) -> String {
+    format!(
+        "'{kind}' names other components by id, but '{location}' holds a component written \
+         inline. Components are a flat list: move this object to the top-level components list \
+         and reference it here by its id."
+    )
+}
+
+/// Whether a value is a component definition, which never nests.
+fn is_inline_component(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|map| map.contains_key("component"))
+}
+
 fn type_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -1119,6 +1395,83 @@ fn type_name(value: &Value) -> &'static str {
 struct Edge {
     target: usize,
     location: String,
+}
+
+/// Which messages wrote a surface, so a failure found on the folded surface is
+/// located in the message a model would have to change.
+#[derive(Debug, Default)]
+struct Origin {
+    /// The `createSurface` that began the surface's current life.
+    created: usize,
+    /// The last `updateComponents` folded into it.
+    updated: Option<usize>,
+    /// Each component's latest definition, as (message, position).
+    components: BTreeMap<String, (usize, usize)>,
+    /// An update to the surface could not be folded, so its components are
+    /// missing here.
+    incomplete: bool,
+}
+
+impl Origin {
+    /// Locates the component list as a whole: where a missing root or an empty
+    /// surface would be fixed.
+    fn list(&self) -> String {
+        match self.updated {
+            Some(message) => format!("messages[{message}].updateComponents.components"),
+            None => format!("messages[{}].createSurface", self.created),
+        }
+    }
+}
+
+/// Notes what a message that was folded into the store wrote.
+fn record_origins(origins: &mut BTreeMap<String, Origin>, index: usize, message: &AgentMessage) {
+    let Some(surface_id) = message.surface_id() else {
+        return;
+    };
+    match &message.payload {
+        AgentPayload::CreateSurface(_) => {
+            origins.insert(
+                surface_id.to_string(),
+                Origin {
+                    created: index,
+                    ..Origin::default()
+                },
+            );
+        }
+        AgentPayload::UpdateComponents(update) => {
+            let origin = origins.entry(surface_id.to_string()).or_default();
+            origin.updated = Some(index);
+            for (position, component) in update.components.iter().enumerate() {
+                origin
+                    .components
+                    .insert(component.id.clone(), (index, position));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether the store can fold these components: a non-empty list of objects,
+/// each with a non-empty string id and type, and no id twice.
+///
+/// Exactly the cases the checks report as
+/// [`ErrorCode::EmptyComponents`], [`ErrorCode::MissingId`],
+/// [`ErrorCode::MissingComponentType`] and [`ErrorCode::DuplicateId`], so a
+/// message this rejects always carries an error that says why.
+fn foldable(components: &[Value]) -> bool {
+    let named = |value: &Value, key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+    };
+    let mut ids = BTreeSet::new();
+    !components.is_empty()
+        && components.iter().all(|component| {
+            named(component, "id")
+                && named(component, "component")
+                && ids.insert(component.get("id").and_then(Value::as_str))
+        })
 }
 
 /// The collection path of a template edge, if this reference is one.
@@ -1400,6 +1753,25 @@ mod tests {
 
     fn codes(report: &ValidationReport) -> Vec<ErrorCode> {
         report.errors.iter().map(|e| e.code).collect()
+    }
+
+    fn located(report: &ValidationReport) -> Vec<(ErrorCode, &str)> {
+        report
+            .errors
+            .iter()
+            .map(|e| (e.code, e.path.as_str()))
+            .collect()
+    }
+
+    fn create(surface: &str) -> Value {
+        json!({"version": "v0.9", "createSurface": {"surfaceId": surface, "catalogId": "c"}})
+    }
+
+    fn update(surface: &str, components: Value) -> Value {
+        json!({
+            "version": "v0.9",
+            "updateComponents": {"surfaceId": surface, "components": components}
+        })
     }
 
     #[test]
@@ -2007,6 +2379,261 @@ mod tests {
         let report = Validator::with_options(&catalog, options)
             .validate(&[Component::new("root", "Text").with("text", json!(123))]);
         assert!(report.is_valid(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn a_child_nested_inline_is_rejected_with_the_way_to_fix_it() {
+        // Components are a flat list and a parent names its children by id, so
+        // this Column has no child a renderer can find.
+        let catalog = basic();
+        let messages = vec![
+            create("s"),
+            update(
+                "s",
+                json!([{"id": "root", "component": "Column", "children": [
+                    {"id": "t", "component": "Text", "text": "hi"}
+                ]}]),
+            ),
+        ];
+        let report = Validator::new(&catalog).validate_json_messages(&messages);
+        assert_eq!(
+            located(&report),
+            vec![(
+                ErrorCode::TypeMismatch,
+                "messages[1].updateComponents.components[0].children[0]"
+            )]
+        );
+        assert!(
+            report.errors[0]
+                .message
+                .contains("move this object to the top-level components list"),
+            "{}",
+            report.errors[0]
+        );
+    }
+
+    #[test]
+    fn every_structural_property_holds_component_ids_and_nothing_else() {
+        let catalog = basic();
+        let check = |component: Component| {
+            let report = Validator::incremental(&catalog).validate(&[component]);
+            report
+                .errors
+                .into_iter()
+                .map(|e| (e.code, e.path))
+                .collect::<Vec<_>>()
+        };
+        let mismatch = |path: &str| vec![(ErrorCode::TypeMismatch, path.to_string())];
+        let inline = json!({"id": "t", "component": "Text", "text": "hi"});
+
+        // A single reference, a child list written as one component, and a
+        // reference inside a list of objects.
+        assert_eq!(
+            check(Component::new("c", "Card").with("child", inline.clone())),
+            mismatch("components[0].child")
+        );
+        assert_eq!(
+            check(Component::new("l", "List").with("children", inline.clone())),
+            mismatch("components[0].children")
+        );
+        assert_eq!(
+            check(
+                Component::new("t", "Tabs")
+                    .with("tabs", json!([{"title": "One", "child": inline}]))
+            ),
+            mismatch("components[0].tabs[0].child")
+        );
+        // A component id is never data-bound, and a child list is never a
+        // bare id.
+        assert_eq!(
+            check(Component::new("c", "Card").with("child", json!({"path": "/id"}))),
+            mismatch("components[0].child")
+        );
+        assert_eq!(
+            check(Component::new("r", "Row").with("children", json!("a"))),
+            mismatch("components[0].children")
+        );
+        // A template needs the list it repeats over.
+        assert_eq!(
+            check(Component::new("r", "Row").with("children", json!({"componentId": "a"}))),
+            vec![(
+                ErrorCode::InvalidValue,
+                "components[0].children".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn the_shape_of_a_reference_is_checked_even_with_type_checks_off() {
+        // Type checking is the caller's choice; whether a value is a reference
+        // decides which children the graph has, so it is not.
+        let catalog = basic();
+        let options = ValidateOptions {
+            check_prop_types: false,
+            ..ValidateOptions::incremental_update()
+        };
+        let report = Validator::with_options(&catalog, options).validate(&[
+            Component::new("c", "Column")
+                .with("children", json!([{"id": "t", "component": "Text"}])),
+            Component::new("t", "Text")
+                .with("text", json!("hi"))
+                .with("variant", json!("huge")),
+        ]);
+        assert_eq!(
+            located(&report),
+            vec![(ErrorCode::TypeMismatch, "components[0].children[0]")]
+        );
+    }
+
+    #[test]
+    fn a_literal_outside_the_catalog_enum_is_rejected() {
+        let catalog = basic();
+        let report = Validator::new(&catalog).validate(&[
+            Component::new("root", "Column")
+                .with("children", json!(["title", "icon", "bound", "svg"]))
+                .with("justify", json!("spaceBetween")),
+            Component::new("title", "Text")
+                .with("text", json!("Hi"))
+                .with("variant", json!("huge")),
+            Component::new("icon", "Icon").with("name", json!("sparkles")),
+            // A binding and an `{svgPath}` are not literals, so no enum applies.
+            Component::new("bound", "Text")
+                .with("text", json!("x"))
+                .with("variant", json!({"path": "/style"})),
+            Component::new("svg", "Icon").with("name", json!({"svgPath": "M0 0"})),
+        ]);
+        assert_eq!(
+            located(&report),
+            vec![
+                (ErrorCode::InvalidValue, "components[1].variant"),
+                (ErrorCode::InvalidValue, "components[2].name"),
+            ]
+        );
+        assert!(
+            report.errors[0].message.contains("h1, h2"),
+            "{}",
+            report.errors[0]
+        );
+    }
+
+    #[test]
+    fn an_unknown_component_type_is_reported_once() {
+        let catalog = basic();
+        let messages = vec![
+            create("s"),
+            update("s", json!([{"id": "root", "component": "Sparkline"}])),
+        ];
+        let report = Validator::new(&catalog).validate_json_messages(&messages);
+        assert_eq!(
+            located(&report),
+            vec![(
+                ErrorCode::UnknownComponent,
+                "messages[1].updateComponents.components[0].component"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_folded_defect_is_reported_once_where_it_was_last_written() {
+        let catalog = basic();
+        let messages = vec![
+            create("a"),
+            update(
+                "a",
+                json!([
+                    {"id": "root", "component": "Column", "children": ["x", "y"]},
+                    {"id": "x", "component": "Text", "text": "one"},
+                    {"id": "y", "component": "Text", "text": "two"}
+                ]),
+            ),
+            // Replaces `y`, which the folded surface keeps at position 2.
+            update("a", json!([{"id": "y", "component": "Sparkline"}])),
+            create("b"),
+            update(
+                "b",
+                json!([{"id": "root", "component": "Text", "text": "hi", "variant": "huge"}]),
+            ),
+        ];
+        let report = Validator::new(&catalog).validate_json_messages(&messages);
+        assert_eq!(
+            located(&report),
+            vec![
+                (
+                    ErrorCode::UnknownComponent,
+                    "messages[2].updateComponents.components[0].component"
+                ),
+                (
+                    ErrorCode::InvalidValue,
+                    "messages[4].updateComponents.components[0].variant"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_message_the_store_cannot_fold_reports_each_defect_once() {
+        let catalog = basic();
+        let validator = Validator::new(&catalog);
+
+        // The surface was never created. That is one defect; the components
+        // the message carried are checked on their own, since no folded
+        // surface will hold them.
+        let never_created = vec![update(
+            "s",
+            json!([
+                {"id": "root", "component": "Card", "child": "root"},
+                {"id": "x", "component": "Sparkline"}
+            ]),
+        )];
+        let report = validator.validate_json_messages(&never_created);
+        assert_eq!(
+            located(&report),
+            vec![
+                (ErrorCode::InvalidValue, "messages[0]"),
+                (
+                    ErrorCode::UnknownComponent,
+                    "messages[0].updateComponents.components[1].component"
+                ),
+                (
+                    ErrorCode::ChildCycle,
+                    "messages[0].updateComponents.components[0].child"
+                ),
+            ]
+        );
+        assert!(report.errors[0].message.contains("must be created"));
+
+        // Components the store cannot key are reported from the raw JSON, not
+        // again by serde or the store, nor as a surface left without them.
+        let duplicated = vec![
+            create("s"),
+            update(
+                "s",
+                json!([
+                    {"id": "root", "component": "Text", "text": "a"},
+                    {"id": "root", "component": "Text", "text": "b"}
+                ]),
+            ),
+        ];
+        assert_eq!(
+            located(&validator.validate_json_messages(&duplicated)),
+            vec![(
+                ErrorCode::DuplicateId,
+                "messages[1].updateComponents.components[1].id"
+            )]
+        );
+
+        // Both at once: the missing creation is still its own defect.
+        let both = vec![update("s", json!([{"component": "Text", "text": "a"}]))];
+        assert_eq!(
+            located(&validator.validate_json_messages(&both)),
+            vec![
+                (ErrorCode::InvalidValue, "messages[0]"),
+                (
+                    ErrorCode::MissingId,
+                    "messages[0].updateComponents.components[0].id"
+                ),
+            ]
+        );
     }
 
     #[test]

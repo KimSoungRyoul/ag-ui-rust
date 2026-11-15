@@ -170,6 +170,17 @@ These are on `main` and not yet in a published version.
   error, except a later run's `RUN_STARTED`: the first run keeps its outcome and an
   `unsupported` diagnostic (the new `Error::Unsupported`) says the rest was not read.
   `Applier::interrupts` is cleared by `RUN_ERROR`.
+- `Validator` rejects a child written inline. A catalog's `ComponentId`,
+  `ChildList` and `Tabs` child references must be component id strings, never
+  objects or bindings, and a `ChildList` template needs both `componentId` and
+  `path`. These checks run even with `ValidateOptions.check_prop_types` set to
+  `false`. With it `true`, a literal string must also be one of the values the
+  catalog's `enum` lists. All of these values were accepted before.
+- `validate_json_messages`, `validate_messages` and the recovery loop report
+  each defect once, where the same mistake was often reported twice. Locators
+  name the message that last wrote the component, for example
+  `messages[1].updateComponents.components[0].child` rather than
+  `components[0].child`. Update code that matches on the old paths.
 - `ag-ui/http` and `ag-ui-a2ui/schema-validation` no longer pin `yoke-derive` to
   `=0.8.2`. Its 0.8.4 declares Rust 1.82, so a fresh Rust 1.85 resolution selects it.
 - `ag-ui-a2ui/schema-validation` uses `jsonschema` 0.61.2 instead of 0.29.1. The same
