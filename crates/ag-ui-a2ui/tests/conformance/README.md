@@ -189,13 +189,13 @@ to declare `children` as a `ChildList`, and both now pass as written.
 
 ## Failing
 
-Ten checks. Three are in cases upstream added after the previous pin, all
+Nine checks. Three are in cases upstream added after the previous pin, all
 about the toolkit's parsers; the agent layer replaces those parsers, and these
 cases are for it to pass. Two are about removing a path that is not there,
 where upstream's rule and the renderer this workspace tests against disagree
 (#42). Two are refusals a JSON Schema engine makes: the engine is in the
-crate and `MessageProcessor` is not wired to it. Two ask the catalog this crate builds in to
-be the published document.
+crate and `MessageProcessor` is not wired to it. Two ask the catalog this
+crate builds in to be the published document.
 
 | Check | What happens |
 |---|---|
