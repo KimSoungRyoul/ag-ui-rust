@@ -503,6 +503,28 @@ impl FilterToolCalls {
         }
     }
 
+    /// Follows an event that was judged, and sends it on unless its call
+    /// is filtered.
+    fn forward(&mut self, mut event: Event, dropped: bool) -> Vec<Event> {
+        // Observe the unfiltered input. A removed start still changes where
+        // the producer's later ID-less chunks belong.
+        self.streams.track(&event);
+
+        if dropped {
+            return Vec::new();
+        }
+        match &mut event {
+            Event::MessagesSnapshot(snapshot) => self.prune(&mut snapshot.messages),
+            Event::RunStarted(started) => {
+                if let Some(input) = &mut started.input {
+                    self.prune(&mut input.messages);
+                }
+            }
+            _ => {}
+        }
+        vec![event]
+    }
+
     /// The refusal of an event that names a call nothing named a tool for.
     fn unknown_call(event: EventType, id: &ToolCallId) -> VerificationError {
         let detail = format!(
@@ -564,29 +586,22 @@ impl StreamTransformer for FilterToolCalls {
     /// Drops what [`try_transform`](Self::try_transform) refuses: an event
     /// of a call the filter never saw start.
     fn transform(&mut self, event: Event) -> Vec<Event> {
-        self.try_transform(event).unwrap_or_default()
+        match self.judge_event(&event) {
+            Ok(dropped) => self.forward(event, dropped),
+            // Nobody is told the event was not sent, so the producer goes on
+            // as if it had been, and its streams are followed that way.
+            Err(_) => {
+                self.streams.track(&event);
+                Vec::new()
+            }
+        }
     }
 
-    fn try_transform(&mut self, mut event: Event) -> Result<Vec<Event>> {
-        let judged = self.judge_event(&event);
-
-        // Observe the unfiltered input. A removed start still changes where
-        // the producer's later ID-less chunks belong.
-        self.streams.track(&event);
-
-        if judged? {
-            return Ok(Vec::new());
-        }
-        match &mut event {
-            Event::MessagesSnapshot(snapshot) => self.prune(&mut snapshot.messages),
-            Event::RunStarted(started) => {
-                if let Some(input) = &mut started.input {
-                    self.prune(&mut input.messages);
-                }
-            }
-            _ => {}
-        }
-        Ok(vec![event])
+    /// A refused event changes nothing here. It was not sent and its emit
+    /// said so, so the producer's streams are where they were.
+    fn try_transform(&mut self, event: Event) -> Result<Vec<Event>> {
+        let dropped = self.judge_event(&event)?;
+        Ok(self.forward(event, dropped))
     }
 }
 
@@ -1575,6 +1590,29 @@ mod tests {
             let args = Event::tool_call_args("c1", "{}");
             assert_eq!(filter.try_transform(args.clone()).unwrap(), [args]);
         }
+    }
+
+    #[test]
+    fn a_refused_event_leaves_the_filter_as_it_was() {
+        let open = Event::tool_call_chunk(Some("c1".into()), Some("search".into()), None);
+        let bare = || Event::tool_call_chunk(None, None, Some("{}".into()));
+        let unknown = Event::tool_call_args("c9", "{}");
+
+        // The emit failed and said so. The event is not on the wire, and the
+        // chunk stream of `c1` is where it was.
+        let mut filter = FilterToolCalls::deny(["nope"]);
+        filter
+            .try_transform(open.clone())
+            .expect("a call that passes");
+        assert!(filter.try_transform(unknown.clone()).is_err());
+        assert_eq!(filter.try_transform(bare()).unwrap(), [bare()]);
+
+        // Dropped without a word, it is an event its producer takes as
+        // sent: one that ended the chunk stream in its lane.
+        let mut filter = FilterToolCalls::deny(["nope"]);
+        filter.transform(open);
+        assert!(filter.transform(unknown).is_empty());
+        assert!(filter.transform(bare()).is_empty());
     }
 
     #[test]
