@@ -56,13 +56,14 @@ impl<S: AgentState> RunContext<S> {
     /// the run driver: call the agent's body, then assert on
     /// [`EventReceiver::drain`]. Nothing emits `RUN_STARTED` here — that is the
     /// driver's job, and skipping it lets a test exercise one method in
-    /// isolation.
+    /// isolation. The ordering verifier takes the run as started.
     pub fn new(input: RunAgentInput) -> Result<(Self, EventReceiver)> {
         let (tx, rx) = mpsc::unbounded();
         let mut sink = EventSink::new(tx, TransformerChain::new(), CancellationToken::new());
         // As the driver does, so an agent that answers a call from an earlier
         // run behaves here as it will in a real one.
         sink.seed(&input.messages);
+        sink.assume_run_started();
         let state = decode_state(&input.state)?;
         Ok((Self::from_parts(input, state, sink), EventReceiver::new(rx)))
     }

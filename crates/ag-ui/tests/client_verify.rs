@@ -158,6 +158,62 @@ fn reasoning_content_needs_its_message_opened_first() {
 }
 
 #[test]
+fn a_reasoning_block_is_bracketed_like_every_other_streamed_entity() {
+    // AG-UI 1.0, "Spans": a producer must not open a block that is already
+    // open, close one it did not open, or leave one open at RUN_FINISHED.
+    let started = Event::run_started("t", "r");
+    let said = complaint(&[
+        started.clone(),
+        Event::reasoning_start("block-1"),
+        Event::reasoning_start("block-1"),
+    ]);
+    assert!(
+        said.contains(r#"REASONING_START for reasoning block "block-1", which is already open"#),
+        "{said}"
+    );
+
+    let said = complaint(&[started.clone(), Event::reasoning_end("block-1")]);
+    assert!(
+        said.contains(r#"REASONING_END for reasoning block "block-1", which was never opened"#),
+        "{said}"
+    );
+
+    let said = complaint(&[
+        started.clone(),
+        Event::reasoning_start("block-1"),
+        Event::run_finished_success("t", "r"),
+    ]);
+    assert!(
+        said.contains(r#"RUN_FINISHED arrived while reasoning block "block-1" was still open"#),
+        "{said}"
+    );
+
+    // A block opens no message: content naming its id has nothing to land in.
+    let said = complaint(&[
+        started.clone(),
+        Event::reasoning_start("block-1"),
+        Event::reasoning_message_content("block-1", "orphan"),
+    ]);
+    assert!(said.contains("never opened"), "{said}");
+
+    // A block may hold several messages, share its id with one of them, and
+    // be opened again once it has closed.
+    verify_all(&[
+        started,
+        Event::reasoning_start("block-1"),
+        Event::reasoning_message_start("block-1"),
+        Event::reasoning_message_end("block-1"),
+        Event::reasoning_message_start("thought-2"),
+        Event::reasoning_message_end("thought-2"),
+        Event::reasoning_end("block-1"),
+        Event::reasoning_start("block-1"),
+        Event::reasoning_end("block-1"),
+        Event::run_finished_success("t", "r"),
+    ])
+    .expect("a balanced block verifies");
+}
+
+#[test]
 fn nothing_may_follow_a_finished_run() {
     let said = complaint(&[
         Event::run_started("t", "r"),

@@ -215,6 +215,12 @@ impl EventSink {
         StreamTransformer::seed(&mut self.chain, history);
     }
 
+    /// For a sink with no run driver behind it, which would have emitted
+    /// `RUN_STARTED`: lets the verifier take the agent's first event.
+    pub(crate) fn assume_run_started(&mut self) {
+        self.verifier.assume_opened();
+    }
+
     /// Emits one event, unless the run was cancelled.
     ///
     /// Failing every emit after cancellation is what makes cancellation work

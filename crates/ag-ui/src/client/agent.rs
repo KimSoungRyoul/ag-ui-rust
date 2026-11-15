@@ -194,8 +194,11 @@ impl<T: Transport> RemoteAgent<T> {
     /// The boundary's warnings are discarded here. A `Thread` reports them;
     /// [`enforce_events`](crate::client::transport::enforce_events) over
     /// [`Transport::run_raw`] hands them to a callback.
+    ///
+    /// A legacy `binary` content part in the request's messages is sent as the
+    /// 1.0 media part it stands for.
     pub fn run_events(&self, params: impl Into<RunAgentInput>) -> EventStream {
-        let connecting = self.transport.run_raw(params.into());
+        let connecting = self.transport.run_raw(outgoing(params));
         let raw = futures_util::stream::once(connecting).try_flatten();
         boxed_stream(crate::client::enforce::stream(raw))
     }
@@ -205,10 +208,19 @@ impl<T: Transport> RemoteAgent<T> {
         &self,
         params: impl Into<RunAgentInput>,
     ) -> crate::client::enforce::CheckedStream {
-        let connecting = self.transport.run_raw(params.into());
+        let connecting = self.transport.run_raw(outgoing(params));
         let raw = futures_util::stream::once(connecting).try_flatten();
         Box::pin(crate::client::enforce::checked(raw))
     }
+}
+
+/// The request as it leaves the client. AG-UI 1.0 retired the `binary` content
+/// part, and a 1.0 producer strips what it does not describe, so the part is
+/// translated here rather than sent.
+fn outgoing(params: impl Into<RunAgentInput>) -> RunAgentInput {
+    let mut input = params.into();
+    crate::message::upgrade_legacy_content(&mut input.messages);
+    input
 }
 
 /// An HTTP endpoint and reusable connection settings. Create independent local

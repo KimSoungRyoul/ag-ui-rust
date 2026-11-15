@@ -227,31 +227,97 @@ fn an_explicit_message_absorbs_a_following_bare_chunk() {
 }
 
 #[test]
-fn events_between_chunks_do_not_split_the_message() {
-    // A producer that streams chunks may well publish state between two
-    // fragments of one message. Ending the message there would be wrong.
-    //
-    // Upstream's `transformChunks` does end it: every event outside its
-    // passthrough list runs `closePendingEvent()` first, so a STATE_SNAPSHOT
-    // between two fragments closes the message and the next fragment re-opens
-    // it. The assembled message is the same either way — see
-    // `splitting_a_message_on_an_intervening_event_assembles_the_same_text` —
-    // but ours does not fire a spurious "message complete" at the halfway
-    // point, and a *bare* fragment after the intervening event still lands in
-    // the right message rather than throwing.
+fn an_event_in_the_lane_ends_the_chunk_stream() {
+    // AG-UI 1.0, "Closing a chunk stream": a message, tool-call, step, state,
+    // custom or reasoning event in the stream's lane ends it. A fragment that
+    // names no id afterwards has nothing to continue.
+    for between in [
+        Event::state_snapshot(serde_json::json!({ "progress": 0.5 })),
+        Event::state_delta(Vec::<ag_ui::PatchOperation>::new()),
+        Event::custom("note", serde_json::json!(1)),
+        Event::step_started("plan"),
+        Event::step_finished("plan"),
+        Event::reasoning_start("span-1"),
+        Event::reasoning_end("span-1"),
+        Event::messages_snapshot(Vec::<ag_ui::Message>::new()),
+        Event::run_started("thread-1", "run-1"),
+    ] {
+        let kind = between.event_type();
+        let mut normalizer = ChunkNormalizer::new();
+        let mut out = Vec::new();
+        normalizer
+            .normalize(text_chunk(Some("msg-1"), Some("Hel")), &mut out)
+            .expect("opens");
+        normalizer.normalize(between, &mut out).expect("passes");
+        assert_eq!(
+            types(&out),
+            [
+                EventType::TextMessageStart,
+                EventType::TextMessageContent,
+                EventType::TextMessageEnd,
+                kind,
+            ],
+            "{kind} must end the open chunk stream before it is delivered"
+        );
+        let error = normalizer
+            .normalize(text_chunk(None, Some("lo")), &mut out)
+            .expect_err("nothing is open to continue");
+        assert!(error.to_string().contains("no message is open"), "{error}");
+    }
+}
+
+#[test]
+fn events_that_stand_aside_do_not_end_the_chunk_stream() {
+    // RAW, ACTIVITY_SNAPSHOT, ACTIVITY_DELTA, REASONING_ENCRYPTED_VALUE and
+    // SUBAGENT_STARTED take no part in assembly.
+    for aside in [
+        Event::raw(serde_json::json!({ "provider": "heartbeat" })),
+        Event::activity_snapshot("act-1", "search", ag_ui::JsonObject::new()),
+        Event::activity_delta("act-1", "search", Vec::<ag_ui::PatchOperation>::new()),
+        Event::reasoning_encrypted_value(
+            ag_ui::ReasoningEncryptedValueSubtype::Message,
+            "msg-1",
+            "b3BhcXVl",
+        ),
+        Event::subagent_started("sub-1", "researcher"),
+    ] {
+        let kind = aside.event_type();
+        let events = normalize_all([
+            text_chunk(Some("msg-1"), Some("Hel")),
+            aside,
+            text_chunk(None, Some("lo")),
+        ])
+        .unwrap_or_else(|error| panic!("{kind} must not end the stream: {error}"));
+        assert_eq!(
+            types(&events),
+            [
+                EventType::TextMessageStart,
+                EventType::TextMessageContent,
+                kind,
+                EventType::TextMessageContent,
+                EventType::TextMessageEnd,
+            ]
+        );
+    }
+}
+
+#[test]
+fn an_event_in_another_lane_leaves_the_chunk_stream_open() {
+    // A lane is the parent agent's or one subagent's, and each is closed by
+    // its own events only.
+    let tagged = |event: Event| event.with_subagent_run_id("sub-1");
     let events = normalize_all([
         text_chunk(Some("msg-1"), Some("Hel")),
-        Event::state_snapshot(serde_json::json!({ "progress": 0.5 })),
+        tagged(Event::custom("note", serde_json::json!(1))),
         text_chunk(None, Some("lo")),
     ])
-    .expect("normalizes");
-
+    .expect("the parent's stream is untouched by a subagent's event");
     assert_eq!(
         types(&events),
         [
             EventType::TextMessageStart,
             EventType::TextMessageContent,
-            EventType::StateSnapshot,
+            EventType::Custom,
             EventType::TextMessageContent,
             EventType::TextMessageEnd,
         ]
@@ -259,11 +325,139 @@ fn events_between_chunks_do_not_split_the_message() {
 }
 
 #[test]
+fn a_subagent_terminal_ends_the_chunk_stream_in_its_lane() {
+    // "A chunk stream MUST NOT outlive its owner": the synthesized end comes
+    // before the terminal, and only that subagent's stream is ended.
+    for terminal in [
+        Event::subagent_finished("sub-1"),
+        Event::subagent_error("sub-1", "failed"),
+    ] {
+        let kind = terminal.event_type();
+        let events = normalize_all([
+            text_chunk(Some("parent-msg"), Some("still ")),
+            text_chunk(Some("sub-msg"), Some("delegated")).with_subagent_run_id("sub-1"),
+            terminal,
+            text_chunk(None, Some("streaming")),
+        ])
+        .expect("normalizes");
+        assert_eq!(
+            types(&events),
+            [
+                EventType::TextMessageStart,
+                EventType::TextMessageContent,
+                EventType::TextMessageStart,
+                EventType::TextMessageContent,
+                EventType::TextMessageEnd,
+                kind,
+                EventType::TextMessageContent,
+                EventType::TextMessageEnd,
+            ]
+        );
+        let Event::TextMessageEnd(first_end) = &events[4] else {
+            unreachable!()
+        };
+        assert_eq!(first_end.message_id, "sub-msg");
+        assert_eq!(first_end.subagent_run_id.as_deref(), Some("sub-1"));
+    }
+}
+
+#[test]
+fn a_continuation_chunk_may_repeat_what_its_opener_said_but_not_contradict_it() {
+    let role = |role| {
+        Event::TextMessageChunk(TextMessageChunkEvent {
+            message_id: Some("msg-1".into()),
+            role,
+            delta: Some("x".into()),
+            ..Default::default()
+        })
+    };
+    let named = |name: Option<&str>| {
+        Event::TextMessageChunk(TextMessageChunkEvent {
+            message_id: Some("msg-1".into()),
+            name: name.map(str::to_owned),
+            ..Default::default()
+        })
+    };
+    let user = Some(TextMessageRole::User);
+    let assistant = Some(TextMessageRole::Assistant);
+
+    // The same value again, or none, continues the stream.
+    assert!(normalize_all([role(user), role(user), role(None)]).is_ok());
+    assert!(normalize_all([named(Some("ada")), named(Some("ada")), named(None)]).is_ok());
+
+    let error = normalize_all([role(user), role(assistant)]).expect_err("two roles");
+    assert!(
+        error.to_string().contains(
+            r#"repeats role "assistant", which does not match the open stream's role "user""#
+        ),
+        "{error}"
+    );
+    // An opener that names no role opened an assistant message.
+    assert!(normalize_all([role(None), role(assistant)]).is_ok());
+    let error = normalize_all([role(None), role(user)]).expect_err("user after the default");
+    assert!(
+        error
+            .to_string()
+            .contains(r#"the open stream's role "assistant""#),
+        "{error}"
+    );
+    let error = normalize_all([named(None), named(Some("ada"))]).expect_err("a late name");
+    assert!(
+        error
+            .to_string()
+            .contains("the open stream's name (absent)"),
+        "{error}"
+    );
+
+    let tool = |name: Option<&str>, parent: Option<&str>| {
+        Event::ToolCallChunk(ToolCallChunkEvent {
+            tool_call_id: Some("call-1".into()),
+            tool_call_name: name.map(str::to_owned),
+            parent_message_id: parent.map(MessageId::new),
+            delta: Some("{}".into()),
+            ..Default::default()
+        })
+    };
+    assert!(
+        normalize_all([
+            tool(Some("search"), Some("m")),
+            tool(Some("search"), Some("m")),
+            tool(None, None)
+        ])
+        .is_ok()
+    );
+    let error = normalize_all([tool(Some("search"), None), tool(Some("delete"), None)])
+        .expect_err("a renamed call");
+    assert!(
+        error.to_string().contains(
+            r#"repeats toolCallName "delete", which does not match the open stream's toolCallName "search""#
+        ),
+        "{error}"
+    );
+    let error = normalize_all([tool(Some("search"), Some("m")), tool(None, Some("other"))])
+        .expect_err("a moved call");
+    assert!(
+        error
+            .to_string()
+            .contains(r#"the open stream's parentMessageId "m""#),
+        "{error}"
+    );
+
+    // A chunk continuing a message a TEXT_MESSAGE_START opened answers to
+    // that start.
+    let error = normalize_all([
+        Event::text_message_start("msg-1", TextMessageRole::User),
+        role(assistant),
+    ])
+    .expect_err("the start said user");
+    assert!(error.to_string().contains("does not match"), "{error}");
+}
+
+#[test]
 fn splitting_a_message_on_an_intervening_event_assembles_the_same_text() {
-    // The stream upstream's transform would have produced for the fixture in
-    // the test above, written out by hand. Applying it has to land in the same
-    // place as applying ours, or the two SDKs disagree about what the user
-    // said — which is the part that actually has to interoperate.
+    // An intervening event ends the stream, and a fragment that names the id
+    // again re-opens the message. Written out by hand, and through the
+    // normalizer: both have to assemble the same text.
     let upstream = [
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
         Event::text_message_content("msg-1", "Hel"),

@@ -1055,28 +1055,37 @@ impl Applier {
     // ---- activities -----------------------------------------------------
 
     fn activity_snapshot(&mut self, event: &ActivitySnapshotEvent) -> Changed {
-        let is_new = !self.by_id.contains_key(&event.message_id);
-        let index = self.activity_index(&event.message_id, &event.activity_type);
+        let index = match self.by_id.get(&event.message_id).copied() {
+            Some(index) => index,
+            // A snapshot for an id not seen yet creates the activity, in
+            // sequence position, whatever `replace` says.
+            None => {
+                let index = self.push_message(Message::Activity(ActivityMessage {
+                    id: event.message_id.clone(),
+                    activity_type: event.activity_type.clone(),
+                    content: event.content.clone(),
+                    subagent_run_id: event.subagent_run_id.clone(),
+                    ..Default::default()
+                }));
+                return Changed::Message(MessageChange {
+                    index,
+                    id: event.message_id.clone(),
+                    kind: MessageChangeKind::Activity,
+                });
+            }
+        };
+        // `replace: false` leaves an existing activity as it stands: content,
+        // `activityType` and owner. It is not a merge.
+        if !event.replace {
+            return Changed::Nothing;
+        }
+        // A replacing snapshot re-mints the activity, attribution included:
+        // one that carries none takes the activity back for the parent.
+        // Metadata is not content, and keeps merging.
         if let Some(Message::Activity(activity)) = self.messages.get_mut(index) {
             activity.activity_type = event.activity_type.clone();
-            // A replacing snapshot re-mints the activity, attribution
-            // included: one that carries none takes the activity back for
-            // the parent. A merge leaves the message where it was, and the
-            // verifier holds a following delta to that owner.
-            if is_new || event.replace {
-                activity.subagent_run_id = event.subagent_run_id.clone();
-            }
-            if event.replace {
-                activity.content = event.content.clone();
-            } else {
-                // `replace: false` is a merge, and RFC 7396 is the merge the
-                // protocol's sibling patch format defines.
-                let mut merged = Value::Object(std::mem::take(&mut activity.content));
-                json_patch::merge(&mut merged, &Value::Object(event.content.clone()));
-                if let Value::Object(object) = merged {
-                    activity.content = object;
-                }
-            }
+            activity.subagent_run_id = event.subagent_run_id.clone();
+            activity.content = event.content.clone();
         }
         Changed::Message(MessageChange {
             index,
@@ -1085,47 +1094,48 @@ impl Applier {
         })
     }
 
+    /// Patches an activity's content and gives it the delta's `activityType`.
+    /// A delta whose target does not exist, or is not an activity, is
+    /// skipped: the error says so, nothing is created, and a `Thread` reports
+    /// it without failing the run. A patch that does not apply changes nothing.
     fn activity_delta(&mut self, event: &ActivityDeltaEvent) -> Result<Changed> {
-        let index = self.activity_index(&event.message_id, &event.activity_type);
-        if let Some(Message::Activity(activity)) = self.messages.get_mut(index) {
-            let what = format!("activity {}", event.message_id);
-            // Patched on a copy, and committed only once the result is still an
-            // object. An activity's content is an object by definition, so a
-            // whole-document operation — `{"op":"replace","path":"","value":7}`
-            // — has nowhere to land; taking the content out first would leave
-            // the activity holding nothing at all.
-            let mut content = Value::Object(activity.content.clone());
-            apply_patch(&mut content, &event.patch, &what)?;
-            let Value::Object(object) = content else {
-                return Err(Error::Patch {
-                    target: what,
-                    message: format!(
-                        "patch replaced the whole activity with {}, which is not an object",
-                        kind_of(&content)
-                    ),
-                });
-            };
-            activity.content = object;
-        }
+        let what = format!("activity {}", event.message_id);
+        let index = self.by_id.get(&event.message_id).copied();
+        let Some((index, Message::Activity(activity))) =
+            index.and_then(|index| Some((index, self.messages.get_mut(index)?)))
+        else {
+            return Err(Error::Patch {
+                target: what,
+                message: "no activity message has this id, so the delta was skipped; an \
+                          ACTIVITY_SNAPSHOT has to create it first"
+                    .to_owned(),
+            });
+        };
+        // Patched on a copy, and committed only once the result is still an
+        // object. An activity's content is an object by definition, so a
+        // whole-document operation — `{"op":"replace","path":"","value":7}`
+        // — has nowhere to land; taking the content out first would leave
+        // the activity holding nothing at all.
+        let mut content = Value::Object(activity.content.clone());
+        apply_patch(&mut content, &event.patch, &what)?;
+        let Value::Object(object) = content else {
+            return Err(Error::Patch {
+                target: what,
+                message: format!(
+                    "patch replaced the whole activity with {}, which is not an object",
+                    kind_of(&content)
+                ),
+            });
+        };
+        activity.content = object;
+        // The delta's type replaces the message's: a delta may retype the
+        // activity it amends.
+        activity.activity_type = event.activity_type.clone();
         Ok(Changed::Message(MessageChange {
             index,
             id: event.message_id.clone(),
             kind: MessageChangeKind::Activity,
         }))
-    }
-
-    /// The index of the activity message with this id, creating it if the
-    /// producer patched an activity it never published.
-    fn activity_index(&mut self, id: &MessageId, activity_type: &str) -> usize {
-        match self.by_id.get(id).copied() {
-            Some(index) => index,
-            None => self.push_message(Message::Activity(ActivityMessage {
-                id: id.clone(),
-                activity_type: activity_type.to_owned(),
-                content: JsonObject::new(),
-                ..Default::default()
-            })),
-        }
     }
 
     // ---- reasoning ------------------------------------------------------
