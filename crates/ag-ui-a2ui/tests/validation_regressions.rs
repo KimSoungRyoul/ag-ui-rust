@@ -444,3 +444,84 @@ fn the_stateful_validator_locates_a_composition_failure_in_its_message() {
         "{detail}"
     );
 }
+
+/// The specification writes `Icon.name` as
+/// `oneOf: [{"enum": […]}, {svgPath}, DataBinding]`. `Catalog::from_schema`
+/// read only a property's own `enum`, so a catalog parsed from a document had
+/// no enum check for a property shaped like that, where the built-in basic
+/// catalog, transcribed by hand, did.
+#[test]
+fn a_custom_catalog_checks_an_enum_nested_in_a_one_of() {
+    let catalog = Catalog::from_schema(&json!({
+        "catalogId": "example.com:badges",
+        "components": {
+            "Badge": {
+                "type": "object",
+                "properties": {
+                    "icon": {"oneOf": [
+                        {"type": "string", "enum": ["check", "close"]},
+                        {"type": "object", "properties": {"svgPath": {"type": "string"}}},
+                        {"$ref": "common_types.json#/$defs/DataBinding"}
+                    ]}
+                }
+            }
+        }
+    }))
+    .unwrap();
+    let validator = Validator::new(&catalog);
+    let badge = |icon: serde_json::Value| vec![Component::new("root", "Badge").with("icon", icon)];
+
+    let report = validator.validate(&badge(json!("tick")));
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].code, ErrorCode::InvalidValue);
+    assert_eq!(report.errors[0].path, "components[0].icon");
+    assert!(
+        report.errors[0]
+            .message
+            .contains("Use one of: check, close."),
+        "{}",
+        report.errors[0].message
+    );
+
+    // A listed literal, the object alternative and a binding are all the
+    // schema's own alternatives, and none of them is a literal off the list.
+    for accepted in [
+        json!("check"),
+        json!({"svgPath": "M0 0h24v24H0z"}),
+        json!({"path": "/icon"}),
+    ] {
+        let report = validator.validate(&badge(accepted.clone()));
+        assert!(report.is_valid(), "{accepted}: {:?}", report.errors);
+    }
+}
+
+/// The same check through the specification's own catalog document, parsed
+/// rather than built in.
+#[test]
+fn the_parsed_specification_catalog_rejects_an_icon_it_does_not_list() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/spec_v0_9/basic_catalog.json");
+    let document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let catalog = Catalog::from_schema(&document).unwrap();
+    let options = ValidateOptions {
+        check_required_props: false,
+        ..ValidateOptions::full_surface()
+    };
+    let validator = Validator::with_options(&catalog, options);
+
+    let report =
+        validator.validate(&[Component::new("root", "Icon").with("name", json!("rocket"))]);
+    assert_eq!(
+        report
+            .errors
+            .iter()
+            .map(|error| (error.code, error.path.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(ErrorCode::InvalidValue, "components[0].name")]
+    );
+    for accepted in [json!("accountCircle"), json!({"svgPath": "M0 0"})] {
+        let report = validator.validate(&[Component::new("root", "Icon").with("name", accepted)]);
+        assert!(report.is_valid(), "{:?}", report.errors);
+    }
+}

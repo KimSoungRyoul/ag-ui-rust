@@ -24,8 +24,10 @@
 //!
 //! Each property also keeps the JSON type its schema pins it to ([`PropType`]),
 //! which is what lets [`crate::core::validate`] reject `{"columns": "three"}` where the
-//! catalog says integer. A bare `enum` is kept as well ([`PropDef::enum_values`]),
-//! so a literal it does not list is rejected too. Those are two constraints out
+//! catalog says integer. An `enum` is kept as well ([`PropDef::enum_values`]),
+//! whether it is the property's own or one alternative of a `oneOf` beside a
+//! data binding, so a literal it does not list is rejected too. Those are two
+//! constraints out
 //! of JSON Schema, not an engine: `pattern`, `minimum`, `additionalProperties`
 //! and the rest are left to whatever validates the document itself. A property
 //! whose schema states no type, or states several, is
@@ -259,10 +261,13 @@ pub struct PropDef {
     pub value_type: PropType,
     /// Human-readable description, carried into generated prompts.
     pub description: Option<String>,
-    /// Permitted values, when the schema constrains them to an enum.
+    /// Permitted literal strings, when the schema constrains them to an enum.
     ///
     /// A literal string outside them fails [`crate::core::validate`]; a binding or a
-    /// function call is not a literal and is left to the renderer.
+    /// function call is not a literal and is left to the renderer. Read from
+    /// the property's own `enum`, or from the `enum`s its `oneOf` / `anyOf`
+    /// alternatives list when every alternative that can be a string has one.
+    /// Empty when any string is accepted.
     pub enum_values: Vec<String>,
     /// Whether the component is invalid without this property.
     pub required: bool,
@@ -847,7 +852,7 @@ fn component_def_from_schema(name: &str, schema: &Value) -> ComponentDef {
                         kind: prop_kind_from_schema(prop_schema),
                         value_type: prop_type_from_schema(prop_schema),
                         description: string_field(prop_schema.get("description")),
-                        enum_values: string_list(prop_schema.get("enum")).unwrap_or_default(),
+                        enum_values: permitted_strings(prop_schema).unwrap_or_default(),
                         required: false,
                     },
                 );
@@ -888,6 +893,88 @@ fn string_list(value: Option<&Value>) -> Option<Vec<String>> {
             .map(str::to_string)
             .collect(),
     )
+}
+
+/// The literal strings a schema permits, when it permits only some of them.
+///
+/// `None` means any string is accepted, and so does a schema this summary
+/// cannot read: a constraint that is not understood must never reject a value.
+/// `Some` lists the strings that are; it is empty for a schema no string
+/// satisfies at all, such as `"type": "object"`.
+///
+/// A bare `enum` lists them directly. More often the `enum` is one alternative
+/// of several — the specification's `Icon.name` is
+/// `oneOf: [{"enum": […]}, {svgPath}, DataBinding]` — and then what the
+/// property permits is what its arms permit between them: the union of the
+/// strings each arm lists, unless some arm takes strings freely (a plain
+/// `"type": "string"`, a `DynamicString`), in which case nothing is ruled out.
+/// An arm that cannot be a string says nothing about which strings are
+/// allowed, so it adds none and rules none out.
+///
+/// The keywords of one schema all have to hold, so each that narrows the
+/// strings narrows them further.
+fn permitted_strings(schema: &Value) -> Option<Vec<String>> {
+    let object = schema.as_object()?;
+    let mut narrowed: Option<Vec<String>> = None;
+    let mut narrow = |values: Vec<String>| {
+        narrowed = Some(match narrowed.take() {
+            Some(current) => current
+                .into_iter()
+                .filter(|value| values.contains(value))
+                .collect(),
+            None => values,
+        });
+    };
+
+    if let Some(values) = string_list(object.get("enum")) {
+        narrow(values);
+    }
+    if let Some(constant) = object.get("const") {
+        narrow(constant.as_str().map(str::to_string).into_iter().collect());
+    }
+    let admits_strings = match object.get("type") {
+        Some(Value::String(name)) => name == "string",
+        Some(Value::Array(names)) => names.iter().any(|name| name == "string"),
+        _ => true,
+    };
+    let refers_to_strings = object
+        .get("$ref")
+        .and_then(Value::as_str)
+        .is_none_or(|reference| {
+            matches!(
+                ref_type(reference),
+                PropType::String | PropType::Unconstrained
+            )
+        });
+    if !admits_strings || !refers_to_strings {
+        narrow(Vec::new());
+    }
+    if let Some(Value::Array(members)) = object.get("allOf") {
+        for values in members.iter().filter_map(permitted_strings) {
+            narrow(values);
+        }
+    }
+    for key in ["oneOf", "anyOf"] {
+        let Some(Value::Array(arms)) = object.get(key) else {
+            continue;
+        };
+        // `None` from any arm makes the whole `collect` `None`: that arm takes
+        // every string, so the alternatives together rule none out.
+        if let Some(arms) = arms
+            .iter()
+            .map(permitted_strings)
+            .collect::<Option<Vec<_>>>()
+        {
+            let mut union: Vec<String> = Vec::new();
+            for value in arms.into_iter().flatten() {
+                if !union.contains(&value) {
+                    union.push(value);
+                }
+            }
+            narrow(union);
+        }
+    }
+    narrowed
 }
 
 /// Decides whether a property schema describes a structural link.
@@ -1510,6 +1597,73 @@ mod tests {
     }
 
     #[test]
+    fn from_schema_reads_an_enum_wherever_the_schema_puts_it() {
+        let binding = "common_types.json#/$defs/DataBinding";
+        let schema = json!({
+            "catalogId": "test",
+            "components": {
+                "Badge": {
+                    "type": "object",
+                    "properties": {
+                        // The property's own.
+                        "tone": {"type": "string", "enum": ["info", "warn"]},
+                        // One alternative of several, beside an object and a
+                        // binding: the shape the specification gives `Icon.name`.
+                        "icon": {"oneOf": [
+                            {"type": "string", "enum": ["check", "close"]},
+                            {"type": "object", "properties": {"svgPath": {"type": "string"}}},
+                            {"$ref": binding}
+                        ]},
+                        // Spread over two arms, with a `const` for a third.
+                        "size": {"anyOf": [
+                            {"enum": ["small", "medium"]},
+                            {"enum": ["medium", "large"]},
+                            {"const": "auto"},
+                            {"type": "number"}
+                        ]},
+                        // Inside an `allOf` wrapper, as a described property is.
+                        "shape": {"allOf": [
+                            {"description": "Outline."},
+                            {"oneOf": [{"enum": ["round", "square"]}, {"$ref": binding}]}
+                        ]},
+                        // An arm that takes any string rules nothing out.
+                        "label": {"oneOf": [{"enum": ["ok"]}, {"type": "string"}]},
+                        "caption": {"oneOf": [
+                            {"enum": ["ok"]},
+                            {"$ref": "common_types.json#/$defs/DynamicString"}
+                        ]},
+                        // Nor does one this summary cannot read.
+                        "kind": {"oneOf": [{"enum": ["ok"]}, {"$ref": "#/$defs/Custom"}]},
+                        "note": {"oneOf": [{"enum": ["ok"]}, {"description": "anything"}]},
+                        // Two keywords of one schema both have to hold.
+                        "both": {"enum": ["a", "b", "c"], "oneOf": [{"enum": ["b", "c", "d"]}]},
+                        // No string satisfies these, so there is no list.
+                        "count": {"type": "integer"},
+                        "flags": {"oneOf": [{"type": "array"}, {"$ref": binding}]}
+                    }
+                }
+            }
+        });
+        let catalog = Catalog::from_schema(&schema).unwrap();
+        let badge = catalog.component("Badge").unwrap();
+        let values = |name: &str| -> Vec<&str> {
+            badge.props[name]
+                .enum_values
+                .iter()
+                .map(String::as_str)
+                .collect()
+        };
+        assert_eq!(values("tone"), ["info", "warn"]);
+        assert_eq!(values("icon"), ["check", "close"]);
+        assert_eq!(values("size"), ["small", "medium", "large", "auto"]);
+        assert_eq!(values("shape"), ["round", "square"]);
+        assert_eq!(values("both"), ["b", "c"]);
+        for open in ["label", "caption", "kind", "note", "count", "flags"] {
+            assert!(values(open).is_empty(), "{open} lists {:?}", values(open));
+        }
+    }
+
+    #[test]
     fn the_built_in_basic_catalog_types_match_the_vendored_specification_document() {
         // `Catalog::basic()` is hand-transcribed so it costs no parsing at
         // startup. This is what keeps the transcription honest: the vendored
@@ -1521,11 +1675,14 @@ mod tests {
             .expect("the vendored basic catalog is JSON");
         let parsed = Catalog::from_schema(&document).unwrap();
         let built_in = Catalog::basic();
-        // `Icon.name` is the one enum the parser does not lift: it sits in the
-        // string arm of a `oneOf` beside `{svgPath}` and a binding.
-        let icon_names =
+        // `Icon.name` is the one enum that is not the property's own: it sits
+        // in the string arm of a `oneOf` beside `{svgPath}` and a binding. The
+        // parser has to lift it from there like any other.
+        assert_eq!(
+            parsed.component("Icon").unwrap().props["name"].enum_values,
             string_list(document.pointer("/components/Icon/allOf/2/properties/name/oneOf/0/enum"))
-                .expect("the specification lists the icon names");
+                .expect("the specification lists the icon names")
+        );
 
         let mut compared = 0;
         for def in built_in.components_in_order() {
@@ -1545,14 +1702,9 @@ mod tests {
                 );
                 // Enums reject values, so they have to match too. Order is
                 // the prompt's business; membership is the validator's.
-                let spec_values = if (def.name.as_str(), prop.name.as_str()) == ("Icon", "name") {
-                    icon_names.clone()
-                } else {
-                    spec_prop.enum_values.clone()
-                };
                 assert_eq!(
                     prop.enum_values.iter().collect::<BTreeSet<_>>(),
-                    spec_values.iter().collect::<BTreeSet<_>>(),
+                    spec_prop.enum_values.iter().collect::<BTreeSet<_>>(),
                     "{}.{} permits different values here and in the specification",
                     def.name,
                     prop.name
