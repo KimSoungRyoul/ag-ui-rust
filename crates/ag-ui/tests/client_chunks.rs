@@ -721,7 +721,7 @@ fn the_applier_leaves_a_retired_thinking_event_to_the_compatibility_boundary() {
         );
         assert!(error.to_string().contains("REASONING_*"), "{error}");
     }
-    assert!(applier.reasoning().is_empty());
+    assert!(applier.messages().is_empty());
 }
 
 #[test]
@@ -742,7 +742,7 @@ fn the_applier_takes_a_chunk_only_in_its_expanded_form() {
         );
         assert!(error.to_string().contains("ChunkNormalizer"), "{error}");
     }
-    assert!(applier.messages().is_empty() && applier.reasoning().is_empty());
+    assert!(applier.messages().is_empty());
 
     // Through the normalizer, the same events assemble.
     let events = normalize_all([

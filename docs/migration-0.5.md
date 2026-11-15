@@ -603,6 +603,92 @@ These are on `main` and not yet in a published version.
   are in the module `ag_ui_a2ui::schema`, which needs no feature. alpha.3 had them in
   `toolkit::schema` and `toolkit::streaming`, which are gone. Write
   `ag_ui_a2ui::schema::SchemaBundle`.
+- A streamed reasoning message is a message of the conversation, as AG-UI 1.0 has it.
+  `Thread::messages()`, `Applier::messages()`, `Update::Messages`,
+  `RunReport::new_messages` and a snapshot's `messages` hold it as `Message::Reasoning`,
+  where it arrived: before the reply it preceded. Alpha.3 kept it out of all of them, in
+  a list of its own. So a view that draws every message now draws the agent's reasoning
+  too. To draw the conversation without it, leave the role out:
+  `thread.messages().iter().filter(|m| m.role() != Role::Reasoning)`.
+
+  ```rust
+  use ag_ui::client::Applier;
+  use ag_ui::{Event, Role, TextMessageRole};
+
+  let mut applier = Applier::new();
+  for event in [
+      Event::reasoning_message_start("think-1"),
+      Event::reasoning_message_content("think-1", "weighing the options"),
+      Event::reasoning_message_end("think-1"),
+      Event::text_message_start("answer-1", TextMessageRole::Assistant),
+      Event::text_message_content("answer-1", "the answer"),
+      Event::text_message_end("answer-1"),
+  ] {
+      applier.apply(&event).expect("applies");
+  }
+  // Alpha.3 listed one message here, the answer.
+  assert_eq!(applier.messages().len(), 2);
+
+  let without_reasoning: Vec<_> = applier
+      .messages()
+      .iter()
+      .filter(|message| message.role() != Role::Reasoning)
+      .collect();
+  assert_eq!(without_reasoning.len(), 1);
+  ```
+
+  A view that draws from updates is unchanged. `Update::Reasoning` still announces each
+  change to a reasoning message, and a reasoning delta produces no `Update::Message`.
+  `ReasoningUpdate` and `ReasoningChange` gain `index`, the message's place in
+  `messages()`; code that builds a `ReasoningChange`, or destructures one without `..`,
+  names the new field.
+- A run sends the conversation's reasoning messages back to the agent, each as it
+  stands. A `REASONING_ENCRYPTED_VALUE` is stored on the message it names, so it returns
+  unmodified in every later request, as 1.0 requires. Only activity messages are left
+  out of a request. Alpha.3 never sent reasoning. An agent now finds `reasoning`
+  messages in `RunAgentInput.messages`; one that forwards its history to a model
+  decides what its provider takes.
+- `Thread::reasoning()` and `Applier::reasoning()` are a view over `messages()` and
+  return an iterator, where they returned `&[ReasoningMessage]`. Write `.count()` for
+  `.len()`, `.next()` for `[0]`, and `.cloned().collect::<Vec<_>>()` for `.to_vec()`.
+- A reasoning span opens no message. `REASONING_START` and `REASONING_END` change
+  nothing: `Applier::apply` returns `Changed::Nothing` and a `Thread` yields no update.
+  Alpha.3 made an entry in `reasoning()` under the span's id, which stayed empty when
+  the message inside the span had an id of its own, and reported `Started`, `Ended` and
+  `Aborted` for it. Those three now come from the reasoning message alone, at
+  `REASONING_MESSAGE_START`, at `REASONING_MESSAGE_END` and when the run stops with the
+  message open. An application that needs to know a span is open reads
+  `Event::ReasoningStart` and `Event::ReasoningEnd` in `Thread::on_event`.
+- An id names one message. A `REASONING_MESSAGE_START` for an id the conversation
+  already holds continues that message, and a `TEXT_MESSAGE_START` for the id of a
+  reasoning message continues the reasoning message, as the reference client does.
+  Alpha.3 held a reply and a reasoning message with one id apart, in its two lists.
+  1.0 requires a producer to give each message of a thread an id of its own.
+- `MESSAGES_SNAPSHOT` follows the 1.0 rule for reasoning. A snapshot that carries no
+  reasoning message leaves the client's where they are. One that carries any declares
+  the whole set, so a reasoning message it leaves out is dropped. In alpha.3 no snapshot
+  removed streamed reasoning, and a reasoning message a snapshot carried was added to
+  `messages()` beside the streamed copy in `reasoning()`.
+- A message in a `MESSAGES_SNAPSHOT` replaces the client's message with the same id,
+  whatever the role of either. Alpha.3 kept an activity message whose id a snapshot
+  without activity gave to another message, and discarded the snapshot's.
+- A `REASONING_ENCRYPTED_VALUE` that names an activity message changes nothing, and
+  `Applier::apply` returns `Changed::Nothing`: an activity has no `encryptedValue`.
+  Alpha.3 reported `MessageChangeKind::EncryptedValue` for it.
+- `Thread::snapshot()` writes format version 2: reasoning is in `messages`, and
+  `reasoning` is not written. `Thread::restore` still reads version 1. Nothing in that
+  format says where a reasoning message stood among the others, so its `reasoning`
+  entries are put before every message, in the order the list held them: reasoning
+  comes before the reply it led to, and there each entry still does. From there they
+  are sent with the next run like any other. None is next to the reply it preceded,
+  so an agent that pairs a reasoning message with the message after it finds the
+  first message of the conversation there. Two kinds of entry are not carried over:
+  one whose id a message already has, and one with no content, encrypted value or
+  metadata, which is what alpha.3 kept for a `REASONING_START` whose id no reasoning
+  message shared. `ThreadSnapshot::reasoning` stays for reading version 1 and is empty
+  in a new snapshot, so code that read it reads `messages` and filters by role. A
+  version 2 snapshot with entries in `reasoning` is refused, and alpha.3 cannot read a
+  version 2 snapshot.
 - `A2uiAuthor` keeps its constructors and methods and is now a use of the agent layer:
   `AuthorRequest::prompt` is the request's target followed by
   `A2uiRequestProcessor::prompt_snippet`, an answer is read by `DirectJson` (the

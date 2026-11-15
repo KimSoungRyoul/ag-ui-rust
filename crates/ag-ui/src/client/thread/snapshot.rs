@@ -9,13 +9,17 @@ use crate::client::{
     error::{Error, Result},
     transport::Transport,
 };
-use crate::{Interrupt, Message, ReasoningMessage, RunId, ThreadId, ToolCallId};
+use crate::{Interrupt, Message, MessageId, ReasoningMessage, RunId, ThreadId, ToolCallId};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use super::pending::{ResumeSubmission, SubmissionStatus, validate_responses};
 use super::run::RunEnd;
 use super::{Thread, random_id, unique};
+
+/// The format [`Thread::snapshot`] writes. Version 1 kept reasoning in a list
+/// of its own; [`Thread::restore`] still reads it.
+const VERSION: u32 = 2;
 
 fn current_protocol_version() -> Option<String> {
     Some(crate::input::PROTOCOL_VERSION.to_owned())
@@ -25,7 +29,7 @@ fn current_protocol_version() -> Option<String> {
 /// observer or running future. Validate it through `restore` before using it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThreadSnapshot {
-    /// Snapshot format version (currently 1).
+    /// Snapshot format version (currently 2). Version 1 is still restored.
     pub version: u32,
     /// The remote conversation identifier.
     pub thread_id: ThreadId,
@@ -33,11 +37,14 @@ pub struct ThreadSnapshot {
     /// legacy peer; snapshots predating this field restore the current version.
     #[serde(default = "current_protocol_version")]
     pub protocol_version: Option<String>,
-    /// Materialized conversation.
+    /// Materialized conversation, reasoning and activity messages included.
     pub messages: Vec<Message>,
     /// Current raw shared state.
     pub state: Value,
-    /// Materialized reasoning, separate from the conversation.
+    /// Version 1 only: the reasoning that format kept apart from `messages`.
+    /// A snapshot of the current version leaves it empty and does not write
+    /// it. [`Thread::restore`] moves a version 1 list into the conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning: Vec<ReasoningMessage>,
     /// Announced subagent lifecycle state.
     pub subagents: Vec<Subagent>,
@@ -68,12 +75,12 @@ impl<T, S> Thread<T, S> {
             .collect();
         decided_interrupt_tool_call_ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         ThreadSnapshot {
-            version: 1,
+            version: VERSION,
             thread_id: self.thread_id.clone(),
             protocol_version: self.protocol_version.clone(),
             messages: self.messages().to_vec(),
             state: self.raw_state().clone(),
-            reasoning: self.reasoning().to_vec(),
+            reasoning: Vec::new(),
             subagents: self.subagents().to_vec(),
             interrupts: self.interrupts.clone(),
             decided_interrupt_tool_call_ids,
@@ -87,6 +94,21 @@ impl<T, S> Thread<T, S> {
 
 impl<T, S: DeserializeOwned> Thread<T, S> {
     /// Restore local state using a new transport. No server query is performed.
+    ///
+    /// A version 1 snapshot kept reasoning in a list of its own, and nothing
+    /// in it says where a reasoning message stood among the others. Its
+    /// entries are put before every message of the conversation, in the
+    /// order the list held them. Reasoning comes before the reply it led to,
+    /// and there each entry still does; after the messages, each would follow
+    /// its own reply and stand in front of whatever the agent says next. From
+    /// there they are sent with the next run, like any other reasoning
+    /// message.
+    ///
+    /// Two kinds of entry are not moved. One whose id a message of the
+    /// conversation already has, because an id names one message. And one
+    /// with no content, encrypted value or metadata: that is what version 1
+    /// kept for a `REASONING_START` whose id no reasoning message shared, and
+    /// it holds no reasoning.
     pub fn restore(transport: T, snapshot: ThreadSnapshot) -> Result<Self>
     where
         T: Transport,
@@ -109,13 +131,9 @@ impl<T, S: DeserializeOwned> Thread<T, S> {
             }
         }
         let mut applier = Applier::new()
-            .with_messages(snapshot.messages)
+            .with_messages(conversation(snapshot.messages, snapshot.reasoning))
             .with_state(snapshot.state);
-        applier.restore_auxiliary(
-            snapshot.reasoning,
-            snapshot.subagents,
-            snapshot.interrupts.clone(),
-        );
+        applier.restore_auxiliary(snapshot.subagents, snapshot.interrupts.clone());
         Ok(Self {
             agent: RemoteAgent::new(transport),
             thread_id: snapshot.thread_id,
@@ -143,12 +161,43 @@ impl<T, S: DeserializeOwned> Thread<T, S> {
     }
 }
 
+/// The messages of a snapshot with a version 1 reasoning list put in front of
+/// them; see [`Thread::restore`] for why there, and for the two kinds of
+/// entry left behind.
+fn conversation(messages: Vec<Message>, reasoning: Vec<ReasoningMessage>) -> Vec<Message> {
+    if reasoning.is_empty() {
+        return messages;
+    }
+    let taken: HashSet<&MessageId> = messages.iter().map(Message::id).collect();
+    let mut conversation: Vec<Message> = reasoning
+        .into_iter()
+        .filter(|entry| {
+            let holds_nothing = entry.content.is_empty()
+                && entry.encrypted_value.is_none()
+                && entry.metadata.is_none();
+            !holds_nothing && !taken.contains(&entry.id)
+        })
+        .map(Message::Reasoning)
+        .collect();
+    conversation.extend(messages);
+    conversation
+}
+
 fn validate_snapshot(snapshot: &ThreadSnapshot) -> Result<()> {
-    if snapshot.version != 1 {
-        return Err(Error::Snapshot(format!(
-            "unsupported version {}",
-            snapshot.version
-        )));
+    match snapshot.version {
+        1 => unique(
+            snapshot.reasoning.iter().map(|message| message.id.as_str()),
+            "reasoning",
+        )?,
+        // One store: a second list could only disagree with the first.
+        VERSION if snapshot.reasoning.is_empty() => {}
+        VERSION => {
+            return Err(Error::Snapshot(
+                "a version 2 snapshot holds reasoning in `messages`, so `reasoning` must be empty"
+                    .into(),
+            ));
+        }
+        other => return Err(Error::Snapshot(format!("unsupported version {other}"))),
     }
     if snapshot.thread_id.as_str().is_empty() {
         return Err(Error::Snapshot("empty thread ID".into()));
@@ -159,10 +208,6 @@ fn validate_snapshot(snapshot: &ThreadSnapshot) -> Result<()> {
             .iter()
             .map(|message| message.id().as_str()),
         "message",
-    )?;
-    unique(
-        snapshot.reasoning.iter().map(|message| message.id.as_str()),
-        "reasoning",
     )?;
     unique(
         snapshot

@@ -108,7 +108,11 @@ impl<T, S> Thread<T, S> {
     pub fn thread_id(&self) -> &ThreadId {
         &self.thread_id
     }
-    /// The current assembled conversation.
+    /// The current assembled conversation, reasoning and activity messages
+    /// included. A run sends all of it but the activity messages.
+    ///
+    /// To draw the conversation without the agent's reasoning, leave that
+    /// role out: `messages().iter().filter(|m| m.role() != Role::Reasoning)`.
     pub fn messages(&self) -> &[Message] {
         self.applier.messages()
     }
@@ -120,8 +124,10 @@ impl<T, S> Thread<T, S> {
     pub fn raw_state(&self) -> &Value {
         self.applier.state()
     }
-    /// Materialized reasoning, separate from the conversation.
-    pub fn reasoning(&self) -> &[ReasoningMessage] {
+    /// The reasoning messages in [`messages`](Self::messages), oldest first:
+    /// a view over that list, for a UI that draws reasoning in a pane of its
+    /// own.
+    pub fn reasoning(&self) -> impl Iterator<Item = &ReasoningMessage> {
         self.applier.reasoning()
     }
     /// Pending human input. Dispatching a response does not remove it.
