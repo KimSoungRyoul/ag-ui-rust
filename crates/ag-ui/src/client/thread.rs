@@ -1305,6 +1305,9 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
                 self.finish_reported();
                 return;
             }
+            // A second RUN_STARTED while the run is active is a nested run
+            // whatever ids it carries, and the verifier says so.
+            Event::RunStarted(_) if self.response_ids.is_some() && self.verifier.is_some() => {}
             Event::RunStarted(started) => {
                 if started.thread_id != self.thread.thread_id
                     || started.run_id != self.request_run_id

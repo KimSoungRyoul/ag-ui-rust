@@ -247,8 +247,10 @@ pub const EXCEPTIONS: &[Exception] = &[
         subject: "binary",
         difference: Difference::NotUpstream,
         why: "InputContent::Binary still reads and writes the 0.x `binary` part, which 1.0 \
-              retired from ContentPart (upstream upgrades it with a shim instead). A peer \
-              validating against 1.0 rejects a message that carries one.",
+              retired from ContentPart. The client sends one, and reads one in an event, \
+              as the media part it stands for, as upstream's shim does; one with only an \
+              `id` has no 1.0 form and goes out as it is, and a peer validating against 1.0 \
+              rejects that message.",
     },
     Exception {
         shape: "ToolCall",

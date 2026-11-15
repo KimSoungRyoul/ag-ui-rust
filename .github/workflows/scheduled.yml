@@ -16,9 +16,8 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # Whether the reviewed protocol baseline has gone stale (reporting, without
-  # failing, what spec/draft adds), then whether the upstream copy of
-  # crates/ag-ui (PR 2778) has moved past the sync point in UPSTREAM.md.
+  # Whether the protocol baseline, the upstream copy of crates/ag-ui (PR 2778) and the
+  # vendored 1.0 corpus still match upstream. The draft's additions are reported without failing.
   upstream-freshness:
     name: upstream freshness
     runs-on: ubuntu-latest
@@ -33,6 +32,8 @@ jobs:
       - run: cargo run --locked -p xtask -- drift-check --upstream --draft
       # Unrelated alarms: a stale baseline above must not hide a moved copy.
       - run: cargo run --locked -p xtask -- upstream-sync
+        if: ${{ !cancelled() }}
+      - run: cargo run --locked -p xtask -- corpus-check
         if: ${{ !cancelled() }}
 
   # ci.yml's `msrv` checks the committed Cargo.lock, but a new consumer

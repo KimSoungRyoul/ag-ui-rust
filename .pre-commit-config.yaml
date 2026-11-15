@@ -25,7 +25,8 @@ default_stages: [pre-commit]
 # from another project or written by a tool, and their worth depends on staying
 # byte-identical to that source: the A2UI conformance suite and spec fixtures
 # are diffed against upstream by hand on every re-copy, so each mechanical
-# "improvement" here is noise in that diff forever; the insta snapshots are
+# "improvement" here is noise in that diff forever; the AG-UI 1.0 corpus is
+# compared with upstream's git trees by `xtask corpus-check`; the insta snapshots are
 # compared byte for byte by the tests themselves; the drift baseline is the
 # protocol's own record. Found the hard way — the first run of this config
 # quietly added a trailing newline to seventeen vendored fixtures.
@@ -39,6 +40,7 @@ exclude: |
   (?x)^(
       crates/ag-ui-a2ui/tests/(conformance|spec_v0_9)/
     | crates/ag-ui-a2ui/schemas/
+    | crates/ag-ui/tests/fixtures/ag-ui-1\.0/
     | crates/ag-ui/tests/snapshots/
     | xtask/baseline/events\.json$
   )

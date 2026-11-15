@@ -278,6 +278,8 @@ impl Legacy {
         // Before the retired shapes below, so a translation sees the event
         // without them, as a 1.0 producer would have written it.
         crate::protocol::omit_event_nulls(&mut value, &tag, &mut self.noticed, warnings);
+        // The retired `binary` content part, which enforcement would drop.
+        crate::message::upgrade_legacy_event_content(&mut value, &tag, warnings);
         if !is_legacy_reasoning_tag(&tag) {
             return Ok(vec![value]);
         }

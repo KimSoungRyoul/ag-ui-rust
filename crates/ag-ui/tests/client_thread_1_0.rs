@@ -188,6 +188,47 @@ async fn a_late_run_error_withdraws_the_outcome_it_follows() {
 }
 
 #[tokio::test]
+async fn a_run_started_inside_an_active_run_is_reported_as_nested() {
+    // The upstream stream `nested-run-started-fatal`. The second RUN_STARTED
+    // names another run, and the complaint is the nesting, not the id.
+    for run_id in ["r", "r-2"] {
+        let transport = ReplayTransport::new([
+            Event::run_started("t", "r"),
+            Event::run_started("t", run_id),
+        ])
+        .matching_requests();
+        let mut thread = Thread::new(transport, "t");
+        let report = thread.send("go").unwrap().collect_report().await;
+        assert!(matches!(report.end, RunEnd::Failed { .. }), "{report:?}");
+        assert_eq!(report.diagnostics.len(), 1, "{report:?}");
+        assert_eq!(report.diagnostics[0].kind, "protocol");
+        assert!(
+            report.diagnostics[0]
+                .message
+                .contains("RUN_STARTED arrived twice in one stream"),
+            "{run_id}: {report:?}"
+        );
+    }
+
+    // Ordering verification off leaves the pairing of ids, which still fails
+    // a run that is not the one requested.
+    let transport =
+        ReplayTransport::new([Event::run_started("t", "r"), Event::run_started("t", "r-2")])
+            .matching_requests();
+    let mut thread = Thread::<_>::builder(transport, "t")
+        .verify(false)
+        .build()
+        .unwrap();
+    let report = thread.send("go").unwrap().collect_report().await;
+    assert!(
+        report.diagnostics[0]
+            .message
+            .contains("does not match the requested thread and run IDs"),
+        "{report:?}"
+    );
+}
+
+#[tokio::test]
 async fn events_outside_the_run_fail_the_thread_run() {
     // Nothing but RUN_STARTED or RUN_ERROR may open a stream, RAW and CUSTOM
     // included; nothing but RUN_ERROR may follow RUN_FINISHED — the upstream
