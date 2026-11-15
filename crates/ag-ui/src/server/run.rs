@@ -139,6 +139,11 @@ impl<A> Runner<A> {
     /// Echoes the request back on `RUN_STARTED`, so a recorded stream replays
     /// without the original HTTP body. Off by default — it is the largest
     /// payload in the protocol.
+    ///
+    /// This decides only what goes on the wire. The verifier and every
+    /// transformer learn the request's history either way (see
+    /// [`StreamTransformer::seed`]), so a resumed run behaves the same with
+    /// and without the echo.
     #[must_use]
     pub fn echo_input(mut self, echo: bool) -> Self {
         self.echo_input = echo;
@@ -201,6 +206,9 @@ async fn drive<A: Agent>(agent: A, input: RunAgentInput, mut sink: EventSink, ec
     let thread_id = input.thread_id.clone();
     let run_id = input.run_id.clone();
 
+    // The history is the request's whether or not RUN_STARTED echoes it: a
+    // resumed run may answer a tool call the interrupted run opened.
+    sink.seed(&input.messages);
     let mut started = RunStartedEvent::new(thread_id.clone(), run_id.clone());
     started.parent_run_id = input.parent_run_id.clone();
     if echo_input {
@@ -239,6 +247,13 @@ fn terminate(
     thread_id: &ThreadId,
     run_id: &RunId,
 ) {
+    // AG-UI 1.0, "Cancelled runs": a cancelled run closes what it opened
+    // before the RUN_FINISHED that cancels it. The handles closed theirs on
+    // the way out; a subagent the agent left active has no ending to infer,
+    // so the driver reports it as stopped by the cancellation.
+    if matches!(outcome, Ok(RunOutcome::Cancelled) | Err(Error::Cancelled)) {
+        sink.close_active_subagents(&Error::Cancelled);
+    }
     let event = match outcome {
         Ok(outcome) => match outcome.validate() {
             Ok(()) => RunFinishedEvent::new(thread_id.clone(), run_id.clone())
@@ -247,8 +262,8 @@ fn terminate(
             Err(error) => error_event(&Error::Protocol(error)),
         },
         // A deliberate stop is a closed run, provided all open entities were
-        // closed. If not, the verifier rejects RUN_FINISHED and the existing
-        // fallback below reports RUN_ERROR instead.
+        // closed. If a raw emit left one open, the verifier rejects
+        // RUN_FINISHED and the fallback below reports RUN_ERROR instead.
         Err(Error::Cancelled) => RunFinishedEvent::new(thread_id.clone(), run_id.clone())
             .with_outcome(RunOutcome::Cancelled)
             .into(),

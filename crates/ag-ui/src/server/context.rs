@@ -59,7 +59,10 @@ impl<S: AgentState> RunContext<S> {
     /// isolation.
     pub fn new(input: RunAgentInput) -> Result<(Self, EventReceiver)> {
         let (tx, rx) = mpsc::unbounded();
-        let sink = EventSink::new(tx, TransformerChain::new(), CancellationToken::new());
+        let mut sink = EventSink::new(tx, TransformerChain::new(), CancellationToken::new());
+        // As the driver does, so an agent that answers a call from an earlier
+        // run behaves here as it will in a real one.
+        sink.seed(&input.messages);
         let state = decode_state(&input.state)?;
         Ok((Self::from_parts(input, state, sink), EventReceiver::new(rx)))
     }
@@ -288,6 +291,12 @@ impl<S> RunContext<S> {
     /// transformed and verified like any other.
     pub fn emit(&mut self, event: Event) -> Result<()> {
         self.sink.emit(event)
+    }
+
+    /// Emits a terminator, even after cancellation. Only the scope handles
+    /// call this, to close the step or subagent they opened.
+    pub(crate) fn emit_forced(&mut self, event: Event) -> Result<()> {
+        self.sink.emit_forced(event)
     }
 
     /// A fresh message id, unique within the run.

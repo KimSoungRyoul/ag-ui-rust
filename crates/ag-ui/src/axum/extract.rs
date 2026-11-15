@@ -36,6 +36,25 @@ use crate::axum::error::{Error, Result};
 ///
 /// Rejects with [`Error`], which renders as a `4xx` and a JSON body naming what
 /// was wrong.
+///
+/// # The `Content-Type` is required
+///
+/// The request must say its body is JSON: `application/json`, `text/json` or
+/// a `+json` type, parameters allowed. Anything else is refused with `415`,
+/// and so is a request with no `Content-Type` at all — an unlabelled body is
+/// not assumed to be JSON.
+///
+/// Requiring a JSON media type has a second effect: a browser will not send
+/// such a request from another origin without a CORS preflight, so whether a
+/// page elsewhere can start a run is up to your CORS policy. That is all it
+/// does. It is not authentication, and an endpoint that relies on cookies
+/// still needs its own CSRF protection.
+///
+/// For clients that send no header and cannot be changed,
+/// [`AgentEndpoint::allow_missing_content_type`](crate::axum::AgentEndpoint::allow_missing_content_type)
+/// accepts an unlabelled body on a mounted endpoint. A hand-written handler
+/// opts out the same way by taking [`Bytes`] and calling [`decode`] itself.
+/// Either way, the effect above no longer holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgUiInput(pub RunAgentInput);
 
@@ -43,6 +62,28 @@ impl AgUiInput {
     /// Unwraps the input.
     pub fn into_inner(self) -> RunAgentInput {
         self.0
+    }
+
+    /// The extractor, with the one choice an endpoint can make about it:
+    /// whether a request with no `Content-Type` is read as JSON.
+    pub(crate) async fn read<S>(
+        request: Request,
+        state: &S,
+        allow_missing_content_type: bool,
+    ) -> Result<Self>
+    where
+        S: Send + Sync,
+    {
+        check_content_type(request.headers(), allow_missing_content_type)?;
+        // Through axum's own extractor rather than `to_bytes`, so a
+        // `DefaultBodyLimit` layer the user applied still applies here.
+        let bytes = Bytes::from_request(request, state)
+            .await
+            .map_err(|rejection| Error::Body {
+                status: rejection.status(),
+                message: rejection.body_text(),
+            })?;
+        Ok(Self(decode(&bytes)?))
     }
 }
 
@@ -53,16 +94,7 @@ where
     type Rejection = Error;
 
     async fn from_request(request: Request, state: &S) -> Result<Self> {
-        check_content_type(request.headers())?;
-        // Through axum's own extractor rather than `to_bytes`, so a
-        // `DefaultBodyLimit` layer the user applied still applies here.
-        let bytes = Bytes::from_request(request, state)
-            .await
-            .map_err(|rejection| Error::Body {
-                status: rejection.status(),
-                message: rejection.body_text(),
-            })?;
-        Ok(Self(decode(&bytes)?))
+        Self::read(request, state, false).await
     }
 }
 
@@ -95,15 +127,19 @@ pub fn decode(body: &[u8]) -> Result<RunAgentInput> {
     Ok(serde_json::from_value(value)?)
 }
 
-/// Refuses a body whose `Content-Type` claims to be something other than JSON.
+/// Refuses a body that does not say it is JSON.
 ///
-/// An absent header passes: plenty of clients omit it, and a missing header is
-/// never a browser form post — those always send one of three
-/// non-JSON types, which is what makes this check a CSRF defence as well as a
-/// content check.
-fn check_content_type(headers: &HeaderMap) -> Result<()> {
+/// An absent header is refused unless `allow_missing` says otherwise: RFC 9110
+/// lets a recipient treat an unlabelled body as `application/octet-stream`,
+/// and that is not something this endpoint reads. See [`AgUiInput`] for what
+/// requiring the header does and does not buy.
+fn check_content_type(headers: &HeaderMap, allow_missing: bool) -> Result<()> {
     let Some(value) = headers.get(header::CONTENT_TYPE) else {
-        return Ok(());
+        return if allow_missing {
+            Ok(())
+        } else {
+            Err(Error::MissingContentType)
+        };
     };
     let found = String::from_utf8_lossy(value.as_bytes());
     if is_json(&found) {
@@ -148,27 +184,57 @@ mod tests {
             "text/json",
             "application/vnd.acme.run+json",
         ] {
+            for allow_missing in [false, true] {
+                assert!(
+                    check_content_type(&headers(value), allow_missing).is_ok(),
+                    "should accept {value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_missing_content_type_is_refused_with_415() {
+        let error = check_content_type(&HeaderMap::new(), false)
+            .expect_err("an unlabelled body is not assumed to be JSON");
+        assert!(matches!(error, Error::MissingContentType), "{error}");
+        assert_eq!(error.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(error.code(), "UNSUPPORTED_MEDIA_TYPE");
+    }
+
+    #[test]
+    fn a_missing_content_type_passes_only_when_allowed() {
+        assert!(check_content_type(&HeaderMap::new(), true).is_ok());
+    }
+
+    #[test]
+    fn a_form_post_is_refused_with_415() {
+        for allow_missing in [false, true] {
+            let error =
+                check_content_type(&headers("application/x-www-form-urlencoded"), allow_missing)
+                    .expect_err("should refuse a form body");
+            assert_eq!(error.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
             assert!(
-                check_content_type(&headers(value)).is_ok(),
-                "should accept {value:?}"
+                error.to_string().contains("x-www-form-urlencoded"),
+                "{error}"
             );
         }
     }
 
     #[test]
-    fn a_missing_content_type_is_accepted() {
-        assert!(check_content_type(&HeaderMap::new()).is_ok());
-    }
-
-    #[test]
-    fn a_form_post_is_refused_with_415() {
-        let error = check_content_type(&headers("application/x-www-form-urlencoded"))
-            .expect_err("should refuse a form body");
-        assert_eq!(error.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-        assert!(
-            error.to_string().contains("x-www-form-urlencoded"),
-            "{error}"
-        );
+    fn a_media_type_that_only_mentions_json_is_refused() {
+        for value in [
+            "text/plain; application/json",
+            "text/plain;charset=application/json",
+            "application/json, text/plain",
+            "application/jsonx",
+            "",
+        ] {
+            assert!(
+                check_content_type(&headers(value), true).is_err(),
+                "should refuse {value:?}"
+            );
+        }
     }
 
     #[test]

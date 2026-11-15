@@ -160,18 +160,22 @@ impl<'a, S> ToolCallHandle<'a, S> {
     /// unanswered.
     ///
     /// Use it when the client executes the tool — a front-end tool's result
-    /// arrives as a message on the next request, not from here.
+    /// arrives as a message on the next request, not from here. Like `Drop`,
+    /// it still closes the call after the run was cancelled.
     pub fn end(mut self) -> Result<()> {
         self.ended = true;
-        self.sink.emit(Event::tool_call_end(self.id.clone()))
+        self.sink.emit_forced(Event::tool_call_end(self.id.clone()))
     }
 
     /// Emits `TOOL_CALL_END` then `TOOL_CALL_RESULT`, and consumes the handle.
     ///
-    /// Returns the id of the tool message carrying the result.
+    /// Returns the id of the tool message carrying the result. After the run
+    /// was cancelled the call is still closed, but the result is new output
+    /// and fails like any other emit.
     pub fn result(mut self, content: impl Into<String>) -> Result<MessageId> {
         self.ended = true;
-        self.sink.emit(Event::tool_call_end(self.id.clone()))?;
+        self.sink
+            .emit_forced(Event::tool_call_end(self.id.clone()))?;
         let mut result = crate::ToolCallResultEvent::new(
             self.result_message_id.clone(),
             self.id.clone(),
@@ -217,7 +221,7 @@ impl<S: AgentState> ToolCallHandle<'_, S> {
 impl<S> Drop for ToolCallHandle<'_, S> {
     fn drop(&mut self) {
         if !self.ended {
-            let _ = self.sink.emit(Event::tool_call_end(self.id.clone()));
+            let _ = self.sink.emit_forced(Event::tool_call_end(self.id.clone()));
         }
     }
 }

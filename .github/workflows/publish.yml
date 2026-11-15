@@ -70,6 +70,15 @@ jobs:
             exit 1
           fi
 
+      # The upstream copy of ag-ui (PR 2778, recorded in UPSTREAM.md) reserves
+      # the version it will publish first; taking that number here would
+      # collide with it. Offline: it reads the record, which the scheduled
+      # upstream-sync job keeps honest.
+      - name: the version is not reserved by the upstream copy
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: cargo run --locked -p xtask -- upstream-sync --publish-guard "$VERSION"
+
       # The release workflow ran these on the tag, but a release made by hand
       # from an unverified commit reaches this job without them.
       - run: cargo test --workspace --all-features --all-targets

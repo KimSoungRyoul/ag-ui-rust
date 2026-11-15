@@ -24,11 +24,11 @@ use std::time::Duration;
 
 use crate::server::{Agent, Runner, StreamTransformer, TransformerChain};
 use axum::Router;
-use axum::http::{HeaderMap, header};
+use axum::extract::Request;
+use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 
-use crate::axum::error::Error;
 use crate::axum::extract::AgUiInput;
 use crate::axum::respond::SseResponse;
 
@@ -67,6 +67,7 @@ pub struct AgentEndpoint<A> {
     echo_input: bool,
     keep_alive: Option<Duration>,
     event_buffer_capacity: Option<NonZeroUsize>,
+    allow_missing_content_type: bool,
 }
 
 impl<A> AgentEndpoint<A> {
@@ -78,6 +79,7 @@ impl<A> AgentEndpoint<A> {
             echo_input: false,
             keep_alive: Some(Duration::from_secs(15)),
             event_buffer_capacity: None,
+            allow_missing_content_type: false,
         }
     }
 
@@ -145,6 +147,19 @@ impl<A> AgentEndpoint<A> {
         self
     }
 
+    /// Reads a request that carries no `Content-Type` as JSON, instead of
+    /// refusing it with `415`.
+    ///
+    /// For clients that send no header and cannot be changed to. Off by
+    /// default, and turning it on gives up what requiring a JSON media type
+    /// buys — see [`AgUiInput`](crate::axum::AgUiInput#the-content-type-is-required).
+    /// A header that names something other than JSON is refused either way.
+    #[must_use]
+    pub fn allow_missing_content_type(mut self) -> Self {
+        self.allow_missing_content_type = true;
+        self
+    }
+
     /// A fresh chain for one run.
     fn chain(&self) -> TransformerChain {
         let mut chain = TransformerChain::new();
@@ -162,8 +177,9 @@ impl<A: Agent + 'static> AgentEndpoint<A> {
     /// nothing in common with this endpoint at all, and saying so is more use
     /// to the caller than a note about a body that was never going to be
     /// answered.
-    async fn serve(&self, headers: HeaderMap, input: Result<AgUiInput, Error>) -> Response {
-        let accept = headers
+    async fn serve(&self, request: Request) -> Response {
+        let accept = request
+            .headers()
             .get(header::ACCEPT)
             .map(|value| String::from_utf8_lossy(value.as_bytes()));
 
@@ -171,7 +187,9 @@ impl<A: Agent + 'static> AgentEndpoint<A> {
             Ok(response) => response,
             Err(error) => return error.into_response(),
         };
-        let input = match input {
+        // The router's state is not this endpoint's business: the body is
+        // read the way `AgUiInput` reads it, under any state.
+        let input = match AgUiInput::read(request, &(), self.allow_missing_content_type).await {
             Ok(AgUiInput(input)) => input,
             Err(error) => return error.into_response(),
         };
@@ -202,6 +220,10 @@ impl<A> std::fmt::Debug for AgentEndpoint<A> {
             .field("echo_input", &self.echo_input)
             .field("keep_alive", &self.keep_alive)
             .field("event_buffer_capacity", &self.event_buffer_capacity)
+            .field(
+                "allow_missing_content_type",
+                &self.allow_missing_content_type,
+            )
             .finish()
     }
 }
@@ -262,9 +284,9 @@ where
         let endpoint = Arc::new(endpoint);
         self.route(
             path,
-            post(move |headers: HeaderMap, input: Result<AgUiInput, Error>| {
+            post(move |request: Request| {
                 let endpoint = Arc::clone(&endpoint);
-                async move { endpoint.serve(headers, input).await }
+                async move { endpoint.serve(request).await }
             }),
         )
     }

@@ -155,6 +155,49 @@ jobs:
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features author
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui-server
       - run: cargo check --all-targets -p ag-ui-a2ui --all-features
+      # Every other test run compiles the ordering verifier in. This one runs
+      # the server without it, so what holds "even when `verify` is disabled"
+      # is executed, not only compiled.
+      - run: cargo test -p ag-ui --no-default-features --features server,sse
+
+  # Each example built alone, the way `cargo run -p <example>` builds it.
+  # Inside the workspace, cargo unifies features across members (e2e and
+  # review-desk turn on `ag-ui-a2ui/ag-ui`), so an example that uses a feature
+  # it never enables stays green everywhere else. Checked twice, because
+  # dev-dependencies unify too: the plain check sees only the package's own
+  # `[dependencies]`, and `--all-targets` then covers its tests. Packages are
+  # read off `examples/`, so a new example is covered automatically.
+  examples:
+    name: examples (each package alone)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: every example builds with only the features it enables
+        run: |
+          set -euo pipefail
+          packages=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.workspace_root as $root | .packages[]
+                | select(.manifest_path | startswith($root + "/examples/")) | .name')
+          # An empty list would check nothing and pass.
+          if [ -z "$packages" ]; then
+            echo "::error::no packages found under examples/; this check would pass without checking anything"
+            exit 2
+          fi
+          status=0
+          check_alone() {
+            echo "--- cargo check -p $* ---"
+            if ! cargo check -p "$@"; then
+              echo "::error title=Example does not build alone::cargo check -p $* failed. Built alone, an example gets only the features its own Cargo.toml enables; enable the one it uses on its own dependency line."
+              status=1
+            fi
+          }
+          for package in $packages; do
+            check_alone "$package"
+            check_alone "$package" --all-targets
+          done
+          exit $status
 
   renderer-interop:
     name: official A2UI renderer core
@@ -311,8 +354,9 @@ jobs:
           done
           exit $status
 
-  # Offline: the Rust events and the vendored 1.0 schema against the reviewed
-  # baseline. The networked freshness check is in scheduled.yml.
+  # Offline: the Rust protocol types (events and every other $defs shape) and
+  # the vendored 1.0 schema against the reviewed baseline. `--local` covers
+  # everything plain `drift-check` does. The networked check is scheduled.yml.
   drift:
     name: protocol drift vs upstream
     runs-on: ubuntu-latest
@@ -320,5 +364,4 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo run --locked -p xtask -- drift-check
       - run: cargo run --locked -p xtask -- drift-check --local
