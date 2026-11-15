@@ -882,11 +882,18 @@ const LAST: u64 = u64::MAX;
 async fn an_id_that_was_sent_cannot_exhaust_the_ids_a_continuation_hands_out() {
     // A request for run `r` names a message by an id of the shape a context
     // hands out, with the largest number there is, and the run echoed it.
-    // A call and a subagent of the same shape were sent as well.
+    // A call and a subagent of the same shape were sent as well. The first
+    // of each kind is in use too: by a message, by a call that message
+    // carries, and by the subagent it is attributed to.
     let mut request = input();
     request.messages = vec![
         Message::user(format!("r-msg-{LAST}"), "hi"),
-        Message::user("r-msg-1", "and again"),
+        Message::Assistant(AssistantMessage {
+            id: "r-msg-1".into(),
+            tool_calls: Some(vec![ToolCall::new("r-call-1", "search", "{}")]),
+            subagent_run_id: Some("r-sub-1".into()),
+            ..Default::default()
+        }),
     ];
     let mut started = RunStartedEvent::new("t", "r");
     started.input = Some(Box::new(request.clone()));
@@ -896,6 +903,8 @@ async fn an_id_that_was_sent_cannot_exhaust_the_ids_a_continuation_hands_out() {
         Event::tool_call_end(format!("r-call-{LAST}")),
         Event::subagent_started(format!("r-sub-{LAST}"), "helper"),
         Event::subagent_finished_success(format!("r-sub-{LAST}")),
+        // Attributed to a subagent that no event announced.
+        Event::custom("note", json!(1)).with_subagent_run_id("r-sub-2"),
     ];
 
     struct MintsOfEachKind;
@@ -929,7 +938,10 @@ async fn an_id_that_was_sent_cannot_exhaust_the_ids_a_continuation_hands_out() {
         format!("r-msg-{LAST}"),
         "r-msg-1".to_owned(),
         format!("r-call-{LAST}"),
+        "r-call-1".to_owned(),
         format!("r-sub-{LAST}"),
+        "r-sub-1".to_owned(),
+        "r-sub-2".to_owned(),
     ];
     for (index, id) in minted.iter().enumerate() {
         assert!(!in_use.contains(id), "{id} was already in use");

@@ -117,10 +117,28 @@ impl Minted {
                 counter.note(number);
             }
         };
+        // Attribution needs no `SUBAGENT_STARTED`, so a subagent id is in
+        // use wherever something is attributed to it.
+        if let Some(id) = event.subagent_run_id() {
+            past(&mut self.subagents, SUBAGENT_ID, id);
+        }
         let mut message = |id: &MessageId| past(&mut self.messages, MESSAGE_ID, id);
+        let mut call = |id: &ToolCallId| past(&mut self.tool_calls, TOOL_CALL_ID, id);
+        let mut subagent = |id: &SubagentRunId| past(&mut self.subagents, SUBAGENT_ID, id);
+        // A restated conversation uses the ids of its messages, of the calls
+        // they carry and of the subagents they are attributed to, whether or
+        // not an event of this run introduced them.
         let mut replayed = |messages: &[Message]| {
             for replayed in messages {
                 message(replayed.id());
+                replayed
+                    .subagent_run_id()
+                    .into_iter()
+                    .for_each(&mut subagent);
+                if let Message::Assistant(assistant) = replayed {
+                    let calls = assistant.tool_calls.iter().flatten();
+                    calls.for_each(|carried| call(&carried.id));
+                }
             }
         };
         match event {
@@ -137,15 +155,8 @@ impl Minted {
                     replayed(&input.messages);
                 }
             }
-            Event::ToolCallStart(e) => past(&mut self.tool_calls, TOOL_CALL_ID, &e.tool_call_id),
-            Event::ToolCallChunk(e) => {
-                if let Some(id) = &e.tool_call_id {
-                    past(&mut self.tool_calls, TOOL_CALL_ID, id);
-                }
-            }
-            Event::SubagentStarted(e) => {
-                past(&mut self.subagents, SUBAGENT_ID, &e.subagent_run_id);
-            }
+            Event::ToolCallStart(e) => call(&e.tool_call_id),
+            Event::ToolCallChunk(e) => e.tool_call_id.iter().for_each(call),
             _ => {}
         }
     }
