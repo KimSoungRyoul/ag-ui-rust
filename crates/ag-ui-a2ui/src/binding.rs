@@ -60,11 +60,16 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 
-/// Deepest nesting these walks will descend into a value.
+/// Deepest nesting these walks will descend into a value, and the most
+/// segments a [`DataModel`](crate::DataModel) path may have.
 ///
-/// Well past `serde_json`'s own parse limit of 127, so it never fires on
-/// anything that arrived as text; it exists for values assembled in memory,
-/// which nothing else bounds.
+/// Well past `serde_json`'s own parse limit of 127, so it never fires on a
+/// value that arrived as text; it exists for values assembled in memory, which
+/// nothing else bounds. A path is the exception: it arrives as one flat string
+/// that no parse limit counts, yet each segment is a level of nesting in the
+/// model. [`DataModel::apply`](crate::DataModel::apply) and
+/// [`DataModel::lookup`](crate::DataModel::lookup) reject a longer one with
+/// [`Error::Pointer`].
 pub const MAX_VALUE_DEPTH: usize = 256;
 
 /// Whether a string parses as an RFC 6901 JSON Pointer.
