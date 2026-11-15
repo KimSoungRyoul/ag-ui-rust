@@ -19,17 +19,6 @@ pub enum SseFrame<E = Event> {
     Comment(String),
 }
 
-impl<E> SseFrame<E> {
-    /// Creates a data frame without serializing it yet.
-    pub fn event(event: E) -> Self {
-        Self::Event(event)
-    }
-    /// Creates an SSE comment; the SDK handles multiline framing.
-    pub fn comment(comment: impl Into<String>) -> Self {
-        Self::Comment(comment.into())
-    }
-}
-
 /// Encodes events as `text/event-stream` frames.
 ///
 /// Each event becomes a single `data:` block holding its JSON, exactly as the

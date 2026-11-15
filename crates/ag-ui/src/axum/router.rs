@@ -22,6 +22,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::RunAgentInput;
 use crate::server::{Agent, Runner, StreamTransformer, TransformerChain};
 use axum::Router;
 use axum::extract::Request;
@@ -34,6 +35,9 @@ use crate::axum::respond::SseResponse;
 
 /// Builds one transformer, once per run.
 type TransformerFactory = Arc<dyn Fn(&mut TransformerChain) + Send + Sync>;
+
+/// Receives one request's decoding warnings.
+type InputWarnings = Arc<dyn Fn(&RunAgentInput, &[String]) + Send + Sync>;
 
 /// An agent plus the per-run settings it is served with.
 ///
@@ -68,6 +72,7 @@ pub struct AgentEndpoint<A> {
     keep_alive: Option<Duration>,
     event_buffer_capacity: Option<NonZeroUsize>,
     allow_missing_content_type: bool,
+    input_warnings: Option<InputWarnings>,
 }
 
 impl<A> AgentEndpoint<A> {
@@ -80,7 +85,44 @@ impl<A> AgentEndpoint<A> {
             keep_alive: Some(Duration::from_secs(15)),
             event_buffer_capacity: None,
             allow_missing_content_type: false,
+            input_warnings: None,
         }
+    }
+
+    /// Hands each request's decoding warnings to `hook`, with the input they
+    /// came from, before the run starts.
+    ///
+    /// A warning says what decoding removed or read as omitted: an
+    /// unrecognised field or enum member, a deprecated optional `null`. It
+    /// quotes at most 64 characters of the body, with control characters
+    /// escaped. The hook is called only for a request that has any. Without
+    /// one the warnings are discarded; the endpoint never prints them.
+    ///
+    /// ```
+    /// use ag_ui::axum::AgentEndpoint;
+    /// # use ag_ui::RunOutcome;
+    /// # use ag_ui::server::{Agent, Result, RunContext};
+    /// # struct CartAgent;
+    /// # impl Agent for CartAgent {
+    /// #     type State = ();
+    /// #     async fn run(&self, _ctx: &mut RunContext<()>) -> Result<RunOutcome> { Ok(RunOutcome::Success) }
+    /// # }
+    ///
+    /// let endpoint = AgentEndpoint::new(CartAgent).on_input_warnings(|input, warnings| {
+    ///     for warning in warnings {
+    ///         // Route it wherever the application logs.
+    ///         let _ = (&input.run_id, warning);
+    ///     }
+    /// });
+    /// # let _ = endpoint;
+    /// ```
+    #[must_use]
+    pub fn on_input_warnings<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&RunAgentInput, &[String]) + Send + Sync + 'static,
+    {
+        self.input_warnings = Some(Arc::new(hook));
+        self
     }
 
     /// Appends a transformer to every run's chain.
@@ -190,7 +232,13 @@ impl<A: Agent + 'static> AgentEndpoint<A> {
         // The router's state is not this endpoint's business: the body is
         // read the way `AgUiInput` reads it, under any state.
         let input = match AgUiInput::read(request, &(), self.allow_missing_content_type).await {
-            Ok(AgUiInput(input)) => input,
+            Ok((AgUiInput(input), warnings)) => {
+                match &self.input_warnings {
+                    Some(hook) if !warnings.is_empty() => hook(&input, &warnings),
+                    _ => {}
+                }
+                input
+            }
             Err(error) => return error.into_response(),
         };
 
@@ -224,6 +272,7 @@ impl<A> std::fmt::Debug for AgentEndpoint<A> {
                 "allow_missing_content_type",
                 &self.allow_missing_content_type,
             )
+            .field("input_warnings", &self.input_warnings.is_some())
             .finish()
     }
 }
