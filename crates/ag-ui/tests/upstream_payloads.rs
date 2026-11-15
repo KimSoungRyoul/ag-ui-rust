@@ -535,6 +535,25 @@ fn capability_caps_stay_integers_on_the_wire() {
     );
     // A number that is not an integer is still malformed.
     assert!(serde_json::from_str::<ExecutionCapabilities>(r#"{"maxIterations":1.5}"#).is_err());
+    assert!(serde_json::from_str::<ExecutionCapabilities>(r#"{"maxIterations":-1.5}"#).is_err());
+
+    // The schema says `integer`, and in JSON Schema that is a number with no
+    // fractional part, however it is spelled. A producer whose numbers are
+    // floats writes ten as `10.0`.
+    let spelled_as_floats: ExecutionCapabilities =
+        serde_json::from_str(r#"{"maxIterations":10.0,"maxExecutionTime":3e4}"#).unwrap();
+    assert_eq!(spelled_as_floats.max_iterations, Some(10));
+    assert_eq!(spelled_as_floats.max_execution_time, Some(30_000));
+    assert_eq!(
+        serde_json::to_string(&spelled_as_floats).unwrap(),
+        r#"{"maxIterations":10,"maxExecutionTime":30000}"#
+    );
+    // "No limit", spelled the same way, is still no cap declared.
+    let unlimited: ExecutionCapabilities =
+        serde_json::from_str(r#"{"maxIterations":-1.0}"#).unwrap();
+    assert_eq!(unlimited.max_iterations, None);
+    // An integer too large for the field is not truncated to fit.
+    assert!(serde_json::from_str::<ExecutionCapabilities>(r#"{"maxIterations":1e30}"#).is_err());
 }
 
 #[test]
