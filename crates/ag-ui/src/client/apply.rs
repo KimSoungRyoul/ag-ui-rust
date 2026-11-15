@@ -1094,9 +1094,10 @@ impl Applier {
         })
     }
 
-    /// Patches an activity's content. A delta whose target does not exist, or
-    /// is not an activity, is skipped: the error says so, nothing is created,
-    /// and a `Thread` reports it without failing the run.
+    /// Patches an activity's content and gives it the delta's `activityType`.
+    /// A delta whose target does not exist, or is not an activity, is
+    /// skipped: the error says so, nothing is created, and a `Thread` reports
+    /// it without failing the run. A patch that does not apply changes nothing.
     fn activity_delta(&mut self, event: &ActivityDeltaEvent) -> Result<Changed> {
         let what = format!("activity {}", event.message_id);
         let index = self.by_id.get(&event.message_id).copied();
@@ -1127,6 +1128,9 @@ impl Applier {
             });
         };
         activity.content = object;
+        // The delta's type replaces the message's: a delta may retype the
+        // activity it amends.
+        activity.activity_type = event.activity_type.clone();
         Ok(Changed::Message(MessageChange {
             index,
             id: event.message_id.clone(),

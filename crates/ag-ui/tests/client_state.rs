@@ -249,6 +249,52 @@ fn an_activity_snapshot_with_replace_false_leaves_an_existing_activity_as_it_sta
 }
 
 #[test]
+fn an_activity_delta_gives_the_activity_its_own_type() {
+    // AG-UI 1.0, `ACTIVITY_DELTA`: "The delta's `activityType` replaces the
+    // message's — a delta MAY retype the activity it amends".
+    let mut applier = Applier::new();
+    let mut content = ag_ui::JsonObject::new();
+    content.insert("found".into(), json!(0));
+    applier
+        .apply(&Event::activity_snapshot("act-1", "web_search", content))
+        .expect("applies");
+    let activity_type = |applier: &Applier| {
+        let ag_ui::Message::Activity(activity) = &applier.messages()[0] else {
+            panic!("expected an activity message");
+        };
+        (
+            activity.activity_type.clone(),
+            activity.content["found"].clone(),
+        )
+    };
+
+    applier
+        .apply(&Event::activity_delta(
+            "act-1",
+            "search_results",
+            vec![PatchOperation::replace("/found", json!(3))],
+        ))
+        .expect("applies");
+    assert_eq!(
+        activity_type(&applier),
+        ("search_results".to_owned(), json!(3))
+    );
+
+    // A patch that does not apply changes nothing, the type included.
+    applier
+        .apply(&Event::activity_delta(
+            "act-1",
+            "web_search",
+            vec![PatchOperation::replace("/absent", json!(1))],
+        ))
+        .expect_err("the path does not resolve");
+    assert_eq!(
+        activity_type(&applier),
+        ("search_results".to_owned(), json!(3))
+    );
+}
+
+#[test]
 fn an_activity_delta_with_no_activity_to_patch_is_skipped_and_reported() {
     // AG-UI 1.0: a delta naming a message that does not exist, or one that is
     // not an activity, is skipped with a warning. It creates nothing.
