@@ -1,7 +1,7 @@
 {
   "name": "three-sequential-runs-accumulate",
   "area": "lifecycle",
-  "description": "a stream may carry more than two runs: each closes before the next opens, messages accumulate and state persists across every boundary, and the last run is the one the request asked for. Local to this repository: the upstream corpus stops at two runs",
+  "description": "a stream may carry more than two runs: each closes before the next opens, messages accumulate, a reasoning message among them, and state persists across every boundary, and the last run is the one the request asked for. Local to this repository: the upstream corpus stops at two runs",
   "specPage": "/spec/1.0/events/lifecycle",
   "kill": "admit one RUN_STARTED after a terminal event and no more, or clear the messages or the state at a run boundary",
   "stream": [
@@ -41,6 +41,17 @@
       "type": "STATE_DELTA",
       "delta": [{ "op": "replace", "path": "/step", "value": 2 }]
     },
+    {
+      "type": "REASONING_MESSAGE_START",
+      "messageId": "three-sequential-runs-think",
+      "role": "reasoning"
+    },
+    {
+      "type": "REASONING_MESSAGE_CONTENT",
+      "messageId": "three-sequential-runs-think",
+      "delta": "weighing the second run"
+    },
+    { "type": "REASONING_MESSAGE_END", "messageId": "three-sequential-runs-think" },
     {
       "type": "TEXT_MESSAGE_START",
       "messageId": "three-sequential-runs-m-b",
@@ -97,6 +108,9 @@
       "RUN_FINISHED",
       "RUN_STARTED",
       "STATE_DELTA",
+      "REASONING_MESSAGE_START",
+      "REASONING_MESSAGE_CONTENT",
+      "REASONING_MESSAGE_END",
       "TEXT_MESSAGE_START",
       "TEXT_MESSAGE_CONTENT",
       "TEXT_MESSAGE_END",
@@ -110,11 +124,16 @@
     ],
     "eventPaths": {
       "6.runId": "three-sequential-runs-r-2",
-      "12.runId": "three-sequential-runs-r-3"
+      "15.runId": "three-sequential-runs-r-3"
     },
-    "messageCount": 3,
+    "messageCount": 4,
     "messages": [
       { "id": "three-sequential-runs-m-a", "role": "assistant", "content": "first run" },
+      {
+        "id": "three-sequential-runs-think",
+        "role": "reasoning",
+        "content": "weighing the second run"
+      },
       { "id": "three-sequential-runs-m-b", "role": "assistant", "content": "second run" },
       { "id": "three-sequential-runs-m-c", "role": "assistant", "content": "third run" }
     ],

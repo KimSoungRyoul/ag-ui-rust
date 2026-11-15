@@ -23,7 +23,8 @@ use std::sync::{Arc, Mutex};
 
 use ag_ui::client::transport::{EventStream, Transport, TransportFuture, TransportStream};
 use ag_ui::client::{
-    Error, MessageChangeKind, RunEnd, RunReport, RunSummary, SubmissionStatus, Thread, Update,
+    Error, MessageChangeKind, ReasoningChangeKind, RunEnd, RunReport, RunSummary, SubmissionStatus,
+    Thread, Update,
 };
 use ag_ui::{
     Event, Interrupt, Message, MessageId, ResumeEntry, RunAgentInput, RunFinishedEvent, RunOutcome,
@@ -366,6 +367,78 @@ async fn a_failed_run_keeps_what_it_delivered_and_the_next_run_starts_clean() {
             "chunked {chunked}"
         );
     }
+}
+
+#[tokio::test]
+async fn reasoning_accumulates_across_runs_and_ends_with_the_run_that_left_it_open() {
+    // A reasoning message is a message of the conversation, so one run's
+    // stays when the next begins; one a failed run left open is over.
+    let replayed = vec![
+        started("r-1"),
+        Event::reasoning_message_start("think-1"),
+        Event::reasoning_message_content("think-1", "first thought"),
+        Event::reasoning_message_end("think-1"),
+        finished("r-1"),
+        started("r-2"),
+        Event::reasoning_message_start("think-2"),
+        Event::reasoning_message_content("think-2", "half a thou"),
+        Event::run_error("the model went away"),
+        started("r"),
+    ];
+    let mut events = replayed.clone();
+    events.extend(says("m-1", "the answer"));
+    events.push(finished("r"));
+    let mut thread = reads([(events, Then::Close)]);
+    let updates: Vec<_> = thread.run().unwrap().collect().await;
+    let failure = updates
+        .iter()
+        .position(|update| matches!(update, Update::Error(Error::Run { .. })))
+        .unwrap_or_else(|| panic!("{updates:?}"));
+    assert!(
+        matches!(&updates[failure + 1..failure + 3], [
+            Update::Reasoning(aborted),
+            Update::RunEnded(run),
+        ] if aborted.change == ReasoningChangeKind::Aborted
+            && aborted.id.as_str() == "think-2"
+            && aborted.index == 1
+            && aborted.text == "half a thou"
+            && summary("r-2", false)(run)),
+        "{updates:?}"
+    );
+    assert!(
+        matches!(updates.last(), Some(Update::Done(RunEnd::Success { .. }))),
+        "{updates:?}"
+    );
+    let held: Vec<_> = thread
+        .messages()
+        .iter()
+        .map(|message| {
+            (
+                message.id().as_str(),
+                matches!(message, Message::Reasoning(_)),
+            )
+        })
+        .collect();
+    assert_eq!(
+        held,
+        [("think-1", true), ("think-2", true), ("m-1", false)],
+        "reasoning and replies accumulate in stream order"
+    );
+
+    // The run after the failed one cannot continue its reasoning message.
+    let mut events = replayed;
+    events.push(Event::reasoning_message_content("think-2", "ght"));
+    let mut thread = reads([(events, Then::Close)]);
+    let report = thread.run().unwrap().collect_report().await;
+    assert_eq!(name(&report.end), "failed");
+    assert!(
+        report
+            .diagnostics
+            .last()
+            .is_some_and(|diagnostic| diagnostic.message.contains("which is not open")),
+        "{report:?}"
+    );
+    assert_eq!(thread.applier().text_of("think-2"), Some("half a thou"));
 }
 
 #[tokio::test]
