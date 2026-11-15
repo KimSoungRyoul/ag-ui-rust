@@ -1,0 +1,53 @@
+name: Scheduled
+
+# Checks whose answer changes with the outside world (the upstream protocol,
+# the crates.io registry), not with the branch, so they run on a timer rather
+# than on pull requests.
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Monday, off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Whether the reviewed protocol baseline has gone stale (reporting, without
+  # failing, what spec/draft adds), then whether the upstream copy of
+  # crates/ag-ui (PR 2778) has moved past the sync point in UPSTREAM.md.
+  upstream-freshness:
+    name: upstream freshness
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }} # lifts the 60 requests/hour anonymous limit
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # upstream-sync lists the commits since the recorded sync commit
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --locked -p xtask -- drift-check --upstream --draft
+      # Unrelated alarms: a stale baseline above must not hide a moved copy.
+      - run: cargo run --locked -p xtask -- upstream-sync
+        if: ${{ !cancelled() }}
+
+  # ci.yml's `msrv` checks the committed Cargo.lock, but a new consumer
+  # resolves the newest versions its toolchain accepts. Alpha.1 passed `msrv`
+  # and still failed for a fresh 1.85 consumer: yoke-derive 0.8.3 needs 1.87
+  # without declaring it (docs/QA.md). No cache, because its key is the
+  # lockfile this job throws away.
+  msrv-fresh-lockfile:
+    name: MSRV 1.85, fresh lockfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: rm Cargo.lock
+      # Resolver 3 on Cargo 1.85 prefers versions whose `rust-version` it
+      # meets, as a consumer's Cargo does.
+      - run: cargo generate-lockfile
+      - run: cargo check -p ag-ui -p ag-ui-a2ui --all-features

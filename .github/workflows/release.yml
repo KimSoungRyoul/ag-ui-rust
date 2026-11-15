@@ -1,12 +1,9 @@
 name: Release
 
-# A tag push verifies and creates a GitHub Release. `workflow_dispatch` runs
-# the same validation against a branch without creating a release.
-#
-# What it does NOT do is upload to crates.io. The registry has no undo — a
-# published version can be yanked but never replaced — so the last step stays a
-# human one, and this job's job is to make that step boring: everything that
-# can be checked before it is checked here, on the exact commit the tag names.
+# A version tag is verified and becomes a GitHub Release. A dispatch runs the
+# same checks on a branch without releasing. Uploading to crates.io stays a
+# human step (publish.yml), because the registry has no undo; this workflow
+# checks everything it can on the exact commit the tag names.
 on:
   push:
     tags: ["v*"]
@@ -17,104 +14,88 @@ env:
   RUSTFLAGS: -D warnings
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   audit:
     uses: ./.github/workflows/audit.yml
-    permissions:
-      contents: read
 
   release:
     needs: audit
     name: verify and release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          # The release note is generated from the log since the previous tag,
-          # so the whole history has to be here.
-          fetch-depth: 0
+          fetch-depth: 0 # the release note is the log since the previous tag
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      # The tag has to name the version the workspace actually is. A tag that
-      # disagrees is the one mistake this file exists to catch, because
-      # everything after it — the release note, the crates.io upload someone
-      # then runs by hand — quietly inherits the wrong number.
+      # Everything after this, the release note and the upload, inherits the
+      # tag's number, so a tag that disagrees with Cargo.toml stops here.
       - name: the tag matches the workspace version
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.ref_type == 'tag'
         run: |
           set -euo pipefail
-          tagged="${GITHUB_REF_NAME#v}"
+          tagged=${GITHUB_REF_NAME#v}
           declared=$(cargo metadata --format-version 1 --no-deps \
-            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "ag-ui"))')
+            | jq -r '.packages[] | select(.name == "ag-ui") | .version')
           echo "tag $tagged, workspace $declared"
           if [ "$tagged" != "$declared" ]; then
             echo "::error title=Version mismatch::the tag says $tagged and Cargo.toml says $declared"
             exit 1
           fi
 
-      # The same gates CI runs, on the tagged commit rather than on whatever
-      # was on main when the branch merged.
+      # CI's gates, on the tagged commit itself.
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
+      - run: cargo test --workspace --all-features --all-targets
       - run: cargo test --doc --workspace --all-features
       - run: cargo run --locked -p xtask -- drift-check --local
 
-      # Verify the core package as crates.io would. A2UI's registry dry run
-      # must wait until this version of ag-ui is published; list its package
-      # here and verify it just before its eventual upload.
+      # ag-ui-a2ui's registry dry run needs this ag-ui version on crates.io, so
+      # only its package list is checked here. publish.yml dry-runs it later.
       - name: package rehearsal
         run: |
-          set -euo pipefail
           cargo publish --dry-run -p ag-ui
           cargo package --list -p ag-ui-a2ui >/dev/null
-          echo "::notice title=a2ui dry run::deferred until ag-ui is on crates.io"
 
-      # The note lists what changed since the previous tag. The upload
-      # instructions are part of it on purpose: the release exists before the
-      # crates are on crates.io, so the note says so rather than implying they
-      # are.
+      # The note says how to publish, because the release exists before the
+      # crates are on crates.io.
       - name: the release note
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          set -euo pipefail
-          previous=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
-          {
-            if [ -n "$previous" ]; then
-              echo "## Changes since $previous"
-              echo
-              git log --no-merges --pretty='- %s' "$previous..${GITHUB_REF_NAME}"
-            else
-              echo "## Changes"
-              echo
-              git log --no-merges --pretty='- %s' "${GITHUB_REF_NAME}"
-            fi
-            echo
-            echo "## Publishing"
-            echo
-            echo 'Verified on this commit: clippy, workspace tests, doctests, protocol drift,'
-            echo 'ag-ui publish dry run, and the ag-ui-a2ui package list. The latter gets its'
-            echo 'registry dry run after ag-ui is published, immediately before upload. Registry'
-            echo 'publication requires a separate workflow dispatch from this exact tag:'
-            echo
-            echo '```sh'
-            echo "gh workflow run publish.yml --ref ${GITHUB_REF_NAME} -f dry_run=true"
-            echo '# After reviewing the dry run and explicitly approving publication:'
-            echo "gh workflow run publish.yml --ref ${GITHUB_REF_NAME} -f dry_run=false"
-            echo '```'
-          } > release-note.md
-          release_flags=()
-          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
-            release_flags+=(--prerelease --latest=false)
-          fi
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
-            --notes-file release-note.md \
-            "${release_flags[@]}" \
-            --verify-tag
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          previous=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          {
+            echo "## Changes${previous:+ since $previous}"
+            echo
+            git log --no-merges --pretty='- %s' "${previous:+$previous..}$TAG"
+            cat <<EOF
+
+          ## Publishing
+
+          Verified on this commit: clippy, workspace tests, doctests, protocol drift,
+          ag-ui publish dry run, and the ag-ui-a2ui package list. The latter gets its
+          registry dry run after ag-ui is published, immediately before upload. Registry
+          publication requires a separate workflow dispatch from this exact tag:
+
+          \`\`\`sh
+          gh workflow run publish.yml --ref $TAG -f dry_run=true
+          # After reviewing the dry run and explicitly approving publication:
+          gh workflow run publish.yml --ref $TAG -f dry_run=false
+          \`\`\`
+          EOF
+          } > release-note.md
+
+          flags=()
+          if [[ ${TAG#v} == *-* ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$TAG" --title "$TAG" --notes-file release-note.md --verify-tag "${flags[@]}"
