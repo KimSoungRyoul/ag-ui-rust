@@ -303,6 +303,45 @@ These are on `main` and not yet in a published version.
   unaffected, since the driver emits `RUN_STARTED` first, and so is `RunContext::new`, whose
   harness stands in for the driver. Code that feeds a standalone `EventVerifier` a recorded
   stream has to start with the run's `RUN_STARTED`.
+- `A2uiVersion` is now the one place an A2UI version is parsed and named:
+  `A2uiVersion::parse`, `ALL`, `DEFAULT`, `FromStr` and `Display` are new, and what
+  differs between versions is a method on it (`operations`, `accepts`). It has a module
+  of its own, `ag_ui_a2ui::version`; `ag_ui_a2ui::A2uiVersion` and
+  `ag_ui_a2ui::message::A2uiVersion` still name it. The wire spelling is unchanged.
+- New in `ag-ui-a2ui`: `operation::Operation`, the list of the agent → renderer payload
+  keys, with `AgentPayload::operation`; `surface::Lifecycle` and
+  `SurfaceStore::lifecycle`; and `Validator::validate_json_updates`, which validates raw
+  messages against a prior `SurfaceStore`. `Operation`, `SurfaceStore`, `SurfaceState`
+  and `Lifecycle` are also re-exported at the crate root.
+- `A2uiVersion` is `#[non_exhaustive]`, as is the new `Operation`, so that A2UI v1.0 can
+  add a version and operations without another break. A `match` on `A2uiVersion` outside
+  the crate needs a wildcard arm. For the same reason `A2uiVersion::ALL` and
+  `Operation::ALL` are slices (`&'static [Self]`), not arrays whose length is part of
+  their type.
+- `StreamParser::process_chunk` returns `Error::Validation` carrying a `child_cycle`
+  for a reference loop, as its documentation said. It returned `Error::Parse` when the
+  loop was closed by a later message, was seen in a message still open, or validation
+  was off. Code that matched `Error::Parse` to catch a loop has to match
+  `Error::Validation`.
+- An envelope failure from `StreamParser` carries the validator's code and locator
+  (`invalid_value` at `message.version`, `missing_field` at
+  `message.createSurface.catalogId`) and lists every failure. Each was a single
+  `missing_field` at `message`. The message texts are unchanged.
+- `StreamParser` no longer replays a repeated `createSurface` for a live surface when
+  components arrive for a surface that has not been created.
+- `Validator::validate_updates`, `SurfaceValidator::push` and `finish`, and
+  `A2uiAuthor` locate a component in the message that last wrote it,
+  `messages[1].updateComponents.components[0].child`, as `validate_json_messages`
+  does. They named its position in the folded surface, `components[3].child`; a
+  component carried over from prior state still has that form. Update code that
+  matches on the old paths.
+- `Catalog::from_schema` reads an `enum` that is one alternative of a `oneOf` or
+  `anyOf`, the way the specification writes `Icon.name`. A literal string such a
+  property does not list is now `invalid_value`; it was accepted for a catalog
+  parsed from a document.
+- The message of `Error::Pointer` quotes at most `error::MAX_SHOWN_PATH_CHARS` (120)
+  characters of the path and states its length; so do the validator's sentences about
+  a binding path. The `pointer` field still holds the whole path.
 
 ## Verify the upgrade
 

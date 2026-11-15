@@ -195,13 +195,16 @@ is recorded in `tests/spec_v0_9/README.md`.
 `tests/author.rs` exercises the official schema engine, local refs, targeted
 async generation, catalog negotiation, and multi-surface transitions.
 `tests/protocol_091.rs` covers lossless model/history replay and lifecycle.
-The older toolkit conformance suite reports **110 direct matches, 9 expected
-streaming divergences, 74 skipped, 0 unexpected failures**. The cases are
-executed with pinned expectations: partial messages wait for a supported
-version or an explicit data path, and only catalog-declared component
-references are rewritten as placeholders. Four named policies requiring
-implicit catalog fallback/cross-ID merging are explicitly superseded and
-covered by replacement regressions. See
+The official conformance suite is vendored whole, and every suite in it is
+accounted for by name: executed, or skipped with the reason. The executed
+suites are the v0.9 validator and the three toolkit suites, and they report
+**168 passed, 11 expected divergences, 3 failing**; the per-suite counts are
+asserted by the test. The divergences are executed with pinned expectations:
+partial messages wait for a supported version or an explicit data path, and an
+unreachable component is a warning. The three failures are cases upstream added
+for the toolkit's parsers. Four named policies requiring implicit catalog
+fallback/cross-ID merging are explicitly superseded and covered by replacement
+regressions. See
 [conformance notes](tests/conformance/README.md) and [schema provenance](schemas/README.md).
 
 ```sh
@@ -210,4 +213,5 @@ cargo +1.85.0 check -p ag-ui-a2ui --all-features
 cargo check -p ag-ui-a2ui --all-features --target wasm32-unknown-unknown
 ```
 
-License: MIT for SDK code; vendored official schemas retain Apache-2.0.
+License: MIT for SDK code; the vendored official schemas and conformance suite
+retain Apache-2.0.

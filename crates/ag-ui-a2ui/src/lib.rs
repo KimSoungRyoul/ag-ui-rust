@@ -9,26 +9,60 @@
 //! Nothing here draws pixels, lays out a tree, or evaluates a UI at runtime. It
 //! produces A2UI, validates it, and transports it. Rendering is the client's
 //! job, and it is a genuinely different program — one with a widget toolkit, an
-//! event loop, and a reactive data model. What this crate gives you instead:
+//! event loop, and a reactive data model. What this crate gives you instead is
+//! the protocol, and what an agent needs around it.
 //!
-//! - [`message`] — the v0.9-family protocol envelopes, in both directions.
-//! - [`catalog`] — what a surface may contain, including the standard
-//!   18-component basic catalog.
-//! - [`validate`] — the semantic checks JSON Schema cannot express: does every
-//!   child reference resolve, is there a root, is the tree acyclic. Plus the two
-//!   a generating model gets wrong often enough to be worth checking without a
-//!   schema engine: the message envelope, and property values against the type
-//!   the catalog declares.
-//! - [`binding`] — JSON Pointer resolution, template scopes, and the
-//!   `formatString` interpolation grammar, so an agent can check its own
-//!   bindings before shipping them.
+//! # The protocol
+//!
+//! The protocol modules sit at the crate root. Everything in them is a pure
+//! function of the messages it is given: no model call, no transport, no clock.
+//! An agent framework, a transport adapter and a test all use the same pieces,
+//! and each fact about the protocol is stated in exactly one of them.
+//!
+//! | Module | What it is the one place for |
+//! |---|---|
+//! | [`version`] | Which protocol versions exist, how each is spelled, and what differs between them. |
+//! | [`operation`] | The names of the agent → renderer operations. |
+//! | [`message`] | The v0.9-family wire types, in both directions. |
+//! | [`catalog`] | What a surface may contain: components, their properties, functions. Includes the standard 18-component basic catalog. |
+//! | [`binding`] | JSON Pointer resolution, template scopes and the `formatString` interpolation grammar, so an agent can check its own bindings before shipping them. |
+//! | [`model`] | The data model, including the undefined slots JSON cannot express. |
+//! | [`surface`] | The surface state machine: lifecycle, and folding a stream of operations. Every stream is folded through it. |
+//! | [`validate`] | The semantic checks JSON Schema cannot express: does every child reference resolve, is there a root, is the tree acyclic. Plus the two a generating model gets wrong often enough to be worth checking without a schema engine: the message envelope, and property values against the type the catalog declares. |
 // Gate module links with their features so minimal rustdoc builds resolve them.
+#![cfg_attr(
+    feature = "schema-validation",
+    doc = "| [`schema_validation`] | Draft 2020-12 validation of agent → renderer messages (feature `schema-validation`). |",
+    doc = "| [`client_schema`] | The same for renderer → agent messages (feature `schema-validation`). |"
+)]
+//!
+//! One further piece is internal: the child-reference graph of a component
+//! list, and the single depth-first walk over it that answers reachability,
+//! cycles and depth for the validator and for the streaming parser alike.
+//!
+//! ## What depends on what
+//!
+//! The protocol modules reach into nothing above them, with one exception that
+//! is on its way out: the JSON Schema validator takes its three schema
+//! documents as a `toolkit::schema::SchemaBundle`, so the `schema-validation`
+//! feature still implies `toolkit`.
+//!
+//! With default features off, the protocol modules are all there is, and they
+//! need only `serde`, `serde_json`, `thiserror` and `jsonptr`.
+//!
+//! # Around the protocol
+//!
 #![cfg_attr(
     feature = "toolkit",
     doc = "- [`toolkit`] (feature `toolkit`) — building ops, negotiating a catalog,",
     doc = "  assembling prompts, parsing a model's output as it streams, recovering a",
     doc = "  surface from conversation history, and the validate-and-retry loop around",
     doc = "  a generating model."
+)]
+#![cfg_attr(
+    not(feature = "toolkit"),
+    doc = "- `toolkit` (feature `toolkit`, off in this build) — building ops, prompts,",
+    doc = "  parsing a model's output, and the validate-and-retry loop."
 )]
 #![cfg_attr(
     feature = "ag-ui",
@@ -68,8 +102,10 @@
 //! # Version
 //!
 //! Supports `v0.9` and `v0.9.1`. Low-level constructors retain `v0.9` as
-//! their default; use `A2uiVersion` to select a discriminator. Candidate RPC
-//! payloads are not accepted or serialized as v0.9-family messages.
+//! their default; use [`A2uiVersion`] to select a discriminator. It is the one
+//! place a version is parsed or named, and what differs between versions is a
+//! method on it. Candidate RPC payloads are not accepted or serialized as
+//! v0.9-family messages.
 //!
 //! # Example
 //!
@@ -100,25 +136,26 @@
 #[doc = include_str!("../README.md")]
 mod readme {}
 
-pub mod binding;
-pub mod catalog;
 pub mod constants;
 pub mod error;
-pub mod message;
-pub mod model;
-pub mod surface;
+
+// The protocol modules are files under `src/protocol/` and public at the crate
+// root, which is their one path: `ag_ui_a2ui::validate`, not a second one
+// through a public `protocol`. The directory only groups the files.
+mod protocol;
+
+#[doc(inline)]
+pub use crate::protocol::{
+    binding, catalog, message, model, operation, surface, validate, version,
+};
+#[cfg(feature = "schema-validation")]
+#[doc(inline)]
+pub use crate::protocol::{client_schema, schema_validation};
 
 #[cfg(feature = "author")]
 pub mod author;
-#[cfg(feature = "schema-validation")]
-pub mod client_schema;
-#[cfg(feature = "schema-validation")]
-pub mod schema_validation;
 #[cfg(feature = "author")]
 pub use author::{A2uiAuthor, AuthorRequest, ValidatedSurface};
-pub use message::{A2uiVersion, DataModelUpdate};
-pub use model::{DataModel, ModelValue};
-pub mod validate;
 
 #[cfg(feature = "toolkit")]
 pub mod toolkit;
@@ -126,13 +163,19 @@ pub mod toolkit;
 #[cfg(feature = "ag-ui")]
 pub mod agui;
 
-pub use catalog::Catalog;
-pub use error::{Error, Result, ValidationErrors};
-pub use message::{
+pub use crate::protocol::catalog::Catalog;
+pub use crate::protocol::message::{
     AgentMessage, AgentPayload, ChildList, ChildTemplate, ClientDataModel, Component,
-    RendererMessage, RendererPayload,
+    DataModelUpdate, RendererMessage, RendererPayload,
 };
-pub use validate::{ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator};
+pub use crate::protocol::model::{DataModel, ModelValue};
+pub use crate::protocol::operation::Operation;
+pub use crate::protocol::surface::{Lifecycle, SurfaceState, SurfaceStore};
+pub use crate::protocol::validate::{
+    ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator,
+};
+pub use crate::protocol::version::A2uiVersion;
+pub use error::{Error, Result, ValidationErrors};
 
 #[cfg(feature = "toolkit")]
 pub use toolkit::{StreamParser, wrap_as_operations_envelope, wrap_error_envelope};

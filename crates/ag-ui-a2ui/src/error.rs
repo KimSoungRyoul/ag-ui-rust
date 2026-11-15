@@ -5,6 +5,47 @@ use std::fmt;
 /// Convenient alias for fallible A2UI operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The most characters of a data-model path an error message quotes.
+///
+/// Well past any path a surface has reason to use, so an ordinary message is
+/// unchanged; a longer path is cut here and its full length stated instead.
+pub const MAX_SHOWN_PATH_CHARS: usize = 120;
+
+/// A data-model path as an error message shows it: whole when it is short,
+/// cut to [`MAX_SHOWN_PATH_CHARS`] characters with its length when it is not.
+///
+/// `{}` writes the path as it is and `{:?}` quotes it, so a message keeps the
+/// punctuation it had before there was a bound.
+pub(crate) struct ShownPath<'a>(pub(crate) &'a str);
+
+impl ShownPath<'_> {
+    /// The part that is shown, and the full length when that is not all of it.
+    fn head(&self) -> (&str, Option<usize>) {
+        match self.0.char_indices().nth(MAX_SHOWN_PATH_CHARS) {
+            Some((cut, _)) => (&self.0[..cut], Some(self.0.chars().count())),
+            None => (self.0, None),
+        }
+    }
+}
+
+impl fmt::Display for ShownPath<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.head() {
+            (head, Some(length)) => write!(f, "{head}… ({length} characters)"),
+            (whole, None) => f.write_str(whole),
+        }
+    }
+}
+
+impl fmt::Debug for ShownPath<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.head() {
+            (head, Some(length)) => write!(f, "{head:?}… ({length} characters)"),
+            (whole, None) => write!(f, "{whole:?}"),
+        }
+    }
+}
+
 /// Everything that can go wrong while producing, validating, or transporting
 /// A2UI.
 ///
@@ -42,7 +83,12 @@ pub enum Error {
 
     /// A JSON Pointer was malformed, or resolved to a location that cannot be
     /// written (for example indexing past the end of an array).
-    #[error("invalid data-model pointer {pointer:?}: {reason}")]
+    ///
+    /// The message shows at most [`MAX_SHOWN_PATH_CHARS`] characters of the
+    /// pointer and says how long it was. A pointer is remote input, the error
+    /// is fed back to a model, and the pointer that is too long to accept is
+    /// the one that would make the longest message. The field keeps it whole.
+    #[error("invalid data-model pointer {:?}: {reason}", ShownPath(.pointer))]
     Pointer {
         /// The offending pointer, exactly as it appeared on the wire.
         pointer: String,
@@ -121,7 +167,7 @@ impl Error {
 /// Newtype rather than a bare `Vec` so that [`Error::Validation`] can carry a
 /// `Display` impl an LLM can read directly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ValidationErrors(pub Vec<crate::validate::ValidationError>);
+pub struct ValidationErrors(pub Vec<crate::protocol::validate::ValidationError>);
 
 impl ValidationErrors {
     /// Number of errors in the list.
@@ -135,13 +181,13 @@ impl ValidationErrors {
     }
 
     /// Borrows the underlying errors.
-    pub fn as_slice(&self) -> &[crate::validate::ValidationError] {
+    pub fn as_slice(&self) -> &[crate::protocol::validate::ValidationError] {
         &self.0
     }
 }
 
-impl From<Vec<crate::validate::ValidationError>> for ValidationErrors {
-    fn from(errors: Vec<crate::validate::ValidationError>) -> Self {
+impl From<Vec<crate::protocol::validate::ValidationError>> for ValidationErrors {
+    fn from(errors: Vec<crate::protocol::validate::ValidationError>) -> Self {
         Self(errors)
     }
 }
@@ -155,5 +201,65 @@ impl fmt::Display for ValidationErrors {
             write!(f, "{error}")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_short_pointer_is_quoted_whole_as_it_always_was() {
+        let error = Error::pointer("/items/nope", "expected a canonical array index");
+        assert_eq!(
+            error.to_string(),
+            "invalid data-model pointer \"/items/nope\": expected a canonical array index"
+        );
+
+        // Up to the limit nothing is cut, and escapes are still escaped.
+        let at_the_limit = format!("/{}", "a".repeat(MAX_SHOWN_PATH_CHARS - 1));
+        assert_eq!(
+            Error::pointer(at_the_limit.clone(), "r").to_string(),
+            format!("invalid data-model pointer {at_the_limit:?}: r")
+        );
+        assert_eq!(
+            Error::pointer("/a\"b", "r").to_string(),
+            "invalid data-model pointer \"/a\\\"b\": r"
+        );
+    }
+
+    #[test]
+    fn a_long_pointer_is_cut_in_the_message_and_whole_in_the_field() {
+        let pointer = "/a".repeat(5_000);
+        let error = Error::pointer(pointer.clone(), "path has more than 256 segments");
+        let message = error.to_string();
+        assert_eq!(
+            message,
+            format!(
+                "invalid data-model pointer {:?}… (10000 characters): \
+                 path has more than 256 segments",
+                &pointer[..MAX_SHOWN_PATH_CHARS]
+            )
+        );
+        assert!(message.len() < 250, "{} bytes", message.len());
+
+        let Error::Pointer { pointer: kept, .. } = error else {
+            panic!("expected a pointer error");
+        };
+        assert_eq!(kept, pointer, "the bound is on the message, not the data");
+    }
+
+    #[test]
+    fn a_cut_lands_between_characters_and_counts_characters() {
+        // Three bytes each: a cut by bytes would split one.
+        let pointer = format!("/{}", "値".repeat(200));
+        let shown = ShownPath(&pointer).to_string();
+        assert_eq!(
+            shown,
+            format!(
+                "/{}… (201 characters)",
+                "値".repeat(MAX_SHOWN_PATH_CHARS - 1)
+            )
+        );
     }
 }

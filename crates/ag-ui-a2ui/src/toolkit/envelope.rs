@@ -15,8 +15,8 @@ use serde_json::{Map, Value, json};
 
 use crate::constants::A2UI_OPERATIONS_KEY;
 use crate::error::Result;
-use crate::message::AgentMessage;
-use crate::validate::ValidationError;
+use crate::protocol::message::AgentMessage;
+use crate::protocol::validate::ValidationError;
 
 /// Wraps operations in the envelope, as a JSON string ready for transport.
 ///
@@ -122,8 +122,8 @@ pub fn unwrap_operations_envelope(value: &Value) -> Result<Vec<AgentMessage>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Component;
-    use crate::validate::ErrorCode;
+    use crate::protocol::message::Component;
+    use crate::protocol::validate::ErrorCode;
 
     fn ops() -> Vec<AgentMessage> {
         vec![

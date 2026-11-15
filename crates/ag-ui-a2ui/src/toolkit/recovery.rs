@@ -58,13 +58,13 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use crate::catalog::Catalog;
 use crate::constants::{A2UI_RECOVERY_ACTIVITY_TYPE, MAX_A2UI_ATTEMPTS};
 use crate::error::{Error, Result, ValidationErrors};
-use crate::message::{AgentMessage, Component};
+use crate::protocol::catalog::Catalog;
+use crate::protocol::message::{AgentMessage, Component};
+use crate::protocol::validate::{ValidateOptions, ValidationError, Validator};
 use crate::toolkit::parser::parse_response;
 use crate::toolkit::prompt::augment_prompt_with_errors;
-use crate::validate::{ValidateOptions, ValidationError, Validator};
 
 /// How the recovery loop should behave.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,7 +74,7 @@ pub struct RecoveryOptions {
     /// The contract each attempt is held to.
     pub validate: ValidateOptions,
     /// Explicit prior renderer state for incremental updates.
-    pub prior: Option<crate::surface::SurfaceStore>,
+    pub prior: Option<crate::protocol::surface::SurfaceStore>,
     /// Surface to return when the response touches more than one live surface.
     /// If omitted, exactly one touched surface must remain live.
     pub target_surface_id: Option<String>,
@@ -366,7 +366,7 @@ fn interpret(
         Ok(parts) => parts,
         Err(error) => {
             return Err(vec![ValidationError::new(
-                crate::validate::ErrorCode::EmptyComponents,
+                crate::protocol::validate::ErrorCode::EmptyComponents,
                 "response",
                 format!(
                     "{error} Return the A2UI messages as a JSON array wrapped in the required \
@@ -388,7 +388,7 @@ fn interpret(
                 Ok(operation) => operations.push(operation),
                 Err(error) => {
                     return Err(vec![ValidationError::new(
-                        crate::validate::ErrorCode::EmptyComponents,
+                        crate::protocol::validate::ErrorCode::EmptyComponents,
                         "response",
                         format!(
                             "A message did not match any A2UI envelope ({error}). Each message \
@@ -422,7 +422,7 @@ fn interpret(
         if !report.is_valid() {
             return Err(report.errors);
         }
-        let mut store = crate::surface::SurfaceStore::new();
+        let mut store = crate::protocol::surface::SurfaceStore::new();
         for operation in &operations {
             store.apply(operation).map_err(|error| {
                 vec![ValidationError::new(
@@ -485,8 +485,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn prior_surfaces() -> crate::surface::SurfaceStore {
-        let mut prior = crate::surface::SurfaceStore::new();
+    fn prior_surfaces() -> crate::protocol::surface::SurfaceStore {
+        let mut prior = crate::protocol::surface::SurfaceStore::new();
         for (id, label) in [("a", "First"), ("b", "Second")] {
             prior.apply(&AgentMessage::create_surface(id, "c")).unwrap();
             prior
