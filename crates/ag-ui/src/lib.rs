@@ -5,10 +5,10 @@
 //! text and reasoning, calls tools, publishes state, and finishes — or pauses
 //! for human input.
 //!
-//! Imported for review as a proposed unified community Rust SDK. The event
-//! surface is checked against the TypeScript definitions in this checkout.
-//! See the Rust workspace's migration guide for differences from the previously published
-//! `ag-ui-core` and `ag-ui-client` packages.
+//! An independent SDK, not an official AG-UI project. The event surface is
+//! checked against a vendored copy of the AG-UI 1.0 JSON Schema. The
+//! `ag-ui-core` and `ag-ui-client` packages on crates.io are an earlier,
+//! unrelated SDK.
 //!
 //! # What is in the box
 //!

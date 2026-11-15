@@ -42,11 +42,12 @@ above — and keeping every item on it enforced by something that fails the buil
 
 ## The source of truth is the TypeScript Zod schemas
 
-Not the protobuf definitions. `sdks/typescript/packages/proto/src/proto/events.proto` has an
-`Event` oneof with 21 arms — no reasoning, no activity, no thinking, no `tool_call_result`.
-The binary transport is a lossy subset of the protocol, so it cannot serve as the port target.
-There is also no JSON Schema export upstream (`zod-to-json-schema` and `toJSONSchema` appear
-nowhere in the repo).
+Not the protobuf definitions. When the port was written,
+`sdks/typescript/packages/proto/src/proto/events.proto` had an `Event` oneof with 21 arms — no
+reasoning, no activity, no thinking, no `tool_call_result` — and there was no JSON Schema export
+upstream. Both have changed: AG-UI 1.0 is published as a JSON Schema, and `events.proto` is now
+generated from it with all 31 1.0 event types. Whether this crate gains a protobuf encoder is
+tracked in [#46](https://github.com/KimSoungRyoul/ag-ui-rust/issues/46).
 
 So the port is hand-written against `core/src/events.ts`, and `xtask drift-check` in CI is what
 keeps it honest. Detection, not generation: it parses the upstream `EventType` enum and Zod
@@ -296,5 +297,5 @@ The producer tracks open child lifecycles before visibility transforms and enfor
 closure on RunFinished even without optional detailed verification. RunError can
 terminate with children open.
 
-The 0.4 migration and implementation contract are in `migration-0.4.md` and
-`sdk-api-improvement-proposal.ko.md`.
+The 0.4 migration is in `migration-0.4.md`; `sdk-api-improvement-proposal.ko.md` keeps the
+0.3 → 0.4 design record as history.

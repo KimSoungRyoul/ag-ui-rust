@@ -24,11 +24,13 @@
 //!
 //! Each property also keeps the JSON type its schema pins it to ([`PropType`]),
 //! which is what lets [`crate::validate`] reject `{"columns": "three"}` where the
-//! catalog says integer. That is one constraint out of JSON Schema, not an
-//! engine: `pattern`, `minimum`, `additionalProperties` and the rest are left to
-//! whatever validates the document itself. A property whose schema states no
-//! type, or states several, is [`PropType::Unconstrained`] and is never rejected
-//! — a catalog this crate reads loosely must not turn into false failures.
+//! catalog says integer. A bare `enum` is kept as well ([`PropDef::enum_values`]),
+//! so a literal it does not list is rejected too. Those are two constraints out
+//! of JSON Schema, not an engine: `pattern`, `minimum`, `additionalProperties`
+//! and the rest are left to whatever validates the document itself. A property
+//! whose schema states no type, or states several, is
+//! [`PropType::Unconstrained`] and is never rejected — a catalog this crate reads
+//! loosely must not turn into false failures.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -258,6 +260,9 @@ pub struct PropDef {
     /// Human-readable description, carried into generated prompts.
     pub description: Option<String>,
     /// Permitted values, when the schema constrains them to an enum.
+    ///
+    /// A literal string outside them fails [`crate::validate`]; a binding or a
+    /// function call is not a literal and is left to the renderer.
     pub enum_values: Vec<String>,
     /// Whether the component is invalid without this property.
     pub required: bool,
@@ -345,6 +350,11 @@ impl ComponentDef {
     ///
     /// Locators are relative to the component object, e.g. `child`,
     /// `children[2]`, `children.componentId`, `tabs[0].child`.
+    ///
+    /// Only strings are ids. Anything else in a structural property — most
+    /// often a child written inline as an object — references nothing, and
+    /// [`crate::validate`] reports it: A2UI components are a flat list, and a
+    /// parent names its children by id.
     pub fn references(&self, component: &Component) -> Vec<ComponentRef> {
         let mut refs = Vec::new();
         for (name, def) in &self.props {
@@ -1511,6 +1521,11 @@ mod tests {
             .expect("the vendored basic catalog is JSON");
         let parsed = Catalog::from_schema(&document).unwrap();
         let built_in = Catalog::basic();
+        // `Icon.name` is the one enum the parser does not lift: it sits in the
+        // string arm of a `oneOf` beside `{svgPath}` and a binding.
+        let icon_names =
+            string_list(document.pointer("/components/Icon/allOf/2/properties/name/oneOf/0/enum"))
+                .expect("the specification lists the icon names");
 
         let mut compared = 0;
         for def in built_in.components_in_order() {
@@ -1527,6 +1542,20 @@ mod tests {
                     prop.value_type, spec_prop.value_type,
                     "{}.{} is {:?} here and {:?} in the specification",
                     def.name, prop.name, prop.value_type, spec_prop.value_type
+                );
+                // Enums reject values, so they have to match too. Order is
+                // the prompt's business; membership is the validator's.
+                let spec_values = if (def.name.as_str(), prop.name.as_str()) == ("Icon", "name") {
+                    icon_names.clone()
+                } else {
+                    spec_prop.enum_values.clone()
+                };
+                assert_eq!(
+                    prop.enum_values.iter().collect::<BTreeSet<_>>(),
+                    spec_values.iter().collect::<BTreeSet<_>>(),
+                    "{}.{} permits different values here and in the specification",
+                    def.name,
+                    prop.name
                 );
                 compared += 1;
             }

@@ -5,7 +5,7 @@ description: "Use when writing Rust consumers of AG-UI agents. The client is ag_
 
 # Consuming an AG-UI agent from Rust
 
-This skill targets workspace version **0.5.0-alpha.1**. Check the actual checkout before copying
+This skill targets workspace version **0.5.0-alpha.3**. Check the actual checkout before copying
 APIs into an older released consumer. One crate, `ag-ui`, contains protocol/server/client
 features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 
@@ -13,12 +13,13 @@ features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 
 ```toml
 [dependencies]
-ag-ui = { path = "/path/to/ag-ui-rust/crates/ag-ui", features = ["http"] }
+ag-ui = { version = "=0.5.0-alpha.3", features = ["http"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-The path selects this unpublished candidate during pre-merge QA. `http` is opt-in.
+`ag-ui` is on crates.io; the `=` keeps Cargo from moving to a later prerelease on its own.
+`http` is opt-in.
 `client` alone accepts custom transports and supports wasm without
 Tokio or reqwest. The public relationship is endpoint → conversation → run:
 

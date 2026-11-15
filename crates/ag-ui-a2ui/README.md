@@ -166,7 +166,7 @@ rejects a result requiring Undefined instead of silently substituting null.
 
 Default features include only `toolkit`, so an A2A or MCP consumer gets no AG-UI
 dependency or schema engine. `default-features = false` selects the protocol
-types alone. The schema engine is pinned to `jsonschema 0.29.1` without its
+types alone. The schema engine is pinned to `jsonschema 0.61.2` without its
 network/filesystem resolvers. Rust 1.85 and wasm builds are covered; browser
 entropy support is target- and feature-specific to the schema engine.
 
