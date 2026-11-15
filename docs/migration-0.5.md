@@ -170,6 +170,15 @@ These are on `main` and not yet in a published version.
   error, except a later run's `RUN_STARTED`: the first run keeps its outcome and an
   `unsupported` diagnostic (the new `Error::Unsupported`) says the rest was not read.
   `Applier::interrupts` is cleared by `RUN_ERROR`.
+- An expired interrupt can be declined. `Thread::decline`, or a cancelled entry in
+  `resume_many`, is no longer refused because `expiresAt` has passed or does not parse;
+  only resolving such an interrupt is. Before, that interrupt blocked every later request.
+- `Thread::unanswered_tool_calls` lists the tool calls `send`, `run` and `resume_many` refuse
+  to run past, including one a failed or aborted run left without a result.
+  `Thread::abandon_tool_call(&id, reason)` answers such a call with a tool message whose
+  `content` and `error` carry `reason`; the call and the answer stay in the transcript and
+  are sent with the next run. The refusal now reads "unanswered tool calls must be answered
+  with tool messages, or abandoned", not "pending frontend tool calls".
 
 ## Verify the upgrade
 
