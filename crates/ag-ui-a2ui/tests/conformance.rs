@@ -38,6 +38,7 @@ use ag_ui_a2ui::toolkit::schema::{SchemaBundle, load_examples, remove_strict_val
 use ag_ui_a2ui::toolkit::streaming::StreamParser;
 use ag_ui_a2ui::validate::{ErrorCode, ValidateOptions, ValidationReport, Validator};
 use ag_ui_a2ui::version::A2uiVersion;
+use ag_ui_a2ui::{DataModel, DataModelUpdate, Error, ModelValue};
 use serde_json::Value;
 
 /// Upstream commit the vendored suite was taken from.
@@ -140,13 +141,13 @@ const SUITES: &[Suite] = &[
     run("agent/legacy/inference_format.yaml", [12, 0, 10, 0]),
     run("agent/legacy/streaming_parser.yaml", [33, 8, 45, 2]),
     run("core/data_context.yaml", [9, 2, 0, 0]),
+    run("core/data_model.yaml", [43, 4, 1, 4]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
     retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
     retired("retired/agent/inference_format.yaml", [13, 0, 6, 0]),
 
     // --- core tier, pre-1.0: in scope, no runner in this harness yet (#72) ---------------------
     skip("core/message_processor_v0_9.yaml", 48, Why::Unharnessed, "the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads"),
-    skip("core/data_model.yaml", 52, Why::Unharnessed, "data-model reads, writes and deletion, with a renderer's observer notifications"),
     skip("core/expressions.yaml", 98, Why::Unharnessed, "the formatString template parser; the crate evaluates a template and exposes no parse"),
     skip("core/catalog.yaml", 73, Why::Unharnessed, "the reference catalog API: fromJson, toJson, round trip, validationSchema, derive"),
     skip("core/common_types.yaml", 22, Why::Unharnessed, "values against the published common types; 3 cases compare a schema generated from an SDK's own types"),
@@ -420,6 +421,26 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
         "a second `<a2ui-json>` inside a block that is still open is read as JSON, and the \
          messages after it are not dispatched",
     ),
+    // Four rules of the reference data model this crate does not have. The
+    // first two came with upstream's change of 2026-09-15; before it the
+    // reference renderer padded and created, as this crate does.
+    (
+        "core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]",
+        "removing an index past the end of a list pads the list out to it with undefined slots",
+    ),
+    (
+        "core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]",
+        "removing a path that does not exist creates the containers on the way to it",
+    ),
+    (
+        "core/data_model.yaml::test_data_model_rejects_forbidden_path_segments[step 0]",
+        "`__proto__`, `constructor` and `prototype` are ordinary keys",
+    ),
+    (
+        "core/data_model.yaml::test_data_model_rejects_excessive_list_index[step 2]",
+        "a write may grow a list by 65,536 slots (DEFAULT_ARRAY_GROWTH_LIMIT), whatever the \
+         index; the reference refuses an index above 10,000",
+    ),
 ];
 
 /// Set `A2UI_CONFORMANCE_VERBOSE=1` to list every executed check by name.
@@ -445,10 +466,37 @@ const DIVERGENCES: &[(&str, &str, &str)] = &[
         r#""/user/""#,
         TRAILING_SLASH,
     ),
+    // `/foo/` is the key `""` under `foo`, so `/foo` holds an object.
+    (
+        "core/data_model.yaml::test_data_model_normalizes_trailing_slash[step 2]",
+        r#"{"":"bar"}"#,
+        TRAILING_SLASH,
+    ),
+    // `//a///b//` writes under the key `""`, so `/a/b` holds nothing.
+    (
+        "core/data_model.yaml::test_data_model_normalizes_empty_path_segments[step 0]",
+        "notified []",
+        TRAILING_SLASH,
+    ),
+    // `/items/-1`.
+    (
+        "core/data_model.yaml::test_data_model_get_out_of_range_index[step 1]",
+        "pointer error: expected a canonical array index",
+        NOT_AN_INDEX,
+    ),
+    // `/items/01`.
+    (
+        "core/data_model.yaml::test_data_model_rejects_leading_zero_list_index[step 0]",
+        "pointer error: expected a canonical array index",
+        NOT_AN_INDEX,
+    ),
 ];
 
 const TRAILING_SLASH: &str =
     "an empty path segment is the empty key here, as RFC 6901 reads it; the reference drops it";
+
+const NOT_AN_INDEX: &str = "reading a list at a segment that is not an index is an error here, as the \
+     specification says of a path; the reference reads no value";
 
 /// Where a case run as a whole stopped, and what this crate did there.
 #[derive(Debug)]
@@ -468,6 +516,11 @@ impl Miss {
             actual: actual.into(),
             expected: expected.into(),
         }
+    }
+
+    fn at(mut self, step: usize) -> Self {
+        self.step = Some(step);
+        self
     }
 }
 
@@ -720,7 +773,7 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     // on the protocol, and gate themselves where a version matters.
     let wire_format = matches!(
         (action, format),
-        ("validate" | "resolve_path", Format::Current)
+        ("validate" | "resolve_path" | "data_model", Format::Current)
             | (
                 "process_chunk" | "parse_full" | "fix_payload" | "has_parts",
                 _
@@ -749,6 +802,10 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
         ("load_catalog", _) => tally.record(check, run_load_catalog(case)),
         ("generate_prompt", _) => tally.record(check, run_generate_prompt(case)),
         ("resolve_path", Format::Current) => settle(check, run_resolve_path(case), tally),
+        ("data_model", Format::Current) => match data_model_skip(case) {
+            Some(reason) => tally.record(check, Outcome::Skipped(reason.to_string())),
+            None => settle(check, run_data_model(case), tally),
+        },
         (other, _) => tally.record(check, Outcome::Skipped(unsupported_action(other))),
     }
 }
@@ -1219,6 +1276,239 @@ fn run_resolve_path(case: &Value) -> Result<(), Miss> {
     } else {
         Err(Miss::new(actual.to_string(), expected.to_string()))
     }
+}
+
+// --- data_model ------------------------------------------------------------
+
+/// Why a `data_model` case is not run at all.
+fn data_model_skip(case: &Value) -> Option<&'static str> {
+    let disposes = case
+        .get("steps")
+        .and_then(Value::as_array)
+        .is_some_and(|steps| {
+            steps
+                .iter()
+                .any(|step| step.get("op").and_then(Value::as_str) == Some("dispose"))
+        });
+    disposes.then_some(
+        "detaches a model's observers: registering observers is a renderer's, and this crate \
+         has none to detach",
+    )
+}
+
+/// What a failed write or read gave, written the way [`DIVERGENCES`] pins it.
+fn pointer_outcome(error: &Error) -> String {
+    match error {
+        // The reason, not the sentence: the sentence quotes the path.
+        Error::Pointer { reason, .. } => format!("pointer error: {reason}"),
+        other => format!("error: {other}"),
+    }
+}
+
+/// What a read found, written the way [`DIVERGENCES`] pins it.
+fn read_outcome(found: Option<&ModelValue>) -> String {
+    match found.map(ModelValue::to_json) {
+        None => "no value".to_string(),
+        Some(Ok(value)) => value.to_string(),
+        Some(Err(error)) => format!("a value with an undefined slot ({error})"),
+    }
+}
+
+/// The reason this crate gives for the failure a phrase of the reference's
+/// `DataError` names. `None` for a phrase with no counterpart here.
+fn data_error_reason(phrase: &str) -> Option<&'static str> {
+    match phrase {
+        "Cannot set path" => Some("path walks through a scalar value"),
+        "non-numeric segment" => Some("expected a canonical array index"),
+        _ => None,
+    }
+}
+
+/// Whether `error` is the failure a step's `expect_error` names. The error is
+/// what the step wanted instead.
+fn is_expected_data_error(error: &Error, expect_error: &Value) -> Result<(), String> {
+    let category = expect_error.get("category").and_then(Value::as_str);
+    if category != Some("DataError") {
+        return Err(format!("a {category:?}, which this runner does not map"));
+    }
+    let Error::Pointer { reason, .. } = error else {
+        return Err("a pointer error".to_string());
+    };
+    match expect_error.get("message").and_then(Value::as_str) {
+        None => Ok(()),
+        Some(phrase) => match data_error_reason(phrase) {
+            Some(wanted) if wanted == reason => Ok(()),
+            Some(wanted) => Err(format!("a pointer error saying {wanted:?}")),
+            None => Err(format!(
+                "a pointer error for {phrase:?}, which this crate has no reason for"
+            )),
+        },
+    }
+}
+
+/// `data_model`: reads, writes and deletes against one [`DataModel`], with the
+/// paths in `watch` asked, after each write, whether their value changed.
+///
+/// A watched path is counted as notified when
+/// [`ModelChange::changed`](ag_ui_a2ui::ModelChange::changed) says so, once
+/// for each time `watch` lists it. That is the reference's rule for firing an
+/// observer, without the observer.
+fn run_data_model(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["initial", "watch", "steps"]].concat(),
+        "case",
+    )?;
+    let initial = case
+        .get("initial")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut model = DataModel::from(initial);
+    let watch = string_list(case.get("watch"));
+    // The value the last `set` was handed, for the step that changes it after.
+    let mut handed = Value::Null;
+    let steps = case.get("steps").and_then(Value::as_array);
+    for (index, step) in steps.into_iter().flatten().enumerate() {
+        data_model_step(&mut model, &watch, &mut handed, step).map_err(|miss| miss.at(index))?;
+    }
+    Ok(())
+}
+
+fn data_model_step(
+    model: &mut DataModel,
+    watch: &[String],
+    handed: &mut Value,
+    step: &Value,
+) -> Result<(), Miss> {
+    unknown_key(
+        step,
+        &[
+            "op",
+            "path",
+            "value",
+            "expect",
+            "expect_absent",
+            "expect_type",
+            "expect_error",
+            "expect_notified",
+            "expect_values",
+        ],
+        "step",
+    )?;
+    let op = step.get("op").and_then(Value::as_str).unwrap_or_default();
+    let path = step.get("path").and_then(Value::as_str).unwrap_or_default();
+    let expect_error = step.get("expect_error");
+
+    // The watched paths the step changed: none of them, for a read.
+    let mut notified: Vec<&str> = Vec::new();
+    match op {
+        "get" => match (model.lookup(path), expect_error) {
+            (Err(error), Some(wanted)) => is_expected_data_error(&error, wanted)
+                .map_err(|wanted| Miss::new(pointer_outcome(&error), wanted))?,
+            (Err(error), None) => return Err(Miss::new(pointer_outcome(&error), "a read")),
+            (Ok(found), Some(_)) => return Err(Miss::new(read_outcome(found), "an error")),
+            (Ok(found), None) => {
+                let actual = read_outcome(found);
+                if let Some(wanted) = step.get("expect") {
+                    if found.and_then(|value| value.to_json().ok()).as_ref() != Some(wanted) {
+                        return Err(Miss::new(actual, wanted.to_string()));
+                    }
+                }
+                if step.get("expect_absent") == Some(&Value::Bool(true)) && found.is_some() {
+                    return Err(Miss::new(actual, "no value"));
+                }
+                if let Some(kind) = step.get("expect_type").and_then(Value::as_str) {
+                    let is_kind = match kind {
+                        "list" => matches!(found, Some(ModelValue::Array(_))),
+                        "object" => matches!(found, Some(ModelValue::Object(_))),
+                        _ => {
+                            return Err(Miss::new(
+                                format!("the runner does not know the type {kind:?}"),
+                                "a list or an object",
+                            ));
+                        }
+                    };
+                    if !is_kind {
+                        return Err(Miss::new(actual, format!("a {kind}")));
+                    }
+                }
+            }
+        },
+        "set" | "delete" => {
+            let update = if op == "set" {
+                *handed = step.get("value").cloned().unwrap_or(Value::Null);
+                DataModelUpdate::Set(handed.clone())
+            } else {
+                DataModelUpdate::Remove
+            };
+            match (model.apply_reporting(path, &update), expect_error) {
+                (Err(error), Some(wanted)) => is_expected_data_error(&error, wanted)
+                    .map_err(|wanted| Miss::new(pointer_outcome(&error), wanted))?,
+                (Err(error), None) => {
+                    return Err(Miss::new(
+                        pointer_outcome(&error),
+                        "the write to be accepted",
+                    ));
+                }
+                (Ok(_), Some(_)) => return Err(Miss::new("accepted", "an error")),
+                (Ok(change), None) => {
+                    for watched in watch {
+                        let changed = change.changed(watched).map_err(|error| {
+                            Miss::new(pointer_outcome(&error), "a watched path")
+                        })?;
+                        if changed {
+                            notified.push(watched);
+                        }
+                    }
+                }
+            }
+        }
+        // The caller changes the value it handed to `set`, afterwards. The
+        // model took its own copy, so nothing is written and nothing changes;
+        // the reads that follow are what show it.
+        "mutate_input" => match handed.pointer_mut(path) {
+            Some(slot) => *slot = step.get("value").cloned().unwrap_or(Value::Null),
+            None => {
+                return Err(Miss::new(
+                    format!("the value handed to the last set has nothing at {path:?}"),
+                    "a value to change",
+                ));
+            }
+        },
+        other => {
+            return Err(Miss::new(
+                format!("the runner does not know the op {other:?}"),
+                "get, set, delete or mutate_input",
+            ));
+        }
+    }
+
+    if let Some(wanted) = step.get("expect_notified") {
+        // One entry for each observer, in no stated order.
+        let mut wanted = string_list(Some(wanted));
+        wanted.sort();
+        notified.sort_unstable();
+        if notified != wanted {
+            return Err(Miss::new(
+                format!("notified {notified:?}"),
+                format!("notified {wanted:?}"),
+            ));
+        }
+    }
+    if let Some(Value::Object(values)) = step.get("expect_values") {
+        for (watched, wanted) in values {
+            let found = model
+                .lookup(watched)
+                .map_err(|error| Miss::new(pointer_outcome(&error), "a watched path"))?;
+            if found.and_then(|value| value.to_json().ok()).as_ref() != Some(wanted) {
+                return Err(Miss::new(
+                    format!("{watched} holds {}", read_outcome(found)),
+                    format!("{watched} to hold {wanted}"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load_vendored(relative: &str) -> Value {

@@ -477,6 +477,9 @@ These are on `main` and not yet in a published version.
   empty path as the whole model in every scope, and `.` as a key named `.`. Write `/`
   for the whole model from inside a template. Outside a template nothing changes for
   the empty path, and `.` is no longer reported as a relative path with no template.
+- `DataModel::apply_reporting` and `ModelChange` are new: a write that reports, for any
+  path, whether the value there is different afterwards. `DataModel::apply` is
+  unchanged.
 
 ## Verify the upgrade
 

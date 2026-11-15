@@ -54,7 +54,7 @@ other suite counts one check per case and verifies its steps in order; a case
 that stops at a step is reported under that step, `suite::case[step 2]`, and
 that is the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 177 passed, 13 expected divergence, 1854 skipped, 3 failing.
+Totals: 220 passed, 17 expected divergence, 1803 skipped, 7 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -63,11 +63,11 @@ Totals: 177 passed, 13 expected divergence, 1854 skipped, 3 failing.
 | `agent/legacy/inference_format.yaml` | 22 | 12 | 0 | 10 | 0 | executed |
 | `agent/legacy/streaming_parser.yaml` | 88 | 33 | 8 | 45 | 2 | executed |
 | `core/data_context.yaml` | 11 | 9 | 2 | 0 | 0 | executed |
+| `core/data_model.yaml` | 52 | 43 | 4 | 1 | 4 | executed |
 | `retired/core/validator.yaml` | 45 | 26 | 0 | 25 | 0 | executed; retired upstream |
 | `retired/core/catalog.yaml` | 24 | 23 | 0 | 1 | 0 | executed; retired upstream |
 | `retired/agent/inference_format.yaml` | 19 | 13 | 0 | 6 | 0 | executed; retired upstream |
 | `core/message_processor_v0_9.yaml` | 48 | 0 | 0 | 48 | 0 | no runner yet (#72): the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads |
-| `core/data_model.yaml` | 52 | 0 | 0 | 52 | 0 | no runner yet (#72): data-model reads, writes and deletion, with a renderer's observer notifications |
 | `core/expressions.yaml` | 98 | 0 | 0 | 98 | 0 | no runner yet (#72): the formatString template parser; the crate evaluates a template and exposes no parse |
 | `core/catalog.yaml` | 73 | 0 | 0 | 73 | 0 | no runner yet (#72): the reference catalog API: fromJson, toJson, round trip, validationSchema, derive |
 | `core/common_types.yaml` | 22 | 0 | 0 | 22 | 0 | no runner yet (#72): values against the published common types; 3 cases compare a schema generated from an SDK's own types |
@@ -148,7 +148,7 @@ name.
 | later: agent layer (#41) | 28 | 772 | The suite tests the agent layer: inference formats, the per-request processor, catalog resolution, renderer capabilities and state. The next pull request of #41 builds it. |
 | later: A2UI v1.0 (#42) | 19 | 397 | The suite tests A2UI v1.0. |
 | later: adapters (#43) | 1 | 11 | The suite tests the A2A transport adapter. |
-| no runner yet (#72) | 5 | 293 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
+| no runner yet (#72) | 4 | 241 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
 | out of scope: renderer | 8 | 241 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. |
 | out of scope: v0.8 | 2 | 36 | The suite tests the v0.8 wire format. This crate speaks v0.9 and v0.9.1. |
 | not applicable | 2 | 12 | The suite asks something of an SDK that does not apply here: a schema generated from the SDK's own types, an integration with Google's ADK. |
@@ -157,7 +157,7 @@ Upstream's `adapter/` tier is its UI framework adapters (`@a2ui/lit`, React,
 Angular, Flutter, SwiftUI), that is, renderers. The suites about transports are
 under `extensions/`.
 
-### The five suites with no runner yet
+### The four suites with no runner yet
 
 These are in scope: they test the same core this crate implements, at the
 versions it speaks. They are not run because each needs a runner for an action
@@ -167,17 +167,17 @@ expose. Issue #72 tracks them, suite by suite.
 | Suite | What a runner would need |
 |---|---|
 | `core/message_processor_v0_9.yaml` | A facade over `SurfaceStore` with a catalog registry, and the `rendererError` payload a renderer would send for each rejection. The lifecycle cases map onto `SurfaceStore::apply` directly. |
-| `core/data_model.yaml` | Reads, writes and deletes map onto `DataModel`; the observer notifications half the steps assert are a renderer's. |
 | `core/expressions.yaml` | A parse of a `formatString` template into parts. `Scope::format_string` evaluates one. |
 | `core/catalog.yaml` | 17 of the 73 cases state v0.9 or v0.9.1. `Catalog::from_schema` covers `from_json`; there is no `toJson`, `validationSchema` or `derive`. |
 | `core/common_types.yaml` | 19 cases validate a value against a published common type; 3 compare a schema generated from an SDK's own types, which this crate does not generate. |
 
 ## Expected divergences
 
-Thirteen checks: three in `core/validator_v0_9.yaml`, eight in
-`agent/legacy/streaming_parser.yaml` and two in `core/data_context.yaml`. Those
-of the suites run one check per case are listed in `DIVERGENCES` in the
-harness with what this crate gives, and the harness holds it to exactly that.
+Seventeen checks: three in `core/validator_v0_9.yaml`, eight in
+`agent/legacy/streaming_parser.yaml`, two in `core/data_context.yaml` and four
+in `core/data_model.yaml`. Those of the suites run one check per case are listed
+in `DIVERGENCES` in the harness with what this crate gives, and the harness
+holds it to exactly that.
 
 | Checks | Reference expectation | Checked behaviour |
 |---:|---|---|
@@ -187,6 +187,8 @@ harness with what this crate gives, and the harness holds it to exactly that.
 | 6 (`test_incremental_data_model_streaming_v09` and five `test_sniff_partial_*_v09` cases) | Emit a root data-model update while the optional `path` field could still arrive after `value`. | Emit nothing until an explicit `path` is known or the message completes. |
 | 1 (`test_cut_unicode_multibyte_emoji_v09`) | Emit text cut after the first half of a surrogate pair. | Emit nothing until the pair is whole: half a pair is not a string in Rust. The suite writes that half as a YAML escape, which is not valid YAML either; the harness reads it as U+FFFD and pins the case. |
 | 2 (`test_resolve_path_context_with_trailing_slash`, `test_resolve_path_empty_in_trailing_slash_context`) | A trailing slash on the scope is dropped: `foo` under `/bar/` is `/bar/foo`. | An empty segment is the empty key, as RFC 6901 reads it, and `""` is a key JSON allows: `foo` under `/bar/` is `/bar//foo`, and the scope `/user/` itself is `/user/`. Only `/` alone is the root. |
+| 2 (`test_data_model_normalizes_trailing_slash`, `test_data_model_normalizes_empty_path_segments`) | Empty segments are dropped from a data-model path: `/foo/` is `/foo`, and `//a///b//` is `/a/b`. | The same rule as above: `/foo/` is the key `""` under `foo`. The write is accepted and stored there, so `/foo` then holds `{"": "bar"}`. |
+| 2 (`test_data_model_get_out_of_range_index`, `test_data_model_rejects_leading_zero_list_index`) | Reading a list at `-1`, `invalid` or `01` finds no value. | It is an `Error::Pointer`, on a read as on a write. The specification says of a path that "it is an error to use a non-numeric index on a path segment that refers to an array", and RFC 6901 has no index `01`. |
 
 The `test_sniff_partial_datamodel_with_cut_key_v09` fixture never becomes valid
 JSON: its final chunk lacks a closing brace for the message. The harness checks
@@ -200,15 +202,20 @@ to declare `children` as a `ChildList`, and both now pass as written.
 
 ## Failing
 
-Three checks, all in cases upstream added after the previous pin, all about the
-toolkit's parsers. The agent layer replaces those parsers, and these cases are
-for it to pass.
+Seven checks. Three are in cases upstream added after the previous pin, all
+about the toolkit's parsers; the agent layer replaces those parsers, and these
+cases are for it to pass. Four are rules of the reference data model that
+`DataModel` does not have.
 
 | Check | What happens |
 |---|---|
 | `agent/legacy/parser.yaml::test_fix_payload_unescaped_latex_backslashes_diagnostic_hint` | The payload is rejected, with the JSON parser's message. The case wants the hint "Unescaped backslash found". |
 | `agent/legacy/streaming_parser.yaml::test_no_placeholders_without_placeholder_component_v09` | With validation off, a `Row` placeholder is emitted for a catalog that defines no `Row`. The case wants nothing emitted until the children arrive. |
 | `agent/legacy/streaming_parser.yaml::test_cut_escape_sequences_v09` | The fixture writes a second `<a2ui-json>` inside a block that is still open. It is read as JSON, and the messages after it are not dispatched. |
+| `core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]` | Removing `/items/10` from a list of three pads the list to eleven slots, eight of them undefined. The case wants the list left as it was. Upstream made this a no-op on 2026-09-15; the reference renderer padded before that, and `examples/review-desk/interop` still checks a renderer that does. |
+| `core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]` | Removing `/nonexistent/child/path` from an empty model leaves `{"nonexistent": {"child": {}}}`. The case wants nothing created, and no watched path changed. Same upstream change. |
+| `core/data_model.yaml::test_data_model_rejects_forbidden_path_segments[step 0]` | A write to `/__proto__/polluted` is accepted. The reference refuses the segments `__proto__`, `constructor` and `prototype` in every language, so that a payload behaves the same in all of them. |
+| `core/data_model.yaml::test_data_model_rejects_excessive_list_index[step 2]` | A write to `/items/10001` is accepted. The reference refuses an index above 10,000; this crate bounds how far one write may grow a list instead, at 65,536 slots (`DEFAULT_ARRAY_GROWTH_LIMIT`). |
 
 ## Skips inside the executed suites
 
@@ -220,6 +227,7 @@ for it to pass.
 | 2 + 2 | **v0.8 schema bundle in a prompt.** Two `generate_prompt` cases ask for the v0.8 schema documents to be embedded in the prompt; this crate ships v0.9. In both `inference_format.yaml` files. |
 | 5 | **A JSON Schema failure** in `core/validator_v0_9.yaml`: an undeclared property, an undeclared function, a function argument of the wrong type, and two theme values. The semantic validator the harness runs does not evaluate these; `SchemaValidator`, behind the `schema-validation` feature, does. They are listed by name in `SCHEMA_ONLY`, because their fixtures are also invalid in ways the semantic validator does report, and would otherwise pass for the wrong reason. |
 | 1 | **JSON Schema validation of an example file.** `test_load_examples_validation_fails_on_schema_error`, in `retired/core/catalog.yaml`, asks `load_examples` to validate each example against an arbitrary schema. |
+| 1 | **Detaching observers.** `test_data_model_stops_notifying_after_dispose`, in `core/data_model.yaml`. Registering observers on a data model is a renderer's; `DataModel` has none to detach. |
 
 ## How the validator cases are run
 
@@ -252,6 +260,16 @@ that was understood.
 - **`resolve_path`** (`core/data_context.yaml`). `binding::absolute_path(scope,
   path)`, with no `contextPath` read as the root scope. The result is compared
   as written, so the root is `/`.
+- **`data_model`** (`core/data_model.yaml`). One `DataModel` per case, built
+  from `initial`. `get` is `DataModel::lookup`; `set` and `delete` are
+  `DataModel::apply_reporting` with a value and with a removal. A `DataError`
+  is an `Error::Pointer`, and a phrase of the reference's message is mapped to
+  the reason this crate gives for the same fault.
+  `DataModel` has no observers. The paths in `watch` are asked, after each
+  write, whether their value changed (`ModelChange::changed`), and a path
+  that says so counts as notified, once for each time `watch` lists it. That
+  is the reference's own rule for firing an observer. The one case that
+  detaches observers (`dispose`) has nothing to run against and is skipped.
 
 ## Retired suites
 

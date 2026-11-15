@@ -168,7 +168,7 @@ pub use crate::protocol::message::{
     AgentMessage, AgentPayload, ChildList, ChildTemplate, ClientDataModel, Component,
     DataModelUpdate, RendererMessage, RendererPayload,
 };
-pub use crate::protocol::model::{DataModel, ModelValue};
+pub use crate::protocol::model::{DataModel, ModelChange, ModelValue};
 pub use crate::protocol::operation::Operation;
 pub use crate::protocol::surface::{Lifecycle, SurfaceState, SurfaceStore};
 pub use crate::protocol::validate::{
