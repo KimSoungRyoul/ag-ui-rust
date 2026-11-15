@@ -213,18 +213,20 @@ Placeholder로 바꾸는 참조는 catalog에 선언된 컴포넌트 참조뿐�
 ## Catalog 합의
 
 ```rust
-use ag_ui_a2ui::toolkit::negotiate::{ClientCapabilitiesWire, select_catalog_schema};
+use ag_ui_a2ui::A2uiVersion;
+use ag_ui_a2ui::agent::{CatalogConfig, CatalogDocument, RendererCapabilities, resolve_catalogs};
 use serde_json::json;
 
-let wire = ClientCapabilitiesWire::from_json(&json!({
+let cards = CatalogDocument::load(
+    json!({"catalogId":"example.com:cards","components":{}}),
+    None,
+    Some(A2uiVersion::V0_9),
+).unwrap();
+let renderer = RendererCapabilities::from_json(&json!({
     "v0.9":{"supportedCatalogIds":["example.com:cards"]}
 })).unwrap();
-let chosen = select_catalog_schema(
-    &[json!({"catalogId":"example.com:cards","components":{}})],
-    &wire.v0_9,
-    false,
-).unwrap();
-assert_eq!(chosen["catalogId"], "example.com:cards");
+let active = resolve_catalogs(&[CatalogConfig::new(cards)], Some(&renderer), false).unwrap();
+assert_eq!(active[0].catalog_id(), "example.com:cards");
 ```
 
 `from_json`은 `schema-validation` feature가 필요하며 공식 capabilities 스키마로 먼저 검증합니다.

@@ -209,7 +209,7 @@ fn empty_collection_path_segment_is_preserved_by_validation() {
 #[test]
 #[cfg(feature = "author")]
 fn required_nullable_custom_property_is_present_but_still_type_checked() {
-    use ag_ui_a2ui::{A2uiAuthor, A2uiVersion, toolkit::schema::SchemaBundle};
+    use ag_ui_a2ui::{A2uiAuthor, A2uiVersion, schema::SchemaBundle};
     let bundle = SchemaBundle::from_inline_catalog(json!({
         "catalogId":"example.com:nullable",
         "components":{"Nullable":{"type":"object",
@@ -364,8 +364,8 @@ fn validate_updates_locates_a_prior_component_by_its_position_in_the_surface() {
 #[test]
 #[cfg(feature = "schema-validation")]
 fn the_stateful_validator_names_the_message_that_wrote_the_component() {
+    use ag_ui_a2ui::schema::SchemaBundle;
     use ag_ui_a2ui::schema_validation::SurfaceValidator;
-    use ag_ui_a2ui::toolkit::schema::SchemaBundle;
     let bundle = SchemaBundle::basic().unwrap();
     let catalog_id = ag_ui_a2ui::constants::OFFICIAL_BASIC_CATALOG_ID;
     let update = |components: serde_json::Value| json!({"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": components}});
@@ -454,8 +454,8 @@ fn the_stateful_validator_names_the_message_that_wrote_the_component() {
 #[test]
 #[cfg(feature = "schema-validation")]
 fn the_stateful_validator_locates_a_composition_failure_in_its_message() {
+    use ag_ui_a2ui::schema::SchemaBundle;
     use ag_ui_a2ui::schema_validation::SurfaceValidator;
-    use ag_ui_a2ui::toolkit::schema::SchemaBundle;
     let child_list = "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ChildList";
     let bundle = SchemaBundle::from_inline_catalog(json!({
         "catalogId": "example.com:menu",

@@ -16,17 +16,22 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["toolkit"]
+# The agent layer is how A2UI is authored, so it is what a dependency with no
+# features named gets.
+default = ["agent"]
 # The framework-neutral agent layer: catalog negotiation, the prompt snippet,
 # reading a model's answer whole or streamed, renderer state, the retry
 # decision. Protocol modules only; no model call, executor or network.
 agent = []
-# Agent-side authoring: op builders, prompt assembly, recovery loop.
-toolkit = []
+# The conventions of an agent hosted on AG-UI: the operations envelope, op
+# builders, the generate and render tools, a surface recovered from history.
+# History finds blocks the way the agent layer does.
+toolkit = ["agent"]
 # Full Draft 2020-12 validation with local resources only.
-schema-validation = ["toolkit", "dep:jsonschema", "dep:schema-getrandom"]
-# Provider-neutral async generation with full validation.
-author = ["toolkit", "schema-validation"]
+schema-validation = ["dep:jsonschema", "dep:schema-getrandom"]
+# One surface created or edited by a model, held to the JSON Schemas: the
+# agent layer with a fixed target.
+author = ["agent", "schema-validation"]
 # AG-UI event emission; does not enable HTTP, axum, or Tokio.
 ag-ui-server = ["author", "ag-ui", "ag-ui/server"]
 # Interop with `ag-ui`: history entries from AG-UI messages, toolkit tool

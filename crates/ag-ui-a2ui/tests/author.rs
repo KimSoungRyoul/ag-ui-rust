@@ -1,7 +1,7 @@
 #![cfg(feature = "author")]
+use ag_ui_a2ui::schema::SchemaBundle;
 use ag_ui_a2ui::schema_validation::SchemaValidator;
-use ag_ui_a2ui::toolkit::schema::SchemaBundle;
-use ag_ui_a2ui::{A2uiAuthor, A2uiVersion, Error};
+use ag_ui_a2ui::{A2uiAuthor, A2uiVersion, Error, ErrorCode};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -122,6 +122,154 @@ fn async_generation_corrects_documents_and_preserves_provider_errors() {
     assert_eq!(calls.get(), 1);
     assert!(matches!(error, Error::Generation(_)));
     assert!(std::error::Error::source(&error).is_some());
+}
+
+/// Located the way a renderer's refusals are: `(code, path)` of each failure.
+fn located(error: Error) -> Vec<(ErrorCode, String)> {
+    match error {
+        Error::Validation { errors } => errors
+            .as_slice()
+            .iter()
+            .map(|error| (error.code, error.path.clone()))
+            .collect(),
+        other => panic!("expected a validation error, got {other:?}"),
+    }
+}
+
+/// What a batch breaks of the request, as opposed to of A2UI, is reported the
+/// same way: a validation error where the message has to change.
+#[test]
+fn a_batch_that_is_not_what_was_asked_for_is_located_in_the_message() {
+    let author = A2uiAuthor::basic(A2uiVersion::V0_9_1).unwrap();
+    let invalid = |path: &str| vec![(ErrorCode::InvalidValue, path.to_string())];
+
+    let mut other_surface = ops();
+    other_surface[0]["createSurface"]["surfaceId"] = json!("other");
+    assert_eq!(
+        located(
+            author
+                .validate_create("s", &other_surface[..1])
+                .unwrap_err()
+        ),
+        invalid("messages[0].createSurface.surfaceId")
+    );
+
+    let mut other_version = ops();
+    other_version[1]["version"] = json!("v0.9");
+    assert_eq!(
+        located(author.validate_create("s", &other_version).unwrap_err()),
+        invalid("messages[1].version")
+    );
+
+    let mut deleted = ops();
+    deleted.push(json!({"version":"v0.9.1","deleteSurface":{"surfaceId":"s"}}));
+    assert_eq!(
+        located(author.validate_create("s", &deleted).unwrap_err()),
+        invalid("messages[3]")
+    );
+
+    // A surface nothing is drawn into is not a surface to hand back.
+    assert_eq!(
+        located(author.validate_create("s", &ops()[..1]).unwrap_err()),
+        [(ErrorCode::EmptyComponents, "response".to_string())]
+    );
+
+    let initial = author.validate_create("s", &ops()).unwrap();
+    let recreated = author.validate_edit(&initial, &ops()[..1]).unwrap_err();
+    assert_eq!(located(recreated), invalid("messages[0]"));
+}
+
+/// A component without an `id` is reported where it is, not as a message that
+/// did not decode.
+#[test]
+fn a_component_without_an_id_is_located_and_fed_back_where_it_is() {
+    let author = A2uiAuthor::basic(A2uiVersion::V0_9_1).unwrap();
+    let mut nameless = ops();
+    nameless[1]["updateComponents"]["components"] = json!([
+        {"id": "root", "component": "Column", "children": ["title"]},
+        {"component": "Text", "text": "Hello"},
+    ]);
+    let found = located(author.validate_create("s", &nameless).unwrap_err());
+    assert!(
+        found
+            .iter()
+            .all(|(_, path)| path.starts_with("messages[1].updateComponents.components[1]")),
+        "{found:?}"
+    );
+
+    let answer = serde_json::to_string(&nameless).unwrap();
+    let surface = ready(
+        author
+            .create("s", "greet")
+            .generate(move |prompt, attempt| {
+                let answer = answer.clone();
+                async move {
+                    if attempt == 1 {
+                        return Ok(answer);
+                    }
+                    assert!(
+                        prompt.contains("at messages[1].updateComponents.components[1]"),
+                        "{prompt}"
+                    );
+                    Ok(serde_json::to_string(&ops()).unwrap())
+                }
+            }),
+    )
+    .unwrap();
+    assert_eq!(surface.attempts(), 2);
+}
+
+/// The attempts are the author's to set; the default is three.
+#[test]
+fn the_number_of_attempts_is_the_authors_and_never_zero() {
+    for (limit, expected) in [(None, 3), (Some(1), 1), (Some(5), 5), (Some(0), 1)] {
+        let mut author = A2uiAuthor::basic(A2uiVersion::V0_9_1).unwrap();
+        if let Some(limit) = limit {
+            author = author.with_max_attempts(limit);
+        }
+        let calls = std::cell::Cell::new(0);
+        let error = ready(author.create("s", "greet").generate(|_, attempt| {
+            calls.set(attempt);
+            async { Ok("not A2UI".to_string()) }
+        }))
+        .unwrap_err();
+        assert_eq!(calls.get(), expected);
+        let Error::RecoveryExhausted { attempts, last } = error else {
+            panic!("expected RecoveryExhausted");
+        };
+        assert_eq!(attempts, expected);
+        assert_eq!(last.as_slice()[0].path, "response");
+    }
+}
+
+/// The author is the agent layer with a fixed target: its prompt is the
+/// layer's snippet under the request, and an answer may come tagged or bare.
+#[test]
+fn the_prompt_is_the_agent_layers_and_an_answer_may_be_tagged_or_bare() {
+    let author = A2uiAuthor::basic(A2uiVersion::V0_9_1).unwrap();
+    let prompt = author.create("s", "greet").prompt();
+    assert!(prompt.starts_with("Create exactly one surface"));
+    assert!(prompt.contains("Target surfaceId: s"));
+    assert!(prompt.contains("Exact version: v0.9.1"));
+    assert!(prompt.contains(author.processor().prompt_snippet()));
+
+    let bare = serde_json::to_string(&ops()).unwrap();
+    let tagged = format!("Here you go.\n<a2ui-json>{bare}</a2ui-json>");
+    for answer in [bare, tagged] {
+        let surface = ready(
+            author
+                .create("s", "greet")
+                .generate(|_, _| std::future::ready(Ok(answer.clone()))),
+        )
+        .unwrap();
+        assert_eq!(surface.attempts(), 1);
+        assert_eq!(surface.operations().len(), 3);
+    }
+
+    let initial = author.validate_create("s", &ops()).unwrap();
+    let edit = author.edit(&initial, "rename").prompt();
+    assert!(edit.starts_with("Edit the existing surface"));
+    assert!(edit.contains("Observed prior operations"));
 }
 
 #[test]
@@ -265,15 +413,23 @@ fn an_edit_revalidates_prior_components_against_the_current_contract() {
 
 #[test]
 fn inline_capabilities_keep_function_array_theme_and_local_resources() {
-    use ag_ui_a2ui::toolkit::negotiate::{ClientCapabilitiesWire, select_catalog_schema};
+    use ag_ui_a2ui::agent::{CatalogConfig, RendererCapabilities, resolve_catalogs};
+    use ag_ui_a2ui::schema_validation::validate_capabilities;
     let wire = json!({"v0.9":{"supportedCatalogIds":["example.com:inline"],"inlineCatalogs":[{
         "catalogId":"example.com:inline",
         "components":{"Label":{"type":"object","properties":{"value":{"$ref":"https://local.example/label.json"}},"required":["value"]}},
         "functions":[{"name":"label","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false},"returnType":"string"}],
         "theme":{"accent":{"type":"string","enum":["blue","green"]}}
     }]}});
-    let caps = ClientCapabilitiesWire::from_json(&wire).unwrap();
-    let selected = select_catalog_schema(&[], &caps.v0_9, true).unwrap();
+    validate_capabilities(&wire).unwrap();
+    let caps = RendererCapabilities::from_json(&wire).unwrap();
+    // An agent that accepts a renderer's own catalogs gets this one active
+    // beside what it registered, as the renderer sent it.
+    let registered = [CatalogConfig::basic(A2uiVersion::V0_9).unwrap()];
+    assert!(resolve_catalogs(&registered, Some(&caps), false).is_err());
+    let active = resolve_catalogs(&registered, Some(&caps), true).unwrap();
+    assert_eq!(active.len(), 1);
+    let selected = active[0].document().clone();
     assert!(selected["functions"].is_array());
     assert_eq!(
         selected["theme"],
@@ -292,5 +448,5 @@ fn inline_capabilities_keep_function_array_theme_and_local_resources() {
     author.validate_create("s", &messages).unwrap();
     let mut invalid = wire;
     invalid["v0.9"]["inlineCatalogs"][0]["functions"][0]["returnType"] = json!("invalid");
-    assert!(ClientCapabilitiesWire::from_json(&invalid).is_err());
+    assert!(validate_capabilities(&invalid).is_err());
 }

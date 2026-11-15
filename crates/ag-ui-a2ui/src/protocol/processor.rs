@@ -9,10 +9,14 @@
 //!   surface whose catalog it does not hold, and validates every surface
 //!   against its own.
 //! - **Raw messages, checked in one order.** The envelope and the nesting of
-//!   the JSON as it arrived; then the surface's place in its life; then the
-//!   components, against the catalog and as a graph.
+//!   the JSON as it arrived, and its version when the context speaks one
+//!   ([`MessageProcessor::accepting_version`]); then the surface's place in
+//!   its life; then the JSON Schemas, when the catalog has them registered;
+//!   then the components, against the catalog and as a graph.
 //! - **Transactions.** A message changes the state or is refused and changes
-//!   nothing, and so does a batch ([`MessageProcessor::process_all`]).
+//!   nothing, and so does a batch ([`MessageProcessor::process_all`]). A batch
+//!   that arrives a message at a time is [`MessageProcessor::begin_batch`] and
+//!   then [`MessageProcessor::process_at`] for each.
 //! - **Why.** A refusal is a [`Rejection`]: its kind, its surface, the
 //!   position of the message in its batch, and the [`Error`] itself.
 //!
@@ -41,6 +45,33 @@
 //! `ValidationError`, so a suite that expects a `ValidationError` accepts
 //! either. [`RejectionKind::is`] answers a category that way.
 //!
+//! # JSON Schema
+//!
+//! The checks above are the semantic validator's: what a catalog summary can
+//! say about a component. With the `schema-validation` feature a catalog can
+//! also be given its compiled schemas
+#![cfg_attr(
+    feature = "schema-validation",
+    doc = "([`MessageProcessor::register_schema`]),"
+)]
+#![cfg_attr(
+    not(feature = "schema-validation"),
+    doc = "(`MessageProcessor::register_schema`),"
+)]
+//! and every message of a surface of that catalog is then held to them as
+//! well: a property the component does not declare, a theme that breaks the
+//! catalog's pattern, a function argument of the wrong type. A catalog with no
+//! schema registered is checked as before.
+//!
+//! # The component keys of v1.0
+//!
+//! A2UI v1.0 gives a component an envelope of its own: `@metadata`,
+//! `@catalogId`, `@accessibility` and `@checks`. Before v1.0 those keys mean
+//! nothing, and the reference renderers refuse a component that carries one
+//! unless its catalog declares a property by that name. A processor does the
+//! same, whatever its options leave unchecked: a model that has seen v1.0
+//! writes these, and a v0.9 renderer would refuse the message.
+//!
 //! # Deleting a surface that is not there
 //!
 //! `deleteSurface` for a surface that is not live does nothing and is not an
@@ -51,12 +82,15 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
 use super::catalog::Catalog;
 use super::message::{AgentMessage, RendererError, RendererMessage, RendererPayload};
 use super::operation::Operation;
+#[cfg(feature = "schema-validation")]
+use super::schema_validation::SchemaValidator;
 use super::surface::{Lifecycle, SurfaceStore};
 use super::validate::{
     ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator, check_envelope,
@@ -98,7 +132,12 @@ use crate::error::{Error, Result, ValidationErrors};
 /// ```
 #[derive(Debug, Clone)]
 pub struct MessageProcessor {
-    catalogs: BTreeMap<String, Catalog>,
+    /// Shared, so that a copy of a processor (a transaction, a state per
+    /// request) does not copy its catalogs.
+    catalogs: BTreeMap<String, Arc<Catalog>>,
+    #[cfg(feature = "schema-validation")]
+    schemas: BTreeMap<String, Arc<SchemaValidator>>,
+    version: Option<A2uiVersion>,
     options: ValidateOptions,
     store: SurfaceStore,
 }
@@ -133,9 +172,24 @@ impl MessageProcessor {
     pub fn with_options(options: ValidateOptions) -> Self {
         Self {
             catalogs: BTreeMap::new(),
+            #[cfg(feature = "schema-validation")]
+            schemas: BTreeMap::new(),
+            version: None,
             options,
             store: SurfaceStore::new(),
         }
+    }
+
+    /// Makes this the processor of a context that speaks `version`: a message
+    /// of a version that cannot share a surface with it is refused, at
+    /// `messages[i].version`.
+    ///
+    /// Without this a message may state any version this crate speaks, and
+    /// only the surface it meets holds it to one.
+    #[must_use]
+    pub fn accepting_version(mut self, version: A2uiVersion) -> Self {
+        self.version = Some(version);
+        self
     }
 
     /// Starts from surfaces observed earlier. Their catalogs still have to be
@@ -153,9 +207,13 @@ impl MessageProcessor {
     ///
     /// Returns [`Error::Catalog`] when another catalog is registered under the
     /// same id. Registering the same catalog again is not an error.
-    pub fn register(&mut self, catalog: Catalog) -> Result<()> {
+    ///
+    /// A catalog is taken as it is or already shared (`Arc<Catalog>`); a
+    /// processor never copies one.
+    pub fn register(&mut self, catalog: impl Into<Arc<Catalog>>) -> Result<()> {
+        let catalog: Arc<Catalog> = catalog.into();
         match self.catalogs.get(&catalog.catalog_id) {
-            Some(held) if *held == catalog => Ok(()),
+            Some(held) if **held == *catalog => Ok(()),
             Some(_) => Err(Error::catalog(format!(
                 "another catalog is already registered as {:?}",
                 catalog.catalog_id
@@ -167,9 +225,65 @@ impl MessageProcessor {
         }
     }
 
+    /// Also holds every message of a surface of catalog `catalog_id` to
+    /// `schema`: the protocol's JSON Schemas and the catalog's own, compiled.
+    ///
+    /// The check runs on the message as it arrived, after the surface's place
+    /// in its life and before the components are looked at. What it refuses is
+    /// a [`RejectionKind::Validation`] refusal, each failure located like any
+    /// other, `messages[1].updateComponents.components[0].text`.
+    ///
+    /// ```
+    /// use std::collections::BTreeMap;
+    ///
+    /// use ag_ui_a2ui::Catalog;
+    /// use ag_ui_a2ui::processor::MessageProcessor;
+    /// use ag_ui_a2ui::schema::SchemaBundle;
+    /// use ag_ui_a2ui::schema_validation::SchemaValidator;
+    /// use serde_json::json;
+    ///
+    /// let bundle = SchemaBundle::basic()?;
+    /// let catalog = Catalog::from_schema(&bundle.catalog)?;
+    /// let id = catalog.catalog_id.clone();
+    ///
+    /// let mut processor = MessageProcessor::new();
+    /// processor.register(catalog)?;
+    /// processor.register_schema(&id, SchemaValidator::new(&bundle, &BTreeMap::new())?)?;
+    ///
+    /// processor.process(&json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s", "catalogId": id}}))?;
+    /// // `Text` declares no `secret`. Only a schema says so.
+    /// let refused = processor
+    ///     .process(&json!({"version": "v0.9.1", "updateComponents": {"surfaceId": "s", "components": [
+    ///         {"id": "root", "component": "Text", "text": "Hello", "secret": true}
+    ///     ]}}))
+    ///     .unwrap_err();
+    /// assert_eq!(refused.errors()[0].path, "messages[0].updateComponents.components[0]");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Catalog`] when no catalog is registered as
+    /// `catalog_id`: a schema checks the surfaces of a catalog the processor
+    /// holds.
+    #[cfg(feature = "schema-validation")]
+    pub fn register_schema(
+        &mut self,
+        catalog_id: &str,
+        schema: impl Into<Arc<SchemaValidator>>,
+    ) -> Result<()> {
+        if !self.catalogs.contains_key(catalog_id) {
+            return Err(Error::catalog(format!(
+                "catalog {catalog_id:?} is not registered; register it before its schema"
+            )));
+        }
+        self.schemas.insert(catalog_id.to_string(), schema.into());
+        Ok(())
+    }
+
     /// A registered catalog.
     pub fn catalog(&self, catalog_id: &str) -> Option<&Catalog> {
-        self.catalogs.get(catalog_id)
+        self.catalogs.get(catalog_id).map(Arc::as_ref)
     }
 
     /// The ids of the registered catalogs, in order.
@@ -214,6 +328,89 @@ impl MessageProcessor {
         Ok(())
     }
 
+    /// Starts a batch whose messages arrive one at a time, each through
+    /// [`MessageProcessor::process_at`].
+    ///
+    /// From here on a locator names the messages of the new batch, and a
+    /// component an earlier batch wrote is located by its position in its
+    /// surface.
+    pub fn begin_batch(&mut self) {
+        self.store.begin_batch();
+    }
+
+    /// Takes message `index` of the batch [`MessageProcessor::begin_batch`]
+    /// opened, or refuses it and changes nothing.
+    ///
+    /// This is [`MessageProcessor::process_all`] for a batch that is not all
+    /// there yet, such as an answer read while it is written: the message is
+    /// checked against the state the messages before it left, and a failure is
+    /// located as `messages[index]`. Each message is a transaction of its own;
+    /// a caller that wants the batch to be one keeps a copy of the processor.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::Catalog;
+    /// use ag_ui_a2ui::processor::MessageProcessor;
+    /// use serde_json::json;
+    ///
+    /// let catalog = Catalog::basic();
+    /// let id = catalog.catalog_id.clone();
+    /// let mut processor = MessageProcessor::new();
+    /// processor.register(catalog)?;
+    ///
+    /// processor.begin_batch();
+    /// processor.process_at(0, &json!({"version": "v0.9", "createSurface": {"surfaceId": "s", "catalogId": id}}))?;
+    /// let refused = processor
+    ///     .process_at(1, &json!({"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": [
+    ///         {"id": "root", "component": "Sparkline"}
+    ///     ]}}))
+    ///     .unwrap_err();
+    /// assert_eq!(refused.message_index, 1);
+    /// assert_eq!(refused.errors()[0].path, "messages[1].updateComponents.components[0].component");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Rejection`] whose [`Rejection::message_index`] is `index`.
+    pub fn process_at(
+        &mut self,
+        index: usize,
+        message: &Value,
+    ) -> std::result::Result<(), Rejection> {
+        self.process_typed_at(index, message).map(drop)
+    }
+
+    /// [`MessageProcessor::process_at`], handing back the message as it was
+    /// decoded on the way in.
+    pub(crate) fn process_typed_at(
+        &mut self,
+        index: usize,
+        message: &Value,
+    ) -> std::result::Result<AgentMessage, Rejection> {
+        let mut next = self.store.clone();
+        let typed = self.step(&mut next, index, message)?;
+        self.store = next;
+        Ok(typed)
+    }
+
+    /// The surfaces, to put aside and to put back: how a caller makes several
+    /// calls one transaction.
+    #[cfg(feature = "agent")]
+    pub(crate) fn surfaces_mut(&mut self) -> &mut SurfaceStore {
+        &mut self.store
+    }
+
+    /// Takes the catalogs, schemas, version and options of `other`, and keeps
+    /// its own surfaces.
+    #[cfg(feature = "agent")]
+    pub(crate) fn adopt_registry(&mut self, other: &Self) {
+        self.catalogs.clone_from(&other.catalogs);
+        #[cfg(feature = "schema-validation")]
+        self.schemas.clone_from(&other.schemas);
+        self.version = other.version;
+        self.options.clone_from(&other.options);
+    }
+
     /// Validates one live surface as it stands, by this processor's options
     /// and against the surface's own catalog.
     ///
@@ -230,14 +427,14 @@ impl MessageProcessor {
         )
     }
 
-    /// One message, against `store`. An error leaves `store` in an unknown
-    /// state: the caller owns a copy and drops it.
+    /// One message, against `store`, decoded. An error leaves `store` in an
+    /// unknown state: the caller owns a copy and drops it.
     fn step(
         &self,
         store: &mut SurfaceStore,
         index: usize,
         message: &Value,
-    ) -> std::result::Result<(), Rejection> {
+    ) -> std::result::Result<AgentMessage, Rejection> {
         let locator = format!("messages[{index}]");
         let invalid = |errors: Vec<ValidationError>| Rejection::invalid(index, message, errors);
         let at_message = |code: ErrorCode, reason: String| {
@@ -260,6 +457,25 @@ impl MessageProcessor {
         if !report.errors.is_empty() {
             return Err(invalid(report.errors));
         }
+        if let Some(spoken) = self.version {
+            let stated = message
+                .get("version")
+                .and_then(Value::as_str)
+                .and_then(A2uiVersion::parse);
+            if let Some(stated) = stated.filter(|stated| !spoken.accepts(*stated)) {
+                return Err(invalid(vec![ValidationError::new(
+                    ErrorCode::InvalidValue,
+                    format!("{locator}.version"),
+                    format!(
+                        "The message states version {stated}, but this context speaks {spoken}."
+                    ),
+                )]));
+            }
+        }
+        let decode = |message: &Value| {
+            serde_json::from_value::<AgentMessage>(message.clone())
+                .map_err(|error| at_message(ErrorCode::InvalidValue, error.to_string()))
+        };
 
         // The surface's place in its life, and its catalog.
         let surface_id = surface_id_of(message).unwrap_or_default();
@@ -293,7 +509,9 @@ impl MessageProcessor {
                 }
             }
             // Nothing to delete is nothing to do.
-            Some(Operation::DeleteSurface) if lifecycle != Lifecycle::Live => return Ok(()),
+            Some(Operation::DeleteSurface) if lifecycle != Lifecycle::Live => {
+                return decode(message);
+            }
             Some(Operation::UpdateComponents | Operation::UpdateDataModel)
                 if lifecycle != Lifecycle::Live =>
             {
@@ -309,11 +527,75 @@ impl MessageProcessor {
             _ => {}
         }
 
-        // Components the store cannot key by id are located one by one; serde
-        // would only say that the message did not decode.
+        // The message as its schemas see it, when its catalog has them.
+        #[cfg(feature = "schema-validation")]
+        {
+            let catalog_id = match operation {
+                Some(Operation::CreateSurface) => message
+                    .pointer("/createSurface/catalogId")
+                    .and_then(Value::as_str),
+                _ => store
+                    .get(surface_id)
+                    .map(|surface| surface.catalog_id.as_str()),
+            };
+            let schema = catalog_id.and_then(|catalog_id| self.schemas.get(catalog_id));
+            if let Some(Err(error)) = schema.map(|schema| schema.validate_message(message)) {
+                return Err(match error {
+                    Error::Validation { errors } => invalid(
+                        errors
+                            .0
+                            .into_iter()
+                            .map(|mut error| {
+                                error.path = located(&locator, &error.path);
+                                error
+                            })
+                            .collect(),
+                    ),
+                    other => at_message(ErrorCode::InvalidValue, other.to_string()),
+                });
+            }
+        }
+
         let components = message
             .pointer("/updateComponents/components")
             .and_then(Value::as_array);
+
+        // The component envelope of v1.0, which this surface is older than.
+        let carries_later_key = |component: &Value| {
+            LATER_COMPONENT_KEYS
+                .iter()
+                .any(|key| component.get(key).is_some())
+        };
+        if components.is_some_and(|components| components.iter().any(carries_later_key)) {
+            let catalog = self.catalog_of(store, index, message, surface_id)?;
+            let mut undeclared = Vec::new();
+            for (position, component) in components.into_iter().flatten().enumerate() {
+                let declared = component
+                    .get("component")
+                    .and_then(Value::as_str)
+                    .and_then(|name| catalog.component(name));
+                for key in LATER_COMPONENT_KEYS {
+                    if component.get(key).is_some()
+                        && !declared.is_some_and(|declared| declared.props.contains_key(key))
+                    {
+                        undeclared.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            format!("{locator}.updateComponents.components[{position}].{key}"),
+                            format!(
+                                "'{key}' is a component key of A2UI v1.0, and this surface is \
+                                 older; the component declares no property by that name."
+                            ),
+                        ));
+                    }
+                }
+            }
+            if !undeclared.is_empty() {
+                return Err(invalid(undeclared));
+            }
+        }
+
+        // Components the store cannot key by id are located one by one; serde
+        // would only say that the message did not decode.
         if let Some(components) = components.filter(|components| !foldable(components)) {
             let catalog = self.catalog_of(store, index, message, surface_id)?;
             let report = Validator::with_options(catalog, self.options.clone())
@@ -328,8 +610,7 @@ impl MessageProcessor {
             });
         }
 
-        let typed: AgentMessage = serde_json::from_value(message.clone())
-            .map_err(|error| at_message(ErrorCode::InvalidValue, error.to_string()))?;
+        let typed = decode(message)?;
         store
             .apply_at(index, &typed)
             .map_err(|error| at_message(ErrorCode::InvalidValue, error.to_string()))?;
@@ -353,7 +634,7 @@ impl MessageProcessor {
                 }
             }
         }
-        Ok(())
+        Ok(typed)
     }
 
     /// The catalog of a surface `store` holds.
@@ -370,9 +651,33 @@ impl MessageProcessor {
             .unwrap_or_default();
         self.catalogs
             .get(catalog_id)
+            .map(Arc::as_ref)
             .ok_or_else(|| unregistered(index, message, catalog_id))
     }
 }
+
+/// A JSON Pointer into a message, as the locator the other checks write:
+/// `/updateComponents/components/0/text` under `messages[1]` is
+/// `messages[1].updateComponents.components[0].text`.
+#[cfg(feature = "schema-validation")]
+fn located(message: &str, pointer: &str) -> String {
+    let mut locator = message.to_string();
+    for segment in pointer.split('/').skip(1) {
+        if !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit()) {
+            locator.push('[');
+            locator.push_str(segment);
+            locator.push(']');
+        } else {
+            locator.push('.');
+            locator.push_str(&segment.replace("~1", "/").replace("~0", "~"));
+        }
+    }
+    locator
+}
+
+/// The keys of the component envelope A2UI v1.0 introduces. On a surface of
+/// an earlier version they are refused unless the catalog declares them.
+const LATER_COMPONENT_KEYS: [&str; 4] = ["@metadata", "@catalogId", "@accessibility", "@checks"];
 
 fn unregistered(index: usize, message: &Value, catalog_id: &str) -> Rejection {
     Rejection::new(

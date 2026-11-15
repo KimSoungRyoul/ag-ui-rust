@@ -211,7 +211,7 @@ impl ResponseStream {
     fn begin(&mut self, state: &mut RendererState) {
         if !self.started {
             self.started = true;
-            state.bind(self.opened.active());
+            state.bind(self.opened.processor());
             state.begin_answer();
         }
     }

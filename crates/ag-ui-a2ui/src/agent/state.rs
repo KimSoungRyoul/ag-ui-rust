@@ -9,39 +9,37 @@ use super::catalog::{CatalogDocument, check_catalogs};
 use crate::error::{Error, Result};
 use crate::protocol::message::AgentMessage;
 use crate::protocol::operation::Operation;
-use crate::protocol::surface::{Lifecycle, SurfaceState, SurfaceStore};
-use crate::protocol::validate::{
-    ErrorCode, MAX_DEPTH, MAX_FUNCTION_CALL_DEPTH, ValidateOptions, ValidationError,
-    ValidationReport, Validator, check_envelope, check_value_depth, foldable,
-};
+use crate::protocol::processor::{MessageProcessor, Rejection, RejectionKind};
+use crate::protocol::surface::{SurfaceState, SurfaceStore};
+use crate::protocol::validate::{ErrorCode, ValidationError, ValidationReport, Validator};
 use crate::protocol::version::A2uiVersion;
 
-/// One active catalog, with the JSON Schema validator compiled for it when
-/// the session asked for one.
-#[derive(Debug, Clone)]
-pub(crate) struct ActiveCatalog {
-    pub(crate) document: CatalogDocument,
-    #[cfg(feature = "schema-validation")]
-    pub(crate) schema: Option<Arc<crate::protocol::schema_validation::SchemaValidator>>,
-}
-
-impl ActiveCatalog {
-    pub(crate) fn new(document: CatalogDocument) -> Self {
-        Self {
-            document,
-            #[cfg(feature = "schema-validation")]
-            schema: None,
-        }
+/// The message processor of a session that holds `catalogs` and speaks
+/// `version`, with no surfaces yet.
+///
+/// A surface is validated while its tree may still be arriving, which is the
+/// processor's default; the whole tree is [`RendererState::check_trees`]'s.
+pub(crate) fn session_processor(
+    catalogs: &[CatalogDocument],
+    version: A2uiVersion,
+) -> Result<MessageProcessor> {
+    let mut processor = MessageProcessor::new().accepting_version(version);
+    for catalog in catalogs {
+        processor.register(catalog.shared_catalog())?;
     }
+    Ok(processor)
 }
 
 /// The surfaces a renderer holds, as the agent's messages leave them.
 ///
-/// A state runs the agent's outbound messages through the one surface state
-/// machine, [`SurfaceStore`], so a message is checked against everything the
-/// renderer has already received: an update must name a surface that exists, a
-/// component is held to the catalog its surface was created with, and a cycle
-/// is found across the whole surface rather than within one message.
+/// A state is the protocol's own [`MessageProcessor`] with the session's
+/// catalogs registered, so an agent's outbound message is taken in the way a
+/// renderer takes it, and is checked against everything the renderer has
+/// already received: an update must name a surface that exists, a component is
+/// held to the catalog its surface was created with, and a cycle is found
+/// across the whole surface rather than within one message. The state adds
+/// what only an agent needs: which catalogs are active and in what order, the
+/// check of a finished tree, and a transaction around both.
 ///
 /// How long a state lives is the one difference between the two ways an agent
 /// shows UI:
@@ -76,10 +74,10 @@ impl ActiveCatalog {
 /// - A `createSurface` that names a catalog the state does not hold is one
 ///   `invalid_value` at `messages[i].createSurface.catalogId`. A renderer
 ///   calls that a catalog error, since it was handed a catalog it does not
-///   have, and so does the core's
-///   [`MessageProcessor`](crate::processor::MessageProcessor)
+///   have, and so does the processor underneath
 ///   ([`RejectionKind::Catalog`](crate::processor::RejectionKind::Catalog)).
-///   Here the name came from the payload. The reference SDK's agent
+///   Here the name came from the payload, and the state turns the refusal
+///   into the payload's. The reference SDK's agent
 ///   layer makes the same turn above its core processor (`RendererState` wraps
 ///   it in `_as_validation_error`: "errors of other kinds, such as a catalog
 ///   that a message names but the processor doesn't hold, come from the
@@ -119,22 +117,19 @@ impl ActiveCatalog {
 /// ```
 #[derive(Debug, Clone)]
 pub struct RendererState {
-    catalogs: Arc<[ActiveCatalog]>,
+    /// The active catalogs, in priority order.
+    catalogs: Arc<[CatalogDocument]>,
     /// The version the catalogs are written against. Every message has to be
     /// of a version that may meet it on one surface.
     version: A2uiVersion,
-    store: SurfaceStore,
+    /// The surfaces, and the one way a message gets into them. The catalogs
+    /// are registered in it, with their schemas when the session checks them.
+    processor: MessageProcessor,
 }
 
 impl PartialEq for RendererState {
     fn eq(&self, other: &Self) -> bool {
-        self.store == other.store
-            && self.catalogs.len() == other.catalogs.len()
-            && self
-                .catalogs
-                .iter()
-                .zip(other.catalogs.iter())
-                .all(|(mine, theirs)| mine.document == theirs.document)
+        self.processor.surfaces() == other.processor.surfaces() && self.catalogs == other.catalogs
     }
 }
 
@@ -157,54 +152,60 @@ impl RendererState {
     /// Returns [`Error::Catalog`] when no catalog is given, or when the
     /// catalogs target versions whose messages cannot meet on one surface.
     pub fn new(catalogs: Vec<CatalogDocument>) -> Result<Self> {
-        Self::with_catalogs(catalogs.into_iter().map(ActiveCatalog::new).collect())
+        let version = check_catalogs(&catalogs)?;
+        let processor = session_processor(&catalogs, version)?;
+        Ok(Self::from_parts(catalogs.into(), version, &processor))
     }
 
-    pub(crate) fn with_catalogs(catalogs: Arc<[ActiveCatalog]>) -> Result<Self> {
-        let documents: Vec<CatalogDocument> = catalogs
-            .iter()
-            .map(|catalog| catalog.document.clone())
-            .collect();
-        let version = check_catalogs(&documents)?;
-        Ok(Self::from_parts(catalogs, version))
-    }
-
-    /// A state for catalogs that were already checked to share `version`.
-    pub(crate) fn from_parts(catalogs: Arc<[ActiveCatalog]>, version: A2uiVersion) -> Self {
+    /// A state for catalogs that were already checked to share `version`,
+    /// taking messages in the way `processor` does. `processor` holds no
+    /// surfaces.
+    pub(crate) fn from_parts(
+        catalogs: Arc<[CatalogDocument]>,
+        version: A2uiVersion,
+        processor: &MessageProcessor,
+    ) -> Self {
         Self {
             catalogs,
             version,
-            store: SurfaceStore::new(),
+            processor: processor.clone(),
         }
     }
 
-    /// Makes the state check with a processor's own catalogs, which name the
-    /// same catalogs it holds and may carry validators it does not.
-    pub(crate) fn bind(&mut self, catalogs: &Arc<[ActiveCatalog]>) {
-        self.catalogs = catalogs.clone();
+    /// Makes the state take messages in the way `processor` does: a request
+    /// processor's own, which registers the catalogs the state holds and may
+    /// check schemas the state did not. The surfaces stay.
+    pub(crate) fn bind(&mut self, processor: &MessageProcessor) {
+        self.processor.adopt_registry(processor);
     }
 
     /// The active catalogs, in priority order.
     pub fn catalogs(&self) -> impl Iterator<Item = &CatalogDocument> {
-        self.catalogs.iter().map(|catalog| &catalog.document)
+        self.catalogs.iter()
     }
 
     /// A surface the renderer holds: created, and not deleted since.
     pub fn surface(&self, surface_id: &str) -> Option<&SurfaceState> {
-        self.store
+        self.store()
             .get(surface_id)
             .filter(|surface| !surface.deleted)
     }
 
     /// Every surface the renderer holds.
     pub fn surfaces(&self) -> impl Iterator<Item = &SurfaceState> {
-        self.store.surfaces().filter(|surface| !surface.deleted)
+        self.store().surfaces().filter(|surface| !surface.deleted)
     }
 
     /// The surface state machine underneath, including the tombstones of
     /// deleted surfaces.
     pub fn store(&self) -> &SurfaceStore {
-        &self.store
+        self.processor.surfaces()
+    }
+
+    /// The message processor underneath: the catalogs it registers, and
+    /// [`MessageProcessor::report`] for the standing of one surface.
+    pub fn processor(&self) -> &MessageProcessor {
+        &self.processor
     }
 
     /// Checks the messages against the state and applies them.
@@ -217,14 +218,11 @@ impl RendererState {
     /// [`RendererState::check_trees`].
     ///
     /// A `deleteSurface` that names a surface the renderer does not hold is
-    /// accepted and changes nothing. The surface state machine itself does
-    /// not have that rule: [`SurfaceStore`] rejects such a delete. The
-    /// reference SDKs' renderer treats it as a no-op (`model.delete_surface`
-    /// in upstream's message processor; the suite states it in
-    /// `core/message_processor_v1_0.yaml::test_delete_non_existent_surface_is_safe_noop`),
-    /// which is what a renderer that holds nothing by that name can only do,
-    /// and the core's [`MessageProcessor`](crate::processor::MessageProcessor)
-    /// follows the same rule.
+    /// accepted and changes nothing. That is the processor's rule, and the
+    /// reference renderers' (the suite states it in
+    /// `core/message_processor_v1_0.yaml::test_delete_non_existent_surface_is_safe_noop`):
+    /// it is what a renderer that holds nothing by that name can only do. The
+    /// surface state machine itself, [`SurfaceStore`], rejects such a delete.
     ///
     /// The call is atomic: if a message is rejected, none of them is applied.
     /// A failure is located in the message that has to change,
@@ -270,7 +268,8 @@ impl RendererState {
     /// A component the root cannot reach is not an error here, as it is not in
     /// [`Validator`]: the protocol has no message that removes one component,
     /// so replacing part of a canvas always leaves such components behind.
-    /// Its bindings are not held to a scope either. A row of a list that was
+    /// Its bindings are not resolved either, which is the validator's rule
+    /// too ([`ValidationReport::unreachable`]). A row of a list that was
     /// replaced still has its relative paths, and no list above it any more to
     /// give them a scope; nothing draws it, so nothing resolves them.
     ///
@@ -298,40 +297,16 @@ impl RendererState {
             if surface.components.is_empty() {
                 continue;
             }
-            let Some(catalog) = self.catalog(&surface.catalog_id) else {
+            let Some(summary) = self.processor.catalog(&surface.catalog_id) else {
                 return Err(inactive_catalog(
                     format!("surfaces[{surface_id:?}]"),
                     &surface.catalog_id,
                     &self.catalogs,
                 ));
             };
-            let summary = catalog.document.catalog();
-            let origin = self.store.origin(surface_id);
-            let found = Validator::new(summary).validate_stored(&self.store, surface);
-            // Where the validator located each component the root cannot
-            // reach: in the message that wrote it, else by its position.
-            let left_behind: Vec<String> = surface
-                .components
-                .iter()
-                .enumerate()
-                .filter(|(_, component)| found.unreachable.contains(&component.id))
-                .map(|(position, component)| {
-                    origin
-                        .and_then(|origin| origin.component(&component.id))
-                        .unwrap_or_else(|| format!("components[{position}]"))
-                })
-                .collect();
-            report
-                .errors
-                .extend(found.errors.into_iter().filter(|error| {
-                    error.code != ErrorCode::UnresolvedBinding
-                        || !left_behind.iter().any(|component| {
-                            error
-                                .path
-                                .strip_prefix(component.as_str())
-                                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
-                        })
-                }));
+            let origin = self.store().origin(surface_id);
+            let found = Validator::new(summary).validate_stored(self.store(), surface);
+            report.errors.extend(found.errors);
             for violation in summary.composition_violations(&surface.components) {
                 // `components[3].children[0]`: the position in the surface,
                 // then where in that component. Name the message instead when
@@ -392,10 +367,10 @@ impl RendererState {
         &mut self,
         turn: impl FnOnce(&mut Self) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
-        let before = self.store.clone();
+        let before = self.store().clone();
         let outcome = turn(self);
         if outcome.is_err() {
-            self.store = before;
+            *self.processor.surfaces_mut() = before;
         }
         outcome
     }
@@ -404,165 +379,58 @@ impl RendererState {
     /// `messages[0]` in a locator, and components already held count as prior
     /// state.
     pub(crate) fn begin_answer(&mut self) {
-        self.store.begin_batch();
+        self.processor.begin_batch();
     }
 
     /// Applies one message under the active catalogs, as `messages[index]`.
     ///
-    /// This is the one place a message meets the state. All or nothing: a
-    /// rejected message changes nothing.
+    /// This is the one place a message meets the state, and it is the
+    /// processor's: the checks, their order and their wording are the ones a
+    /// renderer written on this crate applies. All or nothing: a rejected
+    /// message changes nothing.
     pub(crate) fn apply_at(&mut self, index: usize, message: &Value) -> Result<Applied> {
-        let locator = format!("messages[{index}]");
-        let mut report = ValidationReport::default();
-        check_envelope(message, &locator, &mut report);
-        // The enclosing array is depth 0, so a message sits at 1.
-        check_value_depth(
-            message,
-            &locator,
-            1,
-            MAX_DEPTH,
-            MAX_FUNCTION_CALL_DEPTH,
-            &mut report,
-        );
-        report.into_result()?;
-
-        // The envelope check passed: the message carries one operation, and
-        // that operation's required fields with the types they must have.
-        let reject = |path: String, reason: String| Error::Validation {
-            errors: vec![ValidationError::new(ErrorCode::InvalidValue, path, reason)].into(),
-        };
-        let unreadable = || reject(locator.clone(), "The message cannot be read.".to_string());
-        let operation = Operation::of(message).ok_or_else(unreadable)?;
-        let key = operation.as_str();
-        let surface_id = message[key]["surfaceId"]
-            .as_str()
-            .ok_or_else(unreadable)?
-            .to_string();
-        let stated = message["version"]
-            .as_str()
-            .and_then(A2uiVersion::parse)
-            .ok_or_else(unreadable)?;
-        if !self.version.accepts(stated) {
-            return Err(reject(
-                format!("{locator}.version"),
-                format!(
-                    "The message states version {stated}, but the active catalogs target {}.",
-                    self.version
-                ),
-            ));
+        match self.processor.process_typed_at(index, message) {
+            Ok(message) => Ok(Applied {
+                surface_id: message.surface_id().unwrap_or_default().to_string(),
+                message,
+            }),
+            Err(rejection) => Err(self.payloads_fault(index, message, rejection)),
         }
+    }
 
-        let decode = |message: &Value| {
-            serde_json::from_value::<AgentMessage>(message.clone())
-                .map_err(|error| reject(locator.clone(), error.to_string()))
-        };
-
-        // The surface's place in its life, and its catalog, in the order the
-        // core's message processor asks. A fault of the surface's life is one
-        // error, at the message.
-        let lifecycle = self.store.lifecycle(&surface_id);
-        let catalog_id = match operation {
-            Operation::CreateSurface => {
-                let catalog_id = message[key]["catalogId"].as_str().unwrap_or_default();
-                if self.catalog(catalog_id).is_none() {
-                    return Err(inactive_catalog(
-                        format!("{locator}.{key}.catalogId"),
-                        catalog_id,
-                        &self.catalogs,
-                    ));
-                }
-                if lifecycle == Lifecycle::Live {
-                    return Err(reject(
-                        locator.clone(),
-                        format!("surface {surface_id:?} already exists"),
-                    ));
-                }
-                catalog_id.to_string()
+    /// A refusal, as the agent reads it: whatever a message was refused for,
+    /// the payload got it wrong.
+    ///
+    /// The one refusal a renderer does not blame on the message is a catalog
+    /// it does not hold. Here the catalog's name came from the payload; see
+    /// [`inactive_catalog`].
+    fn payloads_fault(&self, index: usize, message: &Value, rejection: Rejection) -> Error {
+        match rejection.kind {
+            RejectionKind::Catalog => {
+                let named = message
+                    .pointer("/createSurface/catalogId")
+                    .and_then(Value::as_str);
+                let (place, catalog_id) = match named {
+                    Some(catalog_id) => (
+                        format!("messages[{index}].createSurface.catalogId"),
+                        catalog_id.to_string(),
+                    ),
+                    // A surface this state was handed with a catalog that is
+                    // not the session's.
+                    None => (
+                        format!("messages[{index}]"),
+                        rejection
+                            .surface_id
+                            .as_deref()
+                            .and_then(|surface_id| self.store().get(surface_id))
+                            .map(|surface| surface.catalog_id.clone())
+                            .unwrap_or_default(),
+                    ),
+                };
+                inactive_catalog(place, &catalog_id, &self.catalogs)
             }
-            // Nothing by that name to delete. See `apply`.
-            Operation::DeleteSurface if lifecycle != Lifecycle::Live => {
-                return Ok(Applied {
-                    message: decode(message)?,
-                    surface_id,
-                });
-            }
-            _ if lifecycle != Lifecycle::Live => {
-                return Err(reject(
-                    locator.clone(),
-                    match lifecycle {
-                        Lifecycle::Deleted => format!(
-                            "surface {surface_id:?} was deleted; create it again before updating it"
-                        ),
-                        _ => format!(
-                            "surface {surface_id:?} does not exist; create it before updating it"
-                        ),
-                    },
-                ));
-            }
-            _ => self
-                .store
-                .get(&surface_id)
-                .map(|surface| surface.catalog_id.clone())
-                .unwrap_or_default(),
-        };
-        let Some(catalog) = self.catalog(&catalog_id) else {
-            return Err(inactive_catalog(
-                locator.clone(),
-                &catalog_id,
-                &self.catalogs,
-            ));
-        };
-
-        #[cfg(feature = "schema-validation")]
-        if let Some(schema) = &catalog.schema {
-            schema.validate_message(message)?;
+            _ => rejection.into(),
         }
-
-        // What a component is checked for while its tree may still be
-        // arriving: everything about the component itself, and cycles.
-        let in_progress = ValidateOptions {
-            check_bindings: false,
-            ..ValidateOptions::incremental_update()
-        };
-        let summary = catalog.document.catalog();
-
-        // Components the store cannot key by id are located one by one; the
-        // decoder would only say that the message did not decode.
-        let unfoldable = message[key]["components"]
-            .as_array()
-            .filter(|components| operation == Operation::UpdateComponents && !foldable(components));
-        if let Some(components) = unfoldable {
-            let located = Validator::with_options(summary, in_progress)
-                .validate_unfolded(index, components)
-                .errors;
-            return Err(if located.is_empty() {
-                reject(
-                    locator.clone(),
-                    "the components of this message cannot be stored".to_string(),
-                )
-            } else {
-                Error::Validation {
-                    errors: located.into(),
-                }
-            });
-        }
-        let typed = decode(message)?;
-
-        let mut next = self.store.clone();
-        next.apply_at(index, &typed)
-            .map_err(|error| reject(locator.clone(), error.to_string()))?;
-        if operation == Operation::UpdateComponents {
-            if let Some(surface) = next.get(&surface_id) {
-                Validator::with_options(summary, in_progress)
-                    .validate_stored(&next, surface)
-                    .into_result()?;
-            }
-        }
-        self.store = next;
-        Ok(Applied {
-            message: typed,
-            surface_id,
-        })
     }
 
     /// Creates a surface the caller assumes the renderer already holds,
@@ -573,18 +441,9 @@ impl RendererState {
         catalog_id: &str,
         version: A2uiVersion,
     ) -> Result<()> {
-        self.store
+        self.processor
+            .surfaces_mut()
             .apply(&AgentMessage::create_surface(surface_id, catalog_id).with_version(version))
-    }
-
-    pub(crate) fn active(&self) -> &Arc<[ActiveCatalog]> {
-        &self.catalogs
-    }
-
-    fn catalog(&self, catalog_id: &str) -> Option<&ActiveCatalog> {
-        self.catalogs
-            .iter()
-            .find(|catalog| catalog.document.catalog_id() == catalog_id)
     }
 }
 
@@ -597,11 +456,8 @@ impl RendererState {
 /// in its `RendererState`: "errors of other kinds, such as a catalog that a
 /// message names but the processor doesn't hold, come from the payload too"),
 /// and `agent/request_processor.yaml` expects it.
-fn inactive_catalog(place: String, catalog_id: &str, active: &[ActiveCatalog]) -> Error {
-    let ids: Vec<&str> = active
-        .iter()
-        .map(|catalog| catalog.document.catalog_id())
-        .collect();
+fn inactive_catalog(place: String, catalog_id: &str, active: &[CatalogDocument]) -> Error {
+    let ids: Vec<&str> = active.iter().map(CatalogDocument::catalog_id).collect();
     Error::Validation {
         errors: vec![ValidationError::new(
             ErrorCode::InvalidValue,
@@ -862,7 +718,10 @@ mod tests {
             .apply(&[create("a", "one"), delete("a"), delete("a")])
             .unwrap();
         assert!(state.surface("a").is_none());
-        assert_eq!(state.store().lifecycle("a"), Lifecycle::Deleted);
+        assert_eq!(
+            state.store().lifecycle("a"),
+            crate::protocol::surface::Lifecycle::Deleted
+        );
     }
 
     #[test]
