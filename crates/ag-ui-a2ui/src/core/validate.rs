@@ -537,6 +537,31 @@ impl<'a> Validator<'a> {
     /// `messages[2].updateComponents.components[0].child`, so it is unambiguous
     /// across messages and surfaces.
     pub fn validate_json_messages(&self, messages: &[Value]) -> ValidationReport {
+        self.validate_json_updates(&SurfaceStore::new(), messages).0
+    }
+
+    /// Validates raw protocol messages against previously observed renderer
+    /// state: [`Validator::validate_json_messages`] for a batch that continues
+    /// a stream rather than beginning one.
+    ///
+    /// An update may target a surface `prior` already holds, and every live
+    /// surface is held to the whole-surface contract once the batch is folded,
+    /// whether or not the batch touched it. Locators name the messages of this
+    /// batch, numbered from zero; a component `prior` already held is located
+    /// by its position in its surface, `components[3]`.
+    ///
+    /// Returns the report together with the state the batch leaves: `prior`
+    /// with every message that could be folded applied. That state is a
+    /// candidate. Adopt it when the report is clean; a caller that wants a
+    /// rejected batch to change nothing keeps `prior`.
+    pub fn validate_json_updates(
+        &self,
+        prior: &SurfaceStore,
+        messages: &[Value],
+    ) -> (ValidationReport, SurfaceStore) {
+        let mut store = prior.clone();
+        // Whatever `prior` was built from, its messages are not these ones.
+        store.begin_batch();
         let mut message_report = ValidationReport::default();
         for (index, message) in messages.iter().enumerate() {
             let locator = format!("messages[{index}]");
@@ -555,9 +580,8 @@ impl<'a> Validator<'a> {
         }
 
         if !message_report.errors.is_empty() {
-            return message_report;
+            return (message_report, store);
         }
-        let mut store = SurfaceStore::new();
         // Surfaces an update could not be folded into, so its components are
         // missing from the store.
         let mut incomplete: BTreeSet<String> = BTreeSet::new();
@@ -649,7 +673,7 @@ impl<'a> Validator<'a> {
             message_report.errors.extend(report.errors);
             message_report.unreachable.extend(report.unreachable);
         }
-        message_report
+        (message_report, store)
     }
 
     /// Validates updates against explicit previously observed renderer state.

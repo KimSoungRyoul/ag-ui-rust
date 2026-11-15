@@ -619,3 +619,75 @@ fn a_very_long_path_does_not_make_a_very_long_message() {
     assert!(found.message.len() < budget, "{}", found.message.len());
     assert!(found.message.contains("characters)"), "{}", found.message);
 }
+
+/// Raw messages against prior state: the stateful form of
+/// `validate_json_messages`, which is that function started from nothing.
+#[test]
+fn raw_messages_validate_against_prior_state() {
+    use ag_ui_a2ui::SurfaceStore;
+    let catalog = Catalog::basic();
+    let validator = Validator::new(&catalog);
+    let first = [
+        json!({"version": "v0.9", "createSurface": {"surfaceId": "s", "catalogId": "c"}}),
+        json!({"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": [
+            {"id": "root", "component": "Column", "children": ["title"]},
+            {"id": "title", "component": "Text", "text": "Title"}
+        ]}}),
+    ];
+
+    // From an empty store it is the whole-stream entry point.
+    let (report, state) = validator.validate_json_updates(&SurfaceStore::new(), &first);
+    assert_eq!(report, validator.validate_json_messages(&first));
+    assert!(report.is_valid(), "{:?}", report.errors);
+    assert_eq!(state.get("s").unwrap().components.len(), 2);
+
+    // An update to a surface the batch did not create is checked against the
+    // surface the prior state holds, and located in this batch.
+    let update = |components: serde_json::Value| json!({"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": components}});
+    let alone = validator.validate_json_messages(&[update(json!([
+        {"id": "title", "component": "Text", "text": "New title"}
+    ]))]);
+    assert!(
+        !alone.is_valid(),
+        "without prior state the surface does not exist"
+    );
+
+    let (report, next) = validator.validate_json_updates(
+        &state,
+        &[update(
+            json!([{"id": "title", "component": "Text", "text": "New title"}]),
+        )],
+    );
+    assert!(report.is_valid(), "{:?}", report.errors);
+    assert_eq!(
+        next.get("s").unwrap().components[1].prop("text"),
+        Some(&json!("New title"))
+    );
+
+    let (report, candidate) = validator.validate_json_updates(
+        &state,
+        &[update(
+            json!([{"id": "title", "component": "Card", "child": "missing"}]),
+        )],
+    );
+    assert_eq!(
+        report
+            .errors
+            .iter()
+            .map(|error| (error.code, error.path.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            ErrorCode::UnresolvedChild,
+            "messages[0].updateComponents.components[0].child"
+        )]
+    );
+    // The candidate holds the batch; the prior state is the caller's to keep.
+    assert_ne!(candidate, state);
+    assert_eq!(state.get("s").unwrap().components[1].component, "Text");
+
+    // An envelope failure stops before anything is folded.
+    let (report, untouched) =
+        validator.validate_json_updates(&state, &[json!({"updateComponents": {}})]);
+    assert!(!report.is_valid());
+    assert_eq!(untouched, state);
+}
