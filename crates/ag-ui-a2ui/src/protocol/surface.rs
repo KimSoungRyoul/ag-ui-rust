@@ -152,13 +152,13 @@ impl SurfaceState {
     ///   leaves them, and for an undefined last slot a placeholder written
     ///   there and removed. Or the whole list with `null` in each undefined
     ///   slot, then a removal of each. Only the second form can write a list
-    ///   longer than [`MAX_LIST_INDEX`](super::model::MAX_LIST_INDEX) allows
+    ///   longer than [`MAX_LIST_INDEX`](crate::model::MAX_LIST_INDEX) allows
     ///   an index, and only it can write a `null` element after a gap on a
     ///   v1.0 surface, where a written `null` removes.
     /// - A part of the model too deep for one message, which a processor
     ///   refuses past [`MAX_DEPTH`], is written at its own path. Parts start
     ///   at fixed depths, so that a model built by any path of up to
-    ///   [`MAX_VALUE_DEPTH`](super::binding::MAX_VALUE_DEPTH) segments is
+    ///   [`MAX_VALUE_DEPTH`](crate::binding::MAX_VALUE_DEPTH) segments is
     ///   written by paths no longer than that.
     /// - A removed root, which a v0.9 model holds as undefined, is removed
     ///   again.
