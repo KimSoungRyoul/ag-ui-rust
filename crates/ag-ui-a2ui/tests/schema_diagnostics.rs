@@ -1,7 +1,7 @@
 #![cfg(feature = "schema-validation")]
 
 use ag_ui_a2ui::{
-    Error,
+    Catalog, Error, MessageProcessor,
     schema_validation::{
         SchemaValidator, SurfaceValidator, validate_capabilities, validate_common_type,
     },
@@ -352,4 +352,38 @@ fn a_published_catalog_that_declares_no_theme_gets_a_validator() {
         "theme": {"primaryColor": "not-a-hex-color"}
     }});
     assert!(schema.validate_message(&off_pattern).is_err());
+}
+
+/// Two `process_messages` cases of the conformance suite are listed as
+/// failing: a theme that is off the `pattern` in its catalog's theme schema,
+/// and a property a component does not declare. The check for both exists:
+/// `SchemaValidator` refuses each message. What is missing is the wiring,
+/// since `MessageProcessor` runs no `SchemaValidator`. This test is that
+/// statement, and the one to change when a processor learns to run one.
+#[test]
+fn the_schema_engine_makes_the_two_refusals_a_processor_does_not() {
+    let bundle = SchemaBundle::basic().unwrap();
+    let catalog_id = bundle.catalog_id().unwrap().to_string();
+    let schema = SchemaValidator::new(&bundle, &Default::default()).unwrap();
+    let mut processor = MessageProcessor::new();
+    processor
+        .register(Catalog::from_schema(&bundle.catalog).unwrap())
+        .unwrap();
+
+    let off_pattern = json!({"version": "v0.9", "createSurface": {
+        "surfaceId": "s", "catalogId": catalog_id,
+        "theme": {"primaryColor": "not-a-hex-color"}
+    }});
+    let undeclared = json!({"version": "v0.9", "updateComponents": {
+        "surfaceId": "s", "components": [{
+            "id": "root", "component": "Text", "text": "Hello",
+            "@metadata": {"extensions": {"com_example_trace": "t1"}}
+        }]
+    }});
+    for message in [&off_pattern, &undeclared] {
+        assert!(schema.validate_message(message).is_err(), "{message}");
+        processor
+            .process(message)
+            .unwrap_or_else(|refused| panic!("{message}: {refused}"));
+    }
 }

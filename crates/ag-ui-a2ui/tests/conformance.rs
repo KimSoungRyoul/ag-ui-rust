@@ -22,7 +22,9 @@
 //! Run with `cargo test -p ag-ui-a2ui --all-features --test conformance --
 //! --nocapture` to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list
 //! every check by name. The harness is compiled only with the
-//! `schema-validation` feature, which `--all-features` turns on.
+//! `schema-validation` feature, which `--all-features` turns on. Without it,
+//! `tests/conformance_needs_schema_validation.rs` puts one ignored test in a
+//! run, which says so.
 
 // The catalog and common-types suites validate against the published schema
 // documents, so the harness needs the JSON Schema engine; `schema-validation`
@@ -435,16 +437,24 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
         "core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]",
         "removing a path that does not exist creates the containers on the way to it (#42)",
     ),
-    // Two refusals only a JSON Schema engine makes. The processor checks what
-    // the semantic validator checks; `SchemaValidator` is the engine, and it
-    // takes whole schema documents.
+    // Two refusals a JSON Schema engine makes. The check is not missing:
+    // `SchemaValidator`, behind `schema-validation`, refuses both messages,
+    // and `the_schema_engine_makes_the_two_refusals_a_processor_does_not` in
+    // `tests/schema_diagnostics.rs` shows it. The wiring is missing: a
+    // `MessageProcessor` checks what the semantic validator checks and runs no
+    // `SchemaValidator`, with the feature on or off.
     (
         "core/message_processor_v0_9.yaml::test_create_surface_strict_theme_validation_failure",
-        "a theme is not checked against the catalog's theme schema",
+        "a processor does not check a theme against the catalog's theme schema. Missing \
+         wiring, not a missing check: SchemaValidator refuses such a theme. A wired processor \
+         would also have to build a schema document from this case's catalog, which is a \
+         fragment with the theme at its top level",
     ),
     (
         "core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys",
-        "a property the component does not declare, here `@metadata`, is accepted",
+        "a processor accepts a property the component does not declare, here `@metadata`. \
+         Missing wiring, not a missing check: SchemaValidator refuses the message with the \
+         published catalog",
     ),
     // The catalog this crate builds in is a summary written in Rust.
     (

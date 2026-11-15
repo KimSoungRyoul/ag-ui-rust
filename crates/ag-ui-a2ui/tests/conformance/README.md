@@ -193,8 +193,8 @@ Ten checks. Three are in cases upstream added after the previous pin, all
 about the toolkit's parsers; the agent layer replaces those parsers, and these
 cases are for it to pass. Two are about removing a path that is not there,
 where upstream's rule and the renderer this workspace tests against disagree
-(#42). Two are refusals only a JSON Schema engine makes, which
-`MessageProcessor` does not run. Two ask the catalog this crate builds in to
+(#42). Two are refusals a JSON Schema engine makes: the engine is in the
+crate and `MessageProcessor` is not wired to it. Two ask the catalog this crate builds in to
 be the published document.
 
 | Check | What happens |
@@ -204,8 +204,8 @@ be the published document.
 | `agent/legacy/streaming_parser.yaml::test_cut_escape_sequences_v09` | The fixture writes a second `<a2ui-json>` inside a block that is still open. It is read as JSON, and the messages after it are not dispatched. |
 | `core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]` | Removing `/items/10` from a list of three pads the list to eleven slots, eight of them undefined. The case wants the list left as it was. Upstream added the case on 2026-09-15. The official renderer core that `examples/review-desk/interop` runs against, `@a2ui/web_core` 0.11.0, pads as this crate does, and that test and `tests/protocol_091.rs` assert it. The rule is to be read again in #42, when that harness moves to a newer renderer. |
 | `core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]` | Removing `/nonexistent/child/path` from an empty model leaves `{"nonexistent": {"child": {}}}`. The case wants nothing created, and no watched path changed. The same rule, and the same issue (#42). |
-| `core/message_processor_v0_9.yaml::test_create_surface_strict_theme_validation_failure` | A `createSurface` whose theme breaks the `pattern` in the catalog's theme schema is accepted. The processor checks what the semantic validator checks. `SchemaValidator`, behind `schema-validation`, is the JSON Schema engine, and it takes whole schema documents, not the fragment this case declares. |
-| `core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys` | A `Text` carrying `@metadata`, which the basic catalog does not declare, is accepted. A property a component does not declare is `unevaluatedProperties` in the catalog's schema, and the same engine's to refuse. |
+| `core/message_processor_v0_9.yaml::test_create_surface_strict_theme_validation_failure` | A `createSurface` whose theme breaks the `pattern` in the catalog's theme schema is accepted. Missing wiring, not a missing check: `SchemaValidator`, behind `schema-validation`, refuses such a theme, and a `MessageProcessor` checks what the semantic validator checks and runs no `SchemaValidator`, with the feature on or off. A wired processor would also have to build a schema document from this case's catalog, which is a fragment with the theme at its top level and no `$defs`. |
+| `core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys` | A `Text` carrying `@metadata`, which the basic catalog does not declare, is accepted. The same missing wiring: a property a component does not declare is `unevaluatedProperties` in the catalog's schema, and `SchemaValidator` with the published catalog refuses the message. `the_schema_engine_makes_the_two_refusals_a_processor_does_not` in `tests/schema_diagnostics.rs` shows the engine refusing both messages and a processor accepting them. |
 | `core/catalog.yaml::test_v09_basic_catalog_from_json` | The published v0.9 basic catalog, read with `Catalog::from_schema`, is not `Catalog::basic()`. The built-in one has its own id (`BASIC_CATALOG_ID`), declares `checks` on the six input components where the document takes it from the `Checkable` mixin, and has no `List.listStyle`, which the v0.9 document has and the v0.9.1 one does not. Component names, function names, return types and every other property agree. |
 | `core/catalog.yaml::test_v09_basic_catalog_to_json` | The case wants the document of the SDK's own basic catalog to be the published file. `Catalog::basic()` is written in Rust and has no document. The published v0.9.1 one ships with the crate, as `SchemaBundle::basic()`. |
 
@@ -337,8 +337,10 @@ The version of a catalog case is the one it states, or the one its document
 states: 21 cases about a v1.0 catalog say so only in the document.
 
 The harness is compiled only with the `schema-validation` feature, because
-these cases and the common-types ones run a JSON Schema engine.
-`cargo test -p ag-ui-a2ui` without it does not run the suite.
+these cases and the common-types ones run a JSON Schema engine. Without it,
+`cargo test -p ag-ui-a2ui` lists one ignored test in the suite's place,
+`conformance_suite` in `tests/conformance_needs_schema_validation.rs`, whose
+reason says which feature to turn on.
 
 The v0.9 suite has no case that deletes a surface that does not exist.
 `core/message_processor_v1_0.yaml` has one, and its rule is that such a delete
