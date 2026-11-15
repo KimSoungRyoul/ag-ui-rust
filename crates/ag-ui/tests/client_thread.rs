@@ -7,7 +7,9 @@ use std::sync::{
 };
 use std::task::Poll;
 
-use ag_ui::client::transport::{ReplayTransport, Transport, TransportFuture, boxed_stream};
+use ag_ui::client::transport::{
+    EventStream, ReplayTransport, Transport, TransportFuture, TransportStream,
+};
 use ag_ui::client::{Error, RunEnd, SubagentStatus, SubmissionStatus, Thread, Update};
 use ag_ui::{Event, Interrupt, Message, ResumeEntry, RunAgentInput, TextMessageRole};
 use futures_util::{
@@ -451,12 +453,14 @@ impl Transport for PendingTransport {
         } else {
             Box::pin(async move {
                 let start = Event::run_started(input.thread_id, input.run_id);
-                Ok(boxed_stream(futures_util::stream::iter([Ok(start)]).chain(
-                    futures_util::stream::poll_fn(move |_| {
-                        let _ = &guard;
-                        Poll::Pending
-                    }),
-                )))
+                Ok(TransportStream::typed(
+                    futures_util::stream::iter([Ok(start)]).chain(futures_util::stream::poll_fn(
+                        move |_| {
+                            let _ = &guard;
+                            Poll::Pending
+                        },
+                    )),
+                ))
             })
         }
     }
@@ -539,14 +543,18 @@ impl Transport for AfterSuccess {
             )),
             Ok(Event::run_finished_success(input.thread_id, input.run_id)),
         ];
-        let rest = if self.connection_fails {
-            boxed_stream(futures_util::stream::iter([Err(Error::Transport(
+        let rest: EventStream = if self.connection_fails {
+            Box::pin(futures_util::stream::iter([Err(Error::Transport(
                 "connection reset".into(),
             ))]))
         } else {
-            boxed_stream(futures_util::stream::pending())
+            Box::pin(futures_util::stream::pending())
         };
-        Box::pin(async move { Ok(boxed_stream(futures_util::stream::iter(events).chain(rest))) })
+        Box::pin(async move {
+            Ok(TransportStream::typed(
+                futures_util::stream::iter(events).chain(rest),
+            ))
+        })
     }
 }
 

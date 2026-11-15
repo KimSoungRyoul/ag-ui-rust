@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use ag_ui::client::transport::{ReplayTransport, Transport, TransportFuture, boxed_stream};
+use ag_ui::client::transport::{ReplayTransport, Transport, TransportFuture, TransportStream};
 use ag_ui::client::{Error, InterruptExt, RunEnd, SubmissionStatus, Thread, Update};
 use ag_ui::{
     Event, Interrupt, Message, ResumeEntry, RunAgentInput, RunErrorEvent, RunFinishedEvent,
@@ -586,9 +586,11 @@ impl Transport for GoesQuiet {
         requests.push(input.clone());
         let stream = if requests.len() == 1 {
             let events: Vec<_> = (self.first)(&input).into_iter().map(Ok).collect();
-            boxed_stream(futures_util::stream::iter(events).chain(futures_util::stream::pending()))
+            TransportStream::typed(
+                futures_util::stream::iter(events).chain(futures_util::stream::pending()),
+            )
         } else {
-            boxed_stream(futures_util::stream::iter([
+            TransportStream::typed(futures_util::stream::iter([
                 Ok(Event::run_started(
                     input.thread_id.clone(),
                     input.run_id.clone(),

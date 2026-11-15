@@ -62,6 +62,17 @@ Two of those five events are not in the agent's code. `run()` is the driver: it 
 it returns, including when the body does nothing at all and when it returns `Err` through a
 `?`.
 
+The stream's items are `Event`, not `Result<Event>`. Whatever goes wrong inside a run is
+reported in the stream, as `RUN_ERROR`, so there is no error left for an item to carry and
+nothing to unwrap.
+
+:::note[Changed after 0.5.0-alpha.3]
+In the published `0.5.0-alpha.3` the stream yields `Result<Event>`, and these examples need
+`.map(|event| event.expect("the stream should not break"))` before `.collect()`. This page
+describes `main`; see the
+[migration notes](https://github.com/KimSoungRyoul/ag-ui-rust/blob/main/docs/migration-0.5.md).
+:::
+
 The driver has no executor of its own. It owns the agent's future and polls it from the
 stream, so draining the stream *is* running the agent — there is no `spawn` anywhere in the
 crate, and nothing to configure. [Serving over HTTP](/ag-ui-rust/v0.5.0-alpha.3/server/axum/) is what turns

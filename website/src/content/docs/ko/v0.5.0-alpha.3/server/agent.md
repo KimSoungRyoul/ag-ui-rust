@@ -62,6 +62,17 @@ async fn main() {
 하나를 emit합니다. 본문이 아무 일도 하지 않았을 때도, `?`로 `Err`가 빠져나갔을 때도
 마찬가지입니다.
 
+stream의 항목은 `Result<Event>`가 아니라 `Event`입니다. run 안에서 잘못된 일은 stream 안에서
+`RUN_ERROR`로 보고됩니다. 그래서 항목이 실어 나를 error가 남지 않고, unwrap할 것도 없습니다.
+
+:::note[0.5.0-alpha.3 이후에 바뀌었습니다]
+게시된 `0.5.0-alpha.3`에서는 stream이 `Result<Event>`를 내놓습니다. 이 예제들은 `.collect()`
+앞에 `.map(|event| event.expect("the stream should not break"))`가 필요합니다. 이 페이지는
+`main`을 설명합니다.
+[migration 노트](https://github.com/KimSoungRyoul/ag-ui-rust/blob/main/docs/migration-0.5.md)를
+보세요.
+:::
+
 driver는 자체 executor가 없습니다. agent의 future를 소유한 채 stream에서 polling합니다.
 그래서 stream을 비우는 일이 곧 agent를 실행하는 일입니다. crate 어디에도 `spawn`이 없고,
 설정할 것도 없습니다. 그 stream을 응답 본문으로 바꾸는 쪽은

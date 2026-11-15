@@ -28,12 +28,30 @@ trait Transport {
 ```
 
 method 하나입니다. `RunAgentInput`을 건네면 future가 돌아옵니다. 그
-future는 event stream으로 귀결됩니다. *연결*에 실패하는 것은 future가
+future는 run의 stream으로 귀결됩니다. *연결*에 실패하는 것은 future가
 내는 error입니다. stream 도중에 실패하는 것은 stream 안의 error
 항목입니다. 둘은 다른 일이고, client도 다르게 말하고 싶어 합니다.
 
+future가 내놓는 것은 `TransportStream`입니다. transport가 가진 모양
+그대로의 run event입니다. `TransportStream::json`은 받은 그대로의 wire
+JSON을 event 하나에 값 하나씩 받습니다. `TransportStream::typed`는 이
+프로세스에서 `Event`로 만들어져 한 번도 직렬화되지 않은 event를 받습니다.
+transport는 아무것도 decode하지 않고 아무것도 검사하지 않습니다. client가
+어느 쪽이든 같은 호환성 경계에 통과시킵니다. schema 검사, optional null
+registry, 폐기된 event의 변환입니다. 그래서 경계의 warning은 어느 모양이
+들어왔든 `Thread`에 `Update::Warning`으로 도착합니다. typed event는 schema
+순회를 건너뜁니다. `Event`에는 이 버전이 모르는 것이 들어 있을 수 없기
+때문입니다. `TransportStream::enforced`를 부르면 그래도 통과시킵니다.
+
+:::note[0.5.0-alpha.3 이후에 바뀌었습니다]
+게시된 `0.5.0-alpha.3`에는 두 번째 method인 `run_raw`가 있고, `run`은 typed
+event를 돌려줍니다. 이 페이지는 `main`을 설명합니다. 두 모양은
+[migration 노트](https://github.com/KimSoungRyoul/ag-ui-rust/blob/main/docs/migration-0.5.md)에
+있습니다.
+:::
+
 `TransportFuture`는
-`Pin<Box<dyn Future<Output = Result<EventStream>> + Send>>`입니다.
+`Pin<Box<dyn Future<Output = Result<TransportStream>> + Send>>`입니다.
 여기 어디에도 lifetime은 적혀 있지 않습니다. 그렇다면 boxed trait
 object의 기본값인 `'static`입니다. 이 점이 구조를 떠받칩니다.
 
@@ -72,8 +90,8 @@ async fn main() {
 }
 ```
 
-wasm에서는 `EventStream`과 `TransportFuture` alias가 `Send` bound를 떼어
-냅니다. 거기서 transport를 얹게 될 browser API는 단일 thread입니다.
+wasm에서는 `TransportFuture`와 `TransportStream`이 받는 stream이 `Send`
+bound를 떼어 냅니다. 거기서 transport를 얹게 될 browser API는 단일 thread입니다.
 애초에 `Send`가 아닙니다. `Send`를 요구하면 wasm이라는 경우를 만족시킬
 방법이 없어집니다. 이 crate가 애초에 transport를 추상화한 이유가 바로 그
 경우입니다.
@@ -242,7 +260,7 @@ adapter입니다. byte stream에서 난 error는 stream을 끝냅니다. payload
 
 ```rust
 // src/transport.rs
-use ag_ui::client::transport::{EventStream, Transport, TransportFuture};
+use ag_ui::client::transport::{Transport, TransportFuture, TransportStream};
 use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::{Event, RunAgentInput, TextMessageRole};
 use futures_util::StreamExt;
@@ -259,7 +277,7 @@ impl Transport for StaticTransport {
         let events = self.events.clone();
         Box::pin(async move {
             let stream = futures_util::stream::iter(events.into_iter().map(Ok));
-            Ok(Box::pin(stream) as EventStream)
+            Ok(TransportStream::typed(stream))
         })
     }
 }
@@ -288,13 +306,13 @@ async fn main() {
 }
 ```
 
-event가 아니라 byte를 읽는 transport는 가운데에 `decode_events`를
-둡니다. `boxed_stream`은 그 결과를 trait이 돌려주는 모양으로 box해 주는
-helper입니다.
+event가 아니라 byte를 읽는 transport는 JSON으로 넘겨줍니다.
+`decode_raw_events`가 `text/event-stream` body의 chunk를 event 하나에 값
+하나로 바꾸고, `TransportStream::json`이 그것을 그대로 client에 넘깁니다.
 
 ```rust
 // src/transport.rs
-use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
+use ag_ui::client::transport::{Transport, TransportFuture, TransportStream, decode_raw_events};
 use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::{Event, RunAgentInput, SseFormatter};
 use futures_util::StreamExt;
@@ -309,7 +327,7 @@ impl Transport for Recorded {
             // 여기서는 chunk 하나입니다. 실제 body는 network가 정하는
             // 만큼 나뉘어 도착하고, decoder는 그것을 전제로 쓰였습니다.
             let chunks = futures_util::stream::iter([Ok::<_, std::io::Error>(body)]);
-            Ok(boxed_stream(decode_events(chunks)))
+            Ok(TransportStream::json(decode_raw_events(chunks)))
         })
     }
 }
