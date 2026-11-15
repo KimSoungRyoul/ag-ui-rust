@@ -188,6 +188,15 @@ These are on `main` and not yet in a published version.
   every allowed value. A message with several errors can list them in a different order.
 - `ag-ui-a2ui` requires exactly its own version of `ag-ui` (`=0.5.0-…`) while both are
   prereleases, instead of accepting any later alpha.
+- An expired interrupt can be declined. `Thread::decline`, or a cancelled entry in
+  `resume_many`, is no longer refused because `expiresAt` has passed or does not parse;
+  only resolving such an interrupt is. Before, that interrupt blocked every later request.
+- `Thread::unanswered_tool_calls` lists the tool calls `send`, `run` and `resume_many` refuse
+  to run past, including one a failed or aborted run left without a result.
+  `Thread::abandon_tool_call(&id, reason)` answers such a call with a tool message whose
+  `content` and `error` carry `reason`; the call and the answer stay in the transcript and
+  are sent with the next run. The refusal now reads "unanswered tool calls must be answered
+  with tool messages, or abandoned", not "pending frontend tool calls".
 
 ## Verify the upgrade
 

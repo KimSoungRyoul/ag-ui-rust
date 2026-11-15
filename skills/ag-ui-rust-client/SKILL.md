@@ -109,6 +109,10 @@ AG-UI has no tool discovery. Configure tools yourself through builder `.tools` o
 - `Done` contains `RunEnd::{Success, SuccessWithPendingToolCalls, Interrupted, Failed, Cancelled, Aborted}`.
   Pending frontend tool calls still need application results. `Cancelled` is a server-confirmed
   stop; `Aborted` only means local consumption stopped. Match all six.
+- `thread.unanswered_tool_calls()` lists every call the next run must answer first, including
+  one a failed or aborted run left without a result; `send`/`run`/`resume_many` refuse until
+  each has a tool message. Answer with `push_message(Message::tool(..))`, or give a call up
+  with `abandon_tool_call(&id, reason)`, which records a tool message with `error` set.
 
 `Update` is non-exhaustive. `RunEnd` is exhaustive. A successful terminal can coexist with
 local patch/validation diagnostics. `collect_report()` returns `end`, `new_messages`,
@@ -126,7 +130,8 @@ accepts local callbacks. Decode failures are diagnostics and terminate the high-
 
 Use `thread.resume_many(entries)?` to answer **all** pending interrupts exactly once.
 `resume(&interrupt, payload)` and `decline(&interrupt)` are single-interrupt conveniences.
-Unknown/duplicate/missing IDs and expired stored interrupts fail before dispatch. The
+Unknown/duplicate/missing IDs and answers to expired stored interrupts fail before dispatch.
+An expired interrupt can still be declined, which is how the thread moves past it. The
 caller-supplied Interrupt object cannot replace the stored expiry. `response_schema` is
 preserved for form rendering; arbitrary JSON Schema validation and execution authorization
 remain application/server responsibilities.
