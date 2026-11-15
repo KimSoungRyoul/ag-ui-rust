@@ -120,7 +120,14 @@ impl SurfaceSpec {
         self
     }
 
-    /// Sets the catalog id.
+    /// Sets the catalog the surface is created under.
+    ///
+    /// A spec starts on [`BASIC_CATALOG_ID`], the id the built-in
+    /// [`Catalog::basic`](crate::Catalog::basic) carries. A surface for the
+    /// published basic catalog
+    /// ([`OFFICIAL_BASIC_CATALOG_ID`](crate::constants::OFFICIAL_BASIC_CATALOG_ID))
+    /// or for a catalog of the application's own says so here, since a
+    /// renderer draws a surface with the catalog its `createSurface` names.
     #[must_use]
     pub fn with_catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
         self.catalog_id = catalog_id.into();
@@ -218,6 +225,20 @@ mod tests {
     use super::*;
     use crate::protocol::message::AgentPayload;
     use serde_json::json;
+
+    #[test]
+    fn a_spec_creates_its_surface_under_the_catalog_it_names() {
+        let created = |spec: &SurfaceSpec| match &assemble_ops(Intent::Create, spec)[0].payload {
+            AgentPayload::CreateSurface(create) => create.catalog_id.clone(),
+            other => panic!("expected createSurface first, got {other:?}"),
+        };
+        assert_eq!(created(&SurfaceSpec::new("s")), BASIC_CATALOG_ID);
+        let official = crate::constants::OFFICIAL_BASIC_CATALOG_ID;
+        assert_eq!(
+            created(&SurfaceSpec::new("s").with_catalog_id(official)),
+            official
+        );
+    }
 
     fn spec() -> SurfaceSpec {
         SurfaceSpec::new("s1")
