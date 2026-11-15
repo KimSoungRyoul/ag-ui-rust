@@ -286,8 +286,125 @@ fn a_run_error_may_follow_run_finished_once() {
 
 #[test]
 fn a_run_starts_once() {
-    let said = complaint(&[Event::run_started("t", "r"), Event::run_started("t", "r")]);
-    assert!(said.contains("twice"), "{said}");
+    // The upstream stream `nested-run-started-fatal`: a producer closes the
+    // current run before opening the next, whatever id the next one carries.
+    for next in ["r", "r-2"] {
+        let said = complaint(&[Event::run_started("t", "r"), Event::run_started("t", next)]);
+        assert!(said.contains("while a run was still active"), "{said}");
+    }
+}
+
+#[test]
+fn a_stream_may_carry_several_runs_in_sequence() {
+    // 1.0, lifecycle, "Several runs on one stream". The upstream streams
+    // `two-sequential-runs-accumulate` and `run-error-then-new-run-continues`.
+    verify_all(&[
+        Event::run_started("t", "r-1"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_end("msg-1"),
+        Event::run_finished_success("t", "r-1"),
+        Event::run_started("t", "r-2"),
+        Event::run_error("the model went away"),
+        Event::run_started("t", "r-3"),
+        Event::run_finished_success("t", "r-3"),
+        Event::run_error("the transport failed while flushing"),
+        Event::run_started("t", "r-4"),
+        Event::run_finished_success("t", "r-4"),
+    ])
+    .expect("each run closes before the next opens");
+
+    // Between two runs there is nothing: only RUN_STARTED follows RUN_ERROR,
+    // and only RUN_STARTED or one RUN_ERROR follows RUN_FINISHED.
+    for (closed, after) in [
+        (
+            Event::run_finished_success("t", "r-1"),
+            Event::custom("between", json!(1)),
+        ),
+        (
+            Event::run_finished_success("t", "r-1"),
+            Event::run_finished_success("t", "r-1"),
+        ),
+        (Event::run_error("failed"), Event::run_error("failed again")),
+        (
+            Event::run_error("failed"),
+            Event::raw(json!({ "provider": "openai" })),
+        ),
+    ] {
+        let said = complaint(&[Event::run_started("t", "r-1"), closed, after]);
+        assert!(
+            said.contains("after the run had already finished"),
+            "{said}"
+        );
+    }
+
+    // A stream that stops inside a later run was cut short like any other.
+    let truncated = verify_all(&[
+        Event::run_started("t", "r-1"),
+        Event::run_finished_success("t", "r-1"),
+        Event::run_started("t", "r-2"),
+    ])
+    .expect_err("the second run never ended");
+    assert!(
+        truncated
+            .to_string()
+            .contains("ended before RUN_FINISHED or RUN_ERROR"),
+        "{truncated}"
+    );
+}
+
+#[test]
+fn what_a_run_opened_does_not_cross_into_the_next() {
+    // "Run-scoped tracking — open messages, open tool calls, open steps,
+    // active subagents — does not cross the boundary ... A new run starts
+    // with nothing open."
+    let failed_run = [
+        Event::run_started("t", "r-1"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::tool_call_start("call-1", "search"),
+        Event::step_started("plan"),
+        Event::subagent_started("sub-1", "researcher"),
+        Event::run_error("the model went away"),
+        Event::run_started("t", "r-2"),
+    ];
+    for (continues, expected) in [
+        (Event::text_message_content("msg-1", "x"), "is not open"),
+        (Event::tool_call_args("call-1", "{}"), "is not open"),
+        (Event::step_finished("plan"), "never started"),
+        (Event::subagent_finished_success("sub-1"), "is not active"),
+    ] {
+        let mut events = failed_run.to_vec();
+        events.push(continues);
+        let said = complaint(&events);
+        assert!(said.contains(expected), "{said}");
+    }
+
+    // So the next run may open the same step, and announce again the
+    // subagent the run before it closed: the run that resumes a suspended
+    // subagent does.
+    let mut events = failed_run.to_vec();
+    events.extend([
+        Event::step_started("plan"),
+        Event::step_finished("plan"),
+        Event::subagent_started("sub-1", "researcher"),
+        Event::subagent_finished_success("sub-1"),
+        Event::run_finished_success("t", "r-2"),
+        Event::run_started("t", "r-3"),
+        Event::subagent_started("sub-1", "researcher"),
+        Event::subagent_finished_success("sub-1"),
+        Event::run_finished_success("t", "r-3"),
+    ]);
+    verify_all(&events).expect("each run tracks its own");
+
+    // Who owns a message does cross: messages accumulate across runs.
+    let said = complaint(&[
+        Event::run_started("t", "r-1"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant).with_subagent_run_id("a"),
+        Event::text_message_end("msg-1").with_subagent_run_id("a"),
+        Event::run_finished_success("t", "r-1"),
+        Event::run_started("t", "r-2"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant).with_subagent_run_id("b"),
+    ]);
+    assert!(said.contains("belongs to"), "{said}");
 }
 
 #[test]

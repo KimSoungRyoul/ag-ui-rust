@@ -24,12 +24,14 @@
 //!
 //! # The rules
 //!
-//! 1. `RUN_STARTED` opens the stream, and does so exactly once — or
-//!    `RUN_ERROR` does, for a run that failed before it began. Nothing else
-//!    may come first, `RAW` and `CUSTOM` included.
-//! 2. `RUN_FINISHED` and `RUN_ERROR` close it. Nothing may follow, except one
-//!    `RUN_ERROR` after `RUN_FINISHED`: a failure that surfaced after the run
-//!    reported success, which fails the run.
+//! 1. `RUN_STARTED` opens the stream — or `RUN_ERROR` does, for a run that
+//!    failed before it began. Nothing else may come first, `RAW` and `CUSTOM`
+//!    included.
+//! 2. `RUN_FINISHED` and `RUN_ERROR` end the run. Two things may follow: one
+//!    `RUN_ERROR` after `RUN_FINISHED`, a failure that surfaced after the run
+//!    reported success, which fails the run; and after either, a
+//!    `RUN_STARTED`, which begins the next run on the same stream. A
+//!    `RUN_STARTED` inside a run that has not ended is rejected.
 //! 3. `TEXT_MESSAGE_CONTENT` and `TEXT_MESSAGE_END` require an open message
 //!    with the same id, and `TEXT_MESSAGE_START` may not re-open an id that is
 //!    already open.
@@ -78,6 +80,30 @@
 //! `TOOL_CALL_RESULT` mints the tool message it names under its own
 //! attribution.
 //!
+//! # Several runs
+//!
+//! AG-UI 1.0 lets one stream carry several runs in sequence: the run a
+//! request asked for, preceded by runs the producer replays. Every rule
+//! above that says "open" is about one run. A new run starts with nothing
+//! open, whatever a failed run left behind, and may announce again a
+//! subagent the run before it suspended. Who owns an id is about the stream:
+//! messages accumulate across runs, and a message keeps its first writer.
+//!
+//! ```
+//! use ag_ui::client::verify_all;
+//! use ag_ui::Event;
+//!
+//! verify_all(&[
+//!     Event::run_started("thread-1", "run-1"),
+//!     Event::run_error("the model provider went away"),
+//!     Event::run_started("thread-1", "run-2"),
+//!     Event::run_finished_success("thread-1", "run-2"),
+//! ])?;
+//! # Ok::<(), ag_ui::client::Error>(())
+//! ```
+//!
+//! # Chunks
+//!
 //! A `*_CHUNK` event is judged as the events it stands for.
 //! [`crate::client::chunks`] expands chunks before this stage, so a
 //! [`Thread`](crate::client::Thread) never shows it one; a verifier handed a
@@ -97,14 +123,15 @@
 //!   accepted. A producer rejects one, since it knows every call it answers;
 //!   a reader may hold less of the conversation than the producer does.
 
-use crate::Event;
 use crate::ordering::{Broke, Claim, Entity, Open, Ordering, Policy, Violation, describe};
+use crate::{Event, EventType};
 
 use crate::client::error::{Error, Result};
 
-/// An ordering state machine for one run's event stream.
+/// An ordering state machine for one event stream.
 ///
-/// One verifier per run: it is stateful, and its state is that run's progress.
+/// One verifier per stream: it is stateful, and its state is that stream's
+/// progress, through however many runs the stream carries.
 #[derive(Clone, Debug)]
 pub struct Verifier {
     rules: Ordering,
@@ -145,8 +172,8 @@ impl Verifier {
     /// # Errors
     ///
     /// [`Error::Protocol`] when the transport ended the stream before the agent
-    /// finished the run — a truncated response, which otherwise looks exactly
-    /// like a short answer.
+    /// finished the run it was in — a truncated response, which otherwise
+    /// looks exactly like a short answer.
     pub fn finish(&self) -> Result<()> {
         // A stream that opened with RUN_ERROR never started, and is complete.
         if !self.rules.has_opened() {
@@ -168,7 +195,7 @@ fn sentence(violation: &Violation) -> String {
     match &violation.broke {
         Broke::NotStarted => format!("{event} arrived before RUN_STARTED"),
         Broke::RunEnded => format!("{event} arrived after the run had already finished"),
-        Broke::RunStartedTwice => format!("{event} arrived twice in one stream"),
+        Broke::RunStartedTwice => format!("{event} arrived while a run was still active"),
         Broke::AlreadyOpen { entity, id } => {
             format!(
                 "{event} for {} {id:?}, which is already open",
@@ -254,7 +281,16 @@ fn sentence(violation: &Violation) -> String {
     }
 }
 
-/// Verifies a whole run in one call.
+/// The rejection of a `RUN_STARTED` inside a run that has not ended, for a
+/// reader that pairs runs without a [`Verifier`].
+pub(crate) fn nested_run_started() -> Error {
+    Error::protocol(sentence(&Violation {
+        event: EventType::RunStarted,
+        broke: Broke::RunStartedTwice,
+    }))
+}
+
+/// Verifies a whole stream in one call: one run, or several in sequence.
 ///
 /// The streaming form is [`Verifier`]; this is the convenience for recorded
 /// streams and tests.
