@@ -239,10 +239,9 @@ impl SurfaceState {
     /// # An outline can be far larger than its surface
     ///
     /// A component is placed once for every route the root has to it, and a
-    /// surface the validator accepts may have many: two components at each
-    /// level that both name the two of the next level double the placements
-    /// with every level, so 41 components can outline to two million. A list
-    /// template inside another multiplies the items the same way. So the
+    /// surface the validator accepts may have many when its components share
+    /// children, so the placements can grow far faster than the components. A
+    /// list template inside another multiplies the items the same way. So the
     /// outline is lazy: [`Outline`] places one component each time it is
     /// advanced, holds no more than the path from the root, and stops when
     /// its caller does. A client drawing a surface it did not write takes
