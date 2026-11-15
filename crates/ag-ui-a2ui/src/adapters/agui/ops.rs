@@ -15,7 +15,82 @@
 use serde_json::Value;
 
 use crate::constants::{BASIC_CATALOG_ID, DEFAULT_SURFACE_ID};
+use crate::protocol::catalog::Catalog;
 use crate::protocol::message::{AgentMessage, Component};
+use crate::protocol::version::A2uiVersion;
+
+/// The id an AG-UI frontend registers the basic catalog of `version` under,
+/// which is the id a surface is created with when the application names no
+/// catalog.
+///
+/// For v0.9 and v0.9.1 that is [`BASIC_CATALOG_ID`], which is not the id the
+/// published document declares. For v1.0 the two are the same. Read at
+/// `ag-ui-protocol/ag-ui` commit `2330368a`:
+///
+/// - the toolkit's default, `BASIC_CATALOG_ID`
+///   (`sdks/typescript/packages/a2ui-toolkit/src/index.ts:17`, used at lines
+///   714 and 833);
+/// - the middleware's fallback, `basicCatalogId(protocol)`
+///   (`middlewares/a2ui-middleware/src/protocol.ts:19-23`, used at
+///   `index.ts:964-968`), which gives the same id for v0.9 and the published
+///   one for 1.0;
+/// - the renderer behind them, `@copilotkit/a2ui-renderer` 1.87.0 (the
+///   version `apps/dojo/package.json` pins), which registers its v0.9 basic
+///   catalog under that id and its v1 one under the published id
+///   (`dist/react-renderer/a2ui-react/catalog/basic/index.mjs:59-61`).
+///
+/// The renderer of the A2UI project itself, `@a2ui/web_core`, registers both
+/// under the published ids ([`A2uiVersion::basic_catalog_id`]). An
+/// application that draws with it names that id
+/// ([`SurfaceSpec::with_catalog_id`]).
+///
+/// ```
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::adapters::agui::basic_catalog_id;
+///
+/// assert_eq!(
+///     basic_catalog_id(A2uiVersion::V0_9),
+///     "https://a2ui.org/specification/v0_9/basic_catalog.json"
+/// );
+/// assert_eq!(basic_catalog_id(A2uiVersion::V1_0), A2uiVersion::V1_0.basic_catalog_id());
+/// ```
+pub fn basic_catalog_id(version: A2uiVersion) -> &'static str {
+    if A2uiVersion::V0_9_1.accepts(version) {
+        BASIC_CATALOG_ID
+    } else {
+        version.basic_catalog_id()
+    }
+}
+
+/// The basic catalog of `version`, under the id an AG-UI frontend registers
+/// it with ([`basic_catalog_id`]): the catalog a [`SurfaceSpec`] that names
+/// none is drawn from.
+///
+/// It is what to check an adapter's operations against. [`Catalog::basic`]
+/// is the same catalog under the id its document declares, so a
+/// [`MessageProcessor`](crate::processor::MessageProcessor) that holds only
+/// that one refuses a surface created under this id.
+///
+/// ```
+/// use ag_ui_a2ui::adapters::agui::{Intent, SurfaceSpec, assemble_ops, basic_catalog};
+/// use ag_ui_a2ui::{A2uiVersion, Component, MessageProcessor};
+/// use serde_json::json;
+///
+/// let spec = SurfaceSpec::new("cart")
+///     .with_components(vec![Component::new("root", "Text").with("text", json!("Cart"))]);
+/// let operations: Vec<_> = assemble_ops(Intent::Create, &spec)
+///     .iter()
+///     .map(serde_json::to_value)
+///     .collect::<Result<_, _>>()?;
+///
+/// let mut processor = MessageProcessor::new();
+/// processor.register(basic_catalog(A2uiVersion::V0_9))?;
+/// processor.process_all(&operations).map_err(|rejection| rejection.error)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn basic_catalog(version: A2uiVersion) -> Catalog {
+    Catalog::basic_for(version).with_catalog_id(basic_catalog_id(version))
+}
 
 /// Whether the caller is building a new surface or editing one that exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -61,11 +136,20 @@ impl std::fmt::Display for Intent {
 }
 
 /// What a surface should look like, as the authoring layer sees it.
+///
+/// Non-exhaustive: a later protocol version may give a surface more. Build
+/// one with [`SurfaceSpec::new`] and the `with_` methods; the fields stay
+/// public to read and to set.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SurfaceSpec {
     /// Target surface id. Defaults to [`DEFAULT_SURFACE_ID`].
     pub surface_id: String,
-    /// Catalog the components are drawn from. Defaults to [`BASIC_CATALOG_ID`].
+    /// The protocol version the operations are written in. Defaults to
+    /// [`A2uiVersion::DEFAULT`], which is `v0.9`.
+    pub version: A2uiVersion,
+    /// Catalog the components are drawn from. Defaults to
+    /// [`basic_catalog_id`] of the version.
     pub catalog_id: String,
     /// The flat component adjacency list.
     pub components: Vec<Component>,
@@ -77,7 +161,9 @@ pub struct SurfaceSpec {
     /// surface, prefer a narrower pointer: the renderer's two-way bindings write
     /// user input straight into this model, and replacing the root discards it.
     pub data_path: String,
-    /// Optional catalog-defined theme for `createSurface`.
+    /// Optional catalog-defined theme for `createSurface`. The v0.9 family
+    /// only: a v1.0 creation has none, and one that is given a theme cannot
+    /// be written.
     pub theme: Option<Value>,
     /// Ask the renderer to echo the data model back with every message.
     pub send_data_model: Option<bool>,
@@ -87,7 +173,8 @@ impl Default for SurfaceSpec {
     fn default() -> Self {
         Self {
             surface_id: DEFAULT_SURFACE_ID.to_string(),
-            catalog_id: BASIC_CATALOG_ID.to_string(),
+            version: A2uiVersion::DEFAULT,
+            catalog_id: basic_catalog_id(A2uiVersion::DEFAULT).to_string(),
             components: Vec::new(),
             data_model: None,
             data_path: "/".to_string(),
@@ -120,17 +207,66 @@ impl SurfaceSpec {
         self
     }
 
+    /// Sets the protocol version the operations are written in.
+    ///
+    /// A spec that still names the basic catalog of its version moves to the
+    /// basic catalog of the new one ([`basic_catalog_id`]); a catalog the
+    /// application named stays. Bindings in the components are the caller's
+    /// to write as the version does: [`A2uiVersion::path`].
+    ///
+    /// ```
+    /// use ag_ui_a2ui::adapters::agui::{Intent, SurfaceSpec, assemble_ops};
+    /// use ag_ui_a2ui::{A2uiVersion, Component};
+    ///
+    /// let version = A2uiVersion::V1_0;
+    /// let spec = SurfaceSpec::new("cart")
+    ///     .with_version(version)
+    ///     .with_components(vec![Component::new("root", "Text").with("text", version.path("/total"))]);
+    /// let operations = serde_json::to_value(assemble_ops(Intent::Create, &spec))?;
+    /// assert_eq!(operations[0]["version"], "1.0");
+    /// assert_eq!(
+    ///     operations[0]["createSurface"]["catalogId"],
+    ///     "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"
+    /// );
+    /// assert_eq!(operations[1]["updateComponents"]["components"][0]["text"]["@path"], "/total");
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
+    #[must_use]
+    pub fn with_version(mut self, version: A2uiVersion) -> Self {
+        if self.catalog_id == basic_catalog_id(self.version) {
+            self.catalog_id = basic_catalog_id(version).to_string();
+        }
+        self.version = version;
+        self
+    }
+
     /// Sets the catalog the surface is created under.
     ///
-    /// A spec starts on [`BASIC_CATALOG_ID`], the id the built-in
-    /// [`Catalog::basic`](crate::Catalog::basic) carries. A surface for the
-    /// published basic catalog
-    /// ([`OFFICIAL_BASIC_CATALOG_ID`](crate::constants::OFFICIAL_BASIC_CATALOG_ID))
-    /// or for a catalog of the application's own says so here, since a
-    /// renderer draws a surface with the catalog its `createSurface` names.
+    /// A spec starts on the id an AG-UI frontend registers the basic catalog
+    /// under ([`basic_catalog_id`]), and [`basic_catalog`] is that catalog.
+    /// For v0.9 it is not the id the published document declares
+    /// ([`OFFICIAL_BASIC_CATALOG_ID`](crate::constants::OFFICIAL_BASIC_CATALOG_ID)),
+    /// which is the one [`Catalog::basic`] carries and the A2UI project's
+    /// own renderer registers. A surface for that renderer, or for a catalog
+    /// of the application's own, says so here, since a renderer draws a
+    /// surface with the catalog its `createSurface` names.
     #[must_use]
     pub fn with_catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
         self.catalog_id = catalog_id.into();
+        self
+    }
+
+    /// Sets the theme `createSurface` carries. The v0.9 family only.
+    #[must_use]
+    pub fn with_theme(mut self, theme: Value) -> Self {
+        self.theme = Some(theme);
+        self
+    }
+
+    /// Asks the renderer to send the data model back with every message.
+    #[must_use]
+    pub fn with_send_data_model(mut self, send: bool) -> Self {
+        self.send_data_model = Some(send);
         self
     }
 
@@ -184,6 +320,12 @@ pub fn update_data_model(
 /// draw, then data to fill it with. Empty components or an absent data model
 /// simply omit that operation.
 ///
+/// Every operation states the spec's version. The three stay three in v1.0,
+/// whose `createSurface` could carry the components and the data: AG-UI's
+/// middleware writes them apart for either protocol
+/// (`a2ui-middleware/src/index.ts:711-730`, `streamedOps`), and a frontend
+/// that folds a later update onto a surface does so operation by operation.
+///
 /// ```
 /// use ag_ui_a2ui::adapters::agui::{assemble_ops, Intent, SurfaceSpec};
 /// use ag_ui_a2ui::message::Component;
@@ -217,7 +359,9 @@ pub fn assemble_ops(intent: Intent, spec: &SurfaceSpec) -> Vec<AgentMessage> {
             data_model.clone(),
         ));
     }
-    ops
+    ops.into_iter()
+        .map(|operation| operation.with_version(spec.version))
+        .collect()
 }
 
 #[cfg(test)]
@@ -286,14 +430,78 @@ mod tests {
         let spec = SurfaceSpec::default();
         assert_eq!(spec.surface_id, DEFAULT_SURFACE_ID);
         assert_eq!(spec.catalog_id, BASIC_CATALOG_ID);
+        assert_eq!(spec.version, A2uiVersion::DEFAULT);
         assert_eq!(spec.data_path, "/");
+    }
+
+    /// The default catalog of a spec and the catalog the adapter offers for
+    /// it are one: a processor that holds `basic_catalog` takes what
+    /// `assemble_ops` writes, in every version.
+    #[test]
+    fn the_default_catalog_of_a_spec_is_the_one_the_adapter_offers() {
+        use crate::protocol::processor::{MessageProcessor, RejectionKind};
+
+        for &version in A2uiVersion::ALL {
+            let spec = SurfaceSpec::new("s")
+                .with_version(version)
+                .with_components(vec![
+                    Component::new("root", "Text").with("text", version.path("/title")),
+                ])
+                .with_data_model(json!({"title": "Hello"}));
+            assert_eq!(spec.catalog_id, basic_catalog_id(version), "{version}");
+            let operations: Vec<Value> = assemble_ops(Intent::Create, &spec)
+                .iter()
+                .map(|operation| serde_json::to_value(operation).unwrap())
+                .collect();
+            assert_eq!(operations.len(), 3, "{version}");
+            for operation in &operations {
+                assert_eq!(operation["version"], version.as_str());
+            }
+
+            let catalog = basic_catalog(version);
+            assert_eq!(catalog.catalog_id, spec.catalog_id);
+            assert_eq!(catalog.version(), version);
+            let mut processor = MessageProcessor::new();
+            processor.register(catalog).unwrap();
+            processor
+                .process_all(&operations)
+                .unwrap_or_else(|rejection| panic!("{version}: {rejection}"));
+
+            // The catalog under the id its document declares is another name.
+            let mut published = MessageProcessor::new();
+            published.register(Catalog::basic_for(version)).unwrap();
+            let refused = published.process_all(&operations);
+            if basic_catalog_id(version) == version.basic_catalog_id() {
+                refused.unwrap();
+            } else {
+                assert_eq!(refused.unwrap_err().kind, RejectionKind::Catalog);
+            }
+        }
+        assert_eq!(basic_catalog_id(A2uiVersion::V0_9_1), BASIC_CATALOG_ID);
+        assert_eq!(
+            basic_catalog_id(A2uiVersion::V1_0),
+            "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"
+        );
+    }
+
+    #[test]
+    fn a_catalog_the_application_named_stays_when_the_version_changes() {
+        let named = SurfaceSpec::new("s")
+            .with_catalog_id("example.com:cards")
+            .with_version(A2uiVersion::V1_0);
+        assert_eq!(named.catalog_id, "example.com:cards");
+        // And back: the default follows the version both ways.
+        let back = SurfaceSpec::new("s")
+            .with_version(A2uiVersion::V1_0)
+            .with_version(A2uiVersion::V0_9_1);
+        assert_eq!(back.catalog_id, BASIC_CATALOG_ID);
     }
 
     #[test]
     fn theme_and_send_data_model_ride_on_create_surface() {
-        let mut spec = spec();
-        spec.theme = Some(json!({"primaryColor": "#00BFFF"}));
-        spec.send_data_model = Some(true);
+        let spec = spec()
+            .with_theme(json!({"primaryColor": "#00BFFF"}))
+            .with_send_data_model(true);
         let ops = assemble_ops(Intent::Create, &spec);
         let AgentPayload::CreateSurface(payload) = &ops[0].payload else {
             panic!("expected createSurface");

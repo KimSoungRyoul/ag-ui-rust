@@ -341,6 +341,8 @@ impl A2uiAuthor {
             }
             match (&operation.payload, request) {
                 (AgentPayload::CreateSurface(create), Request::Create) => {
+                    // From v1.0 a creation may carry the surface it creates.
+                    draws |= !create.components.is_empty();
                     if let Some(expected) = self.send_data_model {
                         if create.send_data_model.unwrap_or(false) != expected {
                             let requirement = if expected { "true" } else { "false or omitted" };
@@ -375,7 +377,8 @@ impl A2uiAuthor {
                 "response",
                 format!(
                     "Surface {id:?} is created with nothing in it. Follow createSurface with an \
-                     updateComponents that draws it."
+                     updateComponents that draws it, or give createSurface its components \
+                     where the version lets it carry them."
                 ),
             ));
         }

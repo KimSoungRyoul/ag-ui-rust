@@ -174,9 +174,9 @@ Low-level constructors default to `v0.9`; `.with_version(…)` selects another
 discriminator. Every version accepts the four server operations: create,
 component update, data update, and delete. The protocol modules also speak
 `1.0` (`A2uiVersion::V1_0`): a message is written and read as its version
-spells it. The agent layer, the author and the adapters speak the v0.9 family.
-The function-call messages of v1.0 are retained as Rust types but cannot be
-encoded or decoded.
+spells it. The agent layer, the author and the adapters speak it too: a
+session is of the version of the catalogs it was given. The function-call
+messages of v1.0 are retained as Rust types but cannot be encoded or decoded.
 
 `BASIC_CATALOG_ID` is a historical toolkit ID. `A2uiAuthor::basic` uses the
 canonical `OFFICIAL_BASIC_CATALOG_ID` declared by the pinned schema. No alias is
@@ -206,9 +206,10 @@ expressions, message processor, catalog, common types), the nine of the v1.0
 core that need no function call between the two sides (validator, message
 processor, data deletion, data-model pointers, reserved keys, several
 catalogs, composition constraints, the `@index` function, validation
-results), the twelve of the agent tier that do not need another output format
-than direct JSON, and the A2A extension suite, with the four v0.9.1
-transcripts; they report **753 passed, 34 expected divergences, 5 failing**,
+results), the thirteen of the agent tier that do not need another output
+format than direct JSON, each case as it is written, and the A2A extension
+suite, with the transcripts of v0.9.1 and of v1.0; they report **805 passed,
+34 expected divergences, 5 failing**,
 and the per-suite counts are asserted by the test. The divergences
 are executed with pinned expectations: an unreachable component is a warning,
 an empty path segment is the empty key, a binding that cannot resolve is an

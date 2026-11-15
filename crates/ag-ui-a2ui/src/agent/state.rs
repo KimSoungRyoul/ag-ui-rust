@@ -38,8 +38,9 @@ pub(crate) fn session_processor(
 /// catalogs registered, so an agent's outbound message is taken in the way a
 /// renderer takes it, and is checked against everything the renderer has
 /// already received: an update must name a surface that exists, a component is
-/// held to the catalog its surface was created with, and a cycle is found
-/// across the whole surface rather than within one message. The state adds
+/// held to the catalog its surface was created with, or from v1.0 to the one
+/// it names itself, and a cycle is found across the whole surface rather than
+/// within one message. The state adds
 /// what only an agent needs: which catalogs are active and in what order, the
 /// check of a finished tree, and a transaction around both.
 ///
@@ -73,6 +74,10 @@ pub(crate) fn session_processor(
 /// - A fault of a surface's life (created while it is live, updated while it
 ///   is not) is one `invalid_value` at `messages[i]`. So is a message that does
 ///   not decode.
+/// - A component or a function call of a v1.0 surface that names a catalog
+///   the state does not hold, or names none on a surface that has none of its
+///   own, is an `unknown_catalog` where the message wrote it, such as
+///   `messages[i].updateComponents.components[0].@catalogId`.
 /// - A `createSurface` that names a catalog the state does not hold is one
 ///   `invalid_value` at `messages[i].createSurface.catalogId`. A renderer
 ///   calls that a catalog error, since it was handed a catalog it does not
@@ -408,9 +413,14 @@ impl RendererState {
     ///
     /// The one refusal a renderer does not blame on the message is a catalog
     /// it does not hold. Here the catalog's name came from the payload; see
-    /// [`inactive_catalog`].
+    /// [`inactive_catalog`]. From v1.0 a component and a function call name
+    /// catalogs too, and such a refusal is the errors the processor found,
+    /// each where the payload wrote the name.
     fn payloads_fault(&self, index: usize, message: &Value, rejection: Rejection) -> Error {
         match rejection.kind {
+            RejectionKind::Catalog if !rejection.named_catalogs().is_empty() => Error::Validation {
+                errors: rejection.named_catalogs().to_vec().into(),
+            },
             RejectionKind::Catalog => {
                 let named = message
                     .pointer("/createSurface/catalogId")

@@ -192,9 +192,7 @@ where
     R: AsRef<str>,
     A: AsRef<str>,
 {
-    let spoken = |uri: &str| {
-        extension_version(uri).and_then(|number| A2uiVersion::parse(&format!("v{number}")))
-    };
+    let spoken = |uri: &str| extension_version(uri).and_then(A2uiVersion::from_number);
     let advertised: Vec<&str> = advertised
         .iter()
         .map(AsRef::as_ref)

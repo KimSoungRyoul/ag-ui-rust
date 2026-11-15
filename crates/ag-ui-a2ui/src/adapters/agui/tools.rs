@@ -22,9 +22,11 @@ use serde_json::{Value, json};
 use super::ops::{Intent, SurfaceSpec};
 use crate::constants::{GENERATE_A2UI_TOOL_NAME, RENDER_A2UI_TOOL_NAME, ROOT_ID};
 use crate::protocol::message::Component;
+use crate::protocol::version::A2uiVersion;
 
 /// The structured-output tool: emit a surface as
-/// `{surfaceId, components, data}`.
+/// `{surfaceId, components, data}`. Written for v0.9, which is
+/// [`render_a2ui_tool_for`] with [`A2uiVersion::DEFAULT`].
 ///
 /// ```
 /// use ag_ui_a2ui::adapters::agui::render_a2ui_tool;
@@ -34,11 +36,51 @@ use crate::protocol::message::Component;
 /// assert_eq!(tool.parameters["required"], serde_json::json!(["surfaceId", "components"]));
 /// ```
 pub fn render_a2ui_tool() -> Tool {
+    render_a2ui_tool_for(A2uiVersion::DEFAULT)
+}
+
+/// [`render_a2ui_tool`], written for the protocol the frontend's catalog
+/// declares ([`CatalogContext::protocol_version`](super::CatalogContext::protocol_version)).
+///
+/// The name and the arguments are the same for every version. What changes
+/// is what the tool tells the model it is writing: AG-UI's middleware names
+/// the protocol in the tool's description and in the description of
+/// `components`, as `v0.9` or `1.0`
+/// (`a2ui-middleware/src/tools.ts:15-16, 25-57`, `renderA2UITool`), because
+/// the two spell a binding differently and a payload written for the other
+/// one does not render. A 1.0 tool also says how: AG-UI puts that in its
+/// usage guide (`tools.ts:115-119`), which this adapter does not send, so
+/// here it is in the description of `components`.
+///
+/// ```
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::adapters::agui::render_a2ui_tool_for;
+///
+/// let tool = render_a2ui_tool_for(A2uiVersion::V1_0);
+/// assert!(tool.description.starts_with("Render a dynamic A2UI 1.0 surface."));
+/// let components = tool.parameters["properties"]["components"]["description"].as_str().unwrap();
+/// assert!(components.contains(r#"{"@path": "/key"}"#));
+/// ```
+pub fn render_a2ui_tool_for(version: A2uiVersion) -> Tool {
+    // The label AG-UI's middleware gives a protocol: `v0.9` for the whole
+    // v0.9 family, `1.0` for v1.0.
+    let label = version.capabilities_entry();
+    let bindings = if version.reserves_at_keys() {
+        format!(
+            " Bind a value with {{\"{path}\": \"/key\"}}, and call a catalog function with \
+             {{\"{call}\": \"name\", \"args\": {{...}}}}. An object with a \"path\" key is a \
+             literal in {label}, not a binding.",
+            path = version.path_key(),
+            call = version.call_key(),
+        )
+    } else {
+        String::new()
+    };
     Tool::new(
         RENDER_A2UI_TOOL_NAME,
         format!(
-            "Render a dynamic A2UI v0.9 surface. The root component must have id '{ROOT_ID}'. \
-             Use components from the available catalog only."
+            "Render a dynamic A2UI {label} surface. The root component must have id \
+             '{ROOT_ID}'. Use components from the available catalog only."
         ),
         json!({
             "type": "object",
@@ -50,8 +92,8 @@ pub fn render_a2ui_tool() -> Tool {
                 "components": {
                     "type": "array",
                     "description": format!(
-                        "A2UI v0.9 component array (flat format). The root component must have \
-                         id '{ROOT_ID}'."
+                        "A2UI {label} component array (flat format). The root component must \
+                         have id '{ROOT_ID}'.{bindings}"
                     ),
                     "items": {"type": "object"}
                 },

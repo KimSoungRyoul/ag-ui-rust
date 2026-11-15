@@ -124,17 +124,19 @@
 //!
 //! # Version
 //!
-//! The protocol modules speak `v0.9`, `v0.9.1` and `1.0`. [`A2uiVersion`] is
-//! the one place a version is parsed or named, and what differs between
-//! versions is a method on it. There is one set of types: a message is
-//! written and read as its `version` spells it, a surface speaks the version
-//! it was created in, and nothing is translated from one family to the
-//! other.
+//! The crate speaks `v0.9`, `v0.9.1` and `1.0`, in the protocol modules, the
+//! agent layer and the adapters alike. [`A2uiVersion`] is the one place a
+//! version is parsed or named, and what differs between versions is a method
+//! on it. There is one set of types: a message is written and read as its
+//! `version` spells it, a surface speaks the version it was created in, and
+//! nothing is translated from one family to the other.
 //!
 //! A constructor stamps `v0.9` ([`A2uiVersion::DEFAULT`]) unless it is told
 //! otherwise, so nothing changes for a caller that never names
-//! [`A2uiVersion::V1_0`]. The agent layer and the adapters speak the v0.9
-//! family. The function-call messages of v1.0 (`callRendererFunction`,
+//! [`A2uiVersion::V1_0`]. A session of the agent layer speaks the version of
+//! the catalogs it was given: register v1.0 catalogs, and the prompt, the
+//! reading of an answer and the renderer's capabilities are v1.0's. The
+//! function-call messages of v1.0 (`callRendererFunction`,
 //! `callAgentFunction` and their responses) are not accepted or serialized.
 //!
 //! # Example
