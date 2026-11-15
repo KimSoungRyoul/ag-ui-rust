@@ -3,8 +3,11 @@
 #![cfg(feature = "client")]
 
 use ag_ui::client::transport::ReplayTransport;
-use ag_ui::client::{RunEnd, SubmissionStatus, Thread, Update};
-use ag_ui::{Event, Interrupt, Message, RunFinishedEvent, RunOutcome, ToolCallId};
+use ag_ui::client::{Error, RunEnd, SubmissionStatus, Thread, Update};
+use ag_ui::{
+    Event, Interrupt, Message, RunErrorEvent, RunFinishedEvent, RunOutcome, TextMessageRole,
+    ToolCallId,
+};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 
@@ -45,6 +48,150 @@ async fn official_fatal_streams_end_the_thread_run_at_the_first_violation() {
             panic!("{expected}: a fatal error must precede Done: {updates:?}");
         };
         assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(
+            thread.messages().len(),
+            1,
+            "a rejected event must not add a message"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_stream_that_opens_with_run_error_ends_with_the_servers_failure() {
+    // The upstream stream `run-error-first-run-continues`: a run that failed
+    // before it began. The failure is the server's, message and code, and
+    // nothing presents it as a protocol violation.
+    let failed = Event::RunError(
+        RunErrorEvent::new("run-error-first: the agent was unreachable").with_code("UNAVAILABLE"),
+    );
+    let mut thread = Thread::new(ReplayTransport::new([failed]).matching_requests(), "t");
+    let report = thread.send("go").unwrap().collect_report().await;
+    let expected = RunEnd::Failed {
+        message: "run-error-first: the agent was unreachable".into(),
+        code: Some("UNAVAILABLE".into()),
+    };
+    assert_eq!(report.end, expected);
+    assert_eq!(thread.last_run_end(), Some(&expected));
+    let kinds: Vec<_> = report.diagnostics.iter().map(|d| d.kind).collect();
+    assert_eq!(kinds, ["run"], "{:?}", report.diagnostics);
+}
+
+#[tokio::test]
+async fn a_run_error_after_run_finished_fails_the_run() {
+    // The upstream stream `late-run-error-after-finished-run-continues`. The
+    // thread reads past RUN_FINISHED to the end of the stream, verifying or
+    // not, and a late RUN_ERROR turns the reported success into a failure.
+    for verify in [true, false] {
+        let transport = ReplayTransport::new([
+            Event::run_started("t", "r"),
+            Event::text_message_start("late-m-1", TextMessageRole::Assistant),
+            Event::text_message_content("late-m-1", "delivered before the failure"),
+            Event::text_message_end("late-m-1"),
+            Event::run_finished_success("t", "r"),
+            Event::run_error("late-run-error: the transport failed while flushing"),
+        ])
+        .matching_requests();
+        let mut thread = Thread::<_>::builder(transport, "t")
+            .verify(verify)
+            .build()
+            .unwrap();
+        let updates: Vec<_> = thread.send("go").unwrap().collect().await;
+        let expected = RunEnd::Failed {
+            message: "late-run-error: the transport failed while flushing".into(),
+            code: None,
+        };
+        assert!(
+            matches!(updates.last(), Some(Update::Done(end)) if *end == expected),
+            "verify {verify}: {updates:?}"
+        );
+        let errors: Vec<_> = updates
+            .iter()
+            .filter_map(|update| match update {
+                Update::Error(error) => Some(error),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(errors[..], [Error::Run { .. }]),
+            "verify {verify}: {errors:?}"
+        );
+        assert_eq!(thread.last_run_end(), Some(&expected));
+        // Everything delivered before the failure stays delivered.
+        assert_eq!(
+            thread.applier().text_of("late-m-1"),
+            Some("delivered before the failure")
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_late_run_error_withdraws_the_outcome_it_follows() {
+    // The interrupts a RUN_FINISHED reported belong to a run that then failed:
+    // nothing is pending, and nothing is announced.
+    let transport = ReplayTransport::new([
+        Event::run_started("t", "r"),
+        Event::run_finished_interrupt("t", "r", vec![Interrupt::new("approval", "approval")]),
+        Event::run_error("failed after pausing"),
+    ])
+    .matching_requests();
+    let mut thread = Thread::new(transport, "t");
+    let updates: Vec<_> = thread.send("go").unwrap().collect().await;
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, Update::Interrupt(_))),
+        "{updates:?}"
+    );
+    assert!(
+        matches!(updates.last(), Some(Update::Done(RunEnd::Failed { .. }))),
+        "{updates:?}"
+    );
+    assert!(thread.interrupts().is_empty());
+}
+
+#[tokio::test]
+async fn events_outside_the_run_fail_the_thread_run() {
+    // Nothing but RUN_STARTED or RUN_ERROR may open a stream, RAW and CUSTOM
+    // included; nothing but RUN_ERROR may follow RUN_FINISHED — the upstream
+    // stream `event-after-run-finished-fatal`.
+    for (events, expected) in [
+        (
+            vec![
+                Event::raw(json!({ "provider": "openai" })),
+                Event::run_started("t", "r"),
+                Event::run_finished_success("t", "r"),
+            ],
+            "before RUN_STARTED",
+        ),
+        (
+            vec![
+                Event::custom("early", json!(1)),
+                Event::run_started("t", "r"),
+                Event::run_finished_success("t", "r"),
+            ],
+            "before RUN_STARTED",
+        ),
+        (
+            vec![
+                Event::run_started("t", "r"),
+                Event::run_finished_success("t", "r"),
+                Event::text_message_start("after-m-1", TextMessageRole::Assistant),
+            ],
+            "already finished",
+        ),
+    ] {
+        let mut thread = Thread::new(ReplayTransport::new(events).matching_requests(), "t");
+        let report = thread.send("go").unwrap().collect_report().await;
+        assert!(
+            matches!(report.end, RunEnd::Failed { .. }),
+            "{expected}: {report:?}"
+        );
+        assert_eq!(report.diagnostics.len(), 1, "{expected}: {report:?}");
+        assert_eq!(report.diagnostics[0].kind, "protocol");
+        assert!(
+            report.diagnostics[0].message.contains(expected),
+            "{expected}: {report:?}"
+        );
         assert_eq!(
             thread.messages().len(),
             1,

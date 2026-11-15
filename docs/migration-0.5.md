@@ -93,6 +93,13 @@ cancellation is reported as `RUN_FINISHED` with a cancelled outcome; local strea
 abortion remains a separate client decision. A successful outcome can name
 `pendingToolCallIds`, which are frontend calls still awaiting results.
 
+The client follows the 1.0 run lifecycle. A stream may open with `RUN_ERROR`,
+which ends the run as `RunEnd::Failed` with the server's `message` and `code`
+rather than a protocol error. A `RUN_ERROR` after `RUN_FINISHED` fails the
+run, so a `Thread` reads to the end of the stream before it yields `Done`;
+any other event there is a protocol error. `RAW` and `CUSTOM` before
+`RUN_STARTED` are now protocol errors too.
+
 ## Rust API changes from 0.4.5
 
 - `ToolMessage.content` and `ToolCallResultEvent.content` are `ToolContent`:
