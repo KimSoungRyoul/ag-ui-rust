@@ -583,6 +583,27 @@ These are on `main` and not yet in a published version.
   `ChunkNormalizer` in front, applying what `normalize` appends and calling `finish` when
   the stream ends, and reads a stream that may carry `THINKING_*` through
   `TransportStream::into_events` or `transport::enforce_events`, which translate it.
+- New: `Runner::into_parts(input)` returns a run as its two halves, the future that
+  drives the agent and the `EventReceiver` of what it emits. Alpha.3 had only
+  `Runner::run`, whose stream drives the agent and drops it when the stream is dropped.
+  `run` is unchanged and is now the two halves joined. For a run that outlives its
+  response, write `let (driver, events) = runner.into_parts(input);`, put `driver` on
+  your own executor, poll it to completion, and drop it when `events` ends.
+- New: `Runner::continue_run(input, &sent)` drives a run that another driver began,
+  given the events already sent. It emits no `RUN_STARTED`, and its ordering checks,
+  state baseline, active subagents and id counters start from `sent`. Alpha.3 always
+  began a run at `RUN_STARTED` with a fresh verifier. It returns the same halves as
+  `into_parts`, or an error when `sent` holds no run to continue.
+- `EventVerifier::seed` is public, and `EventVerifier::replay` is new. Alpha.3 kept
+  `seed` to the crate, so a verifier used on its own rejected a `TOOL_CALL_RESULT` for
+  a call made by an earlier run unless `RUN_STARTED` echoed the input. To verify a run
+  that continues elsewhere, write `verifier.seed(&request.messages)`, then
+  `verifier.replay(&sent)?`, then `observe` each later event.
+- New: `server::RunProgress` folds the events of a run so far into what the run has
+  open (`open()`, as `OpenEntity`) and builds the `Prelude` a client that joins the run
+  is sent first: `progress.prelude().messages(conversation).into_events()`. Alpha.3
+  had neither; a server replayed every stored event to a joining client or built the
+  prelude by hand.
 
 ## Verify the upgrade
 

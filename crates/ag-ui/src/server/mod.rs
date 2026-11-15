@@ -99,7 +99,9 @@
 //! **Executor-agnostic.** `futures` primitives throughout, no tokio in the
 //! dependency list, no `spawn`. [`CancellationToken`] is an `AtomicBool` and a
 //! waker list rather than `tokio_util`'s. Polling the stream is what runs the
-//! agent.
+//! agent. A run that has to outlive its response is taken as two halves
+//! instead, the driver for an executor of your own and the events for your
+//! store: see [the `run` module](mod@run#a-run-that-outlives-its-response).
 //!
 //! **One extension point.** Everything that observes or rewrites the stream is
 //! a [`StreamTransformer`]. There is no parallel builder of callbacks; the
@@ -205,6 +207,7 @@ pub mod cancel;
 pub mod context;
 pub mod emit;
 pub mod error;
+pub mod progress;
 pub mod run;
 pub mod state;
 pub mod transform;
@@ -217,6 +220,7 @@ pub use emit::{
     EventReceiver, MessageHandle, ReasoningHandle, StepGuard, SubagentHandle, ToolCallHandle,
 };
 pub use error::{Error, Result, Rule, VerificationError};
+pub use progress::{OpenEntity, Prelude, RunProgress};
 pub use run::{Runner, run};
 pub use state::{StateManager, StatePublish};
 pub use transform::{
