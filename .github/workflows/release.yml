@@ -62,7 +62,6 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
       - run: cargo test --doc --workspace --all-features
-      - run: cargo run -p xtask -- drift-check
       - run: cargo run --locked -p xtask -- drift-check --local
 
       # Verify the core package as crates.io would. A2UI's registry dry run

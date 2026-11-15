@@ -91,6 +91,15 @@ jobs:
             exit 1
           fi
 
+      # The upstream copy of ag-ui (PR 2778, recorded in UPSTREAM.md) declares
+      # the version it will publish first. Taking that number from here would
+      # collide with it, and the registry has no undo. Offline: it reads the
+      # record, which the scheduled upstream-sync job keeps honest.
+      - name: the version is not reserved by the upstream copy
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: cargo run --locked -p xtask -- upstream-sync --publish-guard "$VERSION"
+
       # The release workflow already ran these on the tag. They run again here
       # because this job is the irreversible one, and because a release made by
       # hand from an unverified commit reaches this job without having passed

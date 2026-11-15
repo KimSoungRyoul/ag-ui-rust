@@ -4,6 +4,7 @@
 
 mod docs_check;
 mod drift;
+mod upstream_copy;
 
 use std::process::ExitCode;
 
@@ -17,29 +18,43 @@ USAGE
     cargo run -p xtask -- <subcommand> [options]
 
 SUBCOMMANDS
-    drift-check            Compare the Rust event types against the vendored
-                           snapshot of the AG-UI 1.0 schema.
-                           Offline and deterministic; this is the CI gate.
+    drift-check            Compare the Rust protocol types — the event union and
+                           every other $defs shape: capabilities, messages,
+                           content parts, outcomes, tools, patches — against the
+                           vendored snapshot of the AG-UI 1.0 schema.
+                           Offline and deterministic.
     docs-check             Check the skills, the plugin manifests and the
                            skills' sources.md against the repository: the
                            workspace version, the README's dependency blocks,
                            paths that exist, no merged crate names in e2e/ and
                            examples/. Offline; exits 1 on a stale statement.
+    upstream-sync          Compare the upstream copy of crates/ag-ui (PR 2778 on
+                           ag-ui-protocol/ag-ui) with the sync point recorded
+                           in UPSTREAM.md, and list the local commits since it.
+                           Needs the network.
 
 DRIFT-CHECK OPTIONS
-    --local               Compare the vendored schema at
+    --local                Also compare the vendored schema at
                            crates/ag-ui/src/protocol/schema-1.0.json with the
-                           reviewed baseline and Rust event types. Offline.
+                           reviewed baseline. Offline; this is the CI gate.
     --upstream             Additionally fetch upstream and report whether the
                            vendored baseline itself has gone stale. Needs the
                            network, so keep it out of the required CI job.
+    --draft                Additionally fetch upstream's spec/draft/schema.json
+                           and report what it adds to 1.0. Informational: it
+                           never changes the exit code. Needs the network.
     --refresh              Re-fetch upstream and rewrite the vendored baseline,
                            recording the upstream commit and the fetch date.
                            This is how a human accepts an upstream change.
 
+UPSTREAM-SYNC OPTIONS
+    --publish-guard <ver>  Offline: exit 1 if <ver> is the version UPSTREAM.md
+                           says the upstream copy reserves. publish.yml runs it.
+
 EXIT CODES
     0  no drift
-    1  drift found (or, with --upstream, the baseline is stale)
+    1  drift found (or, with --upstream, the baseline is stale; for
+       upstream-sync, the copy moved or the version is reserved)
     2  the check could not run
 ";
 
@@ -67,8 +82,25 @@ fn dispatch(args: &[String]) -> Result<u8, String> {
         }
         "drift-check" => drift::run(parse_drift_args(options)?),
         "docs-check" => docs_check::run(options),
+        "upstream-sync" => upstream_copy::run(parse_sync_args(options)?),
         other => Err(format!(
             "unknown subcommand `{other}`.\nRun `cargo run -p xtask -- --help` for the list."
+        )),
+    }
+}
+
+fn parse_sync_args(options: &[String]) -> Result<upstream_copy::Args, String> {
+    match options {
+        [] => Ok(upstream_copy::Args::default()),
+        [flag, version] if flag == "--publish-guard" && !version.starts_with('-') => {
+            Ok(upstream_copy::Args {
+                publish_guard: Some(version.clone()),
+            })
+        }
+        _ => Err(format!(
+            "unexpected options `{}` for upstream-sync.\n\
+             It takes none, or `--publish-guard <version>`.",
+            options.join(" ")
         )),
     }
 }
@@ -79,17 +111,29 @@ fn parse_drift_args(options: &[String]) -> Result<drift::Args, String> {
         match option.as_str() {
             "--local" => parsed.local = true,
             "--upstream" => parsed.upstream = true,
+            "--draft" => parsed.draft = true,
             "--refresh" => parsed.refresh = true,
             other => {
                 return Err(format!(
                     "unknown option `{other}` for drift-check.\n\
-                     Valid options are --local, --upstream and --refresh."
+                     Valid options are --local, --upstream, --draft and --refresh."
                 ));
             }
         }
     }
-    if parsed.local && (parsed.refresh || parsed.upstream) {
-        return Err("--local cannot be combined with --upstream or --refresh".to_owned());
+    if parsed.local && (parsed.refresh || parsed.upstream || parsed.draft) {
+        return Err(
+            "--local is the offline gate and cannot be combined with --upstream, --draft or \
+             --refresh"
+                .to_owned(),
+        );
+    }
+    if parsed.refresh && parsed.draft {
+        return Err(
+            "--refresh rewrites the 1.0 baseline and reports nothing else; run \
+             `drift-check --draft` on its own."
+                .to_owned(),
+        );
     }
     if parsed.refresh && parsed.upstream {
         return Err("--refresh already re-reads upstream; drop --upstream.\n\
