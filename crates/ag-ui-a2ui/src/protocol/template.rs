@@ -27,7 +27,11 @@ pub const MAX_TEMPLATE_DEPTH: usize = 100;
 ///
 /// A template is a sequence of these: the text between interpolations, and
 /// what each `${…}` holds. An argument of a call is a part as well.
+///
+/// Non-exhaustive, so that a kind of part can be added without breaking a
+/// `match` written outside this crate: such a `match` needs a wildcard arm.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum TemplatePart {
     /// A value written out: the text between interpolations, or a quoted
     /// string, a number, `true` or `false` inside one.
@@ -76,7 +80,7 @@ impl TemplatePart {
 ///            / call / path
 /// call       = name "(" [ argument *( "," argument ) [ "," ] ] ")"
 /// argument   = name ":" expression
-/// path       = 1*( XID_Continue / "/" / "." / "-" )
+/// path       = 1*( XID_Continue / "/" / "." / "-" / "~0" / "~1" )
 /// ```
 ///
 /// - Text outside `${…}` is literal, and `\${` is a literal `${`. Adjacent
@@ -91,12 +95,15 @@ impl TemplatePart {
 /// - `null` is the empty string.
 /// - A name is made of Unicode `XID_Continue` characters. A system function
 ///   starts with `@` and is ASCII: `@index`. A path is a name that may also
-///   hold `/`, `.` and `-`, so a key that needs a JSON Pointer escape (`~0`,
-///   `~1`) cannot be written in a template; bind it with `{"path": …}`.
+///   hold `/`, `.` and `-`, and the two JSON Pointer escapes: `~0` for a `~`
+///   in a key and `~1` for a `/`. A `~` before anything else ends the path.
 /// - Whitespace around an expression, an argument or a name is ignored.
 ///
-/// This is the grammar the reference renderers parse, so a template that
-/// parses here parses there. [`Scope::format_string`] evaluates through it.
+/// This is the grammar the reference renderers parse, with one addition: the
+/// escapes. A binding is a JSON Pointer everywhere else in the protocol, and
+/// without them a template could not name a key that holds `~` or `/`. So a
+/// template the reference parses, parses here; one that uses an escape is for
+/// this crate alone. [`Scope::format_string`] evaluates through this parser.
 ///
 /// ```
 /// use ag_ui_a2ui::binding::{TemplatePart, parse_template};
@@ -331,11 +338,13 @@ impl<'a> Scanner<'a> {
                 self.pos += 1;
             }
         } else {
-            while self
-                .peek(0)
-                .is_some_and(|ch| is_name_char(ch) || matches!(ch, '/' | '.' | '-'))
-            {
-                self.pos += 1;
+            loop {
+                match self.peek(0) {
+                    Some(ch) if is_name_char(ch) || matches!(ch, '/' | '.' | '-') => self.pos += 1,
+                    // The JSON Pointer escapes, and no other use of `~`.
+                    Some('~') if matches!(self.peek(1), Some('0' | '1')) => self.pos += 2,
+                    _ => break,
+                }
             }
         }
         Ok(self.chars[start..self.pos].iter().collect())
@@ -597,6 +606,33 @@ mod tests {
     }
 
     #[test]
+    fn a_path_may_carry_the_json_pointer_escapes() {
+        // A key that holds `/` or `~` is named `~1` or `~0` in a pointer, and
+        // a template path is a pointer like every other binding.
+        assert_eq!(
+            parse_template("${/a~1b} ${c~0d/e} ${f(x: /g~10)}").unwrap(),
+            [
+                path("/a~1b"),
+                text(" "),
+                path("c~0d/e"),
+                text(" "),
+                TemplatePart::Call {
+                    name: "f".into(),
+                    args: vec![("x".into(), path("/g~10"))],
+                },
+            ]
+        );
+        // Nothing else follows a `~`.
+        for stray in ["${/a~b}", "${/a~2}", "${~}", "${/a~}"] {
+            let reason = reason(stray);
+            assert!(
+                reason.starts_with("unexpected characters after the expression"),
+                "{stray}: {reason}"
+            );
+        }
+    }
+
+    #[test]
     fn calls_keep_their_arguments_in_order_and_nest() {
         let parts = parse_template("${outer(a: inner(b: 1), c: /p, d: 'x', e: ${q},)}").unwrap();
         let TemplatePart::Call { name, args } = &parts[0] else {
@@ -680,7 +716,8 @@ mod tests {
             ),
             ("${a b}", "unexpected characters after the expression"),
             ("${a½}", "unexpected characters after the expression"),
-            ("${/a~1b}", "unexpected characters after the expression"),
+            ("${/a~2b}", "unexpected characters after the expression"),
+            ("${a~}", "unexpected characters after the expression"),
             (
                 "${add(a: 1, b: 2}",
                 "expected ')' after the arguments of add",

@@ -483,13 +483,10 @@ These are on `main` and not yet in a published version.
 - `binding::parse_template` and `TemplatePart` are new: a `formatString` template
   parsed into its parts without evaluating it. `Scope::format_string` and
   `format_string_with` now parse with it, so they accept the grammar the reference
-  renderers do and nothing else:
+  renderers do, with `~0` and `~1` in a path besides, and nothing else:
   - An expression that does not parse is `Error::Binding`. The old scanner read
     anything it did not recognize as a path, so `${a b}` or `${count:}` resolved to
     an empty string.
-  - A path in a template is made of `XID_Continue` characters, `/`, `.` and `-`. One
-    with a JSON Pointer escape, `${/a~1b}`, no longer parses; bind such a key with
-    `{"path": "/a~1b"}`.
   - In a quoted string `\n`, `\t` and `\r` are the control characters and a
     backslash before any other character is that character. Only `\'` and `\"` were
     unescaped.

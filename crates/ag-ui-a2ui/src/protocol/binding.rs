@@ -748,13 +748,22 @@ mod tests {
         );
         // What does not parse is an error, where it used to be read as a path
         // that resolved to nothing.
-        for malformed in ["${/count extra}", "${count:}", "${/a~1b}"] {
+        for malformed in ["${/count extra}", "${count:}", "${/count~}"] {
             let error = scope.format_string(malformed).unwrap_err();
             assert!(
                 matches!(error, Error::Binding { .. }),
                 "{malformed}: {error}"
             );
         }
+        // A key that holds `/` or `~` is reached by its pointer escape, in a
+        // template as in any other binding.
+        let escaped = json!({"a/b": "slash", "items": [{"c~d": "tilde"}]});
+        let root = Scope::root(&escaped);
+        assert_eq!(root.format_string("${/a~1b}").unwrap(), "slash");
+        assert_eq!(
+            root.item("/items", 0).format_string("${c~0d}").unwrap(),
+            "tilde"
+        );
         // Nesting is the parser's bound, one hundred levels, not ten.
         let nested = format!("{}/count{}", "${".repeat(50), "}".repeat(50));
         assert_eq!(scope.format_string(&nested).unwrap(), "3");

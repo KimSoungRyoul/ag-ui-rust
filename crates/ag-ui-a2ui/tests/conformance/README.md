@@ -279,7 +279,9 @@ that was understood.
   joined and empty ones dropped on both sides before comparing, and a number is
   compared as a number, so `1e5` is the `100000` the suite writes. A
   `ParseError` is an `Error::Binding`, with the phrase of the reference's
-  message mapped to this crate's reason for the same fault.
+  message mapped to this crate's reason for the same fault. The parser takes
+  one thing the reference grammar does not, `~0` and `~1` in a path, the JSON
+  Pointer escapes. No case has a `~` in a template, so none forbids it.
 - **`process_messages`** (`core/message_processor_v0_9.yaml`). One
   `processor::MessageProcessor` per case; the case's messages, or each step's,
   go in as one batch (`process_all`), unwrapped when they come as
