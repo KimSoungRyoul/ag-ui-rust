@@ -280,7 +280,6 @@ async fn the_surface_still_validates_after_the_round_trip() {
     // And it draws: the template once for each item, in the item's scope.
     let rows: Vec<String> = cart
         .outline(&Catalog::basic(), &data)
-        .iter()
         .filter(|placed| placed.component.id == "row")
         .map(|placed| {
             placed

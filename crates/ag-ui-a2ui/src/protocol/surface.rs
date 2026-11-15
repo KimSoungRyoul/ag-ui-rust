@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::binding::Scope;
-use super::catalog::Catalog;
+use super::catalog::{Catalog, ComponentRef};
 use super::message::{
     AgentMessage, AgentPayload, ClientDataModel, Component, CreateSurface, UpdateComponents,
 };
@@ -220,6 +220,18 @@ impl SurfaceState {
     /// [`MAX_DEPTH`]: an outline is of what is there. Whether a surface is
     /// whole is the validator's to say.
     ///
+    /// # An outline can be far larger than its surface
+    ///
+    /// A component is placed once for every route the root has to it, and a
+    /// surface the validator accepts may have many: two components at each
+    /// level that both name the two of the next level double the placements
+    /// with every level, so 41 components can outline to two million. A list
+    /// template inside another multiplies the items the same way. So the
+    /// outline is lazy: [`Outline`] places one component each time it is
+    /// advanced, holds no more than the path from the root, and stops when
+    /// its caller does. A client drawing a surface it did not write takes
+    /// what it can draw, with [`Iterator::take`], rather than all of it.
+    ///
     /// ```
     /// use ag_ui_a2ui::{AgentMessage, Catalog, Component, SurfaceStore};
     /// use serde_json::json;
@@ -245,7 +257,7 @@ impl SurfaceState {
     ///
     /// let lines: Vec<String> = surface
     ///     .outline(&Catalog::basic(), &data)
-    ///     .iter()
+    ///     .take(100)
     ///     .filter(|placed| placed.component.component == "Text")
     ///     .map(|placed| {
     ///         let text = placed.component.prop("text").unwrap();
@@ -255,81 +267,141 @@ impl SurfaceState {
     /// assert_eq!(lines, ["  \"Today\"", "    \"Write\"", "    \"Review\""]);
     /// # Ok::<(), ag_ui_a2ui::Error>(())
     /// ```
-    pub fn outline<'a>(&'a self, catalog: &Catalog, data: &'a Value) -> Vec<Placed<'a>> {
+    pub fn outline<'a>(&'a self, catalog: &'a Catalog, data: &'a Value) -> Outline<'a> {
         let by_id: BTreeMap<&str, &Component> = self
             .components
             .iter()
             .map(|component| (component.id.as_str(), component))
             .collect();
-        let mut placed = Vec::new();
-        if let Some(root) = by_id.get(ROOT_ID) {
-            let mut above = Vec::new();
-            place(
-                catalog,
-                &by_id,
-                root,
-                // Bindings are read as the surface's version writes them.
-                Scope::root(data).speaking(self.spoken_version()),
-                &mut above,
-                &mut placed,
-            );
+        // Bindings are read as the surface's version writes them.
+        let next = by_id
+            .get(ROOT_ID)
+            .map(|root| (*root, Scope::root(data).speaking(self.spoken_version())));
+        Outline {
+            catalog,
+            by_id,
+            next,
+            path: Vec::new(),
         }
-        placed
     }
 }
 
-/// Places `component` and what it reaches. `above` is the ids from the root
-/// down to it, which is both its depth and what it may not reach again.
-fn place<'a>(
-    catalog: &Catalog,
-    by_id: &BTreeMap<&str, &'a Component>,
+/// The components a surface's root reaches, placed one at a time.
+///
+/// What [`SurfaceState::outline`] returns: an iterator of [`Placed`], in the
+/// order a renderer draws them. Each step places one component and walks only
+/// as far as that takes. The walk holds the path from the root to the last
+/// component placed and nothing else, so a caller that stops early pays for
+/// what it took.
+#[derive(Debug, Clone)]
+pub struct Outline<'a> {
+    catalog: &'a Catalog,
+    by_id: BTreeMap<&'a str, &'a Component>,
+    /// The component to place next, in its scope, below the end of `path`.
+    next: Option<(&'a Component, Scope<'a>)>,
+    /// The components from the root down, each with the children it has
+    /// still to place.
+    path: Vec<Step<'a>>,
+}
+
+/// One component on an outline's path, and how far its children have been
+/// placed.
+#[derive(Debug, Clone)]
+struct Step<'a> {
     component: &'a Component,
     scope: Scope<'a>,
-    above: &mut Vec<&'a str>,
-    placed: &mut Vec<Placed<'a>>,
-) {
-    placed.push(Placed {
-        depth: above.len(),
-        component,
-        scope: scope.clone(),
-    });
-    if above.len() >= MAX_DEPTH {
-        return;
-    }
-    above.push(component.id.as_str());
-    for reference in catalog.references(component) {
-        let Some(child) = by_id.get(reference.id.as_str()) else {
-            continue;
-        };
-        if above.contains(&child.id.as_str()) {
-            continue;
-        }
-        // A template names its child once and draws it for every item.
-        let template = reference
-            .location
-            .strip_suffix(".componentId")
-            .and_then(|property| component.props.get(property)?.get("path")?.as_str());
-        match template {
-            None => place(catalog, by_id, child, scope.clone(), above, placed),
-            Some(path) => {
+    /// The references the component makes, in the order the catalog reports.
+    references: Vec<ComponentRef>,
+    /// The reference whose child is placed next.
+    at: usize,
+    /// Of a template reference: how many items its list has, and the next.
+    items: Option<(usize, usize)>,
+}
+
+impl<'a> Step<'a> {
+    /// The next child to place, in its scope, or `None` once every reference
+    /// has been followed. `on_path` says whether a component is on the path
+    /// from the root down to this one: placing it again would loop.
+    fn next_child(
+        &mut self,
+        by_id: &BTreeMap<&'a str, &'a Component>,
+        on_path: impl Fn(&str) -> bool,
+    ) -> Option<(&'a Component, Scope<'a>)> {
+        let component = self.component;
+        while let Some(reference) = self.references.get(self.at) {
+            let child = by_id
+                .get(reference.id.as_str())
+                .copied()
+                .filter(|child| !on_path(&child.id));
+            let Some(child) = child else {
+                self.at += 1;
+                continue;
+            };
+            // A template names its child once and draws it for every item.
+            let template = reference
+                .location
+                .strip_suffix(".componentId")
+                .and_then(|property| component.props.get(property)?.get("path")?.as_str());
+            let Some(path) = template else {
+                self.at += 1;
+                return Some((child, self.scope.clone()));
+            };
+            let scope = &self.scope;
+            let (items, item) = *self.items.get_or_insert_with(|| {
                 let items = scope
                     .resolve(path)
                     .and_then(Value::as_array)
                     .map_or(0, Vec::len);
-                for index in 0..items {
-                    place(
-                        catalog,
-                        by_id,
-                        child,
-                        scope.item(path, index),
-                        above,
-                        placed,
-                    );
+                (items, 0)
+            });
+            if item < items {
+                self.items = Some((items, item + 1));
+                return Some((child, self.scope.item(path, item)));
+            }
+            self.items = None;
+            self.at += 1;
+        }
+        None
+    }
+}
+
+impl<'a> Iterator for Outline<'a> {
+    type Item = Placed<'a>;
+
+    fn next(&mut self) -> Option<Placed<'a>> {
+        loop {
+            if let Some((component, scope)) = self.next.take() {
+                let depth = self.path.len();
+                let placed = Placed {
+                    depth,
+                    component,
+                    scope: scope.clone(),
+                };
+                // A component at the deepest a renderer draws is placed, and
+                // its children are not.
+                if depth < MAX_DEPTH {
+                    self.path.push(Step {
+                        component,
+                        scope,
+                        references: self.catalog.references(component),
+                        at: 0,
+                        items: None,
+                    });
+                }
+                return Some(placed);
+            }
+            let (last, above) = self.path.split_last_mut()?;
+            let on_path = |id: &str| {
+                last.component.id == id || above.iter().any(|step| step.component.id == id)
+            };
+            match last.next_child(&self.by_id, on_path) {
+                Some(child) => self.next = Some(child),
+                None => {
+                    self.path.pop();
                 }
             }
         }
     }
-    above.pop();
 }
 
 /// A model value as JSON. A removed slot of a list becomes `null` and its

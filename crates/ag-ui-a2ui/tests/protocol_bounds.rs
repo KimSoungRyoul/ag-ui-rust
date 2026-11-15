@@ -6,8 +6,97 @@
 //! Each input is sized so that the test is fast when the bound holds.
 
 use ag_ui_a2ui::processor::MessageProcessor;
-use ag_ui_a2ui::{A2uiVersion, Catalog, Component, ErrorCode, ValidateOptions, Validator};
-use serde_json::json;
+use ag_ui_a2ui::{
+    A2uiVersion, AgentMessage, Catalog, Component, ErrorCode, SurfaceState, SurfaceStore,
+    ValidateOptions, Validator,
+};
+use serde_json::{Value, json};
+
+/// A surface `s` holding `components` and the data `data`.
+fn surface(components: Vec<Component>, data: Value) -> SurfaceState {
+    let mut store = SurfaceStore::new();
+    for message in [
+        AgentMessage::create_surface("s", "basic"),
+        AgentMessage::update_components("s", components),
+        AgentMessage::update_data_model("s", "/", data),
+    ] {
+        store.apply(&message).unwrap();
+    }
+    store.get("s").unwrap().clone()
+}
+
+/// `levels` levels of two Columns under the root, each Column naming both of
+/// the next level, and two Texts at the bottom: `2 * levels + 1` components,
+/// whose outline places `2^(levels + 1) - 1`.
+fn shared_children(levels: usize) -> Vec<Component> {
+    let level = |at: usize| [format!("a{at}"), format!("b{at}")];
+    let mut components = vec![Component::new("root", "Column").with("children", json!(level(1)))];
+    for at in 1..levels {
+        for id in level(at) {
+            components.push(Component::new(id, "Column").with("children", json!(level(at + 1))));
+        }
+    }
+    for id in level(levels) {
+        components.push(Component::new(id, "Text").with("text", json!("leaf")));
+    }
+    components
+}
+
+/// A surface the validator accepts whole may outline to far more than its
+/// size. The outline places one component at a time, so a caller takes what
+/// it draws and the rest is never placed.
+#[test]
+fn an_outline_places_only_what_its_caller_takes() {
+    let catalog = Catalog::basic();
+    let wide = surface(shared_children(20), json!({}));
+    assert_eq!(wide.components.len(), 41);
+    let report = Validator::new(&catalog).validate(&wide.components);
+    assert!(
+        report.is_valid() && report.unreachable.is_empty(),
+        "{report:?}"
+    );
+
+    // Two million placements in all. The first thousand go down the left
+    // edge and back up, in drawing order.
+    let data = json!({});
+    let first: Vec<_> = wide
+        .outline(&catalog, &data)
+        .take(1_000)
+        .map(|placed| (placed.depth, placed.component.id.clone()))
+        .collect();
+    assert_eq!(first.len(), 1_000);
+    assert_eq!(first[0], (0, "root".to_string()));
+    assert_eq!(first[1], (1, "a1".to_string()));
+    assert_eq!(first[20], (20, "a20".to_string()));
+    assert_eq!(first[21], (20, "b20".to_string()));
+    assert_eq!(first[22], (19, "b19".to_string()));
+
+    // A small one is placed whole, and counts as the formula says.
+    let small = surface(shared_children(6), json!({}));
+    assert_eq!(small.outline(&catalog, &data).count(), (1 << 7) - 1);
+
+    // Lists in lists multiply the items the same way.
+    let over = |child: &str| json!({"componentId": child, "path": "/items"});
+    let nested = surface(
+        vec![
+            Component::new("root", "List").with("children", over("outer")),
+            Component::new("outer", "List").with("children", over("inner")),
+            Component::new("inner", "List").with("children", over("leaf")),
+            Component::new("leaf", "Text").with("text", json!({"path": "name"})),
+        ],
+        json!({"items": vec![json!({"name": "x"}); 200]}),
+    );
+    let data = nested.data_model.to_json().unwrap();
+    let leaves: Vec<_> = nested
+        .outline(&catalog, &data)
+        .filter(|placed| placed.component.id == "leaf")
+        .take(500)
+        .map(|placed| placed.scope.base().to_string())
+        .collect();
+    assert_eq!(leaves.len(), 500);
+    assert_eq!(leaves[0], "/items/0");
+    assert_eq!(leaves[499], "/items/99");
+}
 
 /// A chain of `cards` Cards under the root: `root`, then `c1` to
 /// `c<cards - 1>`, each the child of the one before, and a Text at the end.

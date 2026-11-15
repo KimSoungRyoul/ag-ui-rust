@@ -363,22 +363,37 @@ fn print_result(
     }
 }
 
+/// The most components [`surface_lines`] places before it stops.
+///
+/// An outline can be far larger than the surface it comes from, since
+/// components that share children are placed once for every route to them,
+/// and the surface comes from an agent, which may be a model's.
+const DRAWN_COMPONENTS: usize = 500;
+
 /// Draws a surface, or `None` if it has no components to draw.
 ///
 /// A real renderer owns a widget toolkit and a reactive data model. This asks
 /// the surface for its outline — the components the root reaches, each in the
 /// scope its bindings resolve in, the list template instantiated once per
-/// task — and prints the ones that are text.
+/// task — and prints the ones that are text. It walks the outline as far as
+/// [`DRAWN_COMPONENTS`], and a last line says so when the surface has more.
 fn surface_lines(surface: &SurfaceState) -> Option<Vec<String>> {
     if surface.deleted || surface.components.is_empty() {
         return None;
     }
     let data = surface.data_model.to_json().ok()?;
-    let lines = surface
-        .outline(&Catalog::basic(), &data)
-        .iter()
-        .filter_map(line)
+    let catalog = Catalog::basic();
+    let mut outline = surface.outline(&catalog, &data);
+    let mut lines: Vec<String> = outline
+        .by_ref()
+        .take(DRAWN_COMPONENTS)
+        .filter_map(|placed| line(&placed))
         .collect();
+    if outline.next().is_some() {
+        lines.push(format!(
+            "… more than {DRAWN_COMPONENTS} components; the rest is not drawn"
+        ));
+    }
     Some(lines)
 }
 
@@ -451,6 +466,40 @@ mod tests {
     /// failure, printed as one. It used to be folded into "an A2UI envelope
     /// this client cannot draw", which is what a surface with no components
     /// prints as too.
+    /// Three list templates, one inside the other, each over all 40 tasks:
+    /// a surface of four components and an outline of 64,000 rows. The
+    /// terminal draws what fits and says the rest is not drawn.
+    #[test]
+    fn a_surface_whose_outline_is_far_larger_than_itself_is_drawn_in_part() {
+        use ag_ui_a2ui::{Component, SurfaceStore};
+        use serde_json::json;
+
+        let over = |child: &str| json!({"componentId": child, "path": "/tasks"});
+        let components = vec![
+            Component::new("root", "List").with("children", over("week")),
+            Component::new("week", "List").with("children", over("day")),
+            Component::new("day", "List").with("children", over("task")),
+            Component::new("task", "Text").with("text", json!({"path": "title"})),
+        ];
+        let tasks: Vec<_> = (0..40)
+            .map(|at| json!({"title": format!("t{at}")}))
+            .collect();
+        let mut store = SurfaceStore::new();
+        for message in [
+            AgentMessage::create_surface("board", "basic"),
+            AgentMessage::update_components("board", components),
+            AgentMessage::update_data_model("board", "/tasks", json!(tasks)),
+        ] {
+            store.apply(&message).expect("a valid surface");
+        }
+
+        let lines = surface_lines(store.get("board").unwrap()).unwrap();
+        let (note, drawn) = lines.split_last().unwrap();
+        assert!(note.starts_with("… more than 500 components"), "{note}");
+        assert_eq!(drawn[..3], ["t0", "t1", "t2"]);
+        assert!(drawn.len() < DRAWN_COMPONENTS);
+    }
+
     #[test]
     fn a_result_that_does_not_replay_is_printed_as_a_failure() {
         let created =
