@@ -156,6 +156,14 @@ These are on `main` and not yet in a published version.
 - `MultiAgentCapabilities` reads and writes its sub-agent list under the AG-UI 1.0
   key `subagents`. Alpha.3 and earlier used `subAgents`, which 1.0 peers do not read;
   that spelling is no longer read here either. The Rust field is still `sub_agents`.
+- A hosted run cancelled while a message, tool call, reasoning block, step or subagent is
+  open now ends with `RUN_FINISHED` and the cancelled outcome. Alpha.3 ended it with
+  `RUN_ERROR`, code `PROTOCOL_VIOLATION`. A handle's terminator — `end()`, `finish()`,
+  `fail()`, `suspend()` or `Drop` — now goes out after cancellation, and the driver closes a
+  subagent left active with `SUBAGENT_ERROR`, code `CANCELLED`. Every other emit still fails
+  with `Error::Cancelled`.
+- Without the `verify` feature, nothing is sent after `RUN_FINISHED` or `RUN_ERROR` any more:
+  such an emit fails with `Rule::RunEnded`, as it already did with `verify` on.
 
 ## Verify the upgrade
 

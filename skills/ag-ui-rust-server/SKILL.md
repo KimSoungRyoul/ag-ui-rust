@@ -225,7 +225,8 @@ Publish once per change, not once per run — the point is that the client watch
 - `Ok(RunOutcome::interrupt(pending))` — paused for a human. Still a `RUN_FINISHED`; the
   connection closes and **no server-side thread survives**.
 - `Ok(RunOutcome::Cancelled)` or `Err(Error::Cancelled)` — stopped before completion.
-  The driver emits `RUN_FINISHED` with a cancelled outcome when verification permits it.
+  Open handles still close on the way out, the driver ends any subagent left active with
+  `SUBAGENT_ERROR` (code `CANCELLED`), and the run ends with a cancelled `RUN_FINISHED`.
 - `Err(Error::agent(..))` — failed. The driver attempts `RUN_ERROR` while the stream is writable.
 
 A panic is *not* an error and is not caught: it unwinds through whoever polls the stream, and

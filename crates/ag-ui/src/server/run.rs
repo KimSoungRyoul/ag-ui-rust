@@ -239,6 +239,13 @@ fn terminate(
     thread_id: &ThreadId,
     run_id: &RunId,
 ) {
+    // AG-UI 1.0, "Cancelled runs": a cancelled run closes what it opened
+    // before the RUN_FINISHED that cancels it. The handles closed theirs on
+    // the way out; a subagent the agent left active has no ending to infer,
+    // so the driver reports it as stopped by the cancellation.
+    if matches!(outcome, Ok(RunOutcome::Cancelled) | Err(Error::Cancelled)) {
+        sink.close_active_subagents(&Error::Cancelled);
+    }
     let event = match outcome {
         Ok(outcome) => match outcome.validate() {
             Ok(()) => RunFinishedEvent::new(thread_id.clone(), run_id.clone())
@@ -247,8 +254,8 @@ fn terminate(
             Err(error) => error_event(&Error::Protocol(error)),
         },
         // A deliberate stop is a closed run, provided all open entities were
-        // closed. If not, the verifier rejects RUN_FINISHED and the existing
-        // fallback below reports RUN_ERROR instead.
+        // closed. If a raw emit left one open, the verifier rejects
+        // RUN_FINISHED and the fallback below reports RUN_ERROR instead.
         Err(Error::Cancelled) => RunFinishedEvent::new(thread_id.clone(), run_id.clone())
             .with_outcome(RunOutcome::Cancelled)
             .into(),

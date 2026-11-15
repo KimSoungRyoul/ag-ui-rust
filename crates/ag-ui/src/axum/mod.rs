@@ -87,7 +87,8 @@
 //! itself if the run got to finish. An agent sees it through
 //! [`RunContext::is_cancelled`](crate::server::context::RunContext::is_cancelled),
 //! [`until_cancelled`](crate::server::context::RunContext::until_cancelled), or simply by
-//! using `?` on its emits — every emit after cancellation fails.
+//! using `?` on its emits — every emit after cancellation fails, except the
+//! terminators the handles close with on the way out.
 //!
 //! # Why there is no `AgUiLayer`
 //!

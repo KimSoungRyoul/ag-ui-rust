@@ -290,6 +290,12 @@ impl<S> RunContext<S> {
         self.sink.emit(event)
     }
 
+    /// Emits a terminator, even after cancellation. Only the scope handles
+    /// call this, to close the step or subagent they opened.
+    pub(crate) fn emit_forced(&mut self, event: Event) -> Result<()> {
+        self.sink.emit_forced(event)
+    }
+
     /// A fresh message id, unique within the run.
     ///
     /// Derived from the run id and a counter rather than a UUID: the protocol

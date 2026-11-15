@@ -40,18 +40,19 @@ impl<'a, S> ReasoningHandle<'a, S> {
         id: MessageId,
     ) -> Result<Self> {
         sink.emit(Event::reasoning_start(id.clone()))?;
-        // The block is open now, so from here on a failure must still leave a
-        // handle behind to close it.
-        let handle = Self {
+        // The block is open now and the message inside it is not, so a failure
+        // here closes the block alone: a cancellation landing between the two
+        // must not send an end for a message that never started.
+        if let Err(error) = sink.emit(Event::reasoning_message_start(id.clone())) {
+            let _ = sink.emit_forced(Event::reasoning_end(id));
+            return Err(error);
+        }
+        Ok(Self {
             sink,
             state,
             id,
             ended: false,
-        };
-        handle
-            .sink
-            .emit(Event::reasoning_message_start(handle.id.clone()))?;
-        Ok(handle)
+        })
     }
 
     /// The id every event of this block carries.
@@ -92,14 +93,14 @@ impl<'a, S> ReasoningHandle<'a, S> {
         self.close()
     }
 
-    /// Closes both halves. The block terminator is attempted even when the
-    /// message terminator failed, so a half-open block cannot outlive the
-    /// handle.
+    /// Closes both halves, after cancellation too. The block terminator is
+    /// attempted even when the message terminator failed, so a half-open block
+    /// cannot outlive the handle.
     fn close(&mut self) -> Result<()> {
         let message = self
             .sink
-            .emit(Event::reasoning_message_end(self.id.clone()));
-        let block = self.sink.emit(Event::reasoning_end(self.id.clone()));
+            .emit_forced(Event::reasoning_message_end(self.id.clone()));
+        let block = self.sink.emit_forced(Event::reasoning_end(self.id.clone()));
         message.and(block)
     }
 }

@@ -12,7 +12,8 @@
 //!   protocol violation;
 //! - `Drop` emits the terminator, so forgetting `end()` — or returning `Err`
 //!   through a `?` halfway through a message — still produces a well-formed
-//!   stream.
+//!   stream. That includes the `?` a cancelled run unwinds through: a
+//!   terminator still goes out after cancellation, when nothing else does.
 //!
 //! ```compile_fail,E0499
 //! use ag_ui::server::RunContext;
@@ -119,10 +120,9 @@ mod step;
 mod subagent;
 mod tool;
 
-use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
-use crate::{Event, RunErrorEvent, SubagentRunId};
+use crate::{Event, RunErrorEvent, SubagentErrorEvent, SubagentRunId};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_core::Stream;
 use futures_util::StreamExt as _;
@@ -154,14 +154,16 @@ pub(crate) struct EventSink {
     state_manager: StateManager,
     cancel: CancellationToken,
     /// Whether a terminal event has gone out. Tracked here as well as in the
-    /// verifier so that turning the `verify` feature off cannot make the driver
-    /// emit a second `RUN_FINISHED`.
+    /// verifier so that turning the `verify` feature off cannot put anything
+    /// on the wire after it — a second `RUN_FINISHED` included.
     terminated: bool,
     /// The subagent scope in force: every attributable event emitted untagged
     /// while it is set goes out carrying it. See [`SubagentHandle`].
     attribution: Option<SubagentRunId>,
     /// Producer lifecycles survive output filtering and the optional verifier.
-    active_subagents: BTreeSet<SubagentRunId>,
+    /// In the order they started, so a cancelled run closes the innermost
+    /// first.
+    active_subagents: Vec<SubagentRunId>,
     event_buffer_capacity: Option<NonZeroUsize>,
     overflowed: bool,
 }
@@ -190,7 +192,7 @@ impl EventSink {
             cancel,
             terminated: false,
             attribution: None,
-            active_subagents: BTreeSet::new(),
+            active_subagents: Vec::new(),
             event_buffer_capacity: None,
             overflowed: false,
         }
@@ -205,6 +207,8 @@ impl EventSink {
     ///
     /// Failing every emit after cancellation is what makes cancellation work
     /// without any cooperation from the agent: the next `?` unwinds the run.
+    /// Terminators go through [`emit_forced`](Self::emit_forced) instead, so
+    /// the unwinding still closes everything the run had open.
     pub(crate) fn emit(&mut self, event: Event) -> Result<()> {
         if self.cancel.is_cancelled() {
             return Err(Error::Cancelled);
@@ -222,8 +226,11 @@ impl EventSink {
         }
     }
 
-    /// Emits one event even after cancellation — used by the run driver for
-    /// `RUN_FINISHED` and `RUN_ERROR`, which must go out regardless.
+    /// Emits one event even after cancellation — used for terminators: the
+    /// run driver's `RUN_FINISHED` and `RUN_ERROR`, and the event each handle
+    /// closes with. AG-UI 1.0 requires a cancelled run to close what it opened
+    /// before the `RUN_FINISHED` that cancels it, so these must go out
+    /// regardless.
     pub(crate) fn emit_forced(&mut self, mut event: Event) -> Result<()> {
         if self.overflowed {
             return Err(Error::EventBufferFull {
@@ -267,12 +274,33 @@ impl EventSink {
         }
         if let Some((id, opened)) = lifecycle {
             if opened {
-                self.active_subagents.insert(id);
+                if !self.active_subagents.contains(&id) {
+                    self.active_subagents.push(id);
+                }
             } else {
-                self.active_subagents.remove(&id);
+                self.active_subagents.retain(|active| active != &id);
             }
         }
         Ok(())
+    }
+
+    /// Closes every announced subagent still active, innermost first, with
+    /// `SUBAGENT_ERROR` naming `error`.
+    ///
+    /// For the run driver when a run is cancelled. A dropped
+    /// [`SubagentHandle`] does not invent an ending, and the schema has no
+    /// cancelled outcome for a subagent; an error carrying the cancellation's
+    /// code is the one ending that neither claims success nor claims the
+    /// invocation is waiting. Stops at the first event that cannot be sent:
+    /// whatever is left open then makes `RUN_FINISHED` fail, and the driver
+    /// reports that instead.
+    pub(crate) fn close_active_subagents(&mut self, error: &Error) {
+        for id in self.active_subagents.clone().into_iter().rev() {
+            let closing = SubagentErrorEvent::new(id, error.to_string()).with_code(error.code());
+            if self.emit_forced(closing.into()).is_err() {
+                return;
+            }
+        }
     }
 
     /// The subagent scope in force, if any.
@@ -292,6 +320,17 @@ impl EventSink {
     fn send(&mut self, event: Event) -> Result<()> {
         if self.tx.is_closed() {
             return Err(Error::Disconnected);
+        }
+        // The verifier says the same when it is compiled in. This check is
+        // here so that leaving it out cannot put events past the end of a run
+        // on the wire.
+        if self.terminated {
+            return Err(VerificationError::new(
+                event.event_type(),
+                Rule::RunEnded,
+                "the run already ended",
+            )
+            .into());
         }
         if event.event_type().as_str().starts_with("THINKING_") {
             return Err(crate::Error::Protocol(
