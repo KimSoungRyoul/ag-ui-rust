@@ -291,6 +291,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-features --all-targets
 
+  # `msrv` above checks the committed Cargo.lock, which is not what a consumer
+  # builds: a new project resolves the newest versions its toolchain accepts.
+  # Alpha.1 passed `msrv` and still failed for a fresh Rust 1.85 consumer,
+  # because that resolution picked yoke-derive 0.8.3, which needs 1.87 without
+  # declaring it (docs/QA.md). This job repeats the resolution. It runs on the
+  # timer because what it tests changes with the registry, not with the branch;
+  # no cache, since the cache key is the lockfile this job throws away.
+  msrv-fresh-lockfile:
+    name: MSRV 1.85, fresh lockfile (scheduled)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: rm Cargo.lock
+      # Cargo 1.85 with resolver 3 prefers versions whose declared
+      # rust-version it meets, as a consumer's Cargo does.
+      - run: cargo generate-lockfile
+      - run: cargo check -p ag-ui -p ag-ui-a2ui --all-features
+
   # The public API is the product, so a broken intra-doc link is a defect in the
   # deliverable rather than a cosmetic warning.
   docs:
