@@ -21,15 +21,24 @@
 //!
 //! Run with `cargo test -p ag-ui-a2ui --all-features --test conformance --
 //! --nocapture` to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list
-//! every check by name.
+//! every check by name. The harness is compiled only with the
+//! `schema-validation` feature, which `--all-features` turns on. Without it,
+//! `tests/conformance_needs_schema_validation.rs` puts one ignored test in a
+//! run, which says so.
 
-#![cfg(feature = "toolkit")]
+// The catalog and common-types suites validate against the published schema
+// documents, so the harness needs the JSON Schema engine; `schema-validation`
+// brings `toolkit` with it.
+#![cfg(feature = "schema-validation")]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use ag_ui_a2ui::binding::{Scope, absolute_path, parse_template};
 use ag_ui_a2ui::catalog::Catalog;
-use ag_ui_a2ui::surface::SurfaceStore;
+use ag_ui_a2ui::processor::{MessageProcessor, Rejection, RejectionKind};
+use ag_ui_a2ui::schema_validation::{SchemaValidator, validate_common_type};
+use ag_ui_a2ui::surface::{Lifecycle, SurfaceStore};
 use ag_ui_a2ui::toolkit::negotiate::{CatalogRegistry, ClientCapabilities, select_catalog_schema};
 use ag_ui_a2ui::toolkit::parser::{has_a2ui_parts, parse_and_fix, parse_response};
 use ag_ui_a2ui::toolkit::prompt::{GENERATION_GUIDELINES, PromptSpec, build_subagent_prompt};
@@ -37,6 +46,7 @@ use ag_ui_a2ui::toolkit::schema::{SchemaBundle, load_examples, remove_strict_val
 use ag_ui_a2ui::toolkit::streaming::StreamParser;
 use ag_ui_a2ui::validate::{ErrorCode, ValidateOptions, ValidationReport, Validator};
 use ag_ui_a2ui::version::A2uiVersion;
+use ag_ui_a2ui::{DataModel, DataModelUpdate, Error, ModelValue};
 use serde_json::Value;
 
 /// Upstream commit the vendored suite was taken from.
@@ -61,9 +71,6 @@ enum Why {
     Renderer,
     /// It asks something of an SDK that does not apply to this one.
     NotApplicable,
-    /// It tests the pre-1.0 core this crate implements, and this harness has
-    /// no runner for its action yet. Issue #72 adds the runners.
-    Unharnessed,
 }
 
 impl Why {
@@ -76,7 +83,6 @@ impl Why {
             Why::V0_8 => "out of scope: v0.8",
             Why::Renderer => "out of scope: renderer",
             Why::NotApplicable => "not applicable",
-            Why::Unharnessed => "no runner yet (#72)",
         }
     }
 }
@@ -138,17 +144,15 @@ const SUITES: &[Suite] = &[
     run("agent/legacy/parser.yaml", [22, 0, 0, 1]),
     run("agent/legacy/inference_format.yaml", [12, 0, 10, 0]),
     run("agent/legacy/streaming_parser.yaml", [33, 8, 45, 2]),
+    run("core/data_context.yaml", [9, 2, 0, 0]),
+    run("core/data_model.yaml", [45, 4, 1, 2]),
+    run("core/expressions.yaml", [92, 0, 6, 0]),
+    run("core/message_processor_v0_9.yaml", [40, 2, 4, 2]),
+    run("core/catalog.yaml", [14, 3, 54, 2]),
+    run("core/common_types.yaml", [8, 0, 14, 0]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
     retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
     retired("retired/agent/inference_format.yaml", [13, 0, 6, 0]),
-
-    // --- core tier, pre-1.0: in scope, no runner in this harness yet (#72) ---------------------
-    skip("core/message_processor_v0_9.yaml", 48, Why::Unharnessed, "the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads"),
-    skip("core/data_model.yaml", 52, Why::Unharnessed, "data-model reads, writes and deletion, with a renderer's observer notifications"),
-    skip("core/data_context.yaml", 11, Why::Unharnessed, "resolving a relative path against a scope; the crate has no public entry point that returns the absolute path"),
-    skip("core/expressions.yaml", 98, Why::Unharnessed, "the formatString template parser; the crate evaluates a template and exposes no parse"),
-    skip("core/catalog.yaml", 73, Why::Unharnessed, "the reference catalog API: fromJson, toJson, round trip, validationSchema, derive"),
-    skip("core/common_types.yaml", 22, Why::Unharnessed, "values against the published common types; 3 cases compare a schema generated from an SDK's own types"),
 
     // --- core tier: A2UI v1.0 ------------------------------------------------------------------
     skip("core/validator_v1_0.yaml", 49, Why::V1_0, "envelope, schema and topology validation of v1.0 messages"),
@@ -419,12 +423,247 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
         "a second `<a2ui-json>` inside a block that is still open is read as JSON, and the \
          messages after it are not dispatched",
     ),
+    // Removing a path that is not there. Upstream's newer cases want nothing
+    // to happen. `tests/protocol_091.rs` and `examples/review-desk/interop`,
+    // which runs the official renderer core 0.11.0, assert what this crate
+    // does today. Issue #42 is where the rule is read again, when that
+    // harness moves to a newer renderer.
+    (
+        "core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]",
+        "removing an index past the end of a list pads the list out to it with undefined \
+         slots, as the pinned renderer does (#42)",
+    ),
+    (
+        "core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]",
+        "removing a path that does not exist creates the containers on the way to it (#42)",
+    ),
+    // Two refusals a JSON Schema engine makes. The check is not missing:
+    // `SchemaValidator`, behind `schema-validation`, refuses both messages,
+    // and `the_schema_engine_makes_the_two_refusals_a_processor_does_not` in
+    // `tests/schema_diagnostics.rs` shows it. The wiring is missing: a
+    // `MessageProcessor` checks what the semantic validator checks and runs no
+    // `SchemaValidator`, with the feature on or off.
+    (
+        "core/message_processor_v0_9.yaml::test_create_surface_strict_theme_validation_failure",
+        "a processor does not check a theme against the catalog's theme schema. Missing \
+         wiring, not a missing check: SchemaValidator refuses such a theme. A wired processor \
+         would also have to build a schema document from this case's catalog, which is a \
+         fragment with the theme at its top level",
+    ),
+    (
+        "core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys",
+        "a processor accepts a property the component does not declare, here `@metadata`. \
+         Missing wiring, not a missing check: SchemaValidator refuses the message with the \
+         published catalog",
+    ),
+    // The catalog this crate builds in is a summary written in Rust.
+    (
+        "core/catalog.yaml::test_v09_basic_catalog_from_json",
+        "Catalog::basic() is not the published v0.9 catalog read back: it has its own id, \
+         declares `checks` itself where the document takes it from the Checkable mixin, and \
+         has no List.listStyle",
+    ),
+    (
+        "core/catalog.yaml::test_v09_basic_catalog_to_json",
+        "Catalog::basic() was not read from a document and has none to give",
+    ),
 ];
 
 /// Set `A2UI_CONFORMANCE_VERBOSE=1` to list every executed check by name.
 fn verbose() -> bool {
     std::env::var_os("A2UI_CONFORMANCE_VERBOSE").is_some()
 }
+
+/// Checks where this crate does something else on purpose, by the id the
+/// report prints: what this crate gives there, as the runner writes it, and
+/// why.
+///
+/// Both halves are held. The case has to go on expecting something else, and
+/// this crate has to go on giving exactly what is written here: a divergence
+/// that changes, in either direction, fails the suite.
+const DIVERGENCES: &[(&str, &str, &str)] = &[
+    (
+        "core/data_context.yaml::test_resolve_path_context_with_trailing_slash",
+        r#""/bar//foo""#,
+        TRAILING_SLASH,
+    ),
+    (
+        "core/data_context.yaml::test_resolve_path_empty_in_trailing_slash_context",
+        r#""/user/""#,
+        TRAILING_SLASH,
+    ),
+    // `/foo/` is the key `""` under `foo`, so `/foo` holds an object.
+    (
+        "core/data_model.yaml::test_data_model_normalizes_trailing_slash[step 2]",
+        r#"{"":"bar"}"#,
+        TRAILING_SLASH,
+    ),
+    // `//a///b//` writes under the key `""`, so `/a/b` holds nothing.
+    (
+        "core/data_model.yaml::test_data_model_normalizes_empty_path_segments[step 0]",
+        "notified []",
+        TRAILING_SLASH,
+    ),
+    // `/items/-1`.
+    (
+        "core/data_model.yaml::test_data_model_get_out_of_range_index[step 1]",
+        "pointer error: expected a canonical array index",
+        NOT_AN_INDEX,
+    ),
+    // `/items/01`.
+    (
+        "core/data_model.yaml::test_data_model_rejects_leading_zero_list_index[step 0]",
+        "pointer error: expected a canonical array index",
+        NOT_AN_INDEX,
+    ),
+    (
+        "core/message_processor_v0_9.yaml::test_resolve_path_relative_trailing_slash",
+        r#""/bar//foo""#,
+        TRAILING_SLASH,
+    ),
+    (
+        "core/catalog.yaml::test_v09_published_minimal_catalog_is_self_contained",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    (
+        "core/catalog.yaml::test_v091_published_basic_catalog_is_self_contained",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    (
+        "core/catalog.yaml::test_v09_published_vegachart_catalog_is_self_contained",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    // The same difference as in `core/validator_v0_9.yaml`: the component is
+    // found and reported, and the message is not refused for it.
+    (
+        "core/message_processor_v0_9.yaml::test_topology_orphaned_component_error",
+        r#"accepted, with unreachable ["orphan_comp"] on s1"#,
+        "an unreachable component is a warning here, an error upstream",
+    ),
+];
+
+const TRAILING_SLASH: &str =
+    "an empty path segment is the empty key here, as RFC 6901 reads it; the reference drops it";
+
+const REGISTRY: &str = "this crate bundles no schema: a catalog's references resolve through the \
+                        validator's registry of local documents";
+
+const NOT_AN_INDEX: &str = "reading a list at a segment that is not an index is an error here, as the \
+     specification says of a path; the reference reads no value";
+
+/// Where a case run as a whole stopped, and what this crate did there.
+#[derive(Debug)]
+struct Miss {
+    /// The step it stopped at, in a case that has steps.
+    step: Option<usize>,
+    /// What this crate did, written the way [`DIVERGENCES`] pins it.
+    actual: String,
+    /// What the case wanted instead.
+    expected: String,
+}
+
+impl Miss {
+    fn new(actual: impl Into<String>, expected: impl Into<String>) -> Self {
+        Self {
+            step: None,
+            actual: actual.into(),
+            expected: expected.into(),
+        }
+    }
+
+    fn at(mut self, step: usize) -> Self {
+        self.step = Some(step);
+        self
+    }
+}
+
+/// Records a case that is one check: passed, or stopped at one place.
+///
+/// A case with steps is recorded under the step it stopped at,
+/// `suite::case[step 2]`, so that a listed failure or divergence is the one at
+/// that step and not an earlier one that appeared later.
+fn settle(check: &str, result: Result<(), Miss>, tally: &mut Tally) {
+    match result {
+        Ok(()) => {
+            // A failure listed at a step is listed under another name than
+            // the case's, so the case passing would not find it.
+            let listed_at_a_step = KNOWN_FAILURES.iter().any(|(listed, _)| {
+                listed
+                    .strip_prefix(check)
+                    .is_some_and(|rest| rest.starts_with("[step "))
+            });
+            if listed_at_a_step {
+                tally.unexpected.push(format!(
+                    "{check}: listed in KNOWN_FAILURES at a step, and the case now passes; \
+                     remove it from the list"
+                ));
+            }
+            let pinned = DIVERGENCES.iter().any(|(listed, ..)| {
+                listed
+                    .strip_prefix(check)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with("[step "))
+            });
+            let outcome = if pinned {
+                Outcome::Failed(
+                    "listed in DIVERGENCES, and it now does what the case expects; remove it from \
+                     the list"
+                        .into(),
+                )
+            } else {
+                Outcome::Passed
+            };
+            tally.record(check, outcome);
+        }
+        Err(miss) => {
+            let id = match miss.step {
+                Some(step) => format!("{check}[step {step}]"),
+                None => check.to_string(),
+            };
+            let outcome = match DIVERGENCES.iter().find(|(listed, ..)| *listed == id) {
+                Some((_, pinned, reason)) if *pinned == miss.actual => {
+                    Outcome::ExpectedDivergence((*reason).to_string())
+                }
+                Some((_, pinned, _)) => Outcome::Failed(format!(
+                    "the pinned divergence changed: this crate gave {pinned}, and now gives {}",
+                    miss.actual
+                )),
+                None => Outcome::Failed(format!("expected {}, got {}", miss.expected, miss.actual)),
+            };
+            tally.record(&id, outcome);
+        }
+    }
+}
+
+/// The first key of `value` that `known` does not list.
+///
+/// A runner names every key it reads. A key it does not know is an input or
+/// an expectation it would otherwise ignore, and a case with one fails rather
+/// than passing on the part that was understood.
+fn unknown_key(value: &Value, known: &[&str], what: &str) -> Result<(), Miss> {
+    let unknown = value
+        .as_object()
+        .and_then(|object| object.keys().find(|key| !known.contains(&key.as_str())));
+    match unknown {
+        Some(key) => Err(Miss::new(
+            format!("the runner does not read {what} key {key:?}"),
+            "every key of the case to be read",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The keys every case carries, whatever its action.
+const CASE_KEYS: [&str; 6] = [
+    "name",
+    "description",
+    "features",
+    "action",
+    "catalog",
+    "protocolVersion",
+];
 
 fn tally_suite(suite: &Suite) -> (usize, Tally) {
     let cases = cases_of(suite.path);
@@ -574,6 +813,28 @@ fn conformance_suite() {
     );
 }
 
+/// Actions of the core tier in the current layout. Each case is about one
+/// protocol version, and is run only at a version this crate speaks.
+const CORE_ACTIONS: [&str; 13] = [
+    "validate",
+    "resolve_path",
+    "data_model",
+    "parse_expression_template",
+    "process_messages",
+    "get_renderer_data_model",
+    "get_renderer_capabilities",
+    "from_json",
+    "to_json",
+    "round_trip",
+    "validation_schema",
+    "derive",
+    "validate_common_type",
+];
+
+/// Actions on a model's output, which is in one wire format or another in
+/// either layout.
+const STREAM_ACTIONS: [&str; 4] = ["process_chunk", "parse_full", "fix_payload", "has_parts"];
+
 fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     let name = case_name(case);
     let action = case.get("action").and_then(Value::as_str).unwrap_or("");
@@ -601,14 +862,23 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     // Wire-format actions are gated on the version a case targets. Schema
     // surgery and prompt assembly work on the shape of documents rather than
     // on the protocol, and gate themselves where a version matters.
-    let wire_format = matches!(
-        (action, format),
-        ("validate", Format::Current)
-            | (
-                "process_chunk" | "parse_full" | "fix_payload" | "has_parts",
-                _
-            )
-    );
+    // Asked of every version alike, and of none of them here.
+    if action == "common_types_schema" {
+        tally.record(
+            check,
+            Outcome::Skipped(
+                "not applicable: compares a schema generated from an SDK's own types with the \
+                 published one; this crate ships the published document"
+                    .to_string(),
+            ),
+        );
+        return;
+    }
+
+    let wire_format = match format {
+        Format::Current => CORE_ACTIONS.contains(&action) || STREAM_ACTIONS.contains(&action),
+        Format::Retired => STREAM_ACTIONS.contains(&action),
+    };
     if wire_format {
         if let CaseVersion::Unsupported(reason) = case_version(case) {
             tally.record(check, Outcome::Skipped(reason));
@@ -631,6 +901,37 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
         ("select_catalog", _) => tally.record(check, run_select_catalog(case)),
         ("load_catalog", _) => tally.record(check, run_load_catalog(case)),
         ("generate_prompt", _) => tally.record(check, run_generate_prompt(case)),
+        ("resolve_path", Format::Current) => settle(check, run_resolve_path(case), tally),
+        (
+            "from_json" | "to_json" | "round_trip" | "validation_schema" | "derive",
+            Format::Current,
+        ) => {
+            run_catalog_case(check, action, case, tally);
+        }
+        ("validate_common_type", Format::Current) => {
+            settle(check, run_validate_common_type(case), tally);
+        }
+        ("process_messages", Format::Current) => {
+            settle(check, run_process_messages(case), tally);
+        }
+        ("get_renderer_data_model", Format::Current) => {
+            settle(check, run_renderer_data_model(case), tally);
+        }
+        ("get_renderer_capabilities", Format::Current) => tally.record(
+            check,
+            Outcome::Skipped(
+                "advertises a renderer's capabilities: this crate reads them \
+                 (toolkit::negotiate) and has nothing that writes them"
+                    .to_string(),
+            ),
+        ),
+        ("parse_expression_template", Format::Current) => {
+            settle(check, run_parse_expression_template(case), tally);
+        }
+        ("data_model", Format::Current) => match data_model_skip(case) {
+            Some(reason) => tally.record(check, Outcome::Skipped(reason.to_string())),
+            None => settle(check, run_data_model(case), tally),
+        },
         (other, _) => tally.record(check, Outcome::Skipped(unsupported_action(other))),
     }
 }
@@ -1075,6 +1376,1318 @@ fn run_generate_prompt(case: &Value) -> Outcome {
         }
     }
     Outcome::Passed
+}
+
+// --- resolve_path ----------------------------------------------------------
+
+/// `resolve_path`: the absolute path a binding path resolves to in a scope.
+fn run_resolve_path(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["args", "expect"]].concat(),
+        "case",
+    )?;
+    let args = case.get("args").unwrap_or(&Value::Null);
+    unknown_key(args, &["path", "contextPath"], "args")?;
+    let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
+    // No context path is the root scope.
+    let scope = args
+        .get("contextPath")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let expected = case.get("expect").cloned().unwrap_or(Value::Null);
+    let actual = Value::String(absolute_path(scope, path));
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Miss::new(actual.to_string(), expected.to_string()))
+    }
+}
+
+// --- data_model ------------------------------------------------------------
+
+/// Why a `data_model` case is not run at all.
+fn data_model_skip(case: &Value) -> Option<&'static str> {
+    let disposes = case
+        .get("steps")
+        .and_then(Value::as_array)
+        .is_some_and(|steps| {
+            steps
+                .iter()
+                .any(|step| step.get("op").and_then(Value::as_str) == Some("dispose"))
+        });
+    disposes.then_some(
+        "detaches a model's observers: registering observers is a renderer's, and this crate \
+         has none to detach",
+    )
+}
+
+/// What a failed write or read gave, written the way [`DIVERGENCES`] pins it.
+fn pointer_outcome(error: &Error) -> String {
+    match error {
+        // The reason, not the sentence: the sentence quotes the path.
+        Error::Pointer { reason, .. } => format!("pointer error: {reason}"),
+        other => format!("error: {other}"),
+    }
+}
+
+/// What a read found, written the way [`DIVERGENCES`] pins it.
+fn read_outcome(found: Option<&ModelValue>) -> String {
+    match found.map(ModelValue::to_json) {
+        None => "no value".to_string(),
+        Some(Ok(value)) => value.to_string(),
+        Some(Err(error)) => format!("a value with an undefined slot ({error})"),
+    }
+}
+
+/// How this crate's reason starts for the failure a phrase of the reference's
+/// `DataError` names. `None` for a phrase with no counterpart here.
+fn data_error_reason(phrase: &str) -> Option<&'static str> {
+    match phrase {
+        "Cannot set path" => Some("path walks through a scalar value"),
+        "non-numeric segment" => Some("expected a canonical array index"),
+        "Forbidden path segment" => Some("forbidden path segment"),
+        _ => None,
+    }
+}
+
+/// Whether `error` is the failure a step's `expect_error` names. The error is
+/// what the step wanted instead.
+fn is_expected_data_error(error: &Error, expect_error: &Value) -> Result<(), String> {
+    let category = expect_error.get("category").and_then(Value::as_str);
+    if category != Some("DataError") {
+        return Err(format!("a {category:?}, which this runner does not map"));
+    }
+    let Error::Pointer { reason, .. } = error else {
+        return Err("a pointer error".to_string());
+    };
+    match expect_error.get("message").and_then(Value::as_str) {
+        None => Ok(()),
+        Some(phrase) => match data_error_reason(phrase) {
+            Some(wanted) if reason.starts_with(wanted) => Ok(()),
+            Some(wanted) => Err(format!("a pointer error saying {wanted:?}")),
+            None => Err(format!(
+                "a pointer error for {phrase:?}, which this crate has no reason for"
+            )),
+        },
+    }
+}
+
+/// `data_model`: reads, writes and deletes against one [`DataModel`], with the
+/// paths in `watch` asked, after each write, whether their value changed.
+///
+/// A watched path is counted as notified when
+/// [`ModelChange::changed`](ag_ui_a2ui::ModelChange::changed) says so, once
+/// for each time `watch` lists it. That is the reference's rule for firing an
+/// observer, without the observer.
+fn run_data_model(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["initial", "watch", "steps"]].concat(),
+        "case",
+    )?;
+    let initial = case
+        .get("initial")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut model = DataModel::from(initial);
+    let watch = string_list(case.get("watch"));
+    // The value the last `set` was handed, for the step that changes it after.
+    let mut handed = Value::Null;
+    let steps = case.get("steps").and_then(Value::as_array);
+    for (index, step) in steps.into_iter().flatten().enumerate() {
+        data_model_step(&mut model, &watch, &mut handed, step).map_err(|miss| miss.at(index))?;
+    }
+    Ok(())
+}
+
+fn data_model_step(
+    model: &mut DataModel,
+    watch: &[String],
+    handed: &mut Value,
+    step: &Value,
+) -> Result<(), Miss> {
+    unknown_key(
+        step,
+        &[
+            "op",
+            "path",
+            "value",
+            "expect",
+            "expect_absent",
+            "expect_type",
+            "expect_error",
+            "expect_notified",
+            "expect_values",
+        ],
+        "step",
+    )?;
+    let op = step.get("op").and_then(Value::as_str).unwrap_or_default();
+    let path = step.get("path").and_then(Value::as_str).unwrap_or_default();
+    let expect_error = step.get("expect_error");
+
+    // The watched paths the step changed: none of them, for a read.
+    let mut notified: Vec<&str> = Vec::new();
+    match op {
+        "get" => match (model.lookup(path), expect_error) {
+            (Err(error), Some(wanted)) => is_expected_data_error(&error, wanted)
+                .map_err(|wanted| Miss::new(pointer_outcome(&error), wanted))?,
+            (Err(error), None) => return Err(Miss::new(pointer_outcome(&error), "a read")),
+            (Ok(found), Some(_)) => return Err(Miss::new(read_outcome(found), "an error")),
+            (Ok(found), None) => {
+                let actual = read_outcome(found);
+                if let Some(wanted) = step.get("expect") {
+                    if found.and_then(|value| value.to_json().ok()).as_ref() != Some(wanted) {
+                        return Err(Miss::new(actual, wanted.to_string()));
+                    }
+                }
+                if step.get("expect_absent") == Some(&Value::Bool(true)) && found.is_some() {
+                    return Err(Miss::new(actual, "no value"));
+                }
+                if let Some(kind) = step.get("expect_type").and_then(Value::as_str) {
+                    let is_kind = match kind {
+                        "list" => matches!(found, Some(ModelValue::Array(_))),
+                        "object" => matches!(found, Some(ModelValue::Object(_))),
+                        _ => {
+                            return Err(Miss::new(
+                                format!("the runner does not know the type {kind:?}"),
+                                "a list or an object",
+                            ));
+                        }
+                    };
+                    if !is_kind {
+                        return Err(Miss::new(actual, format!("a {kind}")));
+                    }
+                }
+            }
+        },
+        "set" | "delete" => {
+            let update = if op == "set" {
+                *handed = step.get("value").cloned().unwrap_or(Value::Null);
+                DataModelUpdate::Set(handed.clone())
+            } else {
+                DataModelUpdate::Remove
+            };
+            match (model.apply_reporting(path, &update), expect_error) {
+                (Err(error), Some(wanted)) => is_expected_data_error(&error, wanted)
+                    .map_err(|wanted| Miss::new(pointer_outcome(&error), wanted))?,
+                (Err(error), None) => {
+                    return Err(Miss::new(
+                        pointer_outcome(&error),
+                        "the write to be accepted",
+                    ));
+                }
+                (Ok(_), Some(_)) => return Err(Miss::new("accepted", "an error")),
+                (Ok(change), None) => {
+                    for watched in watch {
+                        let changed = change.changed(watched).map_err(|error| {
+                            Miss::new(pointer_outcome(&error), "a watched path")
+                        })?;
+                        if changed {
+                            notified.push(watched);
+                        }
+                    }
+                }
+            }
+        }
+        // The caller changes the value it handed to `set`, afterwards. The
+        // model took its own copy, so nothing is written and nothing changes;
+        // the reads that follow are what show it.
+        "mutate_input" => match handed.pointer_mut(path) {
+            Some(slot) => *slot = step.get("value").cloned().unwrap_or(Value::Null),
+            None => {
+                return Err(Miss::new(
+                    format!("the value handed to the last set has nothing at {path:?}"),
+                    "a value to change",
+                ));
+            }
+        },
+        other => {
+            return Err(Miss::new(
+                format!("the runner does not know the op {other:?}"),
+                "get, set, delete or mutate_input",
+            ));
+        }
+    }
+
+    if let Some(wanted) = step.get("expect_notified") {
+        // One entry for each observer, in no stated order.
+        let mut wanted = string_list(Some(wanted));
+        wanted.sort();
+        notified.sort_unstable();
+        if notified != wanted {
+            return Err(Miss::new(
+                format!("notified {notified:?}"),
+                format!("notified {wanted:?}"),
+            ));
+        }
+    }
+    if let Some(Value::Object(values)) = step.get("expect_values") {
+        for (watched, wanted) in values {
+            let found = model
+                .lookup(watched)
+                .map_err(|error| Miss::new(pointer_outcome(&error), "a watched path"))?;
+            if found.and_then(|value| value.to_json().ok()).as_ref() != Some(wanted) {
+                return Err(Miss::new(
+                    format!("{watched} holds {}", read_outcome(found)),
+                    format!("{watched} to hold {wanted}"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+// --- parse_expression_template ----------------------------------------------
+
+/// Whether two JSON values are the same value, with a number compared as a
+/// number: the suite writes `100000` where a literal `1e5` is a float.
+fn same_json(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => left.as_f64() == right.as_f64(),
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len() && left.iter().zip(right).all(|(l, r)| same_json(l, r))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .all(|(key, l)| right.get(key).is_some_and(|r| same_json(l, r)))
+        }
+        _ => left == right,
+    }
+}
+
+/// The parts of a template as the suite compares them: adjacent literal
+/// strings joined, and empty ones dropped. A case fixes what a template means,
+/// not where an implementation happens to split its literal text.
+fn joined_literals(parts: &[Value]) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for part in parts {
+        match (out.last_mut(), part) {
+            (_, Value::String(text)) if text.is_empty() => {}
+            (Some(Value::String(last)), Value::String(text)) => last.push_str(text),
+            _ => out.push(part.clone()),
+        }
+    }
+    out
+}
+
+/// What this crate's reason for a template that does not parse starts or ends
+/// with, for a phrase of the reference parser's message.
+fn template_fault(phrase: &str) -> Option<fn(&str) -> bool> {
+    Some(match phrase {
+        "Unexpected characters" => |reason| reason.starts_with("unexpected characters after"),
+        "Unclosed interpolation" => |reason| reason.starts_with("unterminated interpolation"),
+        "after function arguments" => {
+            |reason| reason.starts_with("expected ')' after the arguments")
+        }
+        "after argument name" => {
+            |reason| reason.starts_with("expected ':' after the argument name")
+        }
+        "Invalid number literal" => |reason| reason.starts_with("invalid number literal"),
+        "out of range" => |reason| reason.ends_with("is out of range"),
+        "Max recursion depth" => |reason| reason.starts_with("expressions nest deeper"),
+        _ => return None,
+    })
+}
+
+/// `parse_expression_template`: a `formatString` template into its parts.
+fn run_parse_expression_template(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["input", "expect", "expect_error"]].concat(),
+        "case",
+    )?;
+    let input = case
+        .get("input")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let parsed = parse_template(input).map(|parts| {
+        let parts: Vec<Value> = parts.iter().map(|part| part.to_json()).collect();
+        Value::Array(joined_literals(&parts))
+    });
+
+    let Some(expect_error) = case.get("expect_error") else {
+        let wanted = case.get("expect").and_then(Value::as_array);
+        let wanted = Value::Array(joined_literals(wanted.map_or(&[], Vec::as_slice)));
+        return match parsed {
+            Ok(parts) if same_json(&parts, &wanted) => Ok(()),
+            Ok(parts) => Err(Miss::new(parts.to_string(), wanted.to_string())),
+            Err(error) => Err(Miss::new(format!("error: {error}"), wanted.to_string())),
+        };
+    };
+    unknown_key(expect_error, &["category", "message"], "expect_error")?;
+    // The reference raises one error class for a template that does not
+    // parse, and the suite names it by either category.
+    let category = expect_error.get("category").and_then(Value::as_str);
+    if !matches!(category, Some("ParseError" | "ExpressionError")) {
+        return Err(Miss::new(
+            format!("the runner does not map the category {category:?}"),
+            "ParseError",
+        ));
+    }
+    let phrase = expect_error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match parsed {
+        Ok(parts) => Err(Miss::new(parts.to_string(), format!("an error: {phrase}"))),
+        Err(Error::Binding { reason, .. }) => match template_fault(phrase) {
+            _ if phrase.is_empty() => Ok(()),
+            Some(is_fault) if is_fault(&reason) => Ok(()),
+            Some(_) => Err(Miss::new(
+                format!("binding error: {reason}"),
+                format!("the error for {phrase:?}"),
+            )),
+            None => Err(Miss::new(
+                format!("binding error: {reason}"),
+                format!("an error for {phrase:?}, a phrase this runner does not map"),
+            )),
+        },
+        Err(other) => Err(Miss::new(format!("error: {other}"), "a binding error")),
+    }
+}
+
+// --- process_messages -------------------------------------------------------
+
+/// The messages of a case or a step: a list, or a list wrapped as
+/// `{"messages": [...]}`.
+fn message_list(value: Option<&Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::Object(wrapper)) => match wrapper.get("messages") {
+            Some(Value::Array(items)) => items.clone(),
+            _ => vec![Value::Object(wrapper.clone())],
+        },
+        Some(other) => vec![other.clone()],
+        None => Vec::new(),
+    }
+}
+
+/// How a `process_messages` case without `strictMode` is held: the reference
+/// processor then checks the envelope and the surface's life, and neither the
+/// catalog's schema nor the shape of the tree. Its fixtures rely on that: a
+/// `Button` with only a `label`, a component type no catalog defines.
+fn lenient_options() -> ValidateOptions {
+    ValidateOptions {
+        require_root: false,
+        allow_dangling_children: true,
+        check_component_types: false,
+        check_required_props: false,
+        check_prop_types: false,
+        check_bindings: false,
+        ..ValidateOptions::full_surface()
+    }
+}
+
+/// The processor a case describes: its catalogs registered, and held strictly
+/// when the case says `strictMode: true`.
+///
+/// A catalog named by `catalogPaths` is a published one, and the suite's
+/// messages create their surfaces under ids of their own (`test-catalog`). As
+/// the reference harnesses do, the published catalog is registered under each
+/// id the messages name, except in a case that expects a `CatalogError`, where
+/// an unregistered id is the point.
+fn case_processor(case: &Value) -> Result<MessageProcessor, Miss> {
+    let setup = |what: String| Miss::new(what, "a processor for the case");
+    let options = if case.get("strictMode") == Some(&Value::Bool(true)) {
+        conformance_options()
+    } else {
+        lenient_options()
+    };
+    let mut processor = MessageProcessor::with_options(options);
+    for document in case
+        .get("catalogs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let catalog = Catalog::from_schema(document)
+            .map_err(|error| setup(format!("an inline catalog was rejected: {error}")))?;
+        processor
+            .register(catalog)
+            .map_err(|error| setup(error.to_string()))?;
+    }
+    let mut published = Vec::new();
+    for path in string_list(case.get("catalogPaths")) {
+        let text = std::fs::read_to_string(fixture(&path))
+            .map_err(|_| setup(format!("{path} is not vendored under tests/conformance/")))?;
+        let document: Value = serde_json::from_str(&text)
+            .map_err(|error| setup(format!("{path} is not JSON: {error}")))?;
+        let catalog = Catalog::from_schema(&document)
+            .map_err(|error| setup(format!("{path} was rejected: {error}")))?;
+        processor
+            .register(catalog.clone())
+            .map_err(|error| setup(error.to_string()))?;
+        published.push(catalog);
+    }
+    let expects_catalog_error = case
+        .pointer("/expectError/category")
+        .and_then(Value::as_str)
+        == Some("CatalogError");
+    if let (Some(catalog), false) = (published.first(), expects_catalog_error) {
+        let steps = case.get("steps").and_then(Value::as_array);
+        let batches = std::iter::once(case.get("messages"))
+            .chain(steps.into_iter().flatten().map(|step| step.get("messages")));
+        for message in batches.flat_map(message_list) {
+            let named = message
+                .pointer("/createSurface/catalogId")
+                .and_then(Value::as_str);
+            if let Some(id) = named.filter(|id| processor.catalog(id).is_none()) {
+                let mut alias = catalog.clone();
+                alias.catalog_id = id.to_string();
+                processor
+                    .register(alias)
+                    .map_err(|error| setup(error.to_string()))?;
+            }
+        }
+    }
+    Ok(processor)
+}
+
+/// What a refusal was, written the way [`DIVERGENCES`] pins it.
+fn refusal_outcome(rejection: &Rejection) -> String {
+    let detail = match rejection.errors().first() {
+        Some(error) => format!("{} at {}", error.code, error.path),
+        None => rejection.error.to_string(),
+    };
+    format!("refused as {}: {detail}", rejection.kind)
+}
+
+/// What an accepted batch left that a case could have wanted refused: the
+/// components no root reaches, which this crate reports and does not refuse.
+fn accepted_outcome(processor: &MessageProcessor) -> String {
+    let unreachable: Vec<String> = processor
+        .surfaces()
+        .surfaces()
+        .filter_map(|surface| {
+            let report = processor.report(&surface.surface_id)?;
+            (!report.unreachable.is_empty())
+                .then(|| format!("{:?} on {}", report.unreachable, surface.surface_id))
+        })
+        .collect();
+    if unreachable.is_empty() {
+        "accepted".to_string()
+    } else {
+        format!("accepted, with unreachable {}", unreachable.join(", "))
+    }
+}
+
+/// Whether a refusal is the one a phrase of the reference processor's message
+/// names. `None` for a phrase this runner has no reading of.
+fn refusal_says(phrase: &str, rejection: &Rejection) -> Option<bool> {
+    let errors = rejection.errors();
+    let any = |code: ErrorCode| errors.iter().any(|error| error.code == code);
+    let first_says = |needle: &str| errors.first().is_some_and(|e| e.message.contains(needle));
+    let integrity = rejection.kind == RejectionKind::Integrity;
+    Some(
+        if phrase.starts_with("Surface ") && phrase.ends_with(" already exists") {
+            integrity && first_says("already exists")
+        } else if phrase.starts_with("Surface not found for message: ") {
+            integrity && (first_says("does not exist") || first_says("was deleted"))
+        } else if let Some(id) = phrase.strip_prefix("Catalog not found: ") {
+            rejection.kind == RejectionKind::Catalog
+                && rejection.error.to_string().contains(&format!("{id:?}"))
+        } else if phrase == "catalogId" {
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::MissingField && e.path.ends_with(".catalogId"))
+        } else if phrase == "missing an 'id'" {
+            any(ErrorCode::MissingId)
+        } else if phrase.starts_with("Cannot create component ")
+            && phrase.ends_with("without a type")
+        {
+            any(ErrorCode::MissingComponentType)
+        } else if phrase == "Missing root component" {
+            any(ErrorCode::NoRoot)
+        } else if phrase == "Circular reference detected" {
+            any(ErrorCode::ChildCycle)
+        } else if phrase == "Dangling reference" {
+            any(ErrorCode::UnresolvedChild)
+        } else if let Some(kind) = phrase.strip_prefix("Validation failed for component ") {
+            // `'Chart'`: an error about a property of a component of that type.
+            errors.iter().any(|e| {
+                matches!(
+                    e.code,
+                    ErrorCode::TypeMismatch
+                        | ErrorCode::MissingRequiredProp
+                        | ErrorCode::InvalidValue
+                ) && e.message.starts_with(kind)
+            })
+        } else if phrase == "Message contains multiple conflicting update actions" {
+            errors.iter().any(|e| {
+                e.code == ErrorCode::InvalidValue
+                    && e.message.starts_with("Exactly one A2UI payload key")
+            })
+        } else if phrase.starts_with("action '") && phrase.contains("is not supported in protocol")
+        {
+            errors.iter().any(|e| {
+                e.code == ErrorCode::MissingField
+                    && e.message.starts_with("A message must carry one")
+            })
+        } else if phrase == "surfaceId must be a string" {
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::TypeMismatch && e.path.ends_with(".surfaceId"))
+        } else {
+            return None;
+        },
+    )
+}
+
+/// Holds a refusal to a case's `expectError`: its category, its surface, the
+/// fault its message names, and the `error` message a renderer would send.
+fn check_refusal(rejection: &Rejection, wanted: &Value) -> Result<(), Miss> {
+    unknown_key(
+        wanted,
+        &["category", "surfaceId", "message", "rendererError"],
+        "expectError",
+    )?;
+    let actual = refusal_outcome(rejection);
+    if let Some(category) = wanted.get("category").and_then(Value::as_str) {
+        if !rejection.kind.is(category) {
+            return Err(Miss::new(actual, format!("a {category}")));
+        }
+    }
+    if let Some(surface) = wanted.get("surfaceId").and_then(Value::as_str) {
+        if rejection.surface_id.as_deref() != Some(surface) {
+            return Err(Miss::new(
+                format!("{actual}, on surface {:?}", rejection.surface_id),
+                format!("a refusal on surface {surface:?}"),
+            ));
+        }
+    }
+    if let Some(phrase) = wanted.get("message").and_then(Value::as_str) {
+        match refusal_says(phrase, rejection) {
+            Some(true) => {}
+            Some(false) => return Err(Miss::new(actual, format!("the refusal for {phrase:?}"))),
+            None => {
+                return Err(Miss::new(
+                    actual,
+                    format!("a refusal for {phrase:?}, a phrase this runner does not map"),
+                ));
+            }
+        }
+    }
+    if let Some(reply) = wanted.get("rendererError") {
+        unknown_key(reply, &["version", "error"], "rendererError")?;
+        let error = reply.get("error").unwrap_or(&Value::Null);
+        unknown_key(
+            error,
+            &["code", "surfaceId", "message"],
+            "rendererError.error",
+        )?;
+        let sent = serde_json::to_value(rejection.renderer_error())
+            .map_err(|error| Miss::new(error.to_string(), "an error message"))?;
+        for (pointer, wanted) in [
+            ("/version", reply.get("version")),
+            ("/error/code", error.get("code")),
+            ("/error/surfaceId", error.get("surfaceId")),
+        ] {
+            if wanted.is_some() && sent.pointer(pointer) != wanted {
+                return Err(Miss::new(
+                    format!("a renderer error {sent}"),
+                    format!("a renderer error {reply}"),
+                ));
+            }
+        }
+        // The sentence is this crate's own. The fault it is about is the one
+        // `message` names, which was held above.
+        let says_something = sent
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty());
+        if error.get("message") != wanted.get("message") || !says_something {
+            return Err(Miss::new(
+                format!("a renderer error {sent}"),
+                format!("a renderer error {reply}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Holds the state a processor is in to a case's `expect.surfaces`.
+fn check_surfaces(processor: &MessageProcessor, expect: Option<&Value>) -> Result<(), Miss> {
+    let Some(expect) = expect else {
+        return Ok(());
+    };
+    unknown_key(expect, &["surfaces"], "expect")?;
+    let surfaces = expect.get("surfaces").and_then(Value::as_object);
+    for (id, wanted) in surfaces.into_iter().flatten() {
+        unknown_key(
+            wanted,
+            &[
+                "exists",
+                "sendDataModel",
+                "theme",
+                "components",
+                "dataModel",
+            ],
+            "expect.surfaces",
+        )?;
+        let store = processor.surfaces();
+        let live = store.lifecycle(id) == Lifecycle::Live;
+        if wanted.get("exists") == Some(&Value::Bool(false)) {
+            if live {
+                return Err(Miss::new(
+                    format!("surface {id} is live"),
+                    format!("no surface {id}"),
+                ));
+            }
+            continue;
+        }
+        let Some(surface) = store.get(id).filter(|_| live) else {
+            return Err(Miss::new(
+                format!("no surface {id}"),
+                format!("surface {id}"),
+            ));
+        };
+        if let Some(theme) = wanted.get("theme") {
+            if surface.theme.as_ref() != Some(theme) {
+                return Err(Miss::new(
+                    format!("{id} has theme {:?}", surface.theme),
+                    format!("{id} to have theme {theme}"),
+                ));
+            }
+        }
+        if let Some(send) = wanted.get("sendDataModel").and_then(Value::as_bool) {
+            // Not asked for is not sent.
+            if surface.send_data_model.unwrap_or(false) != send {
+                return Err(Miss::new(
+                    format!("{id} has sendDataModel {:?}", surface.send_data_model),
+                    format!("{id} to have sendDataModel {send}"),
+                ));
+            }
+        }
+        let data = surface.data_model.to_json().unwrap_or(Value::Null);
+        if let Some(model) = wanted.get("dataModel") {
+            // The whole model, so that a key that should be gone is seen.
+            if !same_json(&data, model) {
+                return Err(Miss::new(
+                    format!("{id} holds {data}"),
+                    format!("{id} to hold {model}"),
+                ));
+            }
+        }
+        let Some(components) = wanted.get("components") else {
+            continue;
+        };
+        // A list is every component of the surface; a map is some of them.
+        let listed: Vec<(String, &Value)> = match components {
+            Value::Array(items) => {
+                if items.len() != surface.components.len() {
+                    return Err(Miss::new(
+                        format!("{id} has {} component(s)", surface.components.len()),
+                        format!("{id} to have {}", items.len()),
+                    ));
+                }
+                items
+                    .iter()
+                    .map(|item| (item["id"].as_str().unwrap_or_default().to_string(), item))
+                    .collect()
+            }
+            Value::Object(items) => items.iter().map(|(id, item)| (id.clone(), item)).collect(),
+            _ => Vec::new(),
+        };
+        let scope = Scope::root(&data);
+        for (component_id, wanted) in listed {
+            let Some(component) = surface.components.iter().find(|c| c.id == component_id) else {
+                return Err(Miss::new(
+                    format!("{id} has no component {component_id}"),
+                    format!("component {component_id} on {id}"),
+                ));
+            };
+            for (key, wanted) in wanted.as_object().into_iter().flatten() {
+                let actual = match key.as_str() {
+                    "id" => Some(Value::String(component.id.clone())),
+                    "component" => Some(Value::String(component.component.clone())),
+                    // A property as a renderer would show it: bound against
+                    // the surface's data model, at the root scope.
+                    _ => component
+                        .prop(key)
+                        .map(|raw| scope.resolve_dynamic(raw).unwrap_or_else(|_| raw.clone())),
+                };
+                if !actual
+                    .as_ref()
+                    .is_some_and(|actual| same_json(actual, wanted))
+                {
+                    return Err(Miss::new(
+                        format!(
+                            "{component_id}.{key} is {}",
+                            actual.map_or_else(|| "absent".to_string(), |value| value.to_string())
+                        ),
+                        format!("{component_id}.{key} to be {wanted}"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One batch of a `process_messages` case: taken in as a transaction, and held
+/// to what the case expects of it.
+fn process_step(
+    processor: &mut MessageProcessor,
+    messages: Option<&Value>,
+    expect: Option<&Value>,
+    expect_error: Option<&Value>,
+) -> Result<(), Miss> {
+    match (processor.process_all(&message_list(messages)), expect_error) {
+        (Ok(()), None) => check_surfaces(processor, expect),
+        (Ok(()), Some(wanted)) => Err(Miss::new(
+            accepted_outcome(processor),
+            format!("a refusal: {wanted}"),
+        )),
+        (Err(rejection), None) => Err(Miss::new(
+            refusal_outcome(&rejection),
+            "the messages to be accepted",
+        )),
+        (Err(rejection), Some(wanted)) => check_refusal(&rejection, wanted),
+    }
+}
+
+/// `process_messages`: one [`MessageProcessor`] for the case, and the case's
+/// messages, or each step's, taken in as a batch.
+fn run_process_messages(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[
+            &CASE_KEYS[..],
+            &[
+                "catalogPaths",
+                "catalogs",
+                "strictMode",
+                "messages",
+                "steps",
+                "expect",
+                "expectError",
+            ],
+        ]
+        .concat(),
+        "case",
+    )?;
+    let mut processor = case_processor(case)?;
+    let Some(steps) = case.get("steps").and_then(Value::as_array) else {
+        return process_step(
+            &mut processor,
+            case.get("messages"),
+            case.get("expect"),
+            case.get("expectError"),
+        );
+    };
+    for (index, step) in steps.iter().enumerate() {
+        unknown_key(step, &["messages", "expect", "expectError"], "step")
+            .and_then(|()| {
+                process_step(
+                    &mut processor,
+                    step.get("messages"),
+                    step.get("expect"),
+                    step.get("expectError"),
+                )
+            })
+            .map_err(|miss| miss.at(index))?;
+    }
+    Ok(())
+}
+
+/// `get_renderer_data_model`: the `a2uiClientDataModel` metadata a renderer
+/// holding the surfaces the messages leave would attach.
+fn run_renderer_data_model(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[
+            &CASE_KEYS[..],
+            &["catalogPaths", "catalogs", "messages", "args", "expect"],
+        ]
+        .concat(),
+        "case",
+    )?;
+    let args = case.get("args").unwrap_or(&Value::Null);
+    unknown_key(args, &["version"], "args")?;
+    let mut processor = case_processor(case)?;
+    processor
+        .process_all(&message_list(case.get("messages")))
+        .map_err(|rejection| {
+            Miss::new(refusal_outcome(&rejection), "the messages to be accepted")
+        })?;
+    let version = args
+        .get("version")
+        .and_then(Value::as_str)
+        .and_then(A2uiVersion::parse)
+        .ok_or_else(|| Miss::new("args.version is not a version this crate speaks", "one"))?;
+    let wanted = case.get("expect").cloned().unwrap_or(Value::Null);
+    let actual = processor
+        .surfaces()
+        .client_data_model(version)
+        .and_then(|metadata| Ok(serde_json::to_value(metadata)?))
+        .map_err(|error| Miss::new(format!("error: {error}"), wanted.to_string()))?;
+    if same_json(&actual, &wanted) {
+        Ok(())
+    } else {
+        Err(Miss::new(actual.to_string(), wanted.to_string()))
+    }
+}
+
+// --- catalog: from_json, to_json, round_trip, validation_schema, derive -----
+
+/// A document a core case names by repository path.
+///
+/// The tree mirrors upstream's repository root, with `conformance/` itself at
+/// the top of it.
+fn repository_document(path: &str) -> Result<Value, String> {
+    let relative = path.strip_prefix("conformance/").unwrap_or(path);
+    let text = std::fs::read_to_string(fixture(relative))
+        .map_err(|_| format!("{path} is not vendored under tests/conformance/"))?;
+    serde_json::from_str(&text).map_err(|error| format!("{path} is not JSON: {error}"))
+}
+
+/// The catalog document a case is about: inline, or named by path. `None` for
+/// a case about the SDK's own catalog.
+fn catalog_document(case: &Value) -> Result<Option<Value>, String> {
+    match (
+        case.get("catalog"),
+        case.get("catalogPath").and_then(Value::as_str),
+    ) {
+        (Some(inline), _) => Ok(Some(inline.clone())),
+        (None, Some(path)) => repository_document(path).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+/// One case of `core/catalog.yaml`. The version is the case's, or the one its
+/// document states: a case about a v1.0 catalog often says so only there.
+fn run_catalog_case(check: &str, action: &str, case: &Value, tally: &mut Tally) {
+    let document = match catalog_document(case) {
+        Ok(document) => document,
+        Err(reason) => {
+            tally.record(check, Outcome::Failed(reason));
+            return;
+        }
+    };
+    let stated = document
+        .as_ref()
+        .and_then(|document| document.get("protocolVersion"))
+        .map(|version| serde_json::json!({ "protocolVersion": version }));
+    if let Some(CaseVersion::Unsupported(reason)) = stated.as_ref().map(case_version) {
+        tally.record(check, Outcome::Skipped(reason));
+        return;
+    }
+    match action {
+        "from_json" => settle(check, run_from_json(case, document), tally),
+        "round_trip" => settle(check, run_round_trip(case, document), tally),
+        "to_json" => settle(check, run_to_json(case), tally),
+        "validation_schema" => tally.record(
+            check,
+            Outcome::Skipped(
+                "validationSchema is the reference's bundled, flattened schema: this crate \
+                 validates against the documents as published and bundles nothing"
+                    .to_string(),
+            ),
+        ),
+        _ => tally.record(
+            check,
+            Outcome::Skipped(
+                "Catalog has no derive; 7 of the 8 derive cases are on a v1.0 catalog (#42)"
+                    .to_string(),
+            ),
+        ),
+    }
+}
+
+/// The version a catalog case runs under: the one it or its document states,
+/// or v0.9, which is the reference's reading of a document that states none.
+fn catalog_version(case: &Value, document: Option<&Value>) -> String {
+    case.get("protocolVersion")
+        .or_else(|| document.and_then(|document| document.get("protocolVersion")))
+        .map_or_else(|| A2uiVersion::DEFAULT.as_str().to_string(), render_version)
+}
+
+/// A validator for messages on a surface of this catalog, built from the
+/// documents the crate ships and this one, and from nothing else.
+fn catalog_validator(document: &Value) -> Result<SchemaValidator, String> {
+    let mut bundle = SchemaBundle::basic().map_err(|error| error.to_string())?;
+    bundle.catalog = document.clone();
+    SchemaValidator::new(&bundle, &BTreeMap::new()).map_err(|error| error.to_string())
+}
+
+/// What makes a catalog read from the published document differ from the one
+/// this crate builds in: its id, its component and function names, each
+/// component's properties and required properties, each function's return
+/// type.
+fn differences_from_builtin(loaded: &Catalog) -> Vec<String> {
+    let builtin = Catalog::basic();
+    let mut out = Vec::new();
+    if loaded.catalog_id != builtin.catalog_id {
+        out.push(format!(
+            "id {:?}, built in as {:?}",
+            loaded.catalog_id, builtin.catalog_id
+        ));
+    }
+    let names = |catalog: &Catalog| catalog.components.keys().cloned().collect::<Vec<_>>();
+    if names(loaded) != names(&builtin) {
+        out.push(format!("components {:?}", names(loaded)));
+    }
+    for (name, published) in &loaded.components {
+        let Some(own) = builtin.component(name) else {
+            continue;
+        };
+        let props = |def: &ag_ui_a2ui::catalog::ComponentDef| {
+            def.props.keys().cloned().collect::<BTreeSet<_>>()
+        };
+        let (published_props, own_props) = (props(published), props(own));
+        if published_props != own_props {
+            out.push(format!(
+                "{name} properties: published only {:?}, built in only {:?}",
+                published_props.difference(&own_props).collect::<Vec<_>>(),
+                own_props.difference(&published_props).collect::<Vec<_>>()
+            ));
+        }
+        let required = |def: &ag_ui_a2ui::catalog::ComponentDef| {
+            def.required.iter().cloned().collect::<BTreeSet<_>>()
+        };
+        if required(published) != required(own) {
+            out.push(format!(
+                "{name} requires {:?}, built in {:?}",
+                required(published),
+                required(own)
+            ));
+        }
+    }
+    let functions = |catalog: &Catalog| {
+        catalog
+            .functions
+            .iter()
+            .map(|(name, def)| (name.clone(), def.return_type.clone()))
+            .collect::<Vec<_>>()
+    };
+    if functions(loaded) != functions(&builtin) {
+        out.push(format!("functions {:?}", functions(loaded)));
+    }
+    out
+}
+
+/// The entries a case lists against the ones a catalog defines: by name when
+/// the case gives a list, and by name and schema when it gives a map. Either
+/// way the names are all of them.
+fn check_entries(
+    kind: &str,
+    wanted: &Value,
+    defined: Vec<&String>,
+    document: &Value,
+) -> Result<(), Miss> {
+    let names: Vec<&str> = match wanted {
+        Value::Array(names) => names.iter().filter_map(Value::as_str).collect(),
+        Value::Object(entries) => entries.keys().map(String::as_str).collect(),
+        _ => Vec::new(),
+    };
+    let listed: BTreeSet<&str> = names.into_iter().collect();
+    let defined: BTreeSet<&str> = defined.into_iter().map(String::as_str).collect();
+    if listed != defined {
+        return Err(Miss::new(
+            format!("{kind} {defined:?}"),
+            format!("{kind} {listed:?}"),
+        ));
+    }
+    for (name, schema) in wanted.as_object().into_iter().flatten() {
+        let held = document.get(kind).and_then(|entries| entries.get(name));
+        if !held.is_some_and(|held| same_json(held, schema)) {
+            return Err(Miss::new(
+                format!("{kind}.{name} is {}", held.unwrap_or(&Value::Null)),
+                format!("{kind}.{name} to be {schema}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The fault a phrase of the reference's `CatalogError` names, as this crate's
+/// reason for it starts.
+fn catalog_fault(phrase: &str) -> Option<&'static str> {
+    match phrase {
+        "catalog_id must be provided or exist in catalog schema" => {
+            Some("catalog document is missing 'catalogId'")
+        }
+        _ => None,
+    }
+}
+
+/// `from_json`: [`Catalog::from_schema`], and what the case expects of the
+/// catalog it gives.
+fn run_from_json(case: &Value, document: Option<Value>) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[
+            &CASE_KEYS[..],
+            &["catalogId", "catalogPath", "expect", "expectError"],
+        ]
+        .concat(),
+        "case",
+    )?;
+    let document = document.ok_or_else(|| Miss::new("the case names no catalog", "one"))?;
+    let loaded = Catalog::from_schema(&document);
+
+    if let Some(wanted) = case.get("expectError") {
+        unknown_key(wanted, &["category", "message"], "expectError")?;
+        let phrase = wanted
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let fault = catalog_fault(phrase);
+        return match loaded {
+            Ok(_) => Err(Miss::new("loaded", format!("a refusal: {wanted}"))),
+            Err(Error::Catalog(reason))
+                if wanted.get("category").and_then(Value::as_str) == Some("CatalogError")
+                    && (phrase.is_empty()
+                        || fault.is_some_and(|fault| reason.starts_with(fault))) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(Miss::new(format!("error: {error}"), wanted.to_string())),
+        };
+    }
+    let mut catalog =
+        loaded.map_err(|error| Miss::new(format!("error: {error}"), "the catalog to load"))?;
+    // The case's own `catalogId` is the id to load the catalog under.
+    if let Some(id) = case.get("catalogId").and_then(Value::as_str) {
+        catalog.catalog_id = id.to_string();
+    }
+    let expect = case.get("expect").unwrap_or(&Value::Null);
+    unknown_key(
+        expect,
+        &[
+            "catalogId",
+            "protocolVersion",
+            "components",
+            "functions",
+            "matchesBuiltinCatalog",
+            "selfContained",
+            "validComponents",
+            "invalidComponents",
+        ],
+        "expect",
+    )?;
+    if let Some(id) = expect.get("catalogId").and_then(Value::as_str) {
+        if catalog.catalog_id != id {
+            return Err(Miss::new(
+                format!("catalogId {:?}", catalog.catalog_id),
+                format!("catalogId {id:?}"),
+            ));
+        }
+    }
+    // A catalog has no version of its own here. The expectation is held to
+    // the version the case runs under.
+    let version = catalog_version(case, Some(&document));
+    if let Some(wanted) = expect.get("protocolVersion").map(render_version) {
+        if wanted != version {
+            return Err(Miss::new(
+                format!("version {version}"),
+                format!("version {wanted}"),
+            ));
+        }
+    }
+    if let Some(wanted) = expect.get("components") {
+        check_entries(
+            "components",
+            wanted,
+            catalog.components.keys().collect(),
+            &document,
+        )?;
+    }
+    if let Some(wanted) = expect.get("functions") {
+        check_entries(
+            "functions",
+            wanted,
+            catalog.functions.keys().collect(),
+            &document,
+        )?;
+    }
+    if expect.get("matchesBuiltinCatalog") == Some(&Value::Bool(true)) {
+        let differences = differences_from_builtin(&catalog);
+        if !differences.is_empty() {
+            return Err(Miss::new(
+                format!("differs from Catalog::basic(): {}", differences.join("; ")),
+                "the catalog this crate builds in",
+            ));
+        }
+    }
+
+    let samples = |key: &str| {
+        expect
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (valid, invalid) = (samples("validComponents"), samples("invalidComponents"));
+    let self_contained = expect.get("selfContained") == Some(&Value::Bool(true));
+    if valid.is_empty() && invalid.is_empty() && !self_contained {
+        return Ok(());
+    }
+    let validator = catalog_validator(&document)
+        .map_err(|error| Miss::new(format!("no validator compiles: {error}"), "one"))?;
+    for (component, wanted_valid) in valid
+        .iter()
+        .map(|component| (component, true))
+        .chain(invalid.iter().map(|component| (component, false)))
+    {
+        let message = serde_json::json!({
+            "version": version,
+            "updateComponents": {"surfaceId": "s", "components": [component]},
+        });
+        let verdict = validator.validate_message(&message);
+        if verdict.is_ok() != wanted_valid {
+            return Err(Miss::new(
+                match verdict {
+                    Ok(()) => format!("{component} is accepted"),
+                    Err(error) => format!("{component} is refused: {error}"),
+                },
+                if wanted_valid {
+                    "it accepted"
+                } else {
+                    "it refused"
+                },
+            ));
+        }
+    }
+    if self_contained {
+        // Every other expectation of the case held. This one is about a
+        // schema this crate does not make.
+        return Err(Miss::new(
+            NOT_BUNDLED,
+            "a resolved catalog schema whose every $ref is inside it",
+        ));
+    }
+    Ok(())
+}
+
+/// What this crate does where a case wants a self-contained resolved schema.
+const NOT_BUNDLED: &str = "no bundled schema; a validator compiles from this document and the \
+                           ones the crate ships, with retrieval off";
+
+/// `round_trip`: a catalog read from a document gives that document back, and
+/// reading what it gave back changes nothing.
+fn run_round_trip(case: &Value, document: Option<Value>) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["catalogId", "catalogPath"]].concat(),
+        "case",
+    )?;
+    let document = document.ok_or_else(|| Miss::new("the case names no catalog", "one"))?;
+    let mut read = document.clone();
+    for pass in ["first", "second"] {
+        let catalog = Catalog::from_schema(&read)
+            .map_err(|error| Miss::new(format!("error: {error}"), "the catalog to load"))?;
+        let Some(written) = catalog.document() else {
+            return Err(Miss::new("no document", "the document back"));
+        };
+        if *written != document {
+            return Err(Miss::new(
+                format!("another document on the {pass} pass"),
+                "the document it was read from",
+            ));
+        }
+        read = written.clone();
+    }
+    Ok(())
+}
+
+/// `to_json`: the document of the catalog an SDK builds in, against the
+/// published one.
+fn run_to_json(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["builtinCatalog", "expectFile"]].concat(),
+        "case",
+    )?;
+    let builtin = case.get("builtinCatalog").and_then(Value::as_str);
+    if builtin != Some("basic") {
+        return Err(Miss::new(
+            format!("the runner does not know the built-in catalog {builtin:?}"),
+            "basic",
+        ));
+    }
+    let path = case
+        .get("expectFile")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let published = repository_document(path).map_err(|reason| Miss::new(reason, "a file"))?;
+    match Catalog::basic().document() {
+        Some(document) if *document == published => Ok(()),
+        Some(_) => Err(Miss::new("another document", path)),
+        None => Err(Miss::new("Catalog::basic() has no document", path)),
+    }
+}
+
+// --- validate_common_type ---------------------------------------------------
+
+/// `validate_common_type`: each step's value against one definition of the
+/// published common types.
+fn run_validate_common_type(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["definition", "steps"]].concat(),
+        "case",
+    )?;
+    let definition = case
+        .get("definition")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let steps = case.get("steps").and_then(Value::as_array);
+    for (index, step) in steps.into_iter().flatten().enumerate() {
+        let held = || -> Result<(), Miss> {
+            unknown_key(step, &["value", "expectError"], "step")?;
+            let value = step.get("value").cloned().unwrap_or(Value::Null);
+            let verdict = validate_common_type(definition, &value);
+            let Some(wanted) = step.get("expectError") else {
+                // An accepted value is the value: nothing is rewritten on the
+                // way through a schema, so there is no serialized form to
+                // compare it with.
+                return verdict.map_err(|error| {
+                    Miss::new(format!("{value} is refused: {error}"), "it accepted")
+                });
+            };
+            unknown_key(wanted, &["category"], "expectError")?;
+            let category = wanted.get("category").and_then(Value::as_str);
+            match verdict {
+                Err(Error::Validation { .. }) if category == Some("ValidationError") => Ok(()),
+                Err(error) => Err(Miss::new(
+                    format!("{value} is refused: {error}"),
+                    format!("a {category:?}"),
+                )),
+                Ok(()) => Err(Miss::new(
+                    format!("{value} is accepted"),
+                    format!("a {category:?}"),
+                )),
+            }
+        };
+        held().map_err(|miss| miss.at(index))?;
+    }
+    Ok(())
+}
+
+/// The reason three `common_types_schema` cases are skipped is that this
+/// crate ships the published common types and generates none. This is that
+/// claim, checked: the document the crate ships is the published one of both
+/// versions, as JSON.
+#[test]
+fn the_shipped_common_types_are_the_published_ones() {
+    let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas/v0_9_1/common_types.json");
+    let shipped: Value =
+        serde_json::from_str(&std::fs::read_to_string(shipped).expect("the shipped document"))
+            .expect("JSON");
+    for case in cases_of("core/common_types.yaml") {
+        if case.get("action").and_then(Value::as_str) != Some("common_types_schema")
+            || matches!(case_version(&case), CaseVersion::Unsupported(_))
+        {
+            continue;
+        }
+        let path = case["expectFile"].as_str().expect("expectFile");
+        let published = repository_document(path).unwrap_or_else(|reason| panic!("{reason}"));
+        assert_eq!(shipped, published, "{path}");
+    }
 }
 
 fn load_vendored(relative: &str) -> Value {

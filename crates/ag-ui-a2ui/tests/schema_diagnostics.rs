@@ -1,8 +1,10 @@
 #![cfg(feature = "schema-validation")]
 
 use ag_ui_a2ui::{
-    Error,
-    schema_validation::{SchemaValidator, SurfaceValidator, validate_capabilities},
+    Catalog, Error, MessageProcessor,
+    schema_validation::{
+        SchemaValidator, SurfaceValidator, validate_capabilities, validate_common_type,
+    },
     toolkit::schema::SchemaBundle,
 };
 use serde_json::{Value, json};
@@ -184,4 +186,204 @@ fn diagnostics_do_not_change_acceptance_and_fallbacks_are_bounded() {
             .all(|error| error.message.chars().count() <= 385)
     );
     assert!(!errors.to_string().contains("private content"));
+}
+
+#[test]
+fn a_value_is_held_to_one_common_type_on_its_own() {
+    for (definition, accepted, refused) in [
+        (
+            "DynamicString",
+            vec![json!("text"), json!({"path": "/name"})],
+            vec![json!(3), json!({"path": "/name", "extra": 1})],
+        ),
+        (
+            "DynamicValue",
+            vec![
+                json!("text"),
+                json!(3),
+                json!(true),
+                json!(["a"]),
+                json!({"call": "now"}),
+            ],
+            // No literal object: an object is a binding or a call, and one
+            // that is both is neither.
+            vec![json!({"label": "x"}), json!({"call": "now", "path": "/a"})],
+        ),
+        (
+            "ChildList",
+            vec![
+                json!(["a", "b"]),
+                json!({"componentId": "row", "path": "/items"}),
+            ],
+            vec![json!("a"), json!({"componentId": "row"})],
+        ),
+        (
+            "Action",
+            vec![
+                json!({"event": {"name": "submit", "context": {"id": {"path": "/id"}}}}),
+                json!({"functionCall": {"call": "openUrl", "args": {"url": "https://example.com"}}}),
+            ],
+            vec![
+                json!({}),
+                json!({"event": {"name": "a"}, "functionCall": {"call": "b"}}),
+            ],
+        ),
+        (
+            // Any function name, since there is no catalog to ask; only the
+            // keys a call has.
+            "FunctionCall",
+            vec![
+                json!({"call": "anything"}),
+                json!({"call": "x", "args": {"a": 1}, "returnType": "string"}),
+            ],
+            vec![
+                json!({"call": "x", "bogus": 1}),
+                json!({"args": {}}),
+                json!({"call": "x", "returnType": "nothing"}),
+            ],
+        ),
+    ] {
+        for value in accepted {
+            validate_common_type(definition, &value)
+                .unwrap_or_else(|error| panic!("{definition} refuses {value}: {error}"));
+        }
+        for value in refused {
+            let error = validate_common_type(definition, &value).unwrap_err();
+            let Error::Validation { errors } = error else {
+                panic!("{definition} on {value}: expected validation errors, got {error}");
+            };
+            assert!(!errors.0.is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_common_type_failure_is_located_in_the_value_and_echoes_none_of_it() {
+    let secret = "private content ".repeat(50);
+    let value = json!({"event": {"name": "submit", "context": {"note": {"path": 7, "x": secret}}}});
+    let Err(Error::Validation { errors }) = validate_common_type("Action", &value) else {
+        panic!("a binding whose path is a number must fail");
+    };
+    assert!(errors.0.len() <= 16);
+    assert!(
+        errors
+            .0
+            .iter()
+            .all(|error| error.path.is_empty() || error.path.starts_with('/')),
+        "{errors}"
+    );
+    assert!(!errors.to_string().contains("private content"), "{errors}");
+}
+
+#[test]
+fn a_definition_the_common_types_do_not_have_is_named_as_such() {
+    let error = validate_common_type("DynamicColor", &json!("red")).unwrap_err();
+    let Error::Catalog(reason) = error else {
+        panic!("expected a catalog error, got {error}");
+    };
+    assert!(reason.contains("\"DynamicColor\""), "{reason}");
+    assert!(reason.contains("DynamicString"), "{reason}");
+}
+
+/// The published VegaChart and MCP catalogs declare no `$defs/theme`, and the
+/// envelope schema refers to it for a surface's theme. No validator could be
+/// built for either: compiling failed on the reference.
+#[test]
+fn a_published_catalog_that_declares_no_theme_gets_a_validator() {
+    for path in [
+        "catalogs/vegachart/v0_9/catalog.json",
+        "catalogs/mcp/catalog.json",
+    ] {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/conformance")
+            .join(path);
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        assert!(document.pointer("/$defs/theme").is_none(), "{path}");
+        let mut bundle = SchemaBundle::basic().unwrap();
+        bundle.catalog = document.clone();
+        let schema = SchemaValidator::new(&bundle, &Default::default())
+            .unwrap_or_else(|error| panic!("{path}: {error}"));
+
+        let create = |theme: Option<Value>| {
+            let mut message = json!({"version": "v0.9.1", "createSurface": {
+                "surfaceId": "s", "catalogId": document["catalogId"]
+            }});
+            if let Some(theme) = theme {
+                message["createSurface"]["theme"] = theme;
+            }
+            message
+        };
+        // No theme, and any theme that is an object.
+        schema.validate_message(&create(None)).unwrap();
+        schema
+            .validate_message(&create(Some(
+                json!({"primaryColor": "teal", "dense": true}),
+            )))
+            .unwrap();
+        // A theme is an object, whatever the catalog says about it.
+        for not_an_object in [json!("dark"), json!(["dark"]), json!(7)] {
+            assert!(
+                schema
+                    .validate_message(&create(Some(not_an_object.clone())))
+                    .is_err(),
+                "{path}: {not_an_object}"
+            );
+        }
+
+        // The stateful validator registers the same catalog.
+        let mut surfaces = SurfaceValidator::new();
+        surfaces.register(&bundle, &Default::default()).unwrap();
+        surfaces.push(&create(Some(json!({"any": 1})))).unwrap();
+
+        // A caller that hands the catalog in as a resource as well is not
+        // told that it conflicts with itself.
+        let id = document["$id"].as_str().unwrap().to_string();
+        let resources = [(id, document.clone())].into_iter().collect();
+        SchemaValidator::new(&bundle, &resources).unwrap();
+    }
+
+    // A catalog that declares a theme is still held to it.
+    let schema =
+        SchemaValidator::new(&SchemaBundle::basic().unwrap(), &Default::default()).unwrap();
+    let off_pattern = json!({"version": "v0.9.1", "createSurface": {
+        "surfaceId": "s",
+        "catalogId": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
+        "theme": {"primaryColor": "not-a-hex-color"}
+    }});
+    assert!(schema.validate_message(&off_pattern).is_err());
+}
+
+/// Two `process_messages` cases of the conformance suite are listed as
+/// failing: a theme that is off the `pattern` in its catalog's theme schema,
+/// and a property a component does not declare. The check for both exists:
+/// `SchemaValidator` refuses each message. What is missing is the wiring,
+/// since `MessageProcessor` runs no `SchemaValidator`. This test is that
+/// statement, and the one to change when a processor learns to run one.
+#[test]
+fn the_schema_engine_makes_the_two_refusals_a_processor_does_not() {
+    let bundle = SchemaBundle::basic().unwrap();
+    let catalog_id = bundle.catalog_id().unwrap().to_string();
+    let schema = SchemaValidator::new(&bundle, &Default::default()).unwrap();
+    let mut processor = MessageProcessor::new();
+    processor
+        .register(Catalog::from_schema(&bundle.catalog).unwrap())
+        .unwrap();
+
+    let off_pattern = json!({"version": "v0.9", "createSurface": {
+        "surfaceId": "s", "catalogId": catalog_id,
+        "theme": {"primaryColor": "not-a-hex-color"}
+    }});
+    let undeclared = json!({"version": "v0.9", "updateComponents": {
+        "surfaceId": "s", "components": [{
+            "id": "root", "component": "Text", "text": "Hello",
+            "@metadata": {"extensions": {"com_example_trace": "t1"}}
+        }]
+    }});
+    for message in [&off_pattern, &undeclared] {
+        assert!(schema.validate_message(message).is_err(), "{message}");
+        processor
+            .process(message)
+            .unwrap_or_else(|refused| panic!("{message}: {refused}"));
+    }
 }

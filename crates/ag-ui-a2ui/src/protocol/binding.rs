@@ -15,9 +15,14 @@
 //!   current collection scope. A container whose `children` is a template over
 //!   `/employees` opens one scope per element, so `name` inside the template
 //!   resolves to `/employees/0/name`, `/employees/1/name`, and so on.
+//! - The empty path and `.` are relative too, and name the scope itself: the
+//!   element a template is drawing, which is how a template over a list of
+//!   strings shows each one.
 //!
 //! [`Scope`] models exactly this: [`Scope::root`] for the default scope and
 //! [`Scope::item`] to descend into one element of a bound collection.
+//! [`absolute_path`] is the rule on its own, for a caller that holds a scope's
+//! path and no data.
 //!
 //! # Stringification
 //!
@@ -51,6 +56,14 @@
 //! check. The component *graph* — where depth is genuinely unbounded — is walked
 //! iteratively in [`crate::validate`] instead.
 //!
+//! # Templates
+//!
+//! A `formatString` template has one grammar, and [`parse_template`] is it:
+//! the template in, its parts out, nothing evaluated. [`Scope::format_string`]
+//! parses with it and evaluates the parts, so what parses and what evaluates
+//! cannot differ. The parser bounds a template's length, its number of parts
+//! and how deep an expression nests, because a template is model output too.
+//!
 //! [rfc6901]: https://datatracker.ietf.org/doc/html/rfc6901
 
 use std::collections::BTreeMap;
@@ -58,6 +71,9 @@ use std::collections::BTreeMap;
 use jsonptr::Pointer;
 use serde_json::{Map, Value};
 
+pub use super::template::{
+    MAX_TEMPLATE_CHARS, MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_PARTS, TemplatePart, parse_template,
+};
 use crate::error::{Error, Result};
 
 /// Deepest nesting these walks will descend into a value, and the most
@@ -81,13 +97,67 @@ pub(crate) fn pointer_is_valid(path: &str) -> bool {
     Pointer::parse(path).is_ok()
 }
 
+/// The absolute data-model path a binding path resolves to in a scope.
+///
+/// `scope` is the absolute path of the scope the binding sits in: `""` or `/`
+/// for the root scope, `/employees/1` inside the second item of a template
+/// over `/employees`. `path` is the path as the component wrote it.
+///
+/// - A path that starts with `/` is absolute. It is returned as it is,
+///   whatever the scope.
+/// - Any other path is relative, and is joined to the scope.
+/// - The empty path and `.` name the scope itself: the item a template is
+///   drawing, or the whole model in the root scope.
+///
+/// The root is written `/`, the way `updateDataModel` writes it, and
+/// [`DataModel::lookup`](crate::DataModel::lookup) and
+/// [`DataModel::apply`](crate::DataModel::apply) take the result as it is.
+/// [`Scope::resolve_pointer`] resolves the same way and writes the root as the
+/// empty RFC 6901 pointer instead.
+///
+/// No segment is rewritten. A scope that ends in `/` ends in the empty key, as
+/// RFC 6901 reads it, so `name` under `/user/` is `/user//name`. Only `/` on
+/// its own is the root.
+///
+/// ```
+/// use ag_ui_a2ui::binding::absolute_path;
+///
+/// assert_eq!(absolute_path("/employees/1", "name"), "/employees/1/name");
+/// assert_eq!(absolute_path("/employees/1", "/company"), "/company");
+/// // The scope itself: the item, or the whole model in the root scope.
+/// assert_eq!(absolute_path("/employees/1", ""), "/employees/1");
+/// assert_eq!(absolute_path("/employees/1", "."), "/employees/1");
+/// assert_eq!(absolute_path("/", "."), "/");
+/// assert_eq!(absolute_path("", "name"), "/name");
+/// ```
+pub fn absolute_path(scope: &str, path: &str) -> String {
+    if path.starts_with('/') {
+        return path.to_string();
+    }
+    let scope = if scope == "/" { "" } else { scope };
+    if names_the_scope(path) {
+        return if scope.is_empty() {
+            "/".to_string()
+        } else {
+            scope.to_string()
+        };
+    }
+    format!("{scope}/{path}")
+}
+
+/// Whether a path is one of the two spellings of "the scope itself".
+pub(crate) fn names_the_scope(path: &str) -> bool {
+    path.is_empty() || path == "."
+}
+
+/// [`absolute_path`] as an RFC 6901 pointer, where the whole document is the
+/// empty string.
 fn scoped_pointer(base: &str, path: &str) -> String {
-    if path.is_empty() || path == "/" {
+    let absolute = absolute_path(base, path);
+    if absolute == "/" {
         String::new()
-    } else if path.starts_with('/') {
-        path.into()
     } else {
-        format!("{base}/{path}")
+        absolute
     }
 }
 
@@ -190,7 +260,9 @@ impl<'a> Scope<'a> {
 
     /// Turns an A2UI path (absolute or relative) into an absolute JSON Pointer.
     ///
-    /// The empty path and `/` both denote the whole data model.
+    /// Resolved as [`absolute_path`] resolves it, against [`Scope::base`]: the
+    /// empty path and `.` are this scope itself. The whole data model, which
+    /// is `/` or the root scope itself, is the empty pointer.
     pub fn resolve_pointer(&self, path: &str) -> String {
         scoped_pointer(&self.base, path)
     }
@@ -330,15 +402,16 @@ impl<'a> Scope<'a> {
 
     /// Interpolates a `formatString` template against this scope.
     ///
-    /// Expressions are written `${...}` and may contain an absolute path
-    /// (`${/user/name}`), a relative path (`${name}`), a literal, a nested
-    /// `${...}`, or a function call (`${@index(offset: 1)}`). A literal `${` is
-    /// written `\${`.
+    /// The template is parsed by [`parse_template`], which states the grammar:
+    /// `${…}` holds an absolute path (`${/user/name}`), a relative path
+    /// (`${name}`), a literal, a nested `${…}`, or a function call
+    /// (`${@index(offset: 1)}`), and a literal `${` is written `\${`. Each
+    /// part is then evaluated and stringified by [`stringify()`].
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Binding`] for an unterminated expression, trailing
-    /// characters after an expression, or a function this crate cannot evaluate.
+    /// Returns [`Error::Binding`] for a template [`parse_template`] rejects, or
+    /// a function this crate cannot evaluate.
     pub fn format_string(&self, template: &str) -> Result<String> {
         self.format_string_with(template, &NoFunctions)
     }
@@ -354,230 +427,28 @@ impl<'a> Scope<'a> {
         functions: &dyn FunctionResolver,
     ) -> Result<String> {
         let mut out = String::with_capacity(template.len());
-        let chars: Vec<char> = template.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            if chars[i] == '\\' && matches(&chars, i + 1, "${") {
-                out.push_str("${");
-                i += 3;
-                continue;
-            }
-            if matches(&chars, i, "${") {
-                let (body, next) = take_expression(&chars, i + 2)?;
-                let value = self.eval_expression(&body, functions, 0)?;
-                out.push_str(&stringify(Some(&value)));
-                i = next;
-                continue;
-            }
-            out.push(chars[i]);
-            i += 1;
+        for part in parse_template(template)? {
+            let value = self.evaluate(&part, functions)?;
+            out.push_str(&stringify(Some(&value)));
         }
         Ok(out)
     }
 
-    fn eval_expression(
-        &self,
-        expression: &str,
-        functions: &dyn FunctionResolver,
-        depth: usize,
-    ) -> Result<Value> {
-        const MAX_DEPTH: usize = 10;
-        if depth > MAX_DEPTH {
-            return Err(Error::binding(expression, "expression nesting is too deep"));
-        }
-        let expression = expression.trim();
-        if expression.is_empty() {
-            return Ok(Value::String(String::new()));
-        }
-
-        let chars: Vec<char> = expression.chars().collect();
-
-        // Nested `${...}`, used to make a binding explicit or chain calls.
-        if matches(&chars, 0, "${") {
-            let (body, next) = take_expression(&chars, 2)?;
-            if next != chars.len() {
-                return Err(Error::binding(
-                    expression,
-                    "unexpected characters after nested expression",
-                ));
-            }
-            return self.eval_expression(&body, functions, depth + 1);
-        }
-
-        if let Some(literal) = parse_literal(expression) {
-            return Ok(literal);
-        }
-
-        // `name(...)` is a function call; anything else is a data-model path.
-        match expression.find('(') {
-            Some(open) if expression.ends_with(')') => {
-                let name = expression[..open].trim();
-                let raw_args = &expression[open + 1..expression.len() - 1];
-                let mut args = Map::new();
-                for (key, raw) in split_arguments(raw_args, expression)? {
-                    args.insert(key, self.eval_expression(&raw, functions, depth + 1)?);
+    /// The value of one parsed part. The parser bounds how deep a part nests,
+    /// so this may recurse over it.
+    fn evaluate(&self, part: &TemplatePart, functions: &dyn FunctionResolver) -> Result<Value> {
+        match part {
+            TemplatePart::Literal(value) => Ok(value.clone()),
+            TemplatePart::Path(path) => Ok(self.resolve(path).cloned().unwrap_or(Value::Null)),
+            TemplatePart::Call { name, args } => {
+                let mut resolved = Map::new();
+                for (argument, value) in args {
+                    resolved.insert(argument.clone(), self.evaluate(value, functions)?);
                 }
-                self.call_function(name, &args, functions)
+                self.call_function(name, &resolved, functions)
             }
-            Some(_) => Err(Error::binding(expression, "unbalanced parentheses")),
-            None => Ok(self.resolve(expression).cloned().unwrap_or(Value::Null)),
         }
     }
-}
-
-fn matches(chars: &[char], at: usize, needle: &str) -> bool {
-    needle
-        .chars()
-        .enumerate()
-        .all(|(offset, want)| chars.get(at + offset) == Some(&want))
-}
-
-/// Reads an expression body starting just after `${`, returning it and the
-/// index just past the closing `}`.
-///
-/// Tracks brace depth and skips over quoted strings so that
-/// `${formatDate(format:'{yyyy}')}` and nested `${...}` both survive.
-fn take_expression(chars: &[char], start: usize) -> Result<(String, usize)> {
-    let mut depth = 1usize;
-    let mut i = start;
-    while i < chars.len() {
-        let ch = chars[i];
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok((chars[start..i].iter().collect(), i + 1));
-                }
-            }
-            '\'' | '"' => {
-                let quote = ch;
-                i += 1;
-                while i < chars.len() {
-                    if chars[i] == '\\' {
-                        i += 1;
-                    } else if chars[i] == quote {
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    Err(Error::binding(
-        chars[start..].iter().collect::<String>(),
-        "unterminated interpolation: missing '}'",
-    ))
-}
-
-fn parse_literal(expression: &str) -> Option<Value> {
-    let bytes: Vec<char> = expression.chars().collect();
-    if bytes.len() >= 2 {
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == '\'' || first == '"') && first == last {
-            let inner: String = bytes[1..bytes.len() - 1].iter().collect();
-            return Some(Value::String(
-                inner.replace("\\'", "'").replace("\\\"", "\""),
-            ));
-        }
-    }
-    match expression {
-        "true" => return Some(Value::Bool(true)),
-        "false" => return Some(Value::Bool(false)),
-        // `null` interpolates as the empty string, matching the reference
-        // toolkits rather than resolving a path named "null".
-        "null" => return Some(Value::String(String::new())),
-        _ => {}
-    }
-    if expression
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_digit() || c == '-')
-    {
-        // Integers stay integers: `@index(offset: 1)` must not become 1.0.
-        if let Ok(integer) = expression.parse::<i64>() {
-            return Some(Value::Number(integer.into()));
-        }
-        if let Ok(number) = expression.parse::<f64>() {
-            return serde_json::Number::from_f64(number).map(Value::Number);
-        }
-    }
-    None
-}
-
-/// Splits `name: value, name: value` argument lists, respecting nesting.
-fn split_arguments(raw: &str, expression: &str) -> Result<Vec<(String, String)>> {
-    let mut out = Vec::new();
-    if raw.trim().is_empty() {
-        return Ok(out);
-    }
-    let chars: Vec<char> = raw.chars().collect();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    let mut i = 0usize;
-    let mut pieces: Vec<String> = Vec::new();
-    while i < chars.len() {
-        match chars[i] {
-            '(' | '{' | '[' => depth += 1,
-            ')' | '}' | ']' => depth = depth.saturating_sub(1),
-            '\'' | '"' => {
-                let quote = chars[i];
-                i += 1;
-                while i < chars.len() {
-                    if chars[i] == '\\' {
-                        i += 1;
-                    } else if chars[i] == quote {
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            ',' if depth == 0 => {
-                pieces.push(chars[start..i].iter().collect());
-                start = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    pieces.push(chars[start..].iter().collect());
-
-    for piece in pieces {
-        let piece = piece.trim().to_string();
-        if piece.is_empty() {
-            continue;
-        }
-        let colon = split_top_level_colon(&piece).ok_or_else(|| {
-            Error::binding(
-                expression,
-                format!("argument {piece:?} is missing a 'name: value' separator"),
-            )
-        })?;
-        let name = piece[..colon].trim().to_string();
-        let value = piece[colon + 1..].trim().to_string();
-        out.push((name, value));
-    }
-    Ok(out)
-}
-
-fn split_top_level_colon(piece: &str) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut in_quote: Option<char> = None;
-    for (index, ch) in piece.char_indices() {
-        match (in_quote, ch) {
-            (Some(quote), c) if c == quote => in_quote = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"') => in_quote = Some(ch),
-            (None, '(' | '{' | '[') => depth += 1,
-            (None, ')' | '}' | ']') => depth = depth.saturating_sub(1),
-            (None, ':') if depth == 0 => return Some(index),
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Every data-model path referenced anywhere inside a JSON value.
@@ -739,6 +610,65 @@ mod tests {
     }
 
     #[test]
+    fn the_empty_path_and_dot_name_the_scope_itself() {
+        let data = json!({"tags": ["a", "b"], "matrix": [[1, 2], [3]]});
+        let root = Scope::root(&data);
+
+        // In the root scope that is the whole model.
+        for path in ["", ".", "/"] {
+            assert_eq!(root.resolve(path), Some(&data), "{path:?}");
+            assert_eq!(root.resolve_pointer(path), "", "{path:?}");
+        }
+
+        // In an item scope it is the item, which is how a template over a
+        // list of strings shows each one. `/` still leaves the scope.
+        let item = root.item("/tags", 1);
+        for path in ["", "."] {
+            assert_eq!(item.resolve(path), Some(&json!("b")), "{path:?}");
+            assert_eq!(item.resolve_pointer(path), "/tags/1", "{path:?}");
+        }
+        assert_eq!(item.resolve("/"), Some(&data));
+
+        // A template over the item itself iterates the item, not the model.
+        let row = root.item("/matrix", 0);
+        assert_eq!(row.item("", 1).base(), "/matrix/0/1");
+        assert_eq!(row.item(".", 1).resolve(""), Some(&json!(2)));
+
+        // The lossless scope resolves the same way.
+        let model = crate::DataModel::from(data.clone());
+        let item = ModelScope::root(&model).item("/tags", 0);
+        for path in ["", "."] {
+            let value = item.resolve(path).unwrap().unwrap();
+            assert_eq!(value.to_json().unwrap(), json!("a"), "{path:?}");
+        }
+        let cell = ModelScope::root(&model).item("/matrix", 1).item("", 0);
+        assert_eq!(cell.base(), "/matrix/1/0");
+    }
+
+    #[test]
+    fn an_absolute_path_is_the_scope_joined_with_a_relative_path() {
+        for (scope, path, expected) in [
+            ("/user", "name", "/user/name"),
+            ("/user", "address/city", "/user/address/city"),
+            ("/user", "/list/0", "/list/0"),
+            ("/", "user/name", "/user/name"),
+            ("", "foo", "/foo"),
+            ("/user", "", "/user"),
+            ("/user", ".", "/user"),
+            ("/", "", "/"),
+            ("", ".", "/"),
+            ("/user", "/", "/"),
+            // Only the two exact spellings name the scope.
+            ("/user", "./name", "/user/./name"),
+            // A trailing slash is the empty key, and is kept.
+            ("/bar/", "foo", "/bar//foo"),
+            ("/user/", "", "/user/"),
+        ] {
+            assert_eq!(absolute_path(scope, path), expected, "{scope:?} + {path:?}");
+        }
+    }
+
+    #[test]
     fn stringification_follows_the_spec_table() {
         let data = model();
         let scope = Scope::root(&data);
@@ -803,6 +733,56 @@ mod tests {
                 .unwrap(),
             "-9223372036854775807"
         );
+    }
+
+    #[test]
+    fn format_string_evaluates_what_parse_template_parses() {
+        let data = model();
+        let scope = Scope::root(&data);
+        // String escapes, number forms and `null` are the parser's.
+        assert_eq!(
+            scope
+                .format_string(r"${'a\tb'}|${+1}|${.5}|${null}|${ true }")
+                .unwrap(),
+            "a\tb|1|0.5||true"
+        );
+        // What does not parse is an error, where it used to be read as a path
+        // that resolved to nothing.
+        for malformed in ["${/count extra}", "${count:}", "${/count~}"] {
+            let error = scope.format_string(malformed).unwrap_err();
+            assert!(
+                matches!(error, Error::Binding { .. }),
+                "{malformed}: {error}"
+            );
+        }
+        // A key that holds `/` or `~` is reached by its pointer escape, in a
+        // template as in any other binding.
+        let escaped = json!({"a/b": "slash", "items": [{"c~d": "tilde"}]});
+        let root = Scope::root(&escaped);
+        assert_eq!(root.format_string("${/a~1b}").unwrap(), "slash");
+        assert_eq!(
+            root.item("/items", 0).format_string("${c~0d}").unwrap(),
+            "tilde"
+        );
+        // Nesting is the parser's bound, one hundred levels, not ten.
+        let nested = format!("{}/count{}", "${".repeat(50), "}".repeat(50));
+        assert_eq!(scope.format_string(&nested).unwrap(), "3");
+        let too_deep = format!(
+            "{}/count{}",
+            "${".repeat(MAX_TEMPLATE_DEPTH + 1),
+            "}".repeat(MAX_TEMPLATE_DEPTH + 1)
+        );
+        assert!(scope.format_string(&too_deep).is_err());
+
+        // Evaluating the parts by hand gives what evaluating the template does.
+        let template = "${/company}: ${/count} of ${/nested/a}";
+        let by_hand: String = parse_template(template)
+            .unwrap()
+            .iter()
+            .map(|part| stringify(Some(&scope.resolve_dynamic(&part.to_json()).unwrap())))
+            .collect();
+        assert_eq!(by_hand, scope.format_string(template).unwrap());
+        assert_eq!(by_hand, "Acme Corp: 3 of [1,2]");
     }
 
     #[test]

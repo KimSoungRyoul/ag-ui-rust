@@ -37,6 +37,9 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 jsonptr.workspace = true
+# The `XID_Continue` table, which is what a name in a `formatString` template is
+# made of. No dependencies of its own.
+unicode-ident = "1.0.24"
 jsonschema = { version = "=0.61.2", default-features = false, optional = true }
 ag-ui = { workspace = true, optional = true }
 

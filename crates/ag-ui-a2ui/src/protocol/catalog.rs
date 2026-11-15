@@ -35,6 +35,7 @@
 //! loosely must not turn into false failures.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -455,6 +456,9 @@ pub struct Catalog {
     /// Functions, keyed by name.
     pub functions: BTreeMap<String, FunctionDef>,
     component_order: Vec<String>,
+    /// The document the catalog was read from. Shared, so that cloning a
+    /// catalog does not copy it.
+    document: Option<Arc<Value>>,
 }
 
 impl Catalog {
@@ -468,7 +472,47 @@ impl Catalog {
             components: BTreeMap::new(),
             functions: BTreeMap::new(),
             component_order: Vec::new(),
+            document: None,
         }
+    }
+
+    /// The document this catalog was read from, exactly as
+    /// [`Catalog::from_schema`] was given it.
+    ///
+    /// A `Catalog` is a summary: it keeps what the validator reads. The
+    /// document keeps everything else, such as `pattern` and `minimum`, the
+    /// theme, `$defs`, and keywords this crate has never heard of. Reading a
+    /// catalog and asking for its document is a round trip, and the document
+    /// is what a schema validator, a prompt or a renderer is handed.
+    ///
+    /// `None` for a catalog that was not read from a document:
+    /// [`Catalog::basic`], [`Catalog::empty`], and any catalog after
+    /// [`Catalog::insert_component`], which makes it another catalog than the
+    /// one its document describes. Changing the public fields does not rewrite
+    /// the document.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::Catalog;
+    /// use serde_json::json;
+    ///
+    /// let document = json!({
+    ///     "catalogId": "https://example.com/catalogs/charts",
+    ///     "components": {
+    ///         "Chart": {"type": "object", "properties": {"title": {"type": "string", "maxLength": 80}}}
+    ///     },
+    ///     "$defs": {"theme": {"type": "object"}},
+    ///     "x-vendor": true
+    /// });
+    /// let catalog = Catalog::from_schema(&document)?;
+    /// assert_eq!(catalog.document(), Some(&document));
+    /// // The document reads back into the same catalog.
+    /// assert_eq!(Catalog::from_schema(catalog.document().unwrap())?, catalog);
+    ///
+    /// assert!(Catalog::basic().document().is_none());
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    pub fn document(&self) -> Option<&Value> {
+        self.document.as_deref()
     }
 
     /// Looks up a component type.
@@ -489,11 +533,15 @@ impl Catalog {
     }
 
     /// Adds or replaces a component type.
+    ///
+    /// The catalog is then no longer the one a document described, so
+    /// [`Catalog::document`] is `None` afterwards.
     pub fn insert_component(&mut self, def: ComponentDef) {
         if !self.components.contains_key(&def.name) {
             self.component_order.push(def.name.clone());
         }
         self.components.insert(def.name.clone(), def);
+        self.document = None;
     }
 
     /// Every component id referenced by `component`, using this catalog's
@@ -530,7 +578,8 @@ impl Catalog {
         catalog
     }
 
-    /// Parses an A2UI catalog JSON Schema document.
+    /// Parses an A2UI catalog JSON Schema document, and keeps it:
+    /// [`Catalog::document`] gives it back.
     ///
     /// Understands the shape the specification uses: a top-level `components`
     /// map whose values are JSON Schemas, each typically an `allOf` of shared
@@ -565,12 +614,18 @@ impl Catalog {
         }
         if let Some(Value::Object(functions)) = root.get("functions") {
             for (name, function_schema) in functions {
+                // A function is a schema for its call, so the specification
+                // states the return type as the constant the call's
+                // `returnType` has to be. The bare field is the shorthand.
+                let return_type = function_schema
+                    .get("returnType")
+                    .or_else(|| function_schema.pointer("/properties/returnType/const"));
                 catalog.functions.insert(
                     name.to_string(),
                     FunctionDef {
                         name: name.to_string(),
                         description: string_field(function_schema.get("description")),
-                        return_type: string_field(function_schema.get("returnType")),
+                        return_type: string_field(return_type),
                     },
                 );
             }
@@ -594,6 +649,7 @@ impl Catalog {
                 );
             }
         }
+        catalog.document = Some(Arc::new(schema.clone()));
         Ok(catalog)
     }
 
@@ -1425,6 +1481,76 @@ fn basic_component_defs() -> Vec<ComponentDef> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_catalog_keeps_the_document_it_was_read_from() {
+        let document = json!({
+            "$id": "https://example.com/catalogs/forms",
+            "catalogId": "https://example.com/catalogs/forms",
+            "components": {"Field": {"type": "object", "unevaluatedProperties": false,
+                "properties": {"label": {"type": "string", "pattern": "^[A-Z]"}}}},
+            "functions": {"upper": {"returnType": "string"}},
+            "$defs": {"theme": {"type": "object"}, "unused": {"const": 1}},
+            "x-anything": [1, 2, 3]
+        });
+        let catalog = Catalog::from_schema(&document).unwrap();
+        assert_eq!(catalog.document(), Some(&document));
+        // Read again from what it gave back, it gives the same back.
+        let again = Catalog::from_schema(catalog.document().unwrap()).unwrap();
+        assert_eq!(again.document(), Some(&document));
+        assert_eq!(again, catalog);
+
+        // A catalog that was not read from a document has none, and one that
+        // has been added to no longer has the one it was read from.
+        assert!(Catalog::basic().document().is_none());
+        assert!(Catalog::empty("x").document().is_none());
+        let mut extended = catalog.clone();
+        assert_eq!(extended.document(), Some(&document));
+        extended.insert_component(ComponentDef::new("Extra", "An extra.", vec![]));
+        assert!(extended.document().is_none());
+        assert_ne!(extended, catalog);
+
+        // Two documents that summarize alike are still two catalogs.
+        let mut stricter = document.clone();
+        stricter["components"]["Field"]["properties"]["label"]["pattern"] = json!("^[A-Z][a-z]");
+        let stricter = Catalog::from_schema(&stricter).unwrap();
+        assert_eq!(stricter.components, catalog.components);
+        assert_ne!(stricter, catalog);
+    }
+
+    #[test]
+    fn a_function_return_type_is_read_from_the_schema_of_its_call() {
+        // The form the specification's catalogs use, and the shorthand.
+        let catalog = Catalog::from_schema(&json!({
+            "catalogId": "c",
+            "functions": {
+                "capitalize": {"type": "object", "properties": {
+                    "call": {"const": "capitalize"},
+                    "returnType": {"const": "string"}
+                }},
+                "count": {"returnType": "number"},
+                "untyped": {"type": "object"}
+            }
+        }))
+        .unwrap();
+        let returns = |name: &str| catalog.functions[name].return_type.as_deref();
+        assert_eq!(returns("capitalize"), Some("string"));
+        assert_eq!(returns("count"), Some("number"));
+        assert_eq!(returns("untyped"), None);
+
+        // So the published basic catalog states what the built-in one does.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/spec_v0_9/basic_catalog.json");
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let published = Catalog::from_schema(&document).unwrap();
+        for (name, function) in &Catalog::basic().functions {
+            assert_eq!(
+                published.functions[name].return_type, function.return_type,
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn basic_catalog_has_the_eighteen_components_and_fourteen_functions() {
