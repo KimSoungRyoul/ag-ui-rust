@@ -238,17 +238,17 @@ pub(crate) struct Ordering {
     /// The chunk streams being assembled, for the events that stand for
     /// others.
     streams: Streams,
-    /// What is open, by id, with the owner in force. `Vec`s in opening order,
+    /// What is open, by id, with the owner in force, and in opening order,
     /// so a complaint names whichever was opened first.
-    text: Vec<(MessageId, Owner)>,
-    tool: Vec<(ToolCallId, Owner)>,
-    reasoning: Vec<(MessageId, Owner)>,
+    text: OpenSet<MessageId, Owner>,
+    tool: OpenSet<ToolCallId, Owner>,
+    reasoning: OpenSet<MessageId, Owner>,
     /// Open reasoning blocks: what `REASONING_START` opens.
-    blocks: Vec<(MessageId, Owner)>,
+    blocks: OpenSet<MessageId, Owner>,
     /// Open steps, keyed by owner as well as name: a subagent routinely runs
     /// the same graph shape as its parent, and neither closes the other's.
-    steps: Vec<(Owner, StepName)>,
-    subagents: Vec<SubagentRunId>,
+    steps: OpenSet<(Owner, StepName), ()>,
+    subagents: OpenSet<SubagentRunId, ()>,
     /// Ids closed in this run: an id names one invocation.
     closed_subagents: HashSet<SubagentRunId>,
     /// Every text message ever introduced and who owns it: the first writer.
@@ -266,12 +266,81 @@ pub(crate) struct Ordering {
     activity_owners: HashMap<MessageId, Owner>,
 }
 
+/// What is open of one kind, by key, with what it was opened with.
+///
+/// Kept by key, so that opening, continuing and closing one costs the same
+/// however many are open: a producer that opens items and never closes them
+/// does not make each later event slower. The order of opening is read only
+/// to name what is still open, which ends a run.
+#[derive(Clone, Debug)]
+struct OpenSet<K, V> {
+    /// Each open key, with its place in the order of opening.
+    by_key: HashMap<K, (u64, V)>,
+    /// The place the next one opened takes.
+    next: u64,
+}
+
+impl<K, V> Default for OpenSet<K, V> {
+    fn default() -> Self {
+        Self {
+            by_key: HashMap::new(),
+            next: 0,
+        }
+    }
+}
+
+impl<K: Eq + std::hash::Hash, V> OpenSet<K, V> {
+    fn contains(&self, key: &K) -> bool {
+        self.by_key.contains_key(key)
+    }
+
+    fn get(&self, key: &K) -> Option<&V> {
+        self.by_key.get(key).map(|(_, value)| value)
+    }
+
+    fn push(&mut self, key: K, value: V) {
+        self.by_key.insert(key, (self.next, value));
+        self.next += 1;
+    }
+
+    /// Closes `key`, handing back its place and value.
+    fn remove(&mut self, key: &K) -> Option<(u64, V)> {
+        self.by_key.remove(key)
+    }
+
+    /// Opens `key` again in the place it had.
+    fn restore(&mut self, key: K, place: u64, value: V) {
+        self.by_key.insert(key, (place, value));
+    }
+
+    fn clear(&mut self) {
+        self.by_key.clear();
+    }
+
+    /// Everything open, the one opened first first.
+    fn in_order(&self) -> Vec<(&K, &V)> {
+        let mut open: Vec<_> = self.by_key.iter().collect();
+        open.sort_unstable_by_key(|(_, (place, _))| *place);
+        open.into_iter()
+            .map(|(key, (_, value))| (key, value))
+            .collect()
+    }
+
+    /// The one opened first.
+    fn first(&self) -> Option<(&K, &V)> {
+        self.by_key
+            .iter()
+            .min_by_key(|(_, (place, _))| *place)
+            .map(|(key, (_, value))| (key, value))
+    }
+}
+
 /// A stream ended on the way to judging an event, to be put back if the
-/// event is rejected.
+/// event is rejected: its place in the order of opening, its id, its owner.
 enum Ended {
-    Text(usize, (MessageId, Owner)),
-    Tool(usize, (ToolCallId, Owner)),
-    Reasoning(usize, (MessageId, Owner)),
+    Text(u64, MessageId, Owner),
+    Tool(u64, ToolCallId, Owner),
+    Reasoning(u64, MessageId, Owner),
 }
 
 impl Ordering {
@@ -281,12 +350,12 @@ impl Ordering {
             policy,
             phase: Phase::Idle,
             streams: Streams::default(),
-            text: Vec::new(),
-            tool: Vec::new(),
-            reasoning: Vec::new(),
-            blocks: Vec::new(),
-            steps: Vec::new(),
-            subagents: Vec::new(),
+            text: OpenSet::default(),
+            tool: OpenSet::default(),
+            reasoning: OpenSet::default(),
+            blocks: OpenSet::default(),
+            steps: OpenSet::default(),
+            subagents: OpenSet::default(),
             closed_subagents: HashSet::new(),
             message_owners: HashMap::new(),
             reasoning_owners: HashMap::new(),
@@ -382,9 +451,11 @@ impl Ordering {
             self.streams.rewind(before);
             for entry in ended.into_iter().rev() {
                 match entry {
-                    Ended::Text(index, open) => self.text.insert(index, open),
-                    Ended::Tool(index, open) => self.tool.insert(index, open),
-                    Ended::Reasoning(index, open) => self.reasoning.insert(index, open),
+                    Ended::Text(place, id, owner) => self.text.restore(id, place, owner),
+                    Ended::Tool(place, id, owner) => self.tool.restore(id, place, owner),
+                    Ended::Reasoning(place, id, owner) => {
+                        self.reasoning.restore(id, place, owner);
+                    }
                 }
             }
         }
@@ -474,7 +545,7 @@ impl Ordering {
                 self.message_owners
                     .entry(e.message_id.clone())
                     .or_insert_with(|| owner.clone());
-                self.text.push((e.message_id.clone(), owner));
+                self.text.push(e.message_id.clone(), owner);
             }
             Event::TextMessageContent(e) => {
                 require(
@@ -485,15 +556,16 @@ impl Ordering {
                 )?;
             }
             Event::TextMessageEnd(e) => {
-                let index = require(
+                require(
                     &self.text,
                     Entity::Message,
                     &e.message_id,
                     &e.subagent_run_id,
                 )?;
-                let open = self.text.remove(index);
-                if let Some(ended) = ended {
-                    ended.push(Ended::Text(index, open));
+                if let Some((place, owner)) = self.text.remove(&e.message_id) {
+                    if let Some(ended) = ended {
+                        ended.push(Ended::Text(place, e.message_id.clone(), owner));
+                    }
                 }
             }
 
@@ -506,7 +578,7 @@ impl Ordering {
                 not_open(&self.tool, Entity::ToolCall, &e.tool_call_id)?;
                 self.tool_call_owners
                     .insert(e.tool_call_id.clone(), owner.clone());
-                self.tool.push((e.tool_call_id.clone(), owner));
+                self.tool.push(e.tool_call_id.clone(), owner);
             }
             Event::ToolCallArgs(e) => {
                 require(
@@ -517,15 +589,16 @@ impl Ordering {
                 )?;
             }
             Event::ToolCallEnd(e) => {
-                let index = require(
+                require(
                     &self.tool,
                     Entity::ToolCall,
                     &e.tool_call_id,
                     &e.subagent_run_id,
                 )?;
-                let open = self.tool.remove(index);
-                if let Some(ended) = ended {
-                    ended.push(Ended::Tool(index, open));
+                if let Some((place, owner)) = self.tool.remove(&e.tool_call_id) {
+                    if let Some(ended) = ended {
+                        ended.push(Ended::Tool(place, e.tool_call_id.clone(), owner));
+                    }
                 }
             }
             // The call this answers has to be over. Anything else still
@@ -541,7 +614,7 @@ impl Ordering {
                         id: id.as_str().to_owned(),
                     });
                 }
-                if self.tool.iter().any(|(open, _)| open == id) {
+                if self.tool.contains(id) {
                     return Err(Broke::ResultBeforeEnd {
                         id: id.as_str().to_owned(),
                     });
@@ -565,16 +638,16 @@ impl Ordering {
                 self.reasoning_owners
                     .entry(e.message_id.clone())
                     .or_insert_with(|| owner.clone());
-                self.blocks.push((e.message_id.clone(), owner));
+                self.blocks.push(e.message_id.clone(), owner);
             }
             Event::ReasoningEnd(e) => {
-                let index = require(
+                require(
                     &self.blocks,
                     Entity::ReasoningBlock,
                     &e.message_id,
                     &e.subagent_run_id,
                 )?;
-                self.blocks.remove(index);
+                self.blocks.remove(&e.message_id);
             }
             Event::ReasoningMessageStart(e) => {
                 let owner =
@@ -583,7 +656,7 @@ impl Ordering {
                 self.reasoning_owners
                     .entry(e.message_id.clone())
                     .or_insert_with(|| owner.clone());
-                self.reasoning.push((e.message_id.clone(), owner));
+                self.reasoning.push(e.message_id.clone(), owner);
             }
             Event::ReasoningMessageContent(e) => {
                 require(
@@ -594,15 +667,16 @@ impl Ordering {
                 )?;
             }
             Event::ReasoningMessageEnd(e) => {
-                let index = require(
+                require(
                     &self.reasoning,
                     Entity::ReasoningMessage,
                     &e.message_id,
                     &e.subagent_run_id,
                 )?;
-                let open = self.reasoning.remove(index);
-                if let Some(ended) = ended {
-                    ended.push(Ended::Reasoning(index, open));
+                if let Some((place, owner)) = self.reasoning.remove(&e.message_id) {
+                    if let Some(ended) = ended {
+                        ended.push(Ended::Reasoning(place, e.message_id.clone(), owner));
+                    }
                 }
             }
             // Continues an entity by id, and `subtype` says which kind: a
@@ -669,20 +743,15 @@ impl Ordering {
                         owner: key.0,
                     });
                 }
-                self.steps.push(key);
+                self.steps.push(key, ());
             }
             Event::StepFinished(e) => {
                 let key = (e.subagent_run_id.clone(), e.step_name.clone());
-                match self.steps.iter().position(|open| open == &key) {
-                    Some(index) => {
-                        self.steps.remove(index);
-                    }
-                    None => {
-                        return Err(Broke::StepNotRunning {
-                            name: key.1.as_str().to_owned(),
-                            owner: key.0,
-                        });
-                    }
+                if self.steps.remove(&key).is_none() {
+                    return Err(Broke::StepNotRunning {
+                        name: key.1.as_str().to_owned(),
+                        owner: key.0,
+                    });
                 }
             }
 
@@ -708,7 +777,7 @@ impl Ordering {
                         });
                     }
                 }
-                self.subagents.push(id.clone());
+                self.subagents.push(id.clone(), ());
             }
             Event::SubagentFinished(e) => self.close_subagent(&e.subagent_run_id)?,
             Event::SubagentError(e) => self.close_subagent(&e.subagent_run_id)?,
@@ -820,9 +889,8 @@ impl Ordering {
     }
 
     fn close_subagent(&mut self, id: &SubagentRunId) -> Result<(), Broke> {
-        match self.subagents.iter().position(|active| active == id) {
-            Some(index) => {
-                self.subagents.remove(index);
+        match self.subagents.remove(id) {
+            Some(_) => {
                 self.closed_subagents.insert(id.clone());
                 Ok(())
             }
@@ -853,30 +921,44 @@ impl Ordering {
         if let Some((id, _)) = self.blocks.first() {
             return Some(entity(Entity::ReasoningBlock, id.as_str()));
         }
-        if let Some((owner, name)) = self.steps.first() {
+        if let Some(((owner, name), ())) = self.steps.first() {
             return Some(Open::Step {
                 name: name.as_str().to_owned(),
                 owner: owner.clone(),
             });
         }
-        self.subagents.first().map(|id| Open::Subagent {
+        self.subagents.first().map(|(id, ())| Open::Subagent {
             id: id.as_str().to_owned(),
         })
     }
 
     /// Everything open, by kind and in opening order, for a diagnostic.
     pub(crate) fn open(&self) -> OpenSets<'_> {
+        fn ids<K: Eq + std::hash::Hash + AsRef<str>, V>(set: &OpenSet<K, V>) -> Vec<&str> {
+            set.in_order()
+                .into_iter()
+                .map(|(id, _)| id.as_ref())
+                .collect()
+        }
         OpenSets {
-            messages: self.text.iter().map(|(id, _)| id.as_str()).collect(),
-            tool_calls: self.tool.iter().map(|(id, _)| id.as_str()).collect(),
-            reasoning_messages: self.reasoning.iter().map(|(id, _)| id.as_str()).collect(),
-            reasoning_blocks: self.blocks.iter().map(|(id, _)| id.as_str()).collect(),
+            messages: ids(&self.text),
+            tool_calls: ids(&self.tool),
+            reasoning_messages: ids(&self.reasoning),
+            reasoning_blocks: ids(&self.blocks),
             steps: self
                 .steps
-                .iter()
-                .map(|(owner, name)| (owner.as_ref().map(SubagentRunId::as_str), name.as_str()))
+                .in_order()
+                .into_iter()
+                .map(|((owner, name), ())| {
+                    (owner.as_ref().map(SubagentRunId::as_str), name.as_str())
+                })
                 .collect(),
-            subagents: self.subagents.iter().map(SubagentRunId::as_str).collect(),
+            subagents: self
+                .subagents
+                .in_order()
+                .into_iter()
+                .map(|(id, ())| id.as_str())
+                .collect(),
         }
     }
 }
@@ -916,12 +998,12 @@ fn agrees(
 
 /// Rejects a start for an id that is already open. The whole of the
 /// concurrency rule: two ids may overlap, one id may not overlap itself.
-fn not_open<T: PartialEq + AsRef<str>>(
-    open: &[(T, Owner)],
+fn not_open<T: Eq + std::hash::Hash + AsRef<str>>(
+    open: &OpenSet<T, Owner>,
     entity: Entity,
     id: &T,
 ) -> Result<(), Broke> {
-    if open.iter().any(|(open, _)| open == id) {
+    if open.contains(id) {
         return Err(Broke::AlreadyOpen {
             entity,
             id: id.as_ref().to_owned(),
@@ -930,22 +1012,21 @@ fn not_open<T: PartialEq + AsRef<str>>(
     Ok(())
 }
 
-/// Where an open id sits, for an event that continues or closes it and
-/// agrees with its opener about who owns it.
-fn require<T: PartialEq + AsRef<str>>(
-    open: &[(T, Owner)],
+/// Checks that an id is open, for an event that continues or closes it, and
+/// that the event agrees with its opener about who owns it.
+fn require<T: Eq + std::hash::Hash + AsRef<str>>(
+    open: &OpenSet<T, Owner>,
     entity: Entity,
     id: &T,
     named: &Owner,
-) -> Result<usize, Broke> {
-    let Some(index) = open.iter().position(|(open, _)| open == id) else {
+) -> Result<(), Broke> {
+    let Some(owner) = open.get(id) else {
         return Err(Broke::NotOpen {
             entity,
             id: id.as_ref().to_owned(),
         });
     };
-    agrees(entity, id.as_ref(), &open[index].1, named, Claim::Continues)?;
-    Ok(index)
+    agrees(entity, id.as_ref(), owner, named, Claim::Continues)
 }
 
 #[cfg(test)]
