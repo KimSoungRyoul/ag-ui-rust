@@ -465,8 +465,8 @@ fn a_merging_activity_snapshot_keeps_the_activitys_owner() {
     };
     assert_eq!(owner(&applier).as_deref(), Some("s1"));
 
-    // `replace: false` merges content into the message where it is; only a
-    // replacing snapshot re-mints it, attribution included.
+    // `replace: false` leaves the message as it stands; only a replacing
+    // snapshot re-mints it, attribution included.
     let mut step = JsonObject::new();
     step.insert("step".to_owned(), serde_json::json!(2));
     applier
