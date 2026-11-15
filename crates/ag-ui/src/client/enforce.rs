@@ -9,6 +9,9 @@
 //! stream, ahead of the event it concerns, once per run for each distinct
 //! text. A `Thread` records each one; the plain event streams drop them unless
 //! their caller asks for them.
+//!
+//! Events that were never JSON take [`typed`] instead: an `Event` holds
+//! nothing this version does not know, so the schema walk is skipped.
 
 use std::collections::{HashSet, VecDeque};
 use std::pin::Pin;
@@ -42,21 +45,28 @@ pub(crate) fn decode(value: Value, warnings: &mut Vec<String>) -> Result<Option<
         return Ok(None);
     };
     let event: Event = serde_json::from_value(value)?;
-    if let Event::RunStarted(started) = &event {
-        if let Some(version) = &started.protocol_version {
-            let current = (1, 0);
-            let declared = version.split_once('.').and_then(|(major, minor)| {
-                Some((major.parse::<u64>().ok()?, minor.parse::<u64>().ok()?))
-            });
-            if declared.is_none_or(|peer| peer > current) {
-                warnings.push(format!(
-                    "producer declared newer or uninterpretable protocol version \"{}\"",
-                    crate::protocol::excerpt(version, false)
-                ));
-            }
-        }
-    }
+    note_version(&event, warnings);
     Ok(Some(event))
+}
+
+/// Warns when `RUN_STARTED` declares a protocol version newer than this one.
+fn note_version(event: &Event, warnings: &mut Vec<String>) {
+    let Event::RunStarted(started) = event else {
+        return;
+    };
+    let Some(version) = &started.protocol_version else {
+        return;
+    };
+    let current = (1, 0);
+    let declared = version
+        .split_once('.')
+        .and_then(|(major, minor)| Some((major.parse::<u64>().ok()?, minor.parse::<u64>().ok()?)));
+    if declared.is_none_or(|peer| peer > current) {
+        warnings.push(format!(
+            "producer declared newer or uninterpretable protocol version \"{}\"",
+            crate::protocol::excerpt(version, false)
+        ));
+    }
 }
 
 /// Applies the same enforcement to every transport, discarding its warnings.
@@ -70,12 +80,21 @@ where
 }
 
 /// [`stream`], handing each warning to `on_warning` as it is reached.
-pub(crate) fn events<S, F>(raw: S, mut on_warning: F) -> impl Stream<Item = Result<Event>>
+pub(crate) fn events<S, F>(raw: S, on_warning: F) -> impl Stream<Item = Result<Event>>
 where
     S: Stream<Item = Result<Value>>,
     F: FnMut(String),
 {
-    checked(raw).filter_map(move |item| {
+    unchecked(checked(raw), on_warning)
+}
+
+/// Takes the warnings out of a checked stream, handing each to `on_warning`.
+pub(crate) fn unchecked<S, F>(checked: S, mut on_warning: F) -> impl Stream<Item = Result<Event>>
+where
+    S: Stream<Item = Result<Checked>>,
+    F: FnMut(String),
+{
+    checked.filter_map(move |item| {
         std::future::ready(match item {
             Ok(Checked::Event(event)) => Some(Ok(event)),
             Ok(Checked::Warning(warning)) => {
@@ -98,15 +117,7 @@ pub(crate) fn checked<S>(raw: S) -> impl Stream<Item = Result<Checked>>
 where
     S: Stream<Item = Result<Value>>,
 {
-    let boundary = Boundary {
-        raw: Box::pin(raw),
-        legacy: Legacy::default(),
-        ready: VecDeque::new(),
-        out: VecDeque::new(),
-        delivered: HashSet::new(),
-        done: false,
-    };
-    futures_util::stream::unfold(boundary, |mut boundary| async move {
+    futures_util::stream::unfold(Boundary::new(raw), |mut boundary| async move {
         loop {
             if let Some(item) = boundary.out.pop_front() {
                 return Some((item, boundary));
@@ -144,7 +155,31 @@ where
     })
 }
 
-/// What [`checked`] carries between polls.
+/// Typed events under the same contract as [`checked`], minus the schema
+/// walk: an `Event` holds nothing to remove. A retired `THINKING_*` event
+/// still takes the wire path, so there is one translation, and a newer
+/// declared protocol version is still reported.
+pub(crate) fn typed<S>(events: S) -> impl Stream<Item = Result<Checked>>
+where
+    S: Stream<Item = Result<Event>>,
+{
+    futures_util::stream::unfold(Boundary::new(events), |mut boundary| async move {
+        loop {
+            if let Some(item) = boundary.out.pop_front() {
+                return Some((item, boundary));
+            }
+            if boundary.done {
+                return None;
+            }
+            match boundary.raw.next().await? {
+                Ok(event) => boundary.typed(event),
+                Err(error) => boundary.fail(error),
+            }
+        }
+    })
+}
+
+/// What [`checked`] and [`typed`] carry between polls.
 struct Boundary<S> {
     raw: Pin<Box<S>>,
     legacy: Legacy,
@@ -158,6 +193,50 @@ struct Boundary<S> {
 }
 
 impl<S> Boundary<S> {
+    fn new(raw: S) -> Self {
+        Self {
+            raw: Box::pin(raw),
+            legacy: Legacy::default(),
+            ready: VecDeque::new(),
+            out: VecDeque::new(),
+            delivered: HashSet::new(),
+            done: false,
+        }
+    }
+
+    /// Hands on one typed event as it is, unless 1.0 retired it.
+    fn typed(&mut self, event: Event) {
+        let mut warnings = Vec::new();
+        if matches!(event, Event::RunStarted(_)) {
+            // A later run on the same stream reports its own warnings.
+            self.delivered.clear();
+            self.legacy = Legacy::default();
+        }
+        if !event.is_deprecated() {
+            note_version(&event, &mut warnings);
+            self.warn(warnings);
+            self.out.push_back(Ok(Checked::Event(event)));
+            return;
+        }
+        let translated = serde_json::to_value(&event)
+            .map_err(Error::from)
+            .and_then(|value| self.legacy.translate(value, &mut warnings))
+            .and_then(|values| {
+                let mut events = Vec::with_capacity(values.len());
+                for value in values {
+                    events.extend(decode(value, &mut warnings)?);
+                }
+                Ok(events)
+            });
+        self.warn(warnings);
+        match translated {
+            Ok(events) => self
+                .out
+                .extend(events.into_iter().map(|event| Ok(Checked::Event(event)))),
+            Err(error) => self.fail(error),
+        }
+    }
+
     /// Hands on each warning whose text this run has not delivered yet. A
     /// legacy producer would otherwise repeat one per reasoning token.
     fn warn(&mut self, warnings: Vec<String>) {

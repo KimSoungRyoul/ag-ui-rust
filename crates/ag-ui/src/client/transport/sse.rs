@@ -337,9 +337,9 @@ where
     crate::client::enforce::stream(decode_raw_events(chunks))
 }
 
-/// Decodes SSE frames into raw JSON values. A transport should expose these
-/// through [`super::Transport::run_raw`] so the common compatibility boundary
-/// can run before enforcement.
+/// Decodes SSE frames into raw JSON values. A transport hands these on as
+/// [`TransportStream::json`](super::TransportStream::json), so the common
+/// compatibility boundary runs on what the peer actually sent.
 pub fn decode_raw_events<S, B, E>(chunks: S) -> impl Stream<Item = Result<Value>>
 where
     S: Stream<Item = core::result::Result<B, E>>,
