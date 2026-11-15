@@ -926,9 +926,16 @@ impl SurfaceStore {
         let Some(version) = A2uiVersion::parse(&message.version) else {
             return Err(Error::parse("unsupported A2UI version"));
         };
-        let id = message
-            .surface_id()
-            .ok_or_else(|| Error::parse("RPC messages are not part of A2UI v0.9 or v0.9.1"))?;
+        // A function call changes no surface. It is a message of the
+        // versions that have one.
+        let Some(id) = message.surface_id() else {
+            return match version.carries_function_calls() {
+                true => Ok(()),
+                false => Err(Error::parse(format!(
+                    "a {version} message carries no function call"
+                ))),
+            };
+        };
         if let AgentPayload::CreateSurface(create) = &message.payload {
             if self.lifecycle(id) == Lifecycle::Live {
                 return Err(Error::parse(format!("surface {id:?} already exists")));

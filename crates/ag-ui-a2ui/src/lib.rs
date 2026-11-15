@@ -210,7 +210,7 @@ mod protocol;
 
 #[doc(inline)]
 pub use crate::protocol::{
-    binding, catalog, message, model, operation, processor, schema, surface, validate, version,
+    binding, catalog, message, model, operation, processor, rpc, schema, surface, validate, version,
 };
 #[cfg(feature = "schema-validation")]
 #[doc(inline)]

@@ -5,6 +5,10 @@
 //! payload ([`AgentPayload`](super::message::AgentPayload)), the envelope check,
 //! the streaming scanner and the history reader all read the names from here
 //! rather than spelling them again.
+//!
+//! Four of them change a surface, in every version. From v1.0 two more carry
+//! a function call ([`rpc`](crate::rpc)); which a version has is
+//! [`A2uiVersion::operations`](crate::A2uiVersion::operations).
 
 use std::fmt;
 
@@ -31,6 +35,12 @@ pub enum Operation {
     UpdateDataModel,
     /// `deleteSurface`: drop a surface and everything under it.
     DeleteSurface,
+    /// `callRendererFunction`: ask the renderer to run a function of a
+    /// catalog. From v1.0.
+    CallRendererFunction,
+    /// `agentFunctionResponse`: the answer to a renderer's
+    /// `callAgentFunction`. From v1.0.
+    AgentFunctionResponse,
 }
 
 impl Operation {
@@ -39,6 +49,16 @@ impl Operation {
     /// A slice rather than an array: an array's length is part of its type,
     /// so adding an operation would change the type of this constant.
     pub const ALL: &'static [Self] = &[
+        Self::CreateSurface,
+        Self::UpdateComponents,
+        Self::UpdateDataModel,
+        Self::DeleteSurface,
+        Self::CallRendererFunction,
+        Self::AgentFunctionResponse,
+    ];
+
+    /// The operations that change a surface: the four every version has.
+    pub const SURFACE: &'static [Self] = &[
         Self::CreateSurface,
         Self::UpdateComponents,
         Self::UpdateDataModel,
@@ -52,7 +72,18 @@ impl Operation {
             Self::UpdateComponents => "updateComponents",
             Self::UpdateDataModel => "updateDataModel",
             Self::DeleteSurface => "deleteSurface",
+            Self::CallRendererFunction => "callRendererFunction",
+            Self::AgentFunctionResponse => "agentFunctionResponse",
         }
+    }
+
+    /// Whether the operation changes a surface. The two that carry a function
+    /// call do not: they are addressed by `functionCallId`.
+    pub const fn changes_a_surface(self) -> bool {
+        !matches!(
+            self,
+            Self::CallRendererFunction | Self::AgentFunctionResponse
+        )
     }
 
     /// Reads a payload key. `None` for a key that names no operation.
@@ -85,7 +116,9 @@ impl fmt::Display for Operation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::message::{AgentMessage, Component};
+    use crate::protocol::message::{
+        AgentMessage, CallRendererFunction, Component, FunctionCall, FunctionResponse,
+    };
     use serde_json::json;
 
     #[test]
@@ -107,13 +140,15 @@ mod tests {
             AgentMessage::update_components("s", vec![Component::new("root", "Text")]),
             AgentMessage::update_data_model("s", "/", json!({})),
             AgentMessage::delete_surface("s"),
+            AgentMessage::call_renderer_function(CallRendererFunction::new(
+                "call-1",
+                FunctionCall::new("notify").with_catalog_id("c"),
+            )),
+            AgentMessage::agent_function_response(FunctionResponse::value("call-2", json!(1))),
         ];
         let mut seen = Vec::new();
         for message in &messages {
-            let operation = message
-                .payload
-                .operation()
-                .expect("a v0.9-family payload names an operation");
+            let operation = message.payload.operation();
             let wire = serde_json::to_value(message).unwrap();
             assert!(
                 wire.get(operation.as_str()).is_some(),
@@ -123,6 +158,12 @@ mod tests {
             seen.push(operation);
         }
         assert_eq!(seen, Operation::ALL, "one message per operation, in order");
+        assert_eq!(&seen[..4], Operation::SURFACE);
+        assert!(
+            seen[4..]
+                .iter()
+                .all(|operation| !operation.changes_a_surface())
+        );
     }
 
     #[test]

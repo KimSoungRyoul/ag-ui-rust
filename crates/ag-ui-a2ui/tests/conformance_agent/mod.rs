@@ -223,20 +223,6 @@ fn fixture_version(document: &Value) -> Step<Option<A2uiVersion>> {
     }
 }
 
-/// Why a case cannot run yet, when it cannot: it carries one of the messages
-/// by which an agent and a renderer call each other's functions.
-fn not_yet(text: &str) -> Option<&'static str> {
-    [
-        "callRendererFunction",
-        "agentFunctionResponse",
-        "callAgentFunction",
-        "rendererFunctionResponse",
-    ]
-    .into_iter()
-    .find(|marker| text.contains(marker))
-    .map(|_| "function calls between an agent and a renderer")
-}
-
 fn read_fixture(relative: &str) -> Step<Value> {
     let path = conformance_dir().join(relative);
     let text = std::fs::read_to_string(&path)
@@ -344,9 +330,6 @@ fn setup(case: &Value, container: &Value, default: bool, in_v1_0: &mut bool) -> 
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
         );
-    }
-    if let Some(why) = not_yet(&text) {
-        return skip(NEEDS_V1_0, why);
     }
     *in_v1_0 = catalogs
         .first()

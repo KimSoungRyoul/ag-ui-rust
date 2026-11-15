@@ -45,7 +45,8 @@
 //! let versions: &'static [A2uiVersion] = A2uiVersion::ALL;
 //! let operations: &'static [Operation] = Operation::ALL;
 //! assert!(versions.contains(&A2uiVersion::DEFAULT));
-//! assert_eq!(version.operations(), operations);
+//! assert_eq!(version.operations(), Operation::SURFACE);
+//! assert_eq!(A2uiVersion::V1_0.operations(), operations);
 //!
 //! // A version-dependent question is a method, not a string comparison.
 //! assert!(A2uiVersion::V0_9.accepts(version), "v0.9.1 may update a v0.9 surface");
@@ -219,10 +220,23 @@ impl A2uiVersion {
             .find(|version| version.number() == bare)
     }
 
-    /// The operations a message of this version may carry, in envelope order.
+    /// The operations a message of this version may carry, in envelope order:
+    /// the four that change a surface, and from v1.0 the two that carry a
+    /// function call.
     pub fn operations(self) -> &'static [Operation] {
         match self.family() {
-            Family::V0_9 | Family::V1_0 => Operation::ALL,
+            Family::V0_9 => Operation::SURFACE,
+            Family::V1_0 => Operation::ALL,
+        }
+    }
+
+    /// Whether an agent and a renderer call each other's functions with
+    /// messages: `callRendererFunction` and `callAgentFunction`, and the two
+    /// responses. From v1.0.
+    pub const fn carries_function_calls(self) -> bool {
+        match self.family() {
+            Family::V0_9 => false,
+            Family::V1_0 => true,
         }
     }
 
@@ -524,6 +538,8 @@ impl A2uiVersion {
                     ("path", PropType::String, false),
                 ],
                 Operation::DeleteSurface => &[("surfaceId", PropType::String, true)],
+                // Not operations of this family.
+                Operation::CallRendererFunction | Operation::AgentFunctionResponse => &[],
             },
             Family::V1_0 => match operation {
                 Operation::CreateSurface => &[
@@ -543,6 +559,15 @@ impl A2uiVersion {
                     ("path", PropType::String, false),
                 ],
                 Operation::DeleteSurface => &[("surfaceId", PropType::String, true)],
+                Operation::CallRendererFunction => &[
+                    ("functionCallId", PropType::String, true),
+                    ("callFunction", PropType::Object, true),
+                    ("surfaceId", PropType::String, false),
+                ],
+                Operation::AgentFunctionResponse => &[
+                    ("functionCallId", PropType::String, true),
+                    ("error", PropType::Object, false),
+                ],
             },
         }
     }
@@ -657,8 +682,15 @@ mod tests {
                     "{created} surface, {message}"
                 );
             }
-            assert_eq!(created.operations(), Operation::ALL);
-            for &operation in Operation::ALL {
+            assert_eq!(
+                created.operations(),
+                if created.carries_function_calls() {
+                    Operation::ALL
+                } else {
+                    Operation::SURFACE
+                }
+            );
+            for &operation in Operation::SURFACE {
                 let fields = created.envelope(operation);
                 assert_eq!(
                     fields[0],
