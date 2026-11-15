@@ -469,6 +469,14 @@ These are on `main` and not yet in a published version.
   pre-1.0 `events.proto` could carry. Upstream's 1.0 `events.proto` covers every 1.0 event
   type, so there is no gap left to check. `ProtobufFormatter` is unchanged and still
   refuses to encode.
+- `binding::absolute_path(scope, path)` is new: the absolute data-model path a binding
+  path resolves to in a scope, without a data model.
+- The empty path and `.` are relative, and name the scope a binding is in: inside a
+  template they are the item being drawn. `Scope::resolve`, `Scope::resolve_pointer`,
+  `Scope::item`, `ModelScope::resolve`, `ModelScope::item` and the validator read the
+  empty path as the whole model in every scope, and `.` as a key named `.`. Write `/`
+  for the whole model from inside a template. Outside a template nothing changes for
+  the empty path, and `.` is no longer reported as a relative path with no template.
 
 ## Verify the upgrade
 

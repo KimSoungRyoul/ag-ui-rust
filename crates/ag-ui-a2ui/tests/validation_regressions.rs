@@ -31,6 +31,58 @@ fn relative_pointer_escapes_and_empty_segments_are_preserved_in_both_scopes() {
     assert!(lossless.resolve("a~2b").is_err());
 }
 
+/// The empty path and `.` are relative: inside a template they are the item
+/// being drawn, not the whole model. Before, both scopes read the empty path as
+/// the root, so a template over a list of lists iterated the root instead of
+/// each inner list, and a `Text` bound to `""` showed the whole model.
+#[test]
+fn the_empty_path_inside_a_template_is_the_item_and_not_the_whole_model() {
+    let catalog = Catalog::basic();
+    let validator = Validator::with_options(
+        &catalog,
+        ValidateOptions {
+            require_bound_values: true,
+            ..Default::default()
+        },
+    );
+    for own in ["", "."] {
+        let components = vec![
+            Component::new("root", "Column")
+                .with("children", json!({"path": "/rows", "componentId": "row"})),
+            Component::new("row", "Row")
+                .with("children", json!({"path": own, "componentId": "cell"})),
+            Component::new("cell", "Text").with("text", json!({"path": own})),
+        ];
+        let rows = json!({"rows": [["a", "b"], ["c"]]});
+        let report = validator.validate_surface(&components, Some(&rows));
+        assert!(report.is_valid(), "{own:?}: {report:?}");
+        assert!(
+            validator
+                .validate_model(&components, &DataModel::from(rows))
+                .is_valid()
+        );
+
+        // An inner item that is not a list is found where it is.
+        let ragged = json!({"rows": [["a"], "not a list"]});
+        let report = validator.validate_surface(&components, Some(&ragged));
+        assert_eq!(report.errors.len(), 1, "{own:?}: {report:?}");
+        assert_eq!(report.errors[0].code, ErrorCode::UnresolvedBinding);
+        assert!(
+            report.errors[0].message.contains("'/rows/1'"),
+            "{}",
+            report.errors[0].message
+        );
+    }
+
+    // Outside a template both spellings are the whole model, and neither is
+    // reported as a relative path that needs a template around it.
+    for own in ["", "."] {
+        let components = [Component::new("root", "Text").with("text", json!({"path": own}))];
+        let report = validator.validate_surface(&components, Some(&json!({"a": 1})));
+        assert!(report.is_valid(), "{own:?}: {report:?}");
+    }
+}
+
 #[test]
 fn nested_templates_validate_every_item_independent_of_component_order() {
     let catalog = Catalog::basic();

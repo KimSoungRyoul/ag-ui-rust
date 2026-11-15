@@ -47,7 +47,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::binding::{ModelScope, collect_bindings};
+use super::binding::{ModelScope, collect_bindings, names_the_scope};
 use super::catalog::{Catalog, ComponentDef, PropKind};
 use super::graph::{Cycle, Finding, Graph};
 use super::message::{AgentMessage, Component};
@@ -1088,8 +1088,11 @@ impl<'a> Validator<'a> {
             }
             let node = &nodes[index];
             for binding in &bindings[index] {
-                let absolute = binding.path.is_empty() || binding.path.starts_with('/');
-                if !absolute && !in_template {
+                let absolute = binding.path.starts_with('/');
+                // The empty path and `.` name the scope the binding is in,
+                // which outside a template is the whole model: nothing about
+                // them needs a template to mean something.
+                if !absolute && !in_template && !names_the_scope(&binding.path) {
                     report.errors.push(ValidationError::new(
                         ErrorCode::UnresolvedBinding,
                         node.locator(&binding.location),
@@ -1133,7 +1136,7 @@ impl<'a> Validator<'a> {
             };
             for edge in graph.edges(index) {
                 if let Some(path) = template_path(component, &edge.location) {
-                    let resolver = if path.is_empty() || path.starts_with('/') {
+                    let resolver = if path.starts_with('/') {
                         root_scope.as_ref()
                     } else {
                         scope.as_ref()

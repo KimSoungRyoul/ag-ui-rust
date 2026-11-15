@@ -49,10 +49,12 @@ differs from the report. A check is in one of four states:
   is listed by name in `KNOWN_FAILURES` with the reason, and must go on failing:
   one that starts passing fails the suite until it is taken off the list.
 
-A case with `steps` counts one check per step in the validator suites. The
-streaming suite counts one check per case and verifies its steps in order.
+A case with `steps` counts one check per step in the validator suites. Every
+other suite counts one check per case and verifies its steps in order; a case
+that stops at a step is reported under that step, `suite::case[step 2]`, and
+that is the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 168 passed, 11 expected divergence, 1865 skipped, 3 failing.
+Totals: 177 passed, 13 expected divergence, 1854 skipped, 3 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -60,12 +62,12 @@ Totals: 168 passed, 11 expected divergence, 1865 skipped, 3 failing.
 | `agent/legacy/parser.yaml` | 23 | 22 | 0 | 0 | 1 | executed |
 | `agent/legacy/inference_format.yaml` | 22 | 12 | 0 | 10 | 0 | executed |
 | `agent/legacy/streaming_parser.yaml` | 88 | 33 | 8 | 45 | 2 | executed |
+| `core/data_context.yaml` | 11 | 9 | 2 | 0 | 0 | executed |
 | `retired/core/validator.yaml` | 45 | 26 | 0 | 25 | 0 | executed; retired upstream |
 | `retired/core/catalog.yaml` | 24 | 23 | 0 | 1 | 0 | executed; retired upstream |
 | `retired/agent/inference_format.yaml` | 19 | 13 | 0 | 6 | 0 | executed; retired upstream |
 | `core/message_processor_v0_9.yaml` | 48 | 0 | 0 | 48 | 0 | no runner yet (#72): the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads |
 | `core/data_model.yaml` | 52 | 0 | 0 | 52 | 0 | no runner yet (#72): data-model reads, writes and deletion, with a renderer's observer notifications |
-| `core/data_context.yaml` | 11 | 0 | 0 | 11 | 0 | no runner yet (#72): resolving a relative path against a scope; the crate has no public entry point that returns the absolute path |
 | `core/expressions.yaml` | 98 | 0 | 0 | 98 | 0 | no runner yet (#72): the formatString template parser; the crate evaluates a template and exposes no parse |
 | `core/catalog.yaml` | 73 | 0 | 0 | 73 | 0 | no runner yet (#72): the reference catalog API: fromJson, toJson, round trip, validationSchema, derive |
 | `core/common_types.yaml` | 22 | 0 | 0 | 22 | 0 | no runner yet (#72): values against the published common types; 3 cases compare a schema generated from an SDK's own types |
@@ -146,7 +148,7 @@ name.
 | later: agent layer (#41) | 28 | 772 | The suite tests the agent layer: inference formats, the per-request processor, catalog resolution, renderer capabilities and state. The next pull request of #41 builds it. |
 | later: A2UI v1.0 (#42) | 19 | 397 | The suite tests A2UI v1.0. |
 | later: adapters (#43) | 1 | 11 | The suite tests the A2A transport adapter. |
-| no runner yet (#72) | 6 | 304 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
+| no runner yet (#72) | 5 | 293 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
 | out of scope: renderer | 8 | 241 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. |
 | out of scope: v0.8 | 2 | 36 | The suite tests the v0.8 wire format. This crate speaks v0.9 and v0.9.1. |
 | not applicable | 2 | 12 | The suite asks something of an SDK that does not apply here: a schema generated from the SDK's own types, an integration with Google's ADK. |
@@ -155,7 +157,7 @@ Upstream's `adapter/` tier is its UI framework adapters (`@a2ui/lit`, React,
 Angular, Flutter, SwiftUI), that is, renderers. The suites about transports are
 under `extensions/`.
 
-### The six suites with no runner yet
+### The five suites with no runner yet
 
 These are in scope: they test the same core this crate implements, at the
 versions it speaks. They are not run because each needs a runner for an action
@@ -166,15 +168,16 @@ expose. Issue #72 tracks them, suite by suite.
 |---|---|
 | `core/message_processor_v0_9.yaml` | A facade over `SurfaceStore` with a catalog registry, and the `rendererError` payload a renderer would send for each rejection. The lifecycle cases map onto `SurfaceStore::apply` directly. |
 | `core/data_model.yaml` | Reads, writes and deletes map onto `DataModel`; the observer notifications half the steps assert are a renderer's. |
-| `core/data_context.yaml` | A public function that returns the absolute path a relative one resolves to. `binding::Scope` resolves a value, not a path. |
 | `core/expressions.yaml` | A parse of a `formatString` template into parts. `Scope::format_string` evaluates one. |
 | `core/catalog.yaml` | 17 of the 73 cases state v0.9 or v0.9.1. `Catalog::from_schema` covers `from_json`; there is no `toJson`, `validationSchema` or `derive`. |
 | `core/common_types.yaml` | 19 cases validate a value against a published common type; 3 compare a schema generated from an SDK's own types, which this crate does not generate. |
 
 ## Expected divergences
 
-Eleven checks: three in `core/validator_v0_9.yaml` and eight in
-`agent/legacy/streaming_parser.yaml`.
+Thirteen checks: three in `core/validator_v0_9.yaml`, eight in
+`agent/legacy/streaming_parser.yaml` and two in `core/data_context.yaml`. Those
+of the suites run one check per case are listed in `DIVERGENCES` in the
+harness with what this crate gives, and the harness holds it to exactly that.
 
 | Checks | Reference expectation | Checked behaviour |
 |---:|---|---|
@@ -183,6 +186,7 @@ Eleven checks: three in `core/validator_v0_9.yaml` and eight in
 | 1 (`test_delta_streaming_correctness_v09`) | Emit components from a message that has not declared the required `version`. | Emit nothing until a supported version is known. |
 | 6 (`test_incremental_data_model_streaming_v09` and five `test_sniff_partial_*_v09` cases) | Emit a root data-model update while the optional `path` field could still arrive after `value`. | Emit nothing until an explicit `path` is known or the message completes. |
 | 1 (`test_cut_unicode_multibyte_emoji_v09`) | Emit text cut after the first half of a surrogate pair. | Emit nothing until the pair is whole: half a pair is not a string in Rust. The suite writes that half as a YAML escape, which is not valid YAML either; the harness reads it as U+FFFD and pins the case. |
+| 2 (`test_resolve_path_context_with_trailing_slash`, `test_resolve_path_empty_in_trailing_slash_context`) | A trailing slash on the scope is dropped: `foo` under `/bar/` is `/bar/foo`. | An empty segment is the empty key, as RFC 6901 reads it, and `""` is a key JSON allows: `foo` under `/bar/` is `/bar//foo`, and the scope `/user/` itself is `/user/`. Only `/` alone is the root. |
 
 The `test_sniff_partial_datamodel_with_cut_key_v09` fixture never becomes valid
 JSON: its final chunk lacks a closing brace for the message. The harness checks
@@ -238,6 +242,16 @@ nothing. Three things about the comparison:
   failure their description names (`CATEGORY_ONLY`), and the rest are skipped.
   The `rendererError` a renderer would send is not checked; this crate is not
   one.
+
+## How the other core suites are run
+
+Each case is one check. A runner reads every key of a case, and a case that
+carries a key the runner does not know fails rather than passing on the part
+that was understood.
+
+- **`resolve_path`** (`core/data_context.yaml`). `binding::absolute_path(scope,
+  path)`, with no `contextPath` read as the root scope. The result is compared
+  as written, so the root is `/`.
 
 ## Retired suites
 

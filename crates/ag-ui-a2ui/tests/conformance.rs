@@ -28,6 +28,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use ag_ui_a2ui::binding::absolute_path;
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::surface::SurfaceStore;
 use ag_ui_a2ui::toolkit::negotiate::{CatalogRegistry, ClientCapabilities, select_catalog_schema};
@@ -138,6 +139,7 @@ const SUITES: &[Suite] = &[
     run("agent/legacy/parser.yaml", [22, 0, 0, 1]),
     run("agent/legacy/inference_format.yaml", [12, 0, 10, 0]),
     run("agent/legacy/streaming_parser.yaml", [33, 8, 45, 2]),
+    run("core/data_context.yaml", [9, 2, 0, 0]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
     retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
     retired("retired/agent/inference_format.yaml", [13, 0, 6, 0]),
@@ -145,7 +147,6 @@ const SUITES: &[Suite] = &[
     // --- core tier, pre-1.0: in scope, no runner in this harness yet (#72) ---------------------
     skip("core/message_processor_v0_9.yaml", 48, Why::Unharnessed, "the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads"),
     skip("core/data_model.yaml", 52, Why::Unharnessed, "data-model reads, writes and deletion, with a renderer's observer notifications"),
-    skip("core/data_context.yaml", 11, Why::Unharnessed, "resolving a relative path against a scope; the crate has no public entry point that returns the absolute path"),
     skip("core/expressions.yaml", 98, Why::Unharnessed, "the formatString template parser; the crate evaluates a template and exposes no parse"),
     skip("core/catalog.yaml", 73, Why::Unharnessed, "the reference catalog API: fromJson, toJson, round trip, validationSchema, derive"),
     skip("core/common_types.yaml", 22, Why::Unharnessed, "values against the published common types; 3 cases compare a schema generated from an SDK's own types"),
@@ -426,6 +427,122 @@ fn verbose() -> bool {
     std::env::var_os("A2UI_CONFORMANCE_VERBOSE").is_some()
 }
 
+/// Checks where this crate does something else on purpose, by the id the
+/// report prints: what this crate gives there, as the runner writes it, and
+/// why.
+///
+/// Both halves are held. The case has to go on expecting something else, and
+/// this crate has to go on giving exactly what is written here: a divergence
+/// that changes, in either direction, fails the suite.
+const DIVERGENCES: &[(&str, &str, &str)] = &[
+    (
+        "core/data_context.yaml::test_resolve_path_context_with_trailing_slash",
+        r#""/bar//foo""#,
+        TRAILING_SLASH,
+    ),
+    (
+        "core/data_context.yaml::test_resolve_path_empty_in_trailing_slash_context",
+        r#""/user/""#,
+        TRAILING_SLASH,
+    ),
+];
+
+const TRAILING_SLASH: &str =
+    "an empty path segment is the empty key here, as RFC 6901 reads it; the reference drops it";
+
+/// Where a case run as a whole stopped, and what this crate did there.
+#[derive(Debug)]
+struct Miss {
+    /// The step it stopped at, in a case that has steps.
+    step: Option<usize>,
+    /// What this crate did, written the way [`DIVERGENCES`] pins it.
+    actual: String,
+    /// What the case wanted instead.
+    expected: String,
+}
+
+impl Miss {
+    fn new(actual: impl Into<String>, expected: impl Into<String>) -> Self {
+        Self {
+            step: None,
+            actual: actual.into(),
+            expected: expected.into(),
+        }
+    }
+}
+
+/// Records a case that is one check: passed, or stopped at one place.
+///
+/// A case with steps is recorded under the step it stopped at,
+/// `suite::case[step 2]`, so that a listed failure or divergence is the one at
+/// that step and not an earlier one that appeared later.
+fn settle(check: &str, result: Result<(), Miss>, tally: &mut Tally) {
+    match result {
+        Ok(()) => {
+            let pinned = DIVERGENCES.iter().any(|(listed, ..)| {
+                listed
+                    .strip_prefix(check)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with("[step "))
+            });
+            let outcome = if pinned {
+                Outcome::Failed(
+                    "listed in DIVERGENCES, and it now does what the case expects; remove it from \
+                     the list"
+                        .into(),
+                )
+            } else {
+                Outcome::Passed
+            };
+            tally.record(check, outcome);
+        }
+        Err(miss) => {
+            let id = match miss.step {
+                Some(step) => format!("{check}[step {step}]"),
+                None => check.to_string(),
+            };
+            let outcome = match DIVERGENCES.iter().find(|(listed, ..)| *listed == id) {
+                Some((_, pinned, reason)) if *pinned == miss.actual => {
+                    Outcome::ExpectedDivergence((*reason).to_string())
+                }
+                Some((_, pinned, _)) => Outcome::Failed(format!(
+                    "the pinned divergence changed: this crate gave {pinned}, and now gives {}",
+                    miss.actual
+                )),
+                None => Outcome::Failed(format!("expected {}, got {}", miss.expected, miss.actual)),
+            };
+            tally.record(&id, outcome);
+        }
+    }
+}
+
+/// The first key of `value` that `known` does not list.
+///
+/// A runner names every key it reads. A key it does not know is an input or
+/// an expectation it would otherwise ignore, and a case with one fails rather
+/// than passing on the part that was understood.
+fn unknown_key(value: &Value, known: &[&str], what: &str) -> Result<(), Miss> {
+    let unknown = value
+        .as_object()
+        .and_then(|object| object.keys().find(|key| !known.contains(&key.as_str())));
+    match unknown {
+        Some(key) => Err(Miss::new(
+            format!("the runner does not read {what} key {key:?}"),
+            "every key of the case to be read",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The keys every case carries, whatever its action.
+const CASE_KEYS: [&str; 6] = [
+    "name",
+    "description",
+    "features",
+    "action",
+    "catalog",
+    "protocolVersion",
+];
+
 fn tally_suite(suite: &Suite) -> (usize, Tally) {
     let cases = cases_of(suite.path);
     let mut tally = Tally::default();
@@ -603,7 +720,7 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     // on the protocol, and gate themselves where a version matters.
     let wire_format = matches!(
         (action, format),
-        ("validate", Format::Current)
+        ("validate" | "resolve_path", Format::Current)
             | (
                 "process_chunk" | "parse_full" | "fix_payload" | "has_parts",
                 _
@@ -631,6 +748,7 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
         ("select_catalog", _) => tally.record(check, run_select_catalog(case)),
         ("load_catalog", _) => tally.record(check, run_load_catalog(case)),
         ("generate_prompt", _) => tally.record(check, run_generate_prompt(case)),
+        ("resolve_path", Format::Current) => settle(check, run_resolve_path(case), tally),
         (other, _) => tally.record(check, Outcome::Skipped(unsupported_action(other))),
     }
 }
@@ -1075,6 +1193,32 @@ fn run_generate_prompt(case: &Value) -> Outcome {
         }
     }
     Outcome::Passed
+}
+
+// --- resolve_path ----------------------------------------------------------
+
+/// `resolve_path`: the absolute path a binding path resolves to in a scope.
+fn run_resolve_path(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["args", "expect"]].concat(),
+        "case",
+    )?;
+    let args = case.get("args").unwrap_or(&Value::Null);
+    unknown_key(args, &["path", "contextPath"], "args")?;
+    let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
+    // No context path is the root scope.
+    let scope = args
+        .get("contextPath")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let expected = case.get("expect").cloned().unwrap_or(Value::Null);
+    let actual = Value::String(absolute_path(scope, path));
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Miss::new(actual.to_string(), expected.to_string()))
+    }
 }
 
 fn load_vendored(relative: &str) -> Value {

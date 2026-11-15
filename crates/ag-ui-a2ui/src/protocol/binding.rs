@@ -15,9 +15,14 @@
 //!   current collection scope. A container whose `children` is a template over
 //!   `/employees` opens one scope per element, so `name` inside the template
 //!   resolves to `/employees/0/name`, `/employees/1/name`, and so on.
+//! - The empty path and `.` are relative too, and name the scope itself: the
+//!   element a template is drawing, which is how a template over a list of
+//!   strings shows each one.
 //!
 //! [`Scope`] models exactly this: [`Scope::root`] for the default scope and
 //! [`Scope::item`] to descend into one element of a bound collection.
+//! [`absolute_path`] is the rule on its own, for a caller that holds a scope's
+//! path and no data.
 //!
 //! # Stringification
 //!
@@ -81,13 +86,67 @@ pub(crate) fn pointer_is_valid(path: &str) -> bool {
     Pointer::parse(path).is_ok()
 }
 
+/// The absolute data-model path a binding path resolves to in a scope.
+///
+/// `scope` is the absolute path of the scope the binding sits in: `""` or `/`
+/// for the root scope, `/employees/1` inside the second item of a template
+/// over `/employees`. `path` is the path as the component wrote it.
+///
+/// - A path that starts with `/` is absolute. It is returned as it is,
+///   whatever the scope.
+/// - Any other path is relative, and is joined to the scope.
+/// - The empty path and `.` name the scope itself: the item a template is
+///   drawing, or the whole model in the root scope.
+///
+/// The root is written `/`, the way `updateDataModel` writes it, and
+/// [`DataModel::lookup`](crate::DataModel::lookup) and
+/// [`DataModel::apply`](crate::DataModel::apply) take the result as it is.
+/// [`Scope::resolve_pointer`] resolves the same way and writes the root as the
+/// empty RFC 6901 pointer instead.
+///
+/// No segment is rewritten. A scope that ends in `/` ends in the empty key, as
+/// RFC 6901 reads it, so `name` under `/user/` is `/user//name`. Only `/` on
+/// its own is the root.
+///
+/// ```
+/// use ag_ui_a2ui::binding::absolute_path;
+///
+/// assert_eq!(absolute_path("/employees/1", "name"), "/employees/1/name");
+/// assert_eq!(absolute_path("/employees/1", "/company"), "/company");
+/// // The scope itself: the item, or the whole model in the root scope.
+/// assert_eq!(absolute_path("/employees/1", ""), "/employees/1");
+/// assert_eq!(absolute_path("/employees/1", "."), "/employees/1");
+/// assert_eq!(absolute_path("/", "."), "/");
+/// assert_eq!(absolute_path("", "name"), "/name");
+/// ```
+pub fn absolute_path(scope: &str, path: &str) -> String {
+    if path.starts_with('/') {
+        return path.to_string();
+    }
+    let scope = if scope == "/" { "" } else { scope };
+    if names_the_scope(path) {
+        return if scope.is_empty() {
+            "/".to_string()
+        } else {
+            scope.to_string()
+        };
+    }
+    format!("{scope}/{path}")
+}
+
+/// Whether a path is one of the two spellings of "the scope itself".
+pub(crate) fn names_the_scope(path: &str) -> bool {
+    path.is_empty() || path == "."
+}
+
+/// [`absolute_path`] as an RFC 6901 pointer, where the whole document is the
+/// empty string.
 fn scoped_pointer(base: &str, path: &str) -> String {
-    if path.is_empty() || path == "/" {
+    let absolute = absolute_path(base, path);
+    if absolute == "/" {
         String::new()
-    } else if path.starts_with('/') {
-        path.into()
     } else {
-        format!("{base}/{path}")
+        absolute
     }
 }
 
@@ -190,7 +249,9 @@ impl<'a> Scope<'a> {
 
     /// Turns an A2UI path (absolute or relative) into an absolute JSON Pointer.
     ///
-    /// The empty path and `/` both denote the whole data model.
+    /// Resolved as [`absolute_path`] resolves it, against [`Scope::base`]: the
+    /// empty path and `.` are this scope itself. The whole data model, which
+    /// is `/` or the root scope itself, is the empty pointer.
     pub fn resolve_pointer(&self, path: &str) -> String {
         scoped_pointer(&self.base, path)
     }
@@ -736,6 +797,65 @@ mod tests {
         let item = group.item("items", 0);
         assert_eq!(item.base(), "/groups/0/items/0");
         assert_eq!(item.resolve_string("label"), "inner");
+    }
+
+    #[test]
+    fn the_empty_path_and_dot_name_the_scope_itself() {
+        let data = json!({"tags": ["a", "b"], "matrix": [[1, 2], [3]]});
+        let root = Scope::root(&data);
+
+        // In the root scope that is the whole model.
+        for path in ["", ".", "/"] {
+            assert_eq!(root.resolve(path), Some(&data), "{path:?}");
+            assert_eq!(root.resolve_pointer(path), "", "{path:?}");
+        }
+
+        // In an item scope it is the item, which is how a template over a
+        // list of strings shows each one. `/` still leaves the scope.
+        let item = root.item("/tags", 1);
+        for path in ["", "."] {
+            assert_eq!(item.resolve(path), Some(&json!("b")), "{path:?}");
+            assert_eq!(item.resolve_pointer(path), "/tags/1", "{path:?}");
+        }
+        assert_eq!(item.resolve("/"), Some(&data));
+
+        // A template over the item itself iterates the item, not the model.
+        let row = root.item("/matrix", 0);
+        assert_eq!(row.item("", 1).base(), "/matrix/0/1");
+        assert_eq!(row.item(".", 1).resolve(""), Some(&json!(2)));
+
+        // The lossless scope resolves the same way.
+        let model = crate::DataModel::from(data.clone());
+        let item = ModelScope::root(&model).item("/tags", 0);
+        for path in ["", "."] {
+            let value = item.resolve(path).unwrap().unwrap();
+            assert_eq!(value.to_json().unwrap(), json!("a"), "{path:?}");
+        }
+        let cell = ModelScope::root(&model).item("/matrix", 1).item("", 0);
+        assert_eq!(cell.base(), "/matrix/1/0");
+    }
+
+    #[test]
+    fn an_absolute_path_is_the_scope_joined_with_a_relative_path() {
+        for (scope, path, expected) in [
+            ("/user", "name", "/user/name"),
+            ("/user", "address/city", "/user/address/city"),
+            ("/user", "/list/0", "/list/0"),
+            ("/", "user/name", "/user/name"),
+            ("", "foo", "/foo"),
+            ("/user", "", "/user"),
+            ("/user", ".", "/user"),
+            ("/", "", "/"),
+            ("", ".", "/"),
+            ("/user", "/", "/"),
+            // Only the two exact spellings name the scope.
+            ("/user", "./name", "/user/./name"),
+            // A trailing slash is the empty key, and is kept.
+            ("/bar/", "foo", "/bar//foo"),
+            ("/user/", "", "/user/"),
+        ] {
+            assert_eq!(absolute_path(scope, path), expected, "{scope:?} + {path:?}");
+        }
     }
 
     #[test]
