@@ -2,7 +2,6 @@
 
 use crate::{Event, MessageId, ReasoningEncryptedValueSubtype};
 
-use crate::server::agent::AgentState;
 use crate::server::emit::EventSink;
 use crate::server::error::Result;
 use crate::server::state::RunState;
@@ -105,27 +104,10 @@ impl<'a, S> ReasoningHandle<'a, S> {
     }
 }
 
-/// The run's state, reachable while the block is open. See
-/// [`ToolCallHandle`](crate::server::ToolCallHandle), where this matters most.
-impl<S: AgentState> ReasoningHandle<'_, S> {
-    /// The typed state, as of the last publish.
-    pub fn state(&self) -> &S {
-        self.state.get()
-    }
-
-    /// The typed state, mutably. Nothing is emitted until you call
-    /// [`publish_state`](Self::publish_state).
-    pub fn state_mut(&mut self) -> &mut S {
-        self.state.get_mut()
-    }
-
-    /// Publishes whatever [`state_mut`](Self::state_mut) left behind, as a
-    /// `STATE_SNAPSHOT` or a `STATE_DELTA` inside this block's brackets.
-    ///
-    /// A no-op when nothing changed since the last publish.
-    pub fn publish_state(&mut self) -> Result<()> {
-        self.state.publish(self.sink)
-    }
+state_access! {
+    /// The run's state, reachable while the block is open. See
+    /// [`ToolCallHandle`](crate::server::ToolCallHandle), where this matters most.
+    ReasoningHandle, published "inside this block's brackets"
 }
 
 impl<S> Drop for ReasoningHandle<'_, S> {

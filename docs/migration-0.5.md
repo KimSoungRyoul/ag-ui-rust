@@ -527,6 +527,62 @@ These are on `main` and not yet in a published version.
   on it with `Pointer '/$defs/theme' does not exist`, because the envelope schema
   refers to that definition. A surface of such a catalog takes any theme that is an
   object. A catalog that declares a theme is held to it, as before.
+- The chunked and the explicit form no longer mix within one message, tool call or
+  reasoning message, as AG-UI 1.0 requires. An explicit `*_CONTENT`, `*_ARGS` or `*_END`
+  event for an id a `*_CHUNK` opened ends that chunk stream and is then a protocol error
+  ("TEXT_MESSAGE_END for message "m1", which is not open"); alpha.3 read it as part of
+  the chunk stream. A chunk that names no id after an explicit `*_START` is a protocol
+  error ("carries no messageId and no message is open as a chunk stream"), and one that
+  names the open id is a second start ("which is already open"); alpha.3 appended both
+  to the open message. A producer finishes an item in the form it opened it in: chunks
+  only, or `*_START`, `*_CONTENT`, `*_END`. An explicit `*_START` for an id a chunk
+  opened is still accepted, as a re-open. `ChunkNormalizer::is_open` is `true` only
+  while a chunk-opened stream is open, no longer after an explicit `*_START`.
+- `client::Verifier` and `verify_all` judge a `*_CHUNK` event as the events it stands
+  for; alpha.3 skipped chunks. A raw stream gets the verdict it gets through a `Thread`:
+  a chunk that cannot be expanded is a protocol error, and a chunk stream is closed by
+  the event that ends it. A stream already run through `ChunkNormalizer` is unaffected.
+- A hosted run and `server::EventVerifier` apply the chunk rules a consumer applies, with
+  the new `Rule::MalformedChunk`: a `*_CHUNK` that names no id with no chunk stream to
+  continue, a `TOOL_CALL_CHUNK` that opens a call without `toolCallName`, and a
+  continuation that repeats `role`, `name`, `toolCallName` or `parentMessageId` with
+  another value. A chunk stream ends where AG-UI 1.0 says it ends, so a chunk that names
+  no id after a `CUSTOM`, `STATE_*`, `STEP_*` or reasoning event of the same agent or
+  subagent is rejected. A chunk for an id that is explicitly open is
+  `Rule::DuplicateStart`. Alpha.3 accepted all of these, and such a chunk also closed
+  the explicitly open id. Repeat the id on the first chunk after such an event, and
+  name the tool on the chunk that opens a call.
+- `FilterToolCalls`, `SubagentVisibility::inline()` and `SubagentVisibility::hidden()`
+  resolve a chunk that names no id by the same rules. After an event that ends the chunk
+  stream, or after an explicit `*_START`, such a chunk is no longer treated as part of
+  the earlier stream: `inline()` passes it on without an id, where alpha.3 filled in the
+  id of the stream that had ended, and `FilterToolCalls` drops a `TOOL_CALL_CHUNK` it can
+  place in no call, as it always dropped one with nothing open.
+- `server::EventVerifier` accepts one `RUN_ERROR` after `RUN_FINISHED`, which AG-UI 1.0
+  lets a producer send; alpha.3 rejected it with `Rule::RunEnded`. A hosted run is
+  unchanged: its sink still refuses every emit after a terminal event.
+- `server::EventVerifier` rejects a `RUN_FINISHED` whose `interrupt` outcome carries no
+  interrupt, with the new `Rule::InvalidOutcome`, as the client verifier already did.
+  In a hosted run this is an `Event::run_finished_interrupt(.., vec![])` emitted by hand;
+  an agent that returns such an outcome already ended with `RUN_ERROR`.
+- Verifier messages changed. The client says "which is not open" where it said "which
+  was never opened", and a chunk with nothing to continue ends "is open as a chunk
+  stream". A `VerificationError::detail` quotes an id as `"m1"`, not as
+  `MessageId("m1")`.
+- When several things are open at `RUN_FINISHED`, the `Rule::OpenAtFinish` detail names
+  the same one every time: a message before a tool call, a reasoning message, a
+  reasoning block, a step and a subagent, and of several of a kind the one opened first.
+  Alpha.3 named an arbitrary one of a kind, and looked at reasoning before tool calls.
+  The client verifier already named the first opened, in this order.
+- `Applier::apply` applies the explicit form only. For a `TEXT_MESSAGE_CHUNK`,
+  `TOOL_CALL_CHUNK` or `REASONING_MESSAGE_CHUNK`, and for a retired `THINKING_*` event,
+  it returns `Error::Unsupported` and changes nothing; alpha.3 assembled chunks by rules
+  of its own, which had drifted from the normalizer's, and turned `THINKING_*` into
+  reasoning under ids `thinking-1`, `thinking-2`, …. A `Thread` is unaffected: it expands
+  and translates before it applies. Code that drives an `Applier` itself puts a
+  `ChunkNormalizer` in front, applying what `normalize` appends and calling `finish` when
+  the stream ends, and reads a stream that may carry `THINKING_*` through
+  `TransportStream::into_events` or `transport::enforce_events`, which translate it.
 
 ## Verify the upgrade
 

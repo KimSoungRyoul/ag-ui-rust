@@ -4,7 +4,6 @@ use crate::{Event, MessageId, ReasoningEncryptedValueSubtype, ToolCallId, ToolCo
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::server::agent::AgentState;
 use crate::server::emit::EventSink;
 use crate::server::error::Result;
 use crate::server::state::RunState;
@@ -206,29 +205,11 @@ impl<'a, S> ToolCallHandle<'a, S> {
     }
 }
 
-/// The run's state, reachable while the call is open. Same three methods as on
-/// [`RunContext`](crate::server::RunContext), forwarded — a tool that changes the state
-/// is the ordinary case, and it changes it in the middle of the call.
-impl<S: AgentState> ToolCallHandle<'_, S> {
-    /// The typed state, as of the last publish.
-    pub fn state(&self) -> &S {
-        self.state.get()
-    }
-
-    /// The typed state, mutably. Nothing is emitted until you call
-    /// [`publish_state`](Self::publish_state).
-    pub fn state_mut(&mut self) -> &mut S {
-        self.state.get_mut()
-    }
-
-    /// Publishes whatever [`state_mut`](Self::state_mut) left behind, as a
-    /// `STATE_SNAPSHOT` or a `STATE_DELTA` between this call's `TOOL_CALL_START`
-    /// and its `TOOL_CALL_END`.
-    ///
-    /// A no-op when nothing changed since the last publish.
-    pub fn publish_state(&mut self) -> Result<()> {
-        self.state.publish(self.sink)
-    }
+state_access! {
+    /// The run's state, reachable while the call is open. Same three methods as on
+    /// [`RunContext`](crate::server::RunContext), forwarded — a tool that changes the state
+    /// is the ordinary case, and it changes it in the middle of the call.
+    ToolCallHandle, published "between this call's `TOOL_CALL_START` and its `TOOL_CALL_END`"
 }
 
 impl<S> Drop for ToolCallHandle<'_, S> {

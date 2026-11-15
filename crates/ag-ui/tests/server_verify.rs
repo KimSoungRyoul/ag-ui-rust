@@ -231,6 +231,61 @@ fn finishing_with_a_step_open_is_rejected() {
 }
 
 #[test]
+fn the_error_at_finish_names_the_first_thing_that_was_opened() {
+    // Whichever was opened first is the one a human is looking for, and the
+    // same stream always gets the same error. Repeated, because a hash map
+    // would name the right one now and then.
+    let what_is_open = |events: &[Event]| {
+        let (mut ctx, _events) = context();
+        for event in events {
+            ctx.emit(event.clone()).expect("opens");
+        }
+        let error = ctx
+            .emit(Event::run_finished_success("t", "r"))
+            .expect_err("something is open");
+        let Error::Verification(violation) = error else {
+            panic!("expected a verification error, got {error:?}");
+        };
+        assert_eq!(violation.rule, Rule::OpenAtFinish);
+        violation.detail
+    };
+    let message = |id: &str| Event::text_message_start(id, TextMessageRole::Assistant);
+    let messages = ["m-5", "m-1", "m-9", "m-3", "m-7", "m-0", "m-8", "m-2"].map(message);
+    let calls = ["c-4", "c-2", "c-6"].map(|id| Event::tool_call_start(id, "search"));
+    let steps = ["verify", "plan"].map(Event::step_started);
+    for _ in 0..16 {
+        // Within a kind: the one opened first, not the least id.
+        let detail = what_is_open(&messages);
+        assert!(
+            detail.starts_with(r#"message "m-5" is still open"#),
+            "{detail}"
+        );
+        // Across kinds: a message before a tool call, whichever opened first.
+        let mixed: Vec<Event> = calls
+            .iter()
+            .chain(&steps)
+            .chain(&messages)
+            .cloned()
+            .collect();
+        let detail = what_is_open(&mixed);
+        assert!(
+            detail.starts_with(r#"message "m-5" is still open"#),
+            "{detail}"
+        );
+        let detail = what_is_open(&[steps.as_slice(), calls.as_slice()].concat());
+        assert!(
+            detail.starts_with(r#"tool call "c-4" is still open"#),
+            "{detail}"
+        );
+        let detail = what_is_open(&steps);
+        assert!(
+            detail.starts_with(r#"step "verify" is still open under the parent agent"#),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
 fn run_error_may_leave_things_open() {
     let (mut ctx, _events) = context();
     ctx.emit(Event::text_message_start("m1", TextMessageRole::Assistant))
@@ -248,6 +303,64 @@ fn events_after_the_run_ended_are_rejected() {
         .emit(Event::custom("late", serde_json::json!(1)))
         .expect_err("the run has ended");
     assert_eq!(rule(error), Rule::RunEnded);
+}
+
+#[test]
+fn a_recorded_stream_may_carry_one_run_error_after_run_finished() {
+    // AG-UI 1.0, "After a run closes": a producer MAY emit RUN_ERROR after
+    // RUN_FINISHED. The upstream stream
+    // `late-run-error-after-finished-run-continues`.
+    use ag_ui::server::EventVerifier;
+    let mut verifier = EventVerifier::new();
+    for event in [
+        Event::run_started("t", "r"),
+        Event::run_finished_success("t", "r"),
+        Event::run_error("the transport failed while flushing"),
+    ] {
+        verifier.observe(&event).expect("a stream 1.0 allows");
+    }
+    // Nothing follows RUN_ERROR, a second one included.
+    for after in [
+        Event::run_error("again"),
+        Event::custom("late", serde_json::json!(1)),
+        Event::run_started("t", "r-2"),
+    ] {
+        let error = verifier.observe(&after).expect_err("the run has ended");
+        assert_eq!(error.rule, Rule::RunEnded, "{after:?}");
+    }
+}
+
+#[test]
+fn a_hosted_run_sends_nothing_after_its_terminal_event() {
+    // The sink's own rule, with or without the verifier: what a recorded
+    // stream may carry is not what a run that is over may still send.
+    let (mut ctx, mut events) = context();
+    ctx.emit(Event::run_finished_success("t", "r"))
+        .expect("finish");
+    let error = ctx
+        .emit(Event::run_error("too late to say"))
+        .expect_err("the run has ended");
+    assert_eq!(rule(error), Rule::RunEnded);
+    assert_eq!(events.drain().len(), 1, "only RUN_FINISHED went out");
+}
+
+#[test]
+fn an_interrupt_outcome_names_an_interrupt() {
+    // AG-UI 1.0, schema: "At least one: an interrupt outcome with nothing to
+    // answer would leave a consumer with nothing to do."
+    let (mut ctx, mut events) = context();
+    let error = ctx
+        .emit(Event::run_finished_interrupt("t", "r", Vec::new()))
+        .expect_err("nothing to answer");
+    assert_eq!(rule(error), Rule::InvalidOutcome);
+    assert!(events.drain().is_empty(), "the event was not sent");
+    // The run is still open, so it can end properly.
+    ctx.emit(Event::run_finished_interrupt(
+        "t",
+        "r",
+        vec![Interrupt::new("i1", "approval")],
+    ))
+    .expect("an interrupt to answer");
 }
 
 #[test]
@@ -340,15 +453,116 @@ fn a_chunk_needs_no_bracketing() {
         Some("m1".into()),
         Some("whole thing".to_owned()),
     ))
-    .expect("chunks are self-contained");
+    .expect("a chunk opens its own message");
     ctx.emit(Event::tool_call_chunk(
         Some("c1".into()),
         Some("search".to_owned()),
         Some("{}".to_owned()),
     ))
-    .expect("chunks are self-contained");
+    .expect("and the next one ends it");
     ctx.emit(Event::tool_call_result("m2", "c1", "ok"))
-        .expect("a chunked call is a known call");
+        .expect("a result ends the chunked call it answers");
+    ctx.emit(Event::text_message_chunk(
+        Some("m3".into()),
+        Some("last".to_owned()),
+    ))
+    .expect("a chunk opens its own message");
+    ctx.emit(Event::run_finished_success("t", "r"))
+        .expect("RUN_FINISHED ends the chunk stream still open");
+}
+
+fn text_chunk(id: Option<&str>, delta: &str) -> Event {
+    Event::text_message_chunk(id.map(ag_ui::MessageId::new), Some(delta.to_owned()))
+}
+
+#[test]
+fn a_chunk_that_cannot_be_expanded_is_rejected() {
+    // AG-UI 1.0, "The chunked form". The upstream streams
+    // `first-chunk-missing-id-fatal`, `first-tool-chunk-missing-name-fatal`,
+    // `custom-closes-chunk-stream-fatal`, `chunk-conflicting-role-fatal` and
+    // `chunk-conflicting-tool-name-fatal`, which a consumer rejects: a
+    // producer is told before it sends them.
+    let role = |role| {
+        Event::TextMessageChunk(ag_ui::TextMessageChunkEvent {
+            message_id: Some("m1".into()),
+            role: Some(role),
+            delta: Some("x".into()),
+            ..Default::default()
+        })
+    };
+    let tool = |name: Option<&str>| {
+        Event::tool_call_chunk(
+            Some("c1".into()),
+            name.map(str::to_owned),
+            Some("{}".to_owned()),
+        )
+    };
+    for (stream, said) in [
+        (vec![text_chunk(None, "orphan")], "no message is open"),
+        (vec![tool(None)], "without a toolCallName"),
+        (
+            vec![
+                text_chunk(Some("m1"), "Half "),
+                Event::custom("note", serde_json::json!(1)),
+                text_chunk(None, "and half."),
+            ],
+            "no message is open",
+        ),
+        (
+            vec![
+                role(TextMessageRole::User),
+                role(TextMessageRole::Assistant),
+            ],
+            "does not match the open stream's role",
+        ),
+        (
+            vec![tool(Some("search")), tool(Some("delete"))],
+            "does not match the open stream's toolCallName",
+        ),
+    ] {
+        let (mut ctx, _events) = context();
+        let (last, accepted) = stream.split_last().expect("a stream");
+        for event in accepted {
+            ctx.emit(event.clone()).expect("accepted");
+        }
+        let Error::Verification(violation) = ctx.emit(last.clone()).expect_err(said) else {
+            panic!("expected a verification error");
+        };
+        assert_eq!(violation.rule, Rule::MalformedChunk, "{said}");
+        assert_eq!(violation.event, last.event_type(), "{said}");
+        assert!(violation.detail.contains(said), "{}", violation.detail);
+    }
+}
+
+#[test]
+fn the_chunked_and_the_explicit_form_do_not_mix_within_one_item() {
+    // "An explicit event carrying an identifier a chunk stream is assembling
+    // is not a continuation of it: it ends the shorthand". The local streams
+    // `chunk-after-explicit-start-fatal` and
+    // `explicit-content-after-chunk-fatal`.
+    let (mut ctx, _events) = context();
+    ctx.emit(Event::text_message_start("m1", TextMessageRole::Assistant))
+        .expect("start");
+    let error = ctx
+        .emit(text_chunk(Some("m1"), "a"))
+        .expect_err("the chunk opens m1 a second time");
+    assert_eq!(rule(error), Rule::DuplicateStart);
+    // The rejected chunk was not sent, so the message is as it was.
+    ctx.emit(Event::text_message_end("m1")).expect("still open");
+
+    for explicit in [
+        Event::text_message_content("m2", "b"),
+        Event::text_message_end("m2"),
+    ] {
+        let (mut ctx, _events) = context();
+        ctx.emit(text_chunk(Some("m2"), "a")).expect("chunk");
+        let error = ctx
+            .emit(explicit)
+            .expect_err("the chunk stream ended, and m2 with it");
+        assert_eq!(rule(error), Rule::NotOpen);
+        // Not sent either: the chunk stream is still there to continue.
+        ctx.emit(text_chunk(None, "b")).expect("still assembling");
+    }
 }
 
 #[test]

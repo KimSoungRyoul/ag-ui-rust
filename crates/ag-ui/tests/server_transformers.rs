@@ -1113,19 +1113,73 @@ fn hidden_routes_an_untagged_idless_chunk_like_the_normalizer() {
     assert!(!kept(tagged(chunk(Some("m2"), "x"), "s1")));
     assert!(kept(chunk(None, "b")));
 
-    // An explicit start opens the parent's stream too.
+    // An explicit start is not a stream a chunk can continue, and it ends
+    // the parent's chunk stream: the only one left is the subagent's.
     assert!(kept(Event::text_message_start("m3", Default::default())));
-    assert!(kept(chunk(None, "c")));
+    assert!(!kept(chunk(None, "c")));
     assert!(kept(Event::text_message_end("m3")));
 
-    // With the parent's stream closed, the only open one is the subagent's.
+    // The subagent opens another; it is still the only open one.
     assert!(!kept(tagged(chunk(Some("m4"), "y"), "s1")));
     assert!(!kept(chunk(None, "d")));
 
-    // The subagent's stream closed, nothing is open: the chunk passes and
-    // the consumer, not the filter, is the one to complain.
-    assert!(!kept(tagged(Event::text_message_end("m4"), "s1")));
+    // An event in the subagent's lane ends its stream. Nothing is open: the
+    // chunk passes and the consumer, not the filter, is the one to complain.
+    assert!(!kept(tagged(Event::custom("note", json!(1)), "s1")));
     assert!(kept(chunk(None, "e")));
+}
+
+/// The filters follow the stream by the rules a consumer expands chunks by,
+/// so what ends a chunk stream for the consumer ends it here: a chunk that
+/// names no id after it is not handed the id of a stream that is over.
+#[test]
+fn the_filters_end_a_chunk_stream_where_the_consumer_does() {
+    use ag_ui::server::StreamTransformer as _;
+    let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+    let chunk = |delta: &str| Event::text_message_chunk(None, Some(delta.to_owned()));
+    let opening =
+        || Event::text_message_chunk(Some(ag_ui::MessageId::new("m1")), Some("a".to_owned()));
+    let id_of = |events: &[Event]| match events {
+        [Event::TextMessageChunk(chunk)] => chunk.message_id.clone(),
+        other => panic!("expected the chunk back, got {other:?}"),
+    };
+
+    for ender in [
+        Event::custom("note", json!(1)),
+        Event::state_snapshot(json!({})),
+        Event::step_started("plan"),
+        Event::reasoning_start("r1"),
+        Event::messages_snapshot(Vec::<ag_ui::Message>::new()),
+        Event::subagent_finished("s1"),
+    ] {
+        let kind = ender.event_type();
+        let mut inline = SubagentVisibility::inline();
+        inline.transform(tagged(opening(), "s1"));
+        assert_eq!(
+            id_of(&inline.transform(tagged(chunk("b"), "s1"))),
+            Some("m1".into()),
+            "the subagent's stream is open, so the chunk is given its id"
+        );
+        let ender = match ender {
+            lifecycle @ Event::SubagentFinished(_) => lifecycle,
+            other => tagged(other, "s1"),
+        };
+        inline.transform(ender);
+        assert_eq!(
+            id_of(&inline.transform(tagged(chunk("c"), "s1"))),
+            None,
+            "{kind} ended the stream, so the chunk is left for the consumer to refuse"
+        );
+    }
+
+    // RAW stands aside, as it does for the consumer.
+    let mut inline = SubagentVisibility::inline();
+    inline.transform(tagged(opening(), "s1"));
+    inline.transform(tagged(Event::raw(json!({})), "s1"));
+    assert_eq!(
+        id_of(&inline.transform(tagged(chunk("b"), "s1"))),
+        Some("m1".into())
+    );
 }
 
 /// An activity is owned by the snapshot that minted it, and only a replacing

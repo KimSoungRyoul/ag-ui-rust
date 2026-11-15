@@ -114,6 +114,40 @@
 //! that names neither a message nor a subagent can only be resolved when one
 //! stream is open.
 
+/// The run's state as an open handle reaches it: `state`, `state_mut` and
+/// `publish_state`, the same on [`MessageHandle`], [`ReasoningHandle`] and
+/// [`ToolCallHandle`], written once.
+///
+/// Each handle holds the event sink and the state as two fields, so these
+/// reach nothing the handle does not already hold. The handle's own words
+/// come first, as the doc of the `impl` block, then where its publish lands.
+macro_rules! state_access {
+    ($(#[$about:meta])* $handle:ident, published $place:literal) => {
+        $(#[$about])*
+        impl<S: $crate::server::agent::AgentState> $handle<'_, S> {
+            /// The typed state, as of the last publish.
+            pub fn state(&self) -> &S {
+                self.state.get()
+            }
+
+            /// The typed state, mutably. Nothing is emitted until you call
+            /// [`publish_state`](Self::publish_state).
+            pub fn state_mut(&mut self) -> &mut S {
+                self.state.get_mut()
+            }
+
+            /// Publishes whatever [`state_mut`](Self::state_mut) left behind, as a
+            /// `STATE_SNAPSHOT` or a `STATE_DELTA`
+            #[doc = concat!($place, ".")]
+            ///
+            /// A no-op when nothing changed since the last publish.
+            pub fn publish_state(&mut self) -> $crate::server::error::Result<()> {
+                self.state.publish(self.sink)
+            }
+        }
+    };
+}
+
 mod message;
 mod reasoning;
 mod step;
