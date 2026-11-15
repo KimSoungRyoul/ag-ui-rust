@@ -209,6 +209,11 @@ impl SurfaceState {
     /// its relative paths resolve. `data` is the data model as JSON
     /// ([`DataModel::to_json`]).
     ///
+    /// Each scope reads a binding as the surface's version writes one
+    /// ([`SurfaceState::spoken_version`]). The walk follows the references
+    /// `catalog` knows: on a v1.0 surface that draws from several catalogs,
+    /// a component of another catalog is placed and its children are not.
+    ///
     /// This is the walk a client makes before it can draw anything, and it
     /// draws nothing itself. A reference to a component that does not exist
     /// is skipped, and so is one that would loop or nest deeper than
@@ -263,7 +268,8 @@ impl SurfaceState {
                 catalog,
                 &by_id,
                 root,
-                Scope::root(data),
+                // Bindings are read as the surface's version writes them.
+                Scope::root(data).speaking(self.spoken_version()),
                 &mut above,
                 &mut placed,
             );

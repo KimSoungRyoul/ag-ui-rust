@@ -113,8 +113,29 @@ fn a_surface_is_created_whole_and_draws_from_two_catalogs() {
     );
     assert!(processor.report("dash").unwrap().is_valid());
 
-    // What the store replays is what it was given: one message, the creation.
+    // An outline resolves a binding as the surface writes one.
+    let data = surface.data_model.to_json().unwrap();
+    let basic_catalog = Catalog::basic_for(A2uiVersion::V1_0);
+    let drawn: Vec<_> = surface
+        .outline(&basic_catalog, &data)
+        .into_iter()
+        .map(|placed| (placed.depth, placed.component.id.as_str(), placed.scope))
+        .collect();
+    assert_eq!(
+        drawn
+            .iter()
+            .map(|(depth, id, _)| (*depth, *id))
+            .collect::<Vec<_>>(),
+        [(0, "root"), (1, "title"), (1, "chart")]
+    );
+    let title = surface.components[1].prop("text").unwrap();
+    assert_eq!(drawn[1].2.version(), A2uiVersion::V1_0);
+    assert_eq!(drawn[1].2.resolve_dynamic(title).unwrap(), json!("Sales"));
+
+    // The store replays the surface in its own version: the creation, then
+    // its components and its data.
     let replayed = serde_json::to_value(surface.replay()).unwrap();
+    assert_eq!(replayed.as_array().unwrap().len(), 3);
     assert_eq!(replayed[0]["version"], "1.0");
     assert_eq!(replayed[0]["createSurface"]["catalogId"], basic.as_str());
     let mut rebuilt = SurfaceStore::new();

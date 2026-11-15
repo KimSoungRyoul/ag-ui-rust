@@ -1012,7 +1012,9 @@ These are on `main` and not yet in a published version.
   `collect_bindings_in(version, &value)`, `TemplatePart::to_json_in(version)`,
   `Validator::new(&catalog).speaking(version)`. `Scope::root`, `collect_bindings`,
   `TemplatePart::to_json` and a `Validator` given bare components read v0.9, as
-  before.
+  before. What is asked of a surface is read in the surface's version:
+  `SurfaceState::outline` gives each component a scope that speaks it, and
+  `SurfaceState::replay` writes its messages in it.
 - A v1.0 `createSurface` may leave out `catalogId` and may carry `components`,
   `dataModel` and `metadata`; it has no `theme`. So `CreateSurface::catalog_id` and
   `SurfaceState::catalog_id` are `Option<String>`, both structs are
