@@ -539,6 +539,9 @@ fn stream_parts(setup: &Setup, parts: &[StreamPart]) -> Value {
                 StreamPart::Text(text) => json!({"text": text}),
                 StreamPart::A2ui(messages) => json!({"a2ui": setup.emitted(messages)}),
                 StreamPart::Rejected(error) => json!({"error": {"category": category(error)}}),
+                // A kind of part the suite has no word for compares equal to
+                // nothing it expects.
+                other => json!({"unknown": format!("{other:?}")}),
             })
             .collect(),
     )
@@ -1648,13 +1651,14 @@ fn parse_chunk(case: &Value, args: &Value, lowered: &mut bool) -> Step {
     )?;
     let setup = setup(case, args, true, lowered)?;
     let processor = ready_processor(args, &setup)?;
-    let options = StreamOptions {
-        wrapped: args.get("wrapped") != Some(&Value::Bool(false)),
-        after_rejected_block: match args.get("after_rejected_block").and_then(Value::as_str) {
-            Some("continue") => AfterRejectedBlock::Continue,
-            _ => AfterRejectedBlock::End,
-        },
-    };
+    let options = StreamOptions::new()
+        .with_wrapped(args.get("wrapped") != Some(&Value::Bool(false)))
+        .with_after_rejected_block(
+            match args.get("after_rejected_block").and_then(Value::as_str) {
+                Some("continue") => AfterRejectedBlock::Continue,
+                _ => AfterRejectedBlock::End,
+            },
+        );
     let Some(yielded) = run_stream(&setup, &processor, case, options)? else {
         return Ok(());
     };

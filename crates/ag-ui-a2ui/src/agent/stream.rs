@@ -16,7 +16,11 @@ use crate::protocol::message::AgentMessage;
 use crate::protocol::operation::Operation;
 
 /// What a stream does once it rejects a block.
+///
+/// A later version may add a way to go on, so a `match` on one needs a
+/// wildcard arm.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AfterRejectedBlock {
     /// The stream ends: the call that met the block returns the error.
     #[default]
@@ -28,7 +32,23 @@ pub enum AfterRejectedBlock {
 }
 
 /// How a stream reads an answer.
+///
+/// A later version may add an option, so the options are built from
+/// [`StreamOptions::new`], which is also the default, and not written out
+/// field by field:
+///
+/// ```
+/// use ag_ui_a2ui::agent::{AfterRejectedBlock, StreamOptions};
+///
+/// // A tool call argument, read past a block that is rejected.
+/// let options = StreamOptions::new()
+///     .with_wrapped(false)
+///     .with_after_rejected_block(AfterRejectedBlock::Continue);
+/// assert!(!options.wrapped);
+/// assert_eq!(StreamOptions::default(), StreamOptions::new());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct StreamOptions {
     /// False when the whole answer is one block, without tags: a tool call
     /// argument, say. Defaults to true.
@@ -44,6 +64,29 @@ impl Default for StreamOptions {
             wrapped: true,
             after_rejected_block: AfterRejectedBlock::End,
         }
+    }
+}
+
+impl StreamOptions {
+    /// The options a stream reads with by default: an answer with tags
+    /// around its blocks, ended at the first block that is rejected.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the answer has tags around its blocks. False reads the whole
+    /// answer as one block.
+    #[must_use]
+    pub fn with_wrapped(mut self, wrapped: bool) -> Self {
+        self.wrapped = wrapped;
+        self
+    }
+
+    /// What the stream does once it rejects a block.
+    #[must_use]
+    pub fn with_after_rejected_block(mut self, after_rejected_block: AfterRejectedBlock) -> Self {
+        self.after_rejected_block = after_rejected_block;
+        self
     }
 }
 
@@ -65,6 +108,12 @@ impl Default for StreamOptions {
 ///   chunk changes them: a renderer applying each in turn ends up holding what
 ///   the closed block holds. Any other message waits until its text has
 ///   closed, and the messages after it wait with it.
+/// - An `updateDataModel` is emitted while it arrives only once it holds its
+///   `path`, which says where its `value` goes. A model may write the path
+///   after the value, and one that states no path means the whole data
+///   model, which is known only when its text has closed: such a message is
+///   emitted once, then. To see a data model fill in as it is written, ask
+///   the model to write `path` before `value`.
 /// - A message that reads but that the state does not accept yet is not ready:
 ///   half a component can parse and still not be a component the catalog
 ///   describes. It is held, and the block is rejected when it closes if the
@@ -386,30 +435,33 @@ impl ResponseStream {
     }
 }
 
-/// The field a message grows by while it arrives, for the two operations a
-/// renderer applies again as they grow.
-fn growing_field(message: &Value) -> Option<&Value> {
-    [
-        (Operation::UpdateComponents, "components"),
-        (Operation::UpdateDataModel, "value"),
-    ]
-    .into_iter()
-    .find_map(|(operation, field)| message.get(operation.as_str())?.get(field))
-}
-
 /// Whether a message still arriving may be applied and emitted already: it
-/// is one a renderer applies again as it grows, and it holds the field it
-/// grows by, with at least one component when that is what it grows by.
+/// is one a renderer applies again as it grows, and it holds what says where
+/// the part that grows goes.
+///
+/// - An `updateComponents` grows by its `components`, and may be applied once
+///   it holds one.
+/// - An `updateDataModel` grows by its `value`, and may be applied once it
+///   holds its `path` too. The keys of a message come in the order the model
+///   wrote them, and a value read before its path reads as the whole data
+///   model: applied then, it would replace everything the surface holds. One
+///   that never states a path does mean the whole model, which is only known
+///   once its text has closed, so it waits until then.
+///
+/// The reference stream asks only for the `value` (`_may_grow` in
+/// `a2ui_agent`'s `direct_json/response_stream.py`, at the commit the
+/// conformance suite is vendored from), and so emits a value at the root
+/// before its path arrives.
 fn may_grow(message: &Value) -> bool {
-    match growing_field(message) {
-        Some(Value::Array(components))
-            if message.get(Operation::UpdateComponents.as_str()).is_some() =>
-        {
-            !components.is_empty()
-        }
-        Some(_) => message.get(Operation::UpdateDataModel.as_str()).is_some(),
-        None => false,
+    if let Some(update) = message.get(Operation::UpdateComponents.as_str()) {
+        return update
+            .get("components")
+            .and_then(Value::as_array)
+            .is_some_and(|components| !components.is_empty());
     }
+    message
+        .get(Operation::UpdateDataModel.as_str())
+        .is_some_and(|update| update.get("value").is_some() && update.get("path").is_some())
 }
 
 /// Whether what an `updateComponents` holds so far is what it will hold: its

@@ -216,7 +216,7 @@ const SUITES: &[Suite] = &[
     agent("agent/streamed_answer.yaml", [6, 0, 0, 0]),
     agent("agent/direct_json/prompt_generator.yaml", [1, 0, 14, 0]),
     agent("agent/direct_json/response_parser.yaml", [35, 0, 1, 0]),
-    agent("agent/direct_json/response_streaming.yaml", [91, 3, 45, 0]),
+    agent("agent/direct_json/response_streaming.yaml", [87, 7, 45, 0]),
     agent("agent/direct_json/compiler.yaml", [18, 0, 20, 0]),
     agent("agent/direct_json/decompiler.yaml", [9, 0, 2, 0]),
     skip("agent/direct_json/scaling.yaml", 7, Why::Timing, "the direct JSON format: parse time against payload size"),
@@ -732,11 +732,48 @@ const AGENT_DIVERGENCES: &[(&str, &str, &str)] = &[
     ),
     (
         "agent/direct_json/response_streaming.yaml::test_stream_data_model_grows_v09",
-        "a list template whose path holds a map, not an array, is rejected once the data model \
-         arrives; the reference does not look at the data model",
-        "must point at an array",
+        PATHLESS_UPDATE_WAITS,
+        r#"step 3: expected [{"a2ui":[{"updateDataModel":{"surfaceId":"default","value":{"items":{}}},"version":"v0.9"}]}], got []"#,
+    ),
+    (
+        "agent/direct_json/response_streaming.yaml::test_chunk_progressive_key_heals_a_partial_string",
+        PATHLESS_UPDATE_WAITS,
+        r#"step 1: expected [{"a2ui":[{"updateDataModel":{"surfaceId":"s1","value":{"greeting":"Hel"}},"version":"1.0"}]}], got []"#,
+    ),
+    (
+        "agent/direct_json/response_streaming.yaml::test_chunk_data_model_grows_across_chunks",
+        PATHLESS_UPDATE_WAITS,
+        r#"step 1: expected [{"a2ui":[{"updateDataModel":{"surfaceId":"s1","value":{"items":{}}},"version":"1.0"}]}], got []"#,
+    ),
+    (
+        "agent/direct_json/response_streaming.yaml::test_stream_data_model_cut_key_and_value_v09",
+        PATHLESS_UPDATE_WAITS,
+        r#"step 2: expected [{"a2ui":[{"updateDataModel":{"surfaceId":"default","value":{"infoLink":"[More Info](x)","rating":"5 star"}},"version":"v0.9"}]}], got []"#,
+    ),
+    (
+        "agent/direct_json/response_streaming.yaml::test_stream_data_model_keeps_earlier_entries_v09",
+        PATHLESS_UPDATE_WAITS,
+        r#"step 2: expected [{"a2ui":[{"updateDataModel":{"surfaceId":"default","value":{"items":{},"title":"Top Restaurants"}},"version":"v0.9"}]}], got []"#,
     ),
 ];
+
+/// Why five streaming cases end early, at the first chunk of an
+/// `updateDataModel` that states no `path`.
+///
+/// The reference emits the value as it grows, at the root. The keys of a
+/// message arrive in the order the model wrote them, so the same text may go
+/// on to state a path, and a value applied at the root before its path
+/// arrives has replaced the surface's whole data model: the stream leaves
+/// something else than the same answer read whole. This crate emits an
+/// `updateDataModel` as it grows only once it holds its `path`, and one that
+/// never states a path once, whole, on the chunk that closes it. Each entry
+/// pins the first step at which the reference has emitted and this crate has
+/// not. `test_stream_data_model_grows_v09` would be rejected on its closing
+/// chunk for a reason of its own: its list template iterates a path that
+/// holds a map.
+const PATHLESS_UPDATE_WAITS: &str = "an updateDataModel that states no path is emitted when its \
+     text closes, not as its value grows: a path may still follow the value, and a value \
+     applied at the root before its path arrives replaces the whole data model";
 
 /// The row of the agent-tier table for one suite: how many of its cases ran
 /// lowered from v1.0, how many as written, and how many were skipped under

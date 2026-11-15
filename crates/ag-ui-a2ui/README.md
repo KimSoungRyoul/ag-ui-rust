@@ -200,12 +200,13 @@ accounted for by name: executed, or skipped with the reason. The executed
 suites are the seven of the v0.9 core (validator, data context, data model,
 expressions, message processor, catalog, common types), the twelve of the
 agent tier that do not need another output format than direct JSON, and the
-A2A extension suite, with the four v0.9.1 transcripts; they report **525 passed,
-17 expected divergences, 4 failing**, and the per-suite counts are asserted by
+A2A extension suite, with the four v0.9.1 transcripts; they report **521 passed,
+21 expected divergences, 4 failing**, and the per-suite counts are asserted by
 the test. The divergences
 are executed with pinned expectations: an unreachable component is a warning,
-an empty path segment is the empty key, and a binding that cannot resolve is an
-error. The failures are listed by name with what each case wants: two about
+an empty path segment is the empty key, a binding that cannot resolve is an
+error, and a streamed `updateDataModel` that states no path is emitted when its
+text closes. The failures are listed by name with what each case wants: two about
 removing a path that is not there, and two that ask the built-in catalog to be
 the published document. The three suites of the SDK design upstream had before
 its agent layer are not executed, since the code they describe is gone. See
