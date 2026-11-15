@@ -195,10 +195,24 @@ impl<T: Transport> RemoteAgent<T> {
     ///
     /// Connecting is folded into the stream: a transport that cannot reach the
     /// agent yields one error item and ends.
+    ///
+    /// The boundary's warnings are discarded here. A `Thread` reports them;
+    /// [`enforce_events`](crate::client::transport::enforce_events) over
+    /// [`Transport::run_raw`] hands them to a callback.
     pub fn run_events(&self, params: impl Into<RunAgentInput>) -> EventStream {
         let connecting = self.transport.run_raw(params.into());
         let raw = futures_util::stream::once(connecting).try_flatten();
         boxed_stream(crate::client::enforce::stream(raw))
+    }
+
+    /// [`Self::run_events`] with the boundary's warnings left in the stream.
+    pub(crate) fn run_checked(
+        &self,
+        params: impl Into<RunAgentInput>,
+    ) -> crate::client::enforce::CheckedStream {
+        let connecting = self.transport.run_raw(params.into());
+        let raw = futures_util::stream::once(connecting).try_flatten();
+        Box::pin(crate::client::enforce::checked(raw))
     }
 }
 

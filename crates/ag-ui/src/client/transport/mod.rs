@@ -165,3 +165,37 @@ pub fn boxed_raw_stream(
 pub fn boxed_raw_stream(stream: impl Stream<Item = Result<Value>> + 'static) -> RawEventStream {
     Box::pin(stream)
 }
+
+/// Runs raw wire events through the compatibility and enforcement boundary
+/// every transport shares, handing each of its warnings to `on_warning`.
+///
+/// A warning says what the boundary removed or translated on the way: an
+/// unrecognised field, enum member or event, a retired `THINKING_*` event, a
+/// deprecated optional `null`, a newer declared protocol version. It arrives
+/// before the event it concerns. [`decode_events`], [`Transport::run`] and
+/// [`RemoteAgent::run_events`](crate::client::RemoteAgent::run_events) apply
+/// the same boundary and discard them; a [`Thread`](crate::client::Thread)
+/// reports them as diagnostics. Nothing in this crate prints them.
+///
+/// ```
+/// use ag_ui::client::transport::{decode_raw_events, enforce_events};
+/// use futures_util::{StreamExt, stream};
+///
+/// # futures_util::FutureExt::now_or_never(async {
+/// let body = "data: {\"type\":\"RUN_STARTED\",\"threadId\":\"t\",\"runId\":\"r\",\"extra\":1}\n\n";
+/// let chunks = stream::iter([Ok::<_, std::io::Error>(body.as_bytes())]);
+/// let mut warnings = Vec::new();
+/// let events: Vec<_> = enforce_events(decode_raw_events(chunks), |warning| warnings.push(warning))
+///     .collect()
+///     .await;
+/// assert!(events[0].is_ok());
+/// assert_eq!(warnings, ["unrecognised property at /extra"]);
+/// # }).unwrap();
+/// ```
+pub fn enforce_events<S, F>(raw: S, on_warning: F) -> impl Stream<Item = Result<Event>>
+where
+    S: Stream<Item = Result<Value>>,
+    F: FnMut(String),
+{
+    crate::client::enforce::events(raw, on_warning)
+}

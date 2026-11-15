@@ -126,6 +126,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
+// A library writes only to what its caller hands it. What it has to report
+// goes back through the API: a run's diagnostics, a hook, a return value.
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 // Stamps "Available on crate feature X" on every gated item in the rendered
 // docs. Only ever set by docs.rs and the `cargo doc` recipe in CONTRIBUTING, so
 // it costs a stable build nothing.

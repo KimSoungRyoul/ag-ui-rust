@@ -1,8 +1,10 @@
 //! Shared schema enforcement before protocol values reach typed consumers.
 //!
-//! Unknown additions are removed; malformed known values fail. This module
-//! owns no transport or runtime dependencies, so clients and hosted endpoints
-//! apply the same rules with independent feature sets.
+//! Unknown additions are removed; malformed known values fail. What is removed
+//! is pushed onto the caller's `warnings`, which decides where it goes; nothing
+//! here prints. This module owns no transport or runtime dependencies, so
+//! clients and hosted endpoints apply the same rules with independent feature
+//! sets.
 
 use std::sync::OnceLock;
 
@@ -20,29 +22,25 @@ fn schema() -> &'static Value {
 }
 
 #[cfg(feature = "client")]
-pub(crate) fn event(mut value: Value) -> Result<Option<Value>> {
+pub(crate) fn event(mut value: Value, warnings: &mut Vec<String>) -> Result<Option<Value>> {
     if value.get("type").and_then(Value::as_str).is_none() {
         return Err(protocol_error("event /type must be a string"));
     }
     let shape = schema()
         .pointer("/$defs/Event")
         .expect("event schema exists");
-    Ok(enforce(&mut value, shape)?.then_some(value))
+    Ok(normalize(&mut value, shape, "", warnings)?.then_some(value))
 }
 
 #[cfg(feature = "axum")]
-pub(crate) fn input(mut value: Value) -> Result<Value> {
+pub(crate) fn input(mut value: Value, warnings: &mut Vec<String>) -> Result<Value> {
     // An older client's request may carry the registered nulls too; nothing
     // ahead of this function reads them as omitted.
-    let mut warnings = Vec::new();
-    omit_input_nulls(&mut value, &mut Noticed::default(), &mut warnings);
-    for warning in warnings {
-        eprintln!("ag-ui: {warning}");
-    }
+    omit_input_nulls(&mut value, &mut Noticed::default(), warnings);
     let shape = schema()
         .pointer("/$defs/RunAgentInput")
         .expect("input schema exists");
-    if !enforce(&mut value, shape)? {
+    if !normalize(&mut value, shape, "", warnings)? {
         return Err(protocol_error(
             "run input contains an unrecognised required value",
         ));
@@ -50,17 +48,32 @@ pub(crate) fn input(mut value: Value) -> Result<Value> {
     Ok(value)
 }
 
-fn enforce(value: &mut Value, shape: &Value) -> Result<bool> {
-    let mut warnings = Vec::new();
-    let keep = normalize(value, shape, "", &mut warnings)?;
-    for warning in warnings {
-        eprintln!("ag-ui: {warning}");
-    }
-    Ok(keep)
-}
-
 fn protocol_error(message: impl Into<String>) -> String {
     message.into()
+}
+
+/// The most characters of input text one warning repeats.
+const EXCERPT: usize = 64;
+
+/// Input text as a warning repeats it: at most [`EXCERPT`] characters, with
+/// control characters escaped, so the warning stays one bounded line however
+/// large or strange the input. `segment` also escapes it as a JSON Pointer
+/// reference token.
+pub(crate) fn excerpt(text: &str, segment: bool) -> String {
+    let mut excerpt = String::new();
+    let mut chars = text.chars();
+    for c in chars.by_ref().take(EXCERPT) {
+        match c {
+            '~' if segment => excerpt.push_str("~0"),
+            '/' if segment => excerpt.push_str("~1"),
+            c if c.is_control() => excerpt.extend(c.escape_default()),
+            c => excerpt.push(c),
+        }
+    }
+    if chars.next().is_some() {
+        excerpt.push('…');
+    }
+    excerpt
 }
 
 /// The AG-UI 1.0 optional-null registry: whole optional fields that pre-1.0
@@ -248,9 +261,10 @@ fn normalize(
         if let Some(branch) = selected_branch(value, branches) {
             return normalize(value, branch, path, warnings);
         }
-        if has_unknown_discriminator(value, branches) {
+        if let Some(tag) = unknown_discriminator(value, branches) {
             warnings.push(format!(
-                "unrecognised union member at {}",
+                "unrecognised union member \"{}\" at {}",
+                excerpt(tag, false),
                 display_path(path)
             ));
             return Ok(false);
@@ -344,20 +358,19 @@ fn normalize(
 
     if let Some(items) = value.as_array_mut() {
         if let Some(item_schema) = shape.get("items") {
-            // One pass, so pruning stays linear. `index` counts kept members:
-            // a path names a member's position in the pruned list.
+            // One pass, so pruning stays linear. `index` counts every member
+            // read, kept or not: a path names the member's position in the
+            // input, which is where the producer can find it.
             let mut index = 0;
             let mut failure = None;
             items.retain_mut(|item| {
                 if failure.is_some() {
                     return true;
                 }
-                match normalize(item, item_schema, &format!("{path}/{index}"), warnings) {
-                    Ok(true) => {
-                        index += 1;
-                        true
-                    }
-                    Ok(false) => false,
+                let member_path = format!("{path}/{index}");
+                index += 1;
+                match normalize(item, item_schema, &member_path, warnings) {
+                    Ok(keep) => keep,
                     Err(error) => {
                         failure = Some(error);
                         true
@@ -408,7 +421,10 @@ fn normalize(
             object.retain(|name, _| {
                 let known = properties.contains_key(name);
                 if !known {
-                    warnings.push(format!("unrecognised property at {path}/{name}"));
+                    warnings.push(format!(
+                        "unrecognised property at {path}/{}",
+                        excerpt(name, true)
+                    ));
                 }
                 known
             });
@@ -459,18 +475,22 @@ fn selected_branch<'a>(value: &Value, branches: &'a [Value]) -> Option<&'a Value
     matching.next().is_none().then_some(candidate)
 }
 
-fn has_unknown_discriminator(value: &Value, branches: &[Value]) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    ["type", "role", "op"].iter().any(|name| {
-        object.get(*name).is_some_and(Value::is_string)
-            && branches.iter().all(|branch| {
+/// The object's value for the discriminator every branch declares, if it has
+/// one. Called once no branch matched, so it names a member this version does
+/// not know.
+fn unknown_discriminator<'a>(value: &'a Value, branches: &[Value]) -> Option<&'a str> {
+    let object = value.as_object()?;
+    ["type", "role", "op"].iter().find_map(|name| {
+        let tag = object.get(*name)?.as_str()?;
+        branches
+            .iter()
+            .all(|branch| {
                 resolve(branch)
                     .unwrap_or(branch)
                     .pointer(&format!("/properties/{name}/const"))
                     .is_some()
             })
+            .then_some(tag)
     })
 }
 
@@ -559,6 +579,32 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(5),
             "pruning {members} members took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn an_excerpt_is_bounded_escaped_and_marked_when_cut() {
+        assert_eq!(excerpt("a/b~c", true), "a~1b~0c");
+        assert_eq!(excerpt("a/b~c", false), "a/b~c");
+        assert_eq!(excerpt("line\nbreak\u{1b}", false), "line\\nbreak\\u{1b}");
+        let long = "é".repeat(EXCERPT + 1);
+        assert_eq!(excerpt(&long, false), format!("{}…", "é".repeat(EXCERPT)));
+        assert_eq!(excerpt(&"é".repeat(EXCERPT), false), "é".repeat(EXCERPT));
+    }
+
+    #[test]
+    fn a_path_names_the_members_index_in_the_input_not_in_the_pruned_list() {
+        let shape = json!({"type": "array", "items": {"type": "string", "enum": ["known"]}});
+        let mut value = json!(["unknown", "unknown", 3]);
+        let mut warnings = Vec::new();
+        let error = normalize(&mut value, &shape, "/delta", &mut warnings).unwrap_err();
+        assert_eq!(error, "/delta/2 must be string");
+        assert_eq!(
+            warnings,
+            [
+                "unrecognised enum member at /delta/0",
+                "unrecognised enum member at /delta/1"
+            ]
         );
     }
 }

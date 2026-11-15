@@ -227,6 +227,20 @@ These are on `main` and not yet in a published version.
   in a request: `forwardedProps`, a tool's `parameters`, a resume entry's `payload`
   and a media part's `metadata`. A `null` in any other optional field is still
   rejected. `ResumeEntry::resolved(id, Value::Null)` is now written without `payload`.
+- The SDK no longer prints to stderr. What the compatibility boundary removes or
+  translates (an unrecognised field, enum member or event, a retired `THINKING_*`
+  event, a deprecated `null`, a newer `protocolVersion`) is a warning returned to the
+  caller. A `Thread` run yields each as `Update::Error(Error::Warning(..))` and keeps
+  it in `RunReport.diagnostics` with kind `warning`, within `diagnostic_limit`; it
+  does not fail the run. `RemoteAgent::run_events`, `decode_events` and
+  `Transport::run` discard warnings, and the new `transport::enforce_events` hands
+  each to a callback. On the server, `AgentEndpoint::on_input_warnings` receives a
+  request's warnings and `extract::decode_with_warnings` returns them; `AgUiInput`
+  and `extract::decode` discard them. A warning repeats at most 64 characters of
+  input text, with control characters escaped, and names a dropped event by its type.
+- A path in a protocol error or warning names a list member by its index in the
+  input. It used to skip the members dropped before it, so the third of
+  `[unknown, unknown, malformed]` was reported as `/0`.
 
 ## Verify the upgrade
 

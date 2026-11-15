@@ -18,9 +18,10 @@ use crate::client::{
         Applier, Changed, MessageChangeKind, ReasoningChangeKind, Subagent, SubagentChangeKind,
     },
     chunks::ChunkNormalizer,
+    enforce::{Checked, CheckedStream},
     error::{Error, Result},
     interrupts::InterruptExt,
-    transport::{EventStream, Transport},
+    transport::Transport,
     verify::Verifier,
 };
 use crate::{
@@ -73,7 +74,8 @@ pub enum Update<S = Value> {
     /// [`Thread::resume`] — one update per pending interrupt.
     Interrupt(Interrupt),
     /// Something went wrong: a malformed stream, a patch that would not apply,
-    /// a transport failure, a `RUN_ERROR`.
+    /// a transport failure, a `RUN_ERROR`. Or, as [`Error::Warning`], something
+    /// the compatibility boundary removed or translated.
     ///
     /// Not necessarily fatal — a run survives a patch it could not apply. When
     /// it is fatal, the matching [`Update::Done`] follows.
@@ -166,7 +168,8 @@ pub struct StateViewError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunDiagnostic {
     /// A stable broad category (`state`, `protocol`, `patch`, `transport`, `run`,
-    /// or `unsupported`).
+    /// `unsupported`, or `warning` for what the compatibility boundary removed
+    /// or translated; see [`Error::Warning`]).
     pub kind: &'static str,
     /// Human-readable cause.
     pub message: String,
@@ -1034,7 +1037,7 @@ impl AbortHandle {
 pub struct RunStream<'a, T, S = Value> {
     thread: &'a mut Thread<T, S>,
     prepared: Option<(RunAgentInput, Option<Message>)>,
-    events: Option<EventStream>,
+    events: Option<CheckedStream>,
     normalizer: ChunkNormalizer,
     verifier: Option<Verifier>,
     expanded: Vec<Event>,
@@ -1081,6 +1084,7 @@ impl<T, S> RunStream<'_, T, S> {
                 Error::State(_) => "state",
                 Error::Protocol(_) | Error::InvalidPatchDocument { .. } => "protocol",
                 Error::Unsupported(_) => "unsupported",
+                Error::Warning(_) => "warning",
                 Error::Patch { .. } => "patch",
                 Error::Run { .. } => "run",
                 Error::Json(_) | Error::Decode(_) => "decode",
@@ -1436,7 +1440,7 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
                         status: SubmissionStatus::InFlight,
                     });
                 }
-                this.events = Some(this.thread.agent.run_events(input));
+                this.events = Some(this.thread.agent.run_checked(input));
             }
             match this
                 .events
@@ -1446,7 +1450,10 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
                 .poll_next(cx)
             {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Ok(event))) => this.ingest(event),
+                Poll::Ready(Some(Ok(Checked::Event(event)))) => this.ingest(event),
+                Poll::Ready(Some(Ok(Checked::Warning(warning)))) => {
+                    this.diagnostic(Error::Warning(warning));
+                }
                 // After RUN_FINISHED a broken connection truncates nothing:
                 // the run already ended, so the break is only reported.
                 Poll::Ready(Some(Err(error @ Error::Transport(_)))) if this.finished.is_some() => {
