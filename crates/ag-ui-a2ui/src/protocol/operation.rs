@@ -76,7 +76,7 @@ impl fmt::Display for Operation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::message::{AgentMessage, Component};
+    use crate::protocol::message::{AgentMessage, Component};
     use serde_json::json;
 
     #[test]

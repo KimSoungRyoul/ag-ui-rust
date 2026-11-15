@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use crate::constants::{
     DEFAULT_SURFACE_ID, GENERATE_A2UI_TOOL_NAME, RENDER_A2UI_TOOL_NAME, ROOT_ID,
 };
-use crate::core::catalog::Catalog;
+use crate::protocol::catalog::Catalog;
 
 /// A provider-neutral tool definition.
 ///

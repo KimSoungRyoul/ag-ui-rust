@@ -63,7 +63,7 @@
 //! The protocol half is not implemented here. Whether a surface exists is the
 //! [`SurfaceStore`] state machine's answer, a message's envelope is checked by
 //! the validator's one check, and which components the root reaches — and
-//! whether following them loops — is the one graph walk in `core`. What the
+//! whether following them loops — is the protocol's one graph walk. What the
 //! parser keeps for itself is what only a stream has: the fragments of a
 //! message that has not finished, and a record of what it has already emitted.
 
@@ -72,17 +72,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value};
 
 use crate::constants::{A2UI_CLOSE_TAG, A2UI_OPEN_TAG, ROOT_ID};
-use crate::core::catalog::{Catalog, PropKind};
-use crate::core::graph::{Cycle, Finding, Graph};
-use crate::core::message::{AgentMessage, AgentPayload, Component, DeleteSurface};
-use crate::core::operation::Operation;
-use crate::core::surface::{Lifecycle, SurfaceStore};
-use crate::core::validate::{
+use crate::error::{Error, Result, ValidationErrors};
+use crate::protocol::catalog::{Catalog, PropKind};
+use crate::protocol::graph::{Cycle, Finding, Graph};
+use crate::protocol::message::{AgentMessage, AgentPayload, Component, DeleteSurface};
+use crate::protocol::operation::Operation;
+use crate::protocol::surface::{Lifecycle, SurfaceStore};
+use crate::protocol::validate::{
     ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator, check_envelope,
     cycle_error,
 };
-use crate::core::version::A2uiVersion;
-use crate::error::{Error, Result, ValidationErrors};
+use crate::protocol::version::A2uiVersion;
 use crate::toolkit::parser::ResponsePart;
 
 // Shorthand for the payload keys this parser reads raw JSON by. The names
@@ -147,7 +147,7 @@ pub struct StreamParser {
     found_valid_json_in_block: bool,
 
     // --- protocol state ---
-    /// Which surfaces the stream has created and deleted: the core state
+    /// Which surfaces the stream has created and deleted: the protocol's state
     /// machine, told of every `createSurface` and `deleteSurface` this parser
     /// emits. A surface is drawn into only while this says it is live.
     surfaces: SurfaceStore,

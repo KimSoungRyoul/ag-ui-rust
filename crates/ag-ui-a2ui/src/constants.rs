@@ -26,7 +26,7 @@ pub const DEFAULT_SURFACE_ID: &str = "dynamic-surface";
 /// Value stamped into the `version` field of a message whose constructor is
 /// given no version: the discriminator of
 /// [`A2uiVersion::DEFAULT`](crate::A2uiVersion::DEFAULT).
-pub const PROTOCOL_VERSION: &str = crate::core::version::A2uiVersion::DEFAULT.as_str();
+pub const PROTOCOL_VERSION: &str = crate::protocol::version::A2uiVersion::DEFAULT.as_str();
 
 /// Planner-facing tool name: "build me a surface for this request".
 pub const GENERATE_A2UI_TOOL_NAME: &str = "generate_a2ui";

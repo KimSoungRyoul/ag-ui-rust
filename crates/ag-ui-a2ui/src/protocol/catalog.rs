@@ -23,7 +23,7 @@
 //! # Property types are carried, not interpreted
 //!
 //! Each property also keeps the JSON type its schema pins it to ([`PropType`]),
-//! which is what lets [`crate::core::validate`] reject `{"columns": "three"}` where the
+//! which is what lets [`crate::validate`] reject `{"columns": "three"}` where the
 //! catalog says integer. An `enum` is kept as well ([`PropDef::enum_values`]),
 //! whether it is the property's own or one alternative of a `oneOf` beside a
 //! data binding, so a literal it does not list is rejected too. Those are two
@@ -39,8 +39,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::constants::{BASIC_CATALOG_ID, ROOT_ID, SURFACE_COMPONENT};
-use crate::core::message::Component;
 use crate::error::{Error, Result};
+use crate::protocol::message::Component;
 
 /// Component types of the basic catalog, in specification order.
 pub const BASIC_COMPONENTS: [&str; 18] = [
@@ -184,7 +184,7 @@ impl PropKind {
 /// one of the common types, which name a JSON type and a data binding together:
 /// `DynamicString` is "a string *or* a `{"path": …}`". The binding half needs no
 /// representation here because a binding carries the renderer's value, not the
-/// property's, so [`crate::core::validate`] skips bound values entirely.
+/// property's, so [`crate::validate`] skips bound values entirely.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PropType {
     /// The schema pins no single type, so no value is ever rejected.
@@ -263,7 +263,7 @@ pub struct PropDef {
     pub description: Option<String>,
     /// Permitted literal strings, when the schema constrains them to an enum.
     ///
-    /// A literal string outside them fails [`crate::core::validate`]; a binding or a
+    /// A literal string outside them fails [`crate::validate`]; a binding or a
     /// function call is not a literal and is left to the renderer. Read from
     /// the property's own `enum`, or from the `enum`s its `oneOf` / `anyOf`
     /// alternatives list when every alternative that can be a string has one.
@@ -358,7 +358,7 @@ impl ComponentDef {
     ///
     /// Only strings are ids. Anything else in a structural property — most
     /// often a child written inline as an object — references nothing, and
-    /// [`crate::core::validate`] reports it: A2UI components are a flat list, and a
+    /// [`crate::validate`] reports it: A2UI components are a flat list, and a
     /// parent names its children by id.
     pub fn references(&self, component: &Component) -> Vec<ComponentRef> {
         let mut refs = Vec::new();
@@ -599,7 +599,7 @@ impl Catalog {
 
     /// Checks `allowedParents` / `allowedChildren` across a component tree.
     ///
-    /// Kept separate from [`crate::core::validate`] on purpose: the specification
+    /// Kept separate from [`crate::validate`] on purpose: the specification
     /// assigns composition failures their own renderer-side error codes
     /// (`UNALLOWED_PARENT`, `UNALLOWED_CHILD`), distinct from the structural
     /// validation codes. Components with no declared constraints never produce

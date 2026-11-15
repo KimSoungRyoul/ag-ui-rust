@@ -289,13 +289,13 @@ fn root_pointer() -> String {
 }
 impl UpdateDataModel {
     /// Applies an update losslessly, including undefined roots and array slots.
-    pub fn apply_model(&self, model: &mut crate::core::model::DataModel) -> Result<()> {
+    pub fn apply_model(&self, model: &mut crate::protocol::model::DataModel) -> Result<()> {
         model.apply(&self.path, &self.value)
     }
     /// Applies to plain JSON atomically. Undefined results are rejected; use
     /// `apply_model` when deletions can affect array slots or the root.
     pub fn apply(&self, model: &mut Value) -> Result<()> {
-        let mut exact = crate::core::model::DataModel::from(model.clone());
+        let mut exact = crate::protocol::model::DataModel::from(model.clone());
         self.apply_model(&mut exact)?;
         *model = exact.to_json()?;
         Ok(())
@@ -402,7 +402,7 @@ impl RendererMessage {
     /// before decoding. Serde alone permits omitted optional fields and defaults.
     #[cfg(feature = "schema-validation")]
     pub fn from_json(value: &Value) -> Result<Self> {
-        crate::core::client_schema::ClientSchemaValidator::new()?.decode_message(value)
+        crate::protocol::client_schema::ClientSchemaValidator::new()?.decode_message(value)
     }
 
     /// The `surfaceId` this message relates to, if any.
@@ -506,7 +506,7 @@ impl ClientDataModel {
     /// Validates the original metadata against the pinned official schema.
     #[cfg(feature = "schema-validation")]
     pub fn from_json(value: &Value) -> Result<Self> {
-        crate::core::client_schema::ClientSchemaValidator::new()?.decode_data_model(value)
+        crate::protocol::client_schema::ClientSchemaValidator::new()?.decode_data_model(value)
     }
 }
 
@@ -553,7 +553,7 @@ impl Component {
 ///
 /// Either a static list of ids, or a template: one component id instantiated
 /// once per item of the array at `path`. The template form is what creates a
-/// collection scope for relative data bindings (see [`crate::core::binding`]).
+/// collection scope for relative data bindings (see [`crate::binding`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ChildList {

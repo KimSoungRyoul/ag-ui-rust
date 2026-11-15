@@ -74,7 +74,7 @@ pub const MAX_FUNCTION_CALL_DEPTH: usize = 5;
 /// Deliberately closed: these codes are the contract with callers that route on
 /// them (a recovery loop, a renderer's error channel), so adding one is a
 /// breaking change. Composition-constraint failures have their own codes and
-/// live in [`crate::core::catalog::CompositionCode`].
+/// live in [`crate::catalog::CompositionCode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -1414,7 +1414,7 @@ fn template_path(component: &Component, location: &str) -> Option<String> {
 /// schema-driven toolkits report, because callers route on them.
 ///
 /// This is the one envelope check: the validator, the stateful
-/// [`SurfaceValidator`](crate::core::schema_validation::SurfaceValidator) path
+/// [`SurfaceValidator`](crate::schema_validation::SurfaceValidator) path
 /// and the streaming parser all report what it finds.
 ///
 /// Only agent → renderer messages belong here: a renderer's reply is not agent

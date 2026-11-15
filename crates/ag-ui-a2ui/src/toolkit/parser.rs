@@ -483,7 +483,7 @@ mod tests {
 
             let whole = unwrap_response(&content).is_ok();
             let streamed = crate::toolkit::streaming::StreamParser::new(
-                crate::core::catalog::Catalog::basic(),
+                crate::protocol::catalog::Catalog::basic(),
             )
             .process_chunk(&content)
             .expect("a tag this scanner rejects is conversational text, not an error")

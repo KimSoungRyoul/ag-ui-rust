@@ -253,20 +253,16 @@ These are on `main` and not yet in a published version.
 - The constructors `SseFrame::event(e)` and `SseFrame::comment(text)` on
   `encode::sse::SseFrame` (also `axum::SseFrame`) are removed. Write the variants instead:
   `SseFrame::Event(e)` and `SseFrame::Comment(text.into())`.
-- The A2UI protocol modules moved under `ag_ui_a2ui::core`: `core::message`,
-  `core::catalog`, `core::binding`, `core::model`, `core::surface` and `core::validate`,
-  and with `schema-validation`, `core::schema_validation` and `core::client_schema`. The
-  earlier paths (`ag_ui_a2ui::validate::Validator`, `ag_ui_a2ui::surface::SurfaceStore`,
-  …) and the crate-root re-exports name the same items, so no import has to change.
-- `A2uiVersion` is defined in `core::version`; `ag_ui_a2ui::A2uiVersion` and
-  `ag_ui_a2ui::message::A2uiVersion` still name it. It is now the one place a version
-  is parsed and named: `A2uiVersion::parse`, `ALL`, `DEFAULT`, `FromStr` and `Display`
-  are new, and what differs between versions is a method on it (`operations`,
-  `accepts`). The wire spelling is unchanged.
-- New at the crate root: `Operation`, the list of the agent → renderer payload keys,
-  with `AgentPayload::operation`; `SurfaceStore`, `SurfaceState` and `Lifecycle`, with
-  `SurfaceStore::lifecycle`; and `Validator::validate_json_updates`, which validates
-  raw messages against a prior `SurfaceStore`.
+- `A2uiVersion` is now the one place an A2UI version is parsed and named:
+  `A2uiVersion::parse`, `ALL`, `DEFAULT`, `FromStr` and `Display` are new, and what
+  differs between versions is a method on it (`operations`, `accepts`). It has a module
+  of its own, `ag_ui_a2ui::version`; `ag_ui_a2ui::A2uiVersion` and
+  `ag_ui_a2ui::message::A2uiVersion` still name it. The wire spelling is unchanged.
+- New in `ag-ui-a2ui`: `operation::Operation`, the list of the agent → renderer payload
+  keys, with `AgentPayload::operation`; `surface::Lifecycle` and
+  `SurfaceStore::lifecycle`; and `Validator::validate_json_updates`, which validates raw
+  messages against a prior `SurfaceStore`. `Operation`, `SurfaceStore`, `SurfaceState`
+  and `Lifecycle` are also re-exported at the crate root.
 - `StreamParser::process_chunk` returns `Error::Validation` carrying a `child_cycle`
   for a reference loop, as its documentation said. It returned `Error::Parse` when the
   loop was closed by a later message, was seen in a message still open, or validation

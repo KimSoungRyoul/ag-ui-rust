@@ -28,15 +28,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use ag_ui_a2ui::core::catalog::Catalog;
-use ag_ui_a2ui::core::surface::SurfaceStore;
-use ag_ui_a2ui::core::validate::{ErrorCode, ValidateOptions, ValidationReport, Validator};
-use ag_ui_a2ui::core::version::A2uiVersion;
+use ag_ui_a2ui::catalog::Catalog;
+use ag_ui_a2ui::surface::SurfaceStore;
 use ag_ui_a2ui::toolkit::negotiate::{CatalogRegistry, ClientCapabilities, select_catalog_schema};
 use ag_ui_a2ui::toolkit::parser::{has_a2ui_parts, parse_and_fix, parse_response};
 use ag_ui_a2ui::toolkit::prompt::{GENERATION_GUIDELINES, PromptSpec, build_subagent_prompt};
 use ag_ui_a2ui::toolkit::schema::{SchemaBundle, load_examples, remove_strict_validation};
 use ag_ui_a2ui::toolkit::streaming::StreamParser;
+use ag_ui_a2ui::validate::{ErrorCode, ValidateOptions, ValidationReport, Validator};
+use ag_ui_a2ui::version::A2uiVersion;
 use serde_json::Value;
 
 /// Upstream commit the vendored suite was taken from.

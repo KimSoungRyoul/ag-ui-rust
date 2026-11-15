@@ -86,7 +86,7 @@ impl SchemaValidator {
     /// and its creation theme. Useful when restoring state or changing validators.
     pub fn validate_surface(
         &self,
-        surface: &crate::core::surface::SurfaceState,
+        surface: &crate::protocol::surface::SurfaceState,
         catalog: &crate::Catalog,
     ) -> Result<()> {
         self.validate_surface_in(None, surface, catalog)
@@ -102,13 +102,13 @@ impl SchemaValidator {
     /// given here; each message was already checked against it on its own.
     pub(crate) fn validate_surface_in(
         &self,
-        store: Option<&crate::core::surface::SurfaceStore>,
-        surface: &crate::core::surface::SurfaceState,
+        store: Option<&crate::protocol::surface::SurfaceStore>,
+        surface: &crate::protocol::surface::SurfaceState,
         catalog: &crate::Catalog,
     ) -> Result<()> {
         let create = crate::AgentMessage {
             version: surface.version.clone(),
-            payload: crate::AgentPayload::CreateSurface(crate::core::message::CreateSurface {
+            payload: crate::AgentPayload::CreateSurface(crate::protocol::message::CreateSurface {
                 surface_id: surface.surface_id.clone(),
                 catalog_id: surface.catalog_id.clone(),
                 theme: surface.theme.clone(),
@@ -119,7 +119,7 @@ impl SchemaValidator {
         let components = crate::AgentMessage {
             version: surface.version.clone(),
             payload: crate::AgentPayload::UpdateComponents(
-                crate::core::message::UpdateComponents {
+                crate::protocol::message::UpdateComponents {
                     surface_id: surface.surface_id.clone(),
                     components: surface.components.clone(),
                 },
@@ -388,7 +388,7 @@ fn schema_diagnostics(
 #[derive(Debug, Default)]
 pub struct SurfaceValidator {
     catalogs: BTreeMap<String, (SchemaValidator, crate::Catalog)>,
-    state: crate::core::surface::SurfaceStore,
+    state: crate::protocol::surface::SurfaceStore,
 }
 impl SurfaceValidator {
     /// Empty renderer state and catalog registry.
@@ -400,7 +400,7 @@ impl SurfaceValidator {
     /// The messages pushed from here on are numbered from zero; a component
     /// the supplied state already held is located by its position in its
     /// surface.
-    pub fn from_state(mut state: crate::core::surface::SurfaceStore) -> Self {
+    pub fn from_state(mut state: crate::protocol::surface::SurfaceStore) -> Self {
         state.begin_batch();
         Self {
             state,
@@ -488,7 +488,7 @@ impl SurfaceValidator {
         Ok(())
     }
     /// Observed accepted state, for incremental streams and lossless replay.
-    pub fn state(&self) -> &crate::core::surface::SurfaceStore {
+    pub fn state(&self) -> &crate::protocol::surface::SurfaceStore {
         &self.state
     }
 }

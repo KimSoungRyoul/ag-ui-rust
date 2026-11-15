@@ -15,7 +15,7 @@
 use serde_json::Value;
 
 use crate::constants::{BASIC_CATALOG_ID, DEFAULT_SURFACE_ID};
-use crate::core::message::{AgentMessage, Component};
+use crate::protocol::message::{AgentMessage, Component};
 
 /// Whether the caller is building a new surface or editing one that exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -143,7 +143,7 @@ pub fn create_surface(
     send_data_model: Option<bool>,
 ) -> AgentMessage {
     let mut message = AgentMessage::create_surface(surface_id, catalog_id);
-    if let crate::core::message::AgentPayload::CreateSurface(payload) = &mut message.payload {
+    if let crate::protocol::message::AgentPayload::CreateSurface(payload) = &mut message.payload {
         payload.theme = theme;
         payload.send_data_model = send_data_model;
     }
@@ -216,7 +216,7 @@ pub fn assemble_ops(intent: Intent, spec: &SurfaceSpec) -> Vec<AgentMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::message::AgentPayload;
+    use crate::protocol::message::AgentPayload;
     use serde_json::json;
 
     fn spec() -> SurfaceSpec {

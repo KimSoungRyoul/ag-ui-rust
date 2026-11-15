@@ -100,7 +100,7 @@ impl A2uiVersion {
     /// The fields of an operation's payload in this version: name, JSON type,
     /// and whether the protocol requires it.
     ///
-    /// Transcribed from the payload structs in [`crate::core::message`], which
+    /// Transcribed from the payload structs in [`crate::message`], which
     /// are the port of the wire format. Fields the specification leaves untyped
     /// (an `updateDataModel` value, a function's arguments) are simply absent:
     /// this is the envelope contract, not a schema for everything inside it.

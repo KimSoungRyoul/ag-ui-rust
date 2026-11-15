@@ -26,8 +26,8 @@
 use serde_json::Value;
 
 use crate::constants::DEFAULT_SURFACE_ID;
-use crate::core::message::{AgentMessage, Component};
-use crate::core::operation::Operation;
+use crate::protocol::message::{AgentMessage, Component};
+use crate::protocol::operation::Operation;
 use crate::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
 use crate::toolkit::parser::unwrap_response;
 
@@ -150,7 +150,7 @@ fn try_replay(
     per_message: &[Vec<AgentMessage>],
     target: &str,
 ) -> crate::Result<Option<PriorSurface>> {
-    let mut store = crate::core::surface::SurfaceStore::new();
+    let mut store = crate::protocol::surface::SurfaceStore::new();
     for op in per_message
         .iter()
         .flatten()

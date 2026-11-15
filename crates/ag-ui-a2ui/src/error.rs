@@ -50,7 +50,7 @@ impl fmt::Debug for ShownPath<'_> {
 /// A2UI.
 ///
 /// The variants are deliberately coarse: A2UI is a wire protocol, so the useful
-/// detail almost always lives in the payload (a [`crate::core::validate::ValidationError`]
+/// detail almost always lives in the payload (a [`crate::validate::ValidationError`]
 /// list, a JSON Pointer, the offending literal) rather than in the discriminant.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -167,7 +167,7 @@ impl Error {
 /// Newtype rather than a bare `Vec` so that [`Error::Validation`] can carry a
 /// `Display` impl an LLM can read directly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ValidationErrors(pub Vec<crate::core::validate::ValidationError>);
+pub struct ValidationErrors(pub Vec<crate::protocol::validate::ValidationError>);
 
 impl ValidationErrors {
     /// Number of errors in the list.
@@ -181,13 +181,13 @@ impl ValidationErrors {
     }
 
     /// Borrows the underlying errors.
-    pub fn as_slice(&self) -> &[crate::core::validate::ValidationError] {
+    pub fn as_slice(&self) -> &[crate::protocol::validate::ValidationError] {
         &self.0
     }
 }
 
-impl From<Vec<crate::core::validate::ValidationError>> for ValidationErrors {
-    fn from(errors: Vec<crate::core::validate::ValidationError>) -> Self {
+impl From<Vec<crate::protocol::validate::ValidationError>> for ValidationErrors {
+    fn from(errors: Vec<crate::protocol::validate::ValidationError>) -> Self {
         Self(errors)
     }
 }
