@@ -13,7 +13,7 @@
 //! A valid document arrives whole, without a warning. An invalid one is
 //! rejected, unless [`TOLERATED`] names it with what happens instead: where
 //! AG-UI 1.0 says unrecognised material survives, the boundary removes it and
-//! says so.
+//! says so, and it translates a retired shape.
 
 #![cfg(all(feature = "client", feature = "sse", feature = "axum"))]
 
@@ -56,6 +56,8 @@ enum Fate {
     Whole,
     /// Delivered without the unrecognised material, with a warning.
     Stripped,
+    /// A retired shape, delivered as its 1.0 replacement, with a warning.
+    Translated,
     /// Removed from what carried it, or the carrier dropped, with a warning.
     Dropped,
     /// Read by a type that has no boundary: accepted, losing what the type
@@ -97,6 +99,13 @@ fn fate(document: &Value, delivered: Option<Value>, pointer: &str, warnings: &[S
                 "changed without a warning: {document} arrived as {arrived}"
             );
             Fate::Whole
+        }
+        Some(_)
+            if warnings
+                .iter()
+                .any(|said| said.starts_with("translated retired")) =>
+        {
+            Fate::Translated
         }
         Some(_) => Fate::Stripped,
     }
@@ -208,8 +217,7 @@ const TOLERATED: &[(&str, Fate)] = &[
         Fate::Stripped,
     ),
     // An unrecognised member of a union inside a list is dropped from the
-    // list, which survives: a role, a content part, a patch operation. The
-    // retired `binary` part is one of them on the way in.
+    // list, which survives: a role, a content part, a patch operation.
     (
         "MessagesSnapshotEvent/invalid/role-shaped-like-a-tool-message.json",
         Fate::Stripped,
@@ -239,16 +247,17 @@ const TOLERATED: &[(&str, Fate)] = &[
         Fate::Stripped,
     ),
     (
-        "UserMessage/invalid/legacy-binary-part.json",
-        Fate::Stripped,
-    ),
-    (
         "UserMessage/invalid/part-shaped-like-media-with-unknown-type.json",
         Fate::Stripped,
     ),
     (
         "UserMessage/invalid/part-shaped-like-text-with-unknown-type.json",
         Fate::Stripped,
+    ),
+    // The retired `binary` part is read as the media part it stands for.
+    (
+        "UserMessage/invalid/legacy-binary-part.json",
+        Fate::Translated,
     ),
     // An unrecognised enum member in a required position takes the value
     // that holds it: the event, the resume entry.

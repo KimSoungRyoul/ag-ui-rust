@@ -267,6 +267,81 @@ pub(crate) fn upgrade_legacy_content(messages: &mut [Message]) {
     }
 }
 
+/// The same translation on a wire event, before the boundary enforces the
+/// schema, which would drop the part as unrecognised: the content of the
+/// messages `MESSAGES_SNAPSHOT` and the `RUN_STARTED` input echo carry, and of
+/// a `TOOL_CALL_RESULT`. Each translation is a warning naming the part.
+#[cfg(feature = "client")]
+pub(crate) fn upgrade_legacy_event_content(
+    event: &mut Value,
+    tag: &str,
+    warnings: &mut Vec<String>,
+) {
+    let (messages, at) = match tag {
+        "TOOL_CALL_RESULT" => {
+            return upgrade_wire_parts(event.get_mut("content"), "/content", warnings);
+        }
+        "MESSAGES_SNAPSHOT" => (event.get_mut("messages"), "/messages"),
+        "RUN_STARTED" => (event.pointer_mut("/input/messages"), "/input/messages"),
+        _ => return,
+    };
+    for (index, message) in messages
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let at = format!("{at}/{index}/content");
+        upgrade_wire_parts(message.get_mut("content"), &at, warnings);
+    }
+}
+
+/// One content list on the wire. A part that is not a well-formed legacy
+/// part is left for enforcement to judge.
+#[cfg(feature = "client")]
+fn upgrade_wire_parts(content: Option<&mut Value>, at: &str, warnings: &mut Vec<String>) {
+    let Some(parts) = content.and_then(Value::as_array_mut) else {
+        return;
+    };
+    let legacy = |part: &Value| -> Option<BinaryInputContent> {
+        (part.get("type").and_then(Value::as_str) == Some("binary"))
+            .then(|| serde_json::from_value(part.clone()).ok())
+            .flatten()
+    };
+    if !parts.iter().any(|part| legacy(part).is_some()) {
+        return;
+    }
+    let original = std::mem::take(parts);
+    // What the list already holds in 1.0 form, for the mirror check.
+    let modern: Vec<InputContent> = original
+        .iter()
+        .filter(|part| legacy(part).is_none())
+        .filter_map(|part| serde_json::from_value(part.clone()).ok())
+        .collect();
+    for (index, part) in original.iter().enumerate() {
+        let translated = legacy(part).and_then(|binary| {
+            let media = binary.upgraded()?;
+            Some((serde_json::to_value(&media).ok()?, media, binary))
+        });
+        let Some((wire, media, binary)) = translated else {
+            parts.push(part.clone());
+            continue;
+        };
+        let modality = wire.get("type").and_then(Value::as_str).unwrap_or("media");
+        if modern.iter().any(|other| mirrors(other, &media, &binary)) {
+            warnings.push(format!(
+                "dropped retired binary content part at {at}/{index}: the {modality} part \
+                 beside it carries the same payload"
+            ));
+        } else {
+            warnings.push(format!(
+                "translated retired binary content part at {at}/{index} to {modality}"
+            ));
+            parts.push(wire);
+        }
+    }
+}
+
 /// Whether `part` is the media part `media` was converted to, file name
 /// included when the legacy part had one.
 #[cfg(feature = "client")]
