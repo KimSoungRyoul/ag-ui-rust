@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use super::capabilities::{RendererCapabilities, resolve_catalogs};
+use super::capabilities::{AgentCapabilities, RendererCapabilities, resolve_catalogs};
 use super::catalog::{CatalogConfig, CatalogDocument, check_catalogs};
 use super::direct_json::DirectJson;
 use super::format::{OutputFormat, RawPart, ResponseError, ResponsePart};
@@ -96,6 +96,22 @@ impl A2uiGenerator {
     /// The catalogs the agent registered.
     pub fn catalogs(&self) -> &[CatalogConfig] {
         &self.catalogs
+    }
+
+    /// What this agent advertises to renderers: the ids of the catalogs it
+    /// registered, in registration order, and whether it takes a renderer's
+    /// inline catalogs.
+    ///
+    /// [`AgentCapabilities::to_json`] writes it as the protocol's capabilities
+    /// object, and `adapters::a2a::agent_extension` takes the same two values
+    /// for an A2A agent card.
+    pub fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities::supporting(
+            self.catalogs
+                .iter()
+                .map(|config| config.transformed().catalog_id()),
+        )
+        .accepting_inline_catalogs(self.accepts_inline_catalogs)
     }
 
     /// The processor for a request from a renderer with these capabilities.

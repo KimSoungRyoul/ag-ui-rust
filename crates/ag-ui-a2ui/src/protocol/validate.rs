@@ -1040,6 +1040,7 @@ impl<'a> Validator<'a> {
     /// for a caller that holds a surface of an earlier version to the
     /// constraints its catalog states all the same, as the agent layer does,
     /// and wants them reported the same way.
+    #[cfg(feature = "agent")]
     pub(crate) fn composition_stored(
         &self,
         store: &SurfaceStore,

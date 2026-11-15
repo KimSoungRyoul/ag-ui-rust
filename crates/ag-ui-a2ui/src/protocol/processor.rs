@@ -868,6 +868,7 @@ impl Rejection {
     ///
     /// A renderer reports such a refusal as a catalog it does not have. A
     /// caller that wrote the message reads here which name to change.
+    #[cfg_attr(not(feature = "agent"), allow(dead_code))]
     pub(crate) fn named_catalogs(&self) -> &[ValidationError] {
         &self.named
     }

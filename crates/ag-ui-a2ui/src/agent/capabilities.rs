@@ -15,6 +15,7 @@ pub const CLIENT_CAPABILITIES_KEY: &str = "a2uiClientCapabilities";
 
 const SUPPORTED_CATALOG_IDS: &str = "supportedCatalogIds";
 const INLINE_CATALOGS: &str = "inlineCatalogs";
+const ACCEPTS_INLINE_CATALOGS: &str = "acceptsInlineCatalogs";
 
 /// The key of a version's entry in a capabilities object: `v0.9` for the
 /// whole v0.9 family, `1.0` for v1.0.
@@ -201,6 +202,175 @@ impl RendererCapabilities {
     /// The capabilities object, keyed by protocol version, as it travels.
     pub fn to_json(&self) -> Value {
         Value::Object(self.entries.clone())
+    }
+}
+
+/// What an agent advertises to renderers: the catalogs it can write UI for,
+/// and whether it takes the catalogs a renderer declares inline.
+///
+/// It is the counterpart of [`RendererCapabilities`], in the other direction.
+/// As an object keyed by protocol version it is what the protocol's
+/// `agent_capabilities.json` describes for v1.0 and `server_capabilities.json`
+/// for the v0.9 family, and [`AgentCapabilities::to_json`] writes it:
+///
+/// ```json
+/// {"1.0": {"supportedCatalogIds": ["…"], "acceptsInlineCatalogs": false}}
+/// {"v0.9": {"supportedCatalogIds": ["…"], "acceptsInlineCatalogs": false}}
+/// ```
+///
+/// Where it travels is each transport's business. On an A2A agent card the
+/// same two properties are the `params` of the A2UI extension, without a
+/// version key, since the extension's URI names the version
+/// (`adapters::a2a::agent_extension`).
+///
+/// [`A2uiGenerator::capabilities`](super::A2uiGenerator::capabilities) gives
+/// the capabilities of a generator: the catalogs it registered.
+///
+/// ```
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::agent::{A2uiGenerator, AgentCapabilities, CatalogConfig};
+/// use serde_json::json;
+///
+/// let generator = A2uiGenerator::new(vec![CatalogConfig::basic(A2uiVersion::V1_0)?]);
+/// let advertised = generator.capabilities().to_json(A2uiVersion::V1_0);
+/// assert_eq!(
+///     advertised,
+///     json!({"1.0": {
+///         "supportedCatalogIds": ["https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"],
+///         "acceptsInlineCatalogs": false,
+///     }})
+/// );
+///
+/// // And read back, by a renderer or a test.
+/// let read = AgentCapabilities::from_json(&advertised, A2uiVersion::V1_0)?.unwrap();
+/// assert_eq!(read, generator.capabilities());
+/// # Ok::<(), ag_ui_a2ui::Error>(())
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AgentCapabilities {
+    /// The ids of the catalogs the agent can write UI for. From v1.0 one
+    /// surface may draw from several of them.
+    pub supported_catalog_ids: Vec<String>,
+    /// Whether the agent takes the catalogs a renderer declares inline in its
+    /// own capabilities.
+    pub accepts_inline_catalogs: bool,
+}
+
+impl AgentCapabilities {
+    /// Capabilities naming the catalogs an agent can write UI for. Inline
+    /// catalogs are not accepted until
+    /// [`AgentCapabilities::accepting_inline_catalogs`] says so.
+    pub fn supporting<I, S>(catalog_ids: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            supported_catalog_ids: catalog_ids.into_iter().map(Into::into).collect(),
+            accepts_inline_catalogs: false,
+        }
+    }
+
+    /// Whether the agent takes a renderer's inline catalogs.
+    #[must_use]
+    pub fn accepting_inline_catalogs(mut self, accepts: bool) -> Self {
+        self.accepts_inline_catalogs = accepts;
+        self
+    }
+
+    /// The capabilities object an agent of `version` advertises: one entry
+    /// under the version's key ([`A2uiVersion::capabilities_entry`]), with
+    /// both properties stated.
+    pub fn to_json(&self, version: A2uiVersion) -> Value {
+        let mut entry = Map::new();
+        entry.insert(
+            SUPPORTED_CATALOG_IDS.into(),
+            Value::Array(
+                self.supported_catalog_ids
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+        entry.insert(
+            ACCEPTS_INLINE_CATALOGS.into(),
+            Value::Bool(self.accepts_inline_catalogs),
+        );
+        let mut entries = Map::new();
+        entries.insert(capabilities_key(version).into(), Value::Object(entry));
+        Value::Object(entries)
+    }
+
+    /// Reads the entry of `version` out of a capabilities object an agent
+    /// advertised.
+    ///
+    /// Returns `None` when the object has no entry for `version`: the agent
+    /// does not speak it. Both properties are optional in the protocol's
+    /// schemas: an entry that names no catalogs supports none it has said,
+    /// and one that does not say whether it takes inline catalogs does not.
+    /// A property the protocol does not define is passed over, as its schemas
+    /// allow.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Catalog`] when `capabilities` or the entry is not an
+    /// object, when `supportedCatalogIds` is not an array of strings, and
+    /// when `acceptsInlineCatalogs` is not a boolean.
+    pub fn from_json(capabilities: &Value, version: A2uiVersion) -> Result<Option<Self>> {
+        let key = capabilities_key(version);
+        let Some(entries) = capabilities.as_object() else {
+            return Err(Error::catalog(format!(
+                "agent capabilities must be an object keyed by protocol version, not {}",
+                kind(capabilities)
+            )));
+        };
+        let entry = match entries.get(key) {
+            None | Some(Value::Null) => return Ok(None),
+            Some(Value::Object(entry)) => entry,
+            Some(other) => {
+                return Err(Error::catalog(format!(
+                    "invalid '{key}' agent capabilities: the entry must be a JSON object, not {}",
+                    kind(other)
+                )));
+            }
+        };
+        let supported_catalog_ids = match entry.get(SUPPORTED_CATALOG_IDS) {
+            None => Vec::new(),
+            Some(Value::Array(ids)) => ids
+                .iter()
+                .map(|id| id.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    Error::catalog(format!(
+                        "invalid '{key}' agent capabilities: '{SUPPORTED_CATALOG_IDS}' must be \
+                         an array of strings"
+                    ))
+                })?,
+            Some(other) => {
+                return Err(Error::catalog(format!(
+                    "invalid '{key}' agent capabilities: '{SUPPORTED_CATALOG_IDS}' must be an \
+                     array of strings, not {}",
+                    kind(other)
+                )));
+            }
+        };
+        let accepts_inline_catalogs = match entry.get(ACCEPTS_INLINE_CATALOGS) {
+            None => false,
+            Some(Value::Bool(accepts)) => *accepts,
+            Some(other) => {
+                return Err(Error::catalog(format!(
+                    "invalid '{key}' agent capabilities: '{ACCEPTS_INLINE_CATALOGS}' must be a \
+                     boolean, not {}",
+                    kind(other)
+                )));
+            }
+        };
+        Ok(Some(Self {
+            supported_catalog_ids,
+            accepts_inline_catalogs,
+        }))
     }
 }
 
@@ -471,6 +641,93 @@ mod tests {
 
     fn ids(active: &[CatalogDocument]) -> Vec<&str> {
         active.iter().map(CatalogDocument::catalog_id).collect()
+    }
+
+    #[test]
+    fn an_agent_advertises_under_the_key_of_its_version() {
+        let advertised = AgentCapabilities::supporting(["a", "b"]).accepting_inline_catalogs(true);
+        for (version, key) in [
+            (A2uiVersion::V0_9, "v0.9"),
+            (A2uiVersion::V0_9_1, "v0.9"),
+            (A2uiVersion::V1_0, "1.0"),
+        ] {
+            let written = advertised.to_json(version);
+            assert_eq!(
+                written,
+                json!({key: {"supportedCatalogIds": ["a", "b"], "acceptsInlineCatalogs": true}})
+            );
+            assert_eq!(
+                AgentCapabilities::from_json(&written, version).unwrap(),
+                Some(advertised.clone())
+            );
+        }
+        // An agent that advertises one family says nothing of the other.
+        let v0_9 = advertised.to_json(A2uiVersion::V0_9_1);
+        assert_eq!(
+            AgentCapabilities::from_json(&v0_9, A2uiVersion::V1_0).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn what_an_agent_leaves_out_of_its_capabilities_is_the_default() {
+        let read = |value: Value| AgentCapabilities::from_json(&value, A2uiVersion::V1_0);
+        assert_eq!(
+            read(json!({"1.0": {}})).unwrap(),
+            Some(AgentCapabilities::default())
+        );
+        assert_eq!(
+            read(json!({"1.0": {"supportedCatalogIds": ["a"], "somethingLater": 1}})).unwrap(),
+            Some(AgentCapabilities::supporting(["a"]))
+        );
+        for malformed in [
+            json!([]),
+            json!({"1.0": "everything"}),
+            json!({"1.0": {"supportedCatalogIds": "a"}}),
+            json!({"1.0": {"supportedCatalogIds": ["a", 2]}}),
+            json!({"1.0": {"acceptsInlineCatalogs": "yes"}}),
+        ] {
+            let error = read(malformed.clone()).unwrap_err();
+            assert!(matches!(error, Error::Catalog(_)), "{malformed}: {error}");
+        }
+    }
+
+    /// What is written is what the protocol's own schema of each version
+    /// accepts, and the schema requires the version's entry.
+    #[cfg(feature = "schema-validation")]
+    #[test]
+    fn what_an_agent_advertises_is_held_by_the_pinned_schemas() {
+        use crate::protocol::schema_validation::compile_with;
+
+        let advertised = AgentCapabilities::supporting(["a"]).accepting_inline_catalogs(true);
+        for (version, schema) in [
+            (
+                A2uiVersion::V0_9,
+                include_str!("../../schemas/v0_9/server_capabilities.json"),
+            ),
+            (
+                A2uiVersion::V0_9_1,
+                include_str!("../../schemas/v0_9_1/server_capabilities.json"),
+            ),
+            (
+                A2uiVersion::V1_0,
+                include_str!("../../schemas/v1_0/agent_capabilities.json"),
+            ),
+        ] {
+            let schema: Value = serde_json::from_str(schema).unwrap();
+            let validator = compile_with(version, &schema, &[]).unwrap();
+            let written = advertised.to_json(version);
+            assert!(validator.is_valid(&written), "{version}: {written}");
+            let other = if version == A2uiVersion::V1_0 {
+                A2uiVersion::V0_9_1
+            } else {
+                A2uiVersion::V1_0
+            };
+            assert!(
+                !validator.is_valid(&advertised.to_json(other)),
+                "{version} takes the entry of {other}"
+            );
+        }
     }
 
     #[test]

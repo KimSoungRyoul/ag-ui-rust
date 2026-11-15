@@ -230,9 +230,14 @@ impl DataModel {
     }
     /// Applies an update as a surface of `version` takes it.
     ///
-    /// What differs is a removal ([`A2uiVersion::removal_pads`]). From v1.0,
-    /// removing a path that holds nothing changes nothing, and removing the
-    /// root leaves an empty object. Before v1.0 this is [`DataModel::apply`].
+    /// What differs is a removal. From v1.0, removing a path that holds
+    /// nothing changes nothing, and removing the root leaves an empty object
+    /// ([`A2uiVersion::removal_pads`]). And from v1.0 a `null` written at the
+    /// path is a removal ([`A2uiVersion::null_removes`]): that is how the
+    /// message is written, so an update that sets `null` is applied as the
+    /// renderer that receives it applies it. A `null` inside a value that is
+    /// written is stored in every version. Before v1.0 this is
+    /// [`DataModel::apply`].
     ///
     /// ```
     /// use ag_ui_a2ui::{A2uiVersion, DataModel, DataModelUpdate};
@@ -252,6 +257,15 @@ impl DataModel {
     /// assert_eq!(model.lookup("/items/2")?, Some(&json!("c").into()));
     /// model.apply_as(A2uiVersion::V1_0, "/", &remove)?;
     /// assert_eq!(model, json!({}));
+    ///
+    /// // Setting `null` removes in v1.0, and is stored before it.
+    /// let null = DataModelUpdate::Set(json!(null));
+    /// let mut v1_0 = DataModel::from(json!({"name": "Ada", "tags": [null]}));
+    /// let mut v0_9 = v1_0.clone();
+    /// v1_0.apply_as(A2uiVersion::V1_0, "/name", &null)?;
+    /// v0_9.apply_as(A2uiVersion::V0_9, "/name", &null)?;
+    /// assert_eq!(v1_0, json!({"tags": [null]}));
+    /// assert_eq!(v0_9, json!({"name": null, "tags": [null]}));
     /// # Ok::<(), ag_ui_a2ui::Error>(())
     /// ```
     ///
@@ -264,6 +278,12 @@ impl DataModel {
         path: &str,
         value: &DataModelUpdate,
     ) -> Result<()> {
+        // What the message says on the wire is what it does here.
+        let removal = DataModelUpdate::Remove;
+        let value = match value {
+            DataModelUpdate::Set(Value::Null) if version.null_removes() => &removal,
+            other => other,
+        };
         if !version.removal_pads() && matches!(value, DataModelUpdate::Remove) {
             if tokens(path)?.is_empty() {
                 self.root = ModelValue::Object(BTreeMap::new());

@@ -25,6 +25,7 @@
 //! |---|---|
 //! | [`CatalogConfig`] | A catalog the agent registered, and the transformers it applies before a model or a validator sees it. |
 //! | [`RendererCapabilities`], [`resolve_catalogs`] | What the renderer said it can draw, and which catalogs that makes active. |
+//! | [`AgentCapabilities`] | What the agent advertises in return: the catalogs it writes UI for, and whether it takes a renderer's inline ones. |
 //! | [`A2uiGenerator`] | What the agent knows for its whole life: catalogs, examples, format. Built once. |
 //! | [`A2uiRequestProcessor`] | Everything one request needs: the active catalogs, the prompt snippet, and the reading of an answer, whole or streamed. |
 //! | [`OutputFormat`] | The notation a model writes in. [`DirectJson`] is the one implemented. |
@@ -146,7 +147,9 @@ mod state;
 mod stream;
 
 pub use answer::{AnswerPart, StreamedAnswer};
-pub use capabilities::{CLIENT_CAPABILITIES_KEY, RendererCapabilities, resolve_catalogs};
+pub use capabilities::{
+    AgentCapabilities, CLIENT_CAPABILITIES_KEY, RendererCapabilities, resolve_catalogs,
+};
 pub use catalog::{CatalogConfig, CatalogDocument, CatalogTransformer};
 pub use direct_json::DirectJson;
 pub use format::{

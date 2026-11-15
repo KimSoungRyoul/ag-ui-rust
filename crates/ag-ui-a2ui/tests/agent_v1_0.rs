@@ -383,7 +383,7 @@ fn a_v1_0_stream_holds_a_component_until_it_has_closed() {
             format!(
                 r#"{{"version": "{version}", "updateComponents": {{"surfaceId": "s", "components": [{{"id": "root", "component": "Text", "text": "Hel"#
             ),
-            format!(r#"lo", "variant": "body"}}]}}}}, "#),
+            r#"lo", "variant": "body"}]}}, "#.to_string(),
             format!(
                 r#"{{"version": "{version}", "updateDataModel": {{"surfaceId": "s", "path": "/t", "value": {binding}}}}}]</a2ui-json>"#
             ),

@@ -548,6 +548,7 @@ impl SurfacePainter {
 #[cfg(feature = "ag-ui-server")]
 fn render_arguments(operations: &[AgentMessage], applied: &Applied<'_>) -> Value {
     use crate::protocol::message::{AgentPayload, DataModelUpdate};
+    use crate::protocol::version::A2uiVersion;
 
     let surface_id = applied
         .changes
@@ -566,16 +567,32 @@ fn render_arguments(operations: &[AgentMessage], applied: &Applied<'_>) -> Value
         if change.surface_id() != surface_id {
             continue;
         }
+        // What a change writes is read as its version writes it.
+        let version = A2uiVersion::parse(&change.version);
         match &change.payload {
             AgentPayload::UpdateDataModel(update) if matches!(update.path.as_str(), "" | "/") => {
+                let null_removes = version.is_some_and(A2uiVersion::null_removes);
                 match &update.value {
-                    DataModelUpdate::Set(value) => arguments.insert("data".into(), value.clone()),
+                    DataModelUpdate::Set(value) if !(null_removes && value.is_null()) => {
+                        arguments.insert("data".into(), value.clone())
+                    }
                     // A later removal of the root takes the data back.
                     _ => arguments.remove("data"),
                 };
             }
-            // A surface made again starts with no data.
-            AgentPayload::CreateSurface(_) | AgentPayload::DeleteSurface(_) => {
+            // A surface made again starts with the data its creation carries,
+            // which a creation may from v1.0, and with none otherwise.
+            AgentPayload::CreateSurface(create) => {
+                arguments.remove("data");
+                if let Some(data) = create
+                    .data_model
+                    .as_ref()
+                    .filter(|_| version.is_some_and(A2uiVersion::creates_inline))
+                {
+                    arguments.insert("data".into(), Value::Object(data.clone()));
+                }
+            }
+            AgentPayload::DeleteSurface(_) => {
                 arguments.remove("data");
             }
             _ => {}
@@ -1308,5 +1325,42 @@ mod server_tests {
         assert_eq!(empty, json!({"surfaceId": "t"}));
         let deleted = arguments_of(&mut painter, &[AgentMessage::delete_surface("s")]);
         assert_eq!(deleted, json!({"surfaceId": "s"}));
+
+        // A v1.0 creation that carries its surface: the call carries it too.
+        let version = crate::A2uiVersion::V1_0;
+        let create = crate::protocol::message::CreateSurface::new("v")
+            .with_catalog_id(version.basic_catalog_id())
+            .with_components(vec![
+                Component::new("root", "Text").with("text", version.path("/total")),
+            ])
+            .with_data_model(json!({"total": 3}));
+        let whole = arguments_of(
+            &mut painter,
+            &[
+                AgentMessage::new(crate::protocol::message::AgentPayload::CreateSurface(
+                    create,
+                ))
+                .with_version(version),
+            ],
+        );
+        assert_eq!(ids(&whole), ["root"]);
+        assert_eq!(whole["data"], json!({"total": 3}));
+        // In v1.0 a `null` at the root removes, so there is no data to send.
+        let emptied = arguments_of(
+            &mut painter,
+            &[AgentMessage::update_data_model("v", "/", Value::Null).with_version(version)],
+        );
+        assert_eq!(ids(&emptied), ["root"]);
+        assert_eq!(emptied.get("data"), None);
+        assert_eq!(
+            painter
+                .surfaces()
+                .get("v")
+                .unwrap()
+                .data_model
+                .to_json()
+                .unwrap(),
+            json!({})
+        );
     }
 }
