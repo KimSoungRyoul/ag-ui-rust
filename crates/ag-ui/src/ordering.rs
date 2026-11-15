@@ -1114,4 +1114,246 @@ mod tests {
         );
         assert!(!rules.has_ended());
     }
+
+    /// Who owns what: one stream per clause of the attribution rule, with
+    /// the index of the event that must be rejected, or `None` for a stream
+    /// that passes whole.
+    fn ownership() -> Vec<(&'static str, Vec<Event>, Option<usize>)> {
+        use crate::{
+            ActivitySnapshotEvent, AssistantMessage, JsonObject, PatchOperation, RunStartedEvent,
+            ToolCall, ToolCallStartEvent,
+        };
+        let tagged = |event: Event, id: &str| event.with_subagent_run_id(id);
+        let call_in = |message: &str, id: &str| {
+            let mut start = ToolCallStartEvent::new(id, "search");
+            start.parent_message_id = Some(message.into());
+            Event::ToolCallStart(start)
+        };
+        let activity = |id: &str, replace: bool| {
+            let mut event = ActivitySnapshotEvent::new(id, "progress", JsonObject::new());
+            event.replace = replace;
+            Event::ActivitySnapshot(event)
+        };
+        let delta =
+            |id: &str| Event::activity_delta(id, "progress", vec![PatchOperation::add("/step", 1)]);
+        let history = |owner: Option<&str>| {
+            Message::Assistant(AssistantMessage {
+                id: "h1".into(),
+                content: Some("earlier".into()),
+                tool_calls: Some(vec![ToolCall::new("hc1", "search", "{}")]),
+                subagent_run_id: owner.map(Into::into),
+                ..Default::default()
+            })
+        };
+        let echo = |messages: Vec<Message>| {
+            let mut input = RunAgentInput::new("t", "r");
+            input.messages = messages;
+            let mut started = RunStartedEvent::new("t", "r");
+            started.input = Some(Box::new(input));
+            Event::RunStarted(started)
+        };
+        let value = |subtype, id: &str| Event::reasoning_encrypted_value(subtype, id, "x");
+        let run = || Event::run_started("t", "r");
+        let done = || Event::run_finished_success("t", "r");
+        vec![
+            (
+                "a tagged continuation must name the opener",
+                vec![
+                    run(),
+                    tagged(start("m1"), "s1"),
+                    tagged(Event::text_message_content("m1", "x"), "s2"),
+                ],
+                Some(2),
+            ),
+            (
+                "the first writer keeps the id through an untagged re-open",
+                vec![
+                    run(),
+                    tagged(start("m1"), "s1"),
+                    tagged(Event::text_message_end("m1"), "s1"),
+                    start("m1"),
+                    tagged(Event::text_message_content("m1", "x"), "s1"),
+                    Event::text_message_end("m1"),
+                    tagged(call_in("m1", "c1"), "s1"),
+                    tagged(Event::tool_call_end("c1"), "s1"),
+                    done(),
+                ],
+                None,
+            ),
+            (
+                "and a sibling still may not continue it",
+                vec![
+                    run(),
+                    tagged(start("m1"), "s1"),
+                    tagged(Event::text_message_end("m1"), "s1"),
+                    start("m1"),
+                    tagged(Event::text_message_content("m1", "x"), "s2"),
+                ],
+                Some(4),
+            ),
+            (
+                "a tool call belongs to the message that carries it",
+                vec![
+                    run(),
+                    tagged(start("m1"), "s1"),
+                    tagged(call_in("m1", "c1"), "s2"),
+                ],
+                Some(2),
+            ),
+            (
+                "an untagged call inherits, so a sibling cannot continue it",
+                vec![
+                    run(),
+                    tagged(start("m1"), "s1"),
+                    call_in("m1", "c1"),
+                    tagged(Event::tool_call_args("c1", "{}"), "s2"),
+                ],
+                Some(3),
+            ),
+            (
+                "the echo seeds ownership",
+                vec![echo(vec![history(Some("s1"))]), tagged(start("h1"), "s2")],
+                Some(1),
+            ),
+            (
+                "the echo seeds tool calls too",
+                vec![
+                    echo(vec![history(Some("s1"))]),
+                    tagged(Event::tool_call_start("hc1", "search"), "s2"),
+                ],
+                Some(1),
+            ),
+            (
+                "a snapshot is authoritative over the echo",
+                vec![
+                    echo(vec![history(Some("s1"))]),
+                    Event::messages_snapshot(vec![history(None)]),
+                    tagged(start("h1"), "s1"),
+                ],
+                Some(2),
+            ),
+            (
+                "a result mints its message under its own attribution",
+                vec![
+                    run(),
+                    Event::tool_call_start("c1", "search"),
+                    Event::tool_call_end("c1"),
+                    tagged(Event::tool_call_result("m2", "c1", "ok"), "s1"),
+                    start("m2"),
+                    tagged(Event::text_message_end("m2"), "s2"),
+                ],
+                Some(5),
+            ),
+            (
+                "a reasoning block and its message share an owner",
+                vec![
+                    run(),
+                    tagged(Event::reasoning_start("r1"), "s1"),
+                    tagged(Event::reasoning_message_start("r1"), "s2"),
+                ],
+                Some(2),
+            ),
+            (
+                "a text message and a reasoning message may share an id",
+                vec![
+                    run(),
+                    tagged(start("x"), "s1"),
+                    tagged(Event::text_message_end("x"), "s1"),
+                    tagged(Event::reasoning_message_start("x"), "s2"),
+                    tagged(Event::reasoning_message_end("x"), "s2"),
+                    done(),
+                ],
+                None,
+            ),
+            (
+                "an encrypted value names the owner of its tool call",
+                vec![
+                    run(),
+                    tagged(Event::tool_call_start("c1", "search"), "s1"),
+                    tagged(Event::tool_call_end("c1"), "s1"),
+                    tagged(value(ReasoningEncryptedValueSubtype::ToolCall, "c1"), "s2"),
+                ],
+                Some(3),
+            ),
+            (
+                "an encrypted value names the owner of its reasoning message",
+                vec![
+                    run(),
+                    tagged(Event::reasoning_message_start("r1"), "s1"),
+                    tagged(Event::reasoning_message_end("r1"), "s1"),
+                    tagged(value(ReasoningEncryptedValueSubtype::Message, "r1"), "s2"),
+                ],
+                Some(3),
+            ),
+            (
+                "an activity delta names the owner of the activity",
+                vec![
+                    run(),
+                    tagged(activity("a1", true), "s1"),
+                    delta("a1"),
+                    activity("a1", false),
+                    tagged(delta("a1"), "s2"),
+                ],
+                Some(4),
+            ),
+            (
+                "a replacing snapshot re-owns the activity",
+                vec![
+                    run(),
+                    tagged(activity("a1", true), "s1"),
+                    tagged(activity("a1", true), "s2"),
+                    tagged(delta("a1"), "s2"),
+                    done(),
+                ],
+                None,
+            ),
+            (
+                "steps are keyed by owner",
+                vec![
+                    run(),
+                    Event::step_started("plan"),
+                    tagged(Event::step_started("plan"), "s1"),
+                    tagged(Event::step_finished("plan"), "s1"),
+                    tagged(Event::step_finished("plan"), "s2"),
+                ],
+                Some(4),
+            ),
+            (
+                "concurrent subagents interleave under their own tags",
+                vec![
+                    run(),
+                    Event::subagent_started("s1", "researcher"),
+                    Event::subagent_started("s2", "researcher"),
+                    tagged(start("m1"), "s1"),
+                    tagged(start("m2"), "s2"),
+                    tagged(Event::text_message_content("m1", "a"), "s1"),
+                    tagged(Event::text_message_content("m2", "b"), "s2"),
+                    tagged(Event::text_message_end("m2"), "s2"),
+                    Event::subagent_finished_success("s2"),
+                    tagged(Event::text_message_end("m1"), "s1"),
+                    Event::subagent_finished_success("s1"),
+                    done(),
+                ],
+                None,
+            ),
+            (
+                "a run may not finish with a subagent active",
+                vec![run(), Event::subagent_started("s1", "researcher"), done()],
+                Some(2),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_clause_of_the_attribution_rule_holds_at_both_ends() {
+        for policy in [Policy::PRODUCER, Policy::CONSUMER] {
+            for (name, events, expected) in ownership() {
+                let mut rules = Ordering::new(policy);
+                let rejected = events
+                    .iter()
+                    .position(|event| rules.observe(event).is_err());
+                assert_eq!(rejected, expected, "{policy:?}, {name}: {events:?}");
+            }
+        }
+    }
 }
