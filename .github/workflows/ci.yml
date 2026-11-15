@@ -312,7 +312,7 @@ jobs:
           exit $status
 
   # Offline: the Rust events and the vendored 1.0 schema against the reviewed
-  # baseline. The networked freshness check is upstream.yml.
+  # baseline. The networked freshness check is in scheduled.yml.
   drift:
     name: protocol drift vs upstream
     runs-on: ubuntu-latest
