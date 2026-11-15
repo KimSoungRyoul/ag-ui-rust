@@ -2,10 +2,11 @@
 
 use ag_ui_a2ui::{
     Catalog, Error, MessageProcessor,
+    processor::RejectionKind,
+    schema::SchemaBundle,
     schema_validation::{
         SchemaValidator, SurfaceValidator, validate_capabilities, validate_common_type,
     },
-    toolkit::schema::SchemaBundle,
 };
 use serde_json::{Value, json};
 
@@ -354,36 +355,126 @@ fn a_published_catalog_that_declares_no_theme_gets_a_validator() {
     assert!(schema.validate_message(&off_pattern).is_err());
 }
 
-/// Two `process_messages` cases of the conformance suite are listed as
-/// failing: a theme that is off the `pattern` in its catalog's theme schema,
-/// and a property a component does not declare. The check for both exists:
-/// `SchemaValidator` refuses each message. What is missing is the wiring,
-/// since `MessageProcessor` runs no `SchemaValidator`. This test is that
-/// statement, and the one to change when a processor learns to run one.
+/// A processor refuses what its catalog's schemas refuse once they are
+/// registered, and locates it the way it locates everything else. Two
+/// `process_messages` cases of the conformance suite rest on this: a theme
+/// that is off the `pattern` in its catalog's theme schema, and a property a
+/// component does not declare.
 #[test]
-fn the_schema_engine_makes_the_two_refusals_a_processor_does_not() {
+fn a_processor_with_schemas_registered_makes_the_refusals_a_schema_engine_makes() {
     let bundle = SchemaBundle::basic().unwrap();
     let catalog_id = bundle.catalog_id().unwrap().to_string();
     let schema = SchemaValidator::new(&bundle, &Default::default()).unwrap();
-    let mut processor = MessageProcessor::new();
-    processor
-        .register(Catalog::from_schema(&bundle.catalog).unwrap())
-        .unwrap();
+    let processor = || {
+        let mut processor = MessageProcessor::new();
+        processor
+            .register(Catalog::from_schema(&bundle.catalog).unwrap())
+            .unwrap();
+        processor
+    };
 
     let off_pattern = json!({"version": "v0.9", "createSurface": {
         "surfaceId": "s", "catalogId": catalog_id,
         "theme": {"primaryColor": "not-a-hex-color"}
     }});
+    let create = json!({"version": "v0.9", "createSurface": {
+        "surfaceId": "s", "catalogId": catalog_id
+    }});
     let undeclared = json!({"version": "v0.9", "updateComponents": {
         "surfaceId": "s", "components": [{
-            "id": "root", "component": "Text", "text": "Hello",
-            "@metadata": {"extensions": {"com_example_trace": "t1"}}
+            "id": "root", "component": "Text", "text": "Hello", "secret": true
         }]
     }});
     for message in [&off_pattern, &undeclared] {
         assert!(schema.validate_message(message).is_err(), "{message}");
-        processor
-            .process(message)
-            .unwrap_or_else(|refused| panic!("{message}: {refused}"));
     }
+
+    // Without schemas a processor checks what a catalog summary can say, and
+    // neither of these is in it.
+    let mut semantic = processor();
+    semantic.process(&off_pattern).unwrap();
+    semantic.process(&undeclared).unwrap();
+
+    // With them, both are refused, each where it is.
+    let mut checked = processor();
+    checked.register_schema(&catalog_id, schema).unwrap();
+    let refused = checked.process(&off_pattern).unwrap_err();
+    assert_eq!(refused.kind, RejectionKind::Validation);
+    assert_eq!(
+        refused.errors()[0].path,
+        "messages[0].createSurface.theme.primaryColor"
+    );
+    assert!(checked.surfaces().get("s").is_none());
+
+    let refused = checked
+        .process_all(&[create.clone(), undeclared.clone()])
+        .unwrap_err();
+    assert_eq!(refused.message_index, 1);
+    assert_eq!(
+        refused.errors()[0].path,
+        "messages[1].updateComponents.components[0]"
+    );
+    assert!(refused.errors()[0].message.contains("secret"));
+    assert!(
+        checked.surfaces().get("s").is_none(),
+        "a batch is all or nothing"
+    );
+
+    // A schema is for a catalog the processor holds.
+    assert!(matches!(
+        processor().register_schema(
+            "another/catalog",
+            SchemaValidator::new(&bundle, &Default::default()).unwrap()
+        ),
+        Err(Error::Catalog(_))
+    ));
+}
+
+/// The component keys A2UI v1.0 introduces are refused before it, with or
+/// without a schema engine, unless the catalog declares a property by that
+/// name. The reference renderers do the same in every mode.
+#[test]
+fn the_component_keys_of_v1_0_are_refused_on_an_earlier_surface() {
+    let catalog = Catalog::basic();
+    let catalog_id = catalog.catalog_id.clone();
+    let mut processor = MessageProcessor::new();
+    processor.register(catalog).unwrap();
+    processor
+        .process(&json!({"version": "v0.9", "createSurface": {
+            "surfaceId": "s", "catalogId": catalog_id
+        }}))
+        .unwrap();
+
+    for key in ["@metadata", "@catalogId", "@accessibility", "@checks"] {
+        let mut component = json!({"id": "root", "component": "Text", "text": "Hello"});
+        component[key] = json!({});
+        let refused = processor
+            .process(&json!({"version": "v0.9", "updateComponents": {
+                "surfaceId": "s", "components": [component]
+            }}))
+            .unwrap_err();
+        assert_eq!(refused.kind, RejectionKind::Validation);
+        assert_eq!(
+            refused.errors()[0].path,
+            format!("messages[0].updateComponents.components[0].{key}")
+        );
+    }
+
+    // A catalog may declare a property by one of those names.
+    let declares = Catalog::from_schema(&json!({
+        "catalogId": "declares",
+        "components": {"Note": {"type": "object", "properties": {
+            "@metadata": {"type": "object"}
+        }}}
+    }))
+    .unwrap();
+    processor.register(declares).unwrap();
+    processor
+        .process_all(&[
+            json!({"version": "v0.9", "createSurface": {"surfaceId": "n", "catalogId": "declares"}}),
+            json!({"version": "v0.9", "updateComponents": {"surfaceId": "n", "components": [
+                {"id": "root", "component": "Note", "@metadata": {"trace": "t1"}}
+            ]}}),
+        ])
+        .unwrap();
 }

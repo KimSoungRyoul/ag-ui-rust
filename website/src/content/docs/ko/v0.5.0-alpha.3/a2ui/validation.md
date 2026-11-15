@@ -31,7 +31,7 @@ SDK가 이를 검사합니다. 일반 날씨 데이터를 자동으로 화면으
 
 ```rust
 use ag_ui_a2ui::schema_validation::SurfaceValidator;
-use ag_ui_a2ui::toolkit::schema::SchemaBundle;
+use ag_ui_a2ui::schema::SchemaBundle;
 use serde_json::json;
 use std::collections::BTreeMap;
 

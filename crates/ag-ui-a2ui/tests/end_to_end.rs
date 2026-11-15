@@ -1,35 +1,33 @@
 //! The whole agent-side loop, end to end.
 //!
 //! Each unit test covers one module. These cover the seams between them: a turn
-//! that creates a surface, a follow-up turn that edits it by recovering it from
-//! history, and the failure path where a model's output is rejected and the
-//! errors go back out as an error envelope.
+//! that creates a surface, a follow-up turn that edits it, the failure path
+//! where a model's output is rejected and the errors go back out as an error
+//! envelope, and a surface shown while it is still being written.
+//!
+//! Generation is the agent layer's; the envelope and the history scan are the
+//! AG-UI conventions around it.
 
 #![cfg(feature = "toolkit")]
 
+use ag_ui_a2ui::A2uiVersion;
+use ag_ui_a2ui::agent::{
+    A2uiGenerator, A2uiRequestProcessor, CatalogConfig, CatalogDocument, RendererCapabilities,
+    ResponsePart, RetryDriver, StreamOptions, StreamPart, Verdict,
+};
 use ag_ui_a2ui::binding::Scope;
 use ag_ui_a2ui::catalog::Catalog;
-use ag_ui_a2ui::constants::{A2UI_OPERATIONS_KEY, BASIC_CATALOG_ID, PROTOCOL_VERSION};
-use ag_ui_a2ui::message::{AgentPayload, Component};
+use ag_ui_a2ui::constants::{A2UI_OPERATIONS_KEY, OFFICIAL_BASIC_CATALOG_ID, PROTOCOL_VERSION};
+use ag_ui_a2ui::message::{AgentMessage, AgentPayload, Component};
 use ag_ui_a2ui::toolkit::envelope::{wrap_as_operations_envelope, wrap_error_envelope};
 use ag_ui_a2ui::toolkit::history::{HistoryMessage, find_prior_surface};
-use ag_ui_a2ui::toolkit::negotiate::{ClientCapabilities, select_catalog_schema};
 use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
-use ag_ui_a2ui::toolkit::prompt::{PromptSpec, build_subagent_prompt};
-use ag_ui_a2ui::toolkit::recovery::{RecoveryOptions, generate_with_recovery};
-use ag_ui_a2ui::toolkit::schema::SchemaBundle;
-use ag_ui_a2ui::toolkit::streaming::StreamParser;
 use ag_ui_a2ui::validate::{ErrorCode, Validator};
 use serde_json::{Value, json};
 
-/// A model that returns a canned response, wrapped in the expected tags.
-fn model(response: &'static str) -> impl FnMut(&str, u32) -> ag_ui_a2ui::Result<String> {
-    move |_prompt, _attempt| Ok(response.to_string())
-}
-
 const CREATE_RESPONSE: &str = r#"Here is your order.
 <a2ui-json>[
-  {"version": "v0.9", "createSurface": {"surfaceId": "order", "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+  {"version": "v0.9", "createSurface": {"surfaceId": "order", "catalogId": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}},
   {"version": "v0.9", "updateComponents": {"surfaceId": "order", "components": [
     {"id": "root", "component": "Column", "children": ["heading", "items"]},
     {"id": "heading", "component": "Text", "text": {"path": "/title"}, "variant": "h2"},
@@ -41,31 +39,46 @@ const CREATE_RESPONSE: &str = r#"Here is your order.
   }}}
 ]</a2ui-json>"#;
 
+/// The processor of a request from a renderer that draws the basic catalog.
+fn processor() -> A2uiRequestProcessor {
+    let generator = A2uiGenerator::new(vec![CatalogConfig::basic(A2uiVersion::V0_9).unwrap()]);
+    let renderer = RendererCapabilities::supporting(A2uiVersion::V0_9, [OFFICIAL_BASIC_CATALOG_ID]);
+    generator.create_processor(Some(&renderer)).unwrap()
+}
+
+/// The messages of an answer that stood.
+fn messages(parts: Vec<ResponsePart>) -> Vec<AgentMessage> {
+    parts
+        .into_iter()
+        .flat_map(|part| match part {
+            ResponsePart::A2ui(messages) => messages,
+            ResponsePart::Text(_) => Vec::new(),
+        })
+        .collect()
+}
+
 #[test]
 fn a_turn_generates_validates_and_ships_a_surface() {
-    let catalog = Catalog::basic();
+    let processor = processor();
 
-    // 1. Build the prompt for the generating model.
-    let spec = PromptSpec::new("You build UI surfaces.", "Show my coffee order.", &catalog);
-    let prompt = build_subagent_prompt(&spec);
-    assert!(prompt.contains("Intent: create"));
+    // 1. The instructions for the generating model.
+    let system = format!("You build UI surfaces.\n\n{}", processor.prompt_snippet());
+    assert!(system.contains("---BEGIN A2UI JSON SCHEMA---"));
+    assert!(system.contains(OFFICIAL_BASIC_CATALOG_ID));
 
-    // 2. Generate, validating and retrying if needed.
-    let surface = generate_with_recovery(
-        &prompt,
-        &catalog,
-        &RecoveryOptions::default(),
-        model(CREATE_RESPONSE),
-        |_| {},
-    )
-    .expect("the canned response is valid A2UI");
+    // 2. The model's answer is judged. A clean first answer stands.
+    let mut state = processor.create_state();
+    let mut retry = RetryDriver::new(&processor, 3);
+    let Verdict::Done(parts) = retry.judge(CREATE_RESPONSE, &mut state) else {
+        panic!("the canned response is valid A2UI");
+    };
+    assert_eq!(retry.attempts(), 1);
+    assert_eq!(parts[0], ResponsePart::Text("Here is your order.".into()));
 
-    assert_eq!(surface.attempts, 1);
-    assert_eq!(surface.text, "Here is your order.");
+    // 3. The state is what the renderer now holds, and it is a whole surface.
+    let surface = state.surface("order").expect("the surface was created");
     assert_eq!(surface.components.len(), 4);
-
-    // 3. The reconstructed surface validates against its own data.
-    let report = Validator::new(&catalog).validate_model(&surface.components, &surface.data_model);
+    let report = state.processor().report("order").unwrap();
     assert!(report.is_valid(), "{:?}", report.errors);
     assert!(report.unreachable.is_empty());
 
@@ -81,108 +94,118 @@ fn a_turn_generates_validates_and_ships_a_surface() {
     );
 
     // 5. Ship it.
-    let envelope = wrap_as_operations_envelope(&surface.operations).unwrap();
+    let envelope = wrap_as_operations_envelope(&messages(parts)).unwrap();
     let value: Value = serde_json::from_str(&envelope).unwrap();
     let operations = value[A2UI_OPERATIONS_KEY].as_array().unwrap();
     assert_eq!(operations.len(), 3);
     assert_eq!(operations[0]["version"], PROTOCOL_VERSION);
     assert_eq!(
         operations[0]["createSurface"]["catalogId"],
-        BASIC_CATALOG_ID
+        OFFICIAL_BASIC_CATALOG_ID
     );
 }
 
 #[test]
 fn a_follow_up_turn_edits_the_surface_without_re_creating_it() {
-    let catalog = Catalog::basic();
+    let processor = processor();
+    // A canvas: one state for the conversation.
+    let mut state = processor.create_state();
+    let first = messages(
+        processor
+            .parse_response_in(CREATE_RESPONSE, &mut state)
+            .unwrap(),
+    );
 
     // Turn one is in history as the envelope the agent emitted.
-    let first = generate_with_recovery(
-        "prompt",
-        &catalog,
-        &RecoveryOptions::default(),
-        model(CREATE_RESPONSE),
-        |_| {},
-    )
-    .unwrap();
     let history = vec![
         HistoryMessage::text("user", "Show my coffee order."),
-        HistoryMessage::text(
-            "assistant",
-            wrap_as_operations_envelope(&first.operations).unwrap(),
-        ),
+        HistoryMessage::text("assistant", wrap_as_operations_envelope(&first).unwrap()),
         HistoryMessage::text("user", "Add the total."),
     ];
 
-    // Turn two recovers what is on screen.
+    // Turn two recovers what is on screen, which is what the state holds.
     let prior = find_prior_surface(&history).expect("the surface is in history");
     assert_eq!(prior.surface_id, "order");
-    assert_eq!(prior.catalog_id.as_deref(), Some(BASIC_CATALOG_ID));
-    assert_eq!(prior.components.len(), 4);
+    assert_eq!(prior.catalog_id.as_deref(), Some(OFFICIAL_BASIC_CATALOG_ID));
+    assert_eq!(prior.components, state.surface("order").unwrap().components);
     assert_eq!(
         prior.data_model.to_json().unwrap()["items"][0]["name"],
         "Espresso"
     );
 
-    // The prompt shows the model the current tree and forbids re-creation.
-    let prompt = build_subagent_prompt(
-        &PromptSpec::new("You build UI surfaces.", "Add the total.", &catalog).updating(&prior),
+    // The model's edit is read against the surface as it stands: an update
+    // alone is a whole answer, and it may name components it does not send.
+    let edit = r#"<a2ui-json>[
+      {"version": "v0.9", "updateComponents": {"surfaceId": "order", "components": [
+        {"id": "root", "component": "Column", "children": ["heading", "items", "total"]},
+        {"id": "total", "component": "Text", "text": {"path": "/total"}}
+      ]}},
+      {"version": "v0.9", "updateDataModel": {"surfaceId": "order", "path": "/total", "value": "$7.50"}}
+    ]</a2ui-json>"#;
+    let sent = messages(processor.parse_response_in(edit, &mut state).unwrap());
+    assert!(
+        !sent
+            .iter()
+            .any(|op| matches!(op.payload, AgentPayload::CreateSurface(_))),
+        "updating an existing surface must never re-create it"
     );
-    assert!(prompt.contains("Do NOT emit `createSurface` for 'order'"));
-    assert!(prompt.contains("\"id\": \"heading\""));
+    let surface = state.surface("order").unwrap();
+    assert_eq!(surface.components.len(), 5);
+    assert_eq!(surface.data_model.to_json().unwrap()["total"], "$7.50");
 
-    // The edit ships as an update, so no createSurface goes out.
-    let edit = SurfaceSpec::new(&prior.surface_id)
+    // Re-creating the surface is the model's mistake, and the state is left
+    // as the edit left it.
+    let before = state.clone();
+    let rejected = processor
+        .parse_response_in(CREATE_RESPONSE, &mut state)
+        .unwrap_err();
+    assert!(rejected.error.to_string().contains("already exists"));
+    assert_eq!(state, before);
+
+    // The same edit built in code ships as an update too.
+    let spec = SurfaceSpec::new(&prior.surface_id)
         .with_components(vec![
             Component::new("root", "Column").with("children", json!(["heading", "items", "total"])),
             Component::new("total", "Text").with("text", json!({"path": "/total"})),
         ])
         .with_data_model(json!("$7.50"))
         .with_data_path("/total");
-
-    let operations = assemble_ops(Intent::Update, &edit);
+    let operations = assemble_ops(Intent::Update, &spec);
     assert!(
         !operations
             .iter()
-            .any(|op| matches!(op.payload, AgentPayload::CreateSurface(_))),
-        "updating an existing surface must never re-create it"
+            .any(|op| matches!(op.payload, AgentPayload::CreateSurface(_)))
     );
-
-    // Validating the edit against the merged surface catches nothing: the new
-    // component and its binding both resolve.
-    let mut merged = prior.components.clone();
-    merged.retain(|c| c.id != "root");
-    merged.extend(edit.components.iter().cloned());
-    let mut data = prior.data_model.to_json().unwrap();
-    data["total"] = json!("$7.50");
-    let report = Validator::new(&catalog).validate_surface(&merged, Some(&data));
-    assert!(report.is_valid(), "{:?}", report.errors);
+    assert_eq!(operations, sent);
 }
 
 #[test]
 fn a_surface_that_cannot_be_fixed_ships_as_an_error_envelope() {
-    let catalog = Catalog::basic();
+    let processor = processor();
     // Every attempt names a child that was never defined.
-    let broken = r#"<a2ui-json>[
-        {"version": "v0.9", "createSurface": {"surfaceId": "order", "catalogId": "c"}},
-        {"version": "v0.9", "updateComponents": {"surfaceId": "order", "components": [
-          {"id": "root", "component": "Card", "child": "never-defined"}
-        ]}}
-    ]</a2ui-json>"#;
+    let broken = CREATE_RESPONSE.replace(
+        r#"{"id": "root", "component": "Column", "children": ["heading", "items"]}"#,
+        r#"{"id": "root", "component": "Card", "child": "never-defined"}"#,
+    );
 
-    let mut attempts = 0;
-    let error = generate_with_recovery(
-        "prompt",
-        &catalog,
-        &RecoveryOptions::default(),
-        |_, _| {
-            attempts += 1;
-            Ok(broken.to_string())
-        },
-        |_| {},
-    )
-    .unwrap_err();
-    assert_eq!(attempts, 3, "the loop should use its whole budget");
+    let mut state = processor.create_state();
+    let mut retry = RetryDriver::new(&processor, 3);
+    let mut prompt = "Show my coffee order.".to_string();
+    let error = loop {
+        match retry.judge(&broken, &mut state) {
+            Verdict::Retry(feedback) => prompt = feedback.prompt("Show my coffee order."),
+            Verdict::GiveUp(error) => break error,
+            Verdict::Done(_) => panic!("the answer names a child that does not exist"),
+        }
+    };
+    assert_eq!(
+        retry.attempts(),
+        3,
+        "the driver should use its whole budget"
+    );
+    assert!(prompt.contains("Correction required"));
+    assert!(prompt.contains("unresolved_child"));
+    assert!(state.surface("order").is_none(), "nothing was applied");
 
     let ag_ui_a2ui::Error::RecoveryExhausted { last, .. } = error else {
         panic!("expected RecoveryExhausted");
@@ -266,11 +289,25 @@ fn a_custom_catalog_drives_validation_the_same_way() {
 fn a_surface_renders_progressively_while_it_is_generated() {
     // The same generation as the first test, but delivered in token-sized
     // chunks: the user sees the tree fill in instead of waiting for the end.
-    let catalog = Catalog::basic();
-    let mut parser = StreamParser::new(catalog);
+    let processor = processor();
+    let mut state = processor.create_state();
+    let mut stream = processor
+        .open_stream(&state, StreamOptions::default())
+        .unwrap();
 
     let mut seen_text = Vec::new();
-    let mut renders: Vec<Value> = Vec::new();
+    let mut renders: Vec<AgentMessage> = Vec::new();
+    let mut take = |parts: Vec<StreamPart>| {
+        for part in parts {
+            match part {
+                StreamPart::Text(text) => seen_text.push(text),
+                StreamPart::A2ui(messages) => renders.extend(messages),
+                StreamPart::Rejected(error) => {
+                    panic!("the canned response streams cleanly: {error}")
+                }
+            }
+        }
+    };
     let mut cursor = 0;
     while cursor < CREATE_RESPONSE.len() {
         // A chunk boundary at an arbitrary character, including mid-token.
@@ -278,128 +315,106 @@ fn a_surface_renders_progressively_while_it_is_generated() {
         while !CREATE_RESPONSE.is_char_boundary(end) {
             end += 1;
         }
-        for part in parser
-            .process_chunk(&CREATE_RESPONSE[cursor..end])
-            .expect("the canned response streams cleanly")
-        {
-            if !part.text.is_empty() {
-                seen_text.push(part.text);
-            }
-            renders.extend(part.a2ui.into_iter().flatten());
-        }
+        take(
+            stream
+                .feed(&CREATE_RESPONSE[cursor..end], &mut state)
+                .expect("the canned response streams cleanly"),
+        );
         cursor = end;
     }
+    take(stream.close(&mut state).unwrap());
 
-    // Streaming text is passed through verbatim, newline and all: trimming it
-    // would swallow whitespace that separates one chunk from the next.
-    assert_eq!(
-        seen_text,
-        vec![
-            "Here is your order.
-"
-            .to_string()
-        ]
-    );
+    assert_eq!(seen_text.concat(), "Here is your order.");
 
     // The surface was created before any components arrived.
-    assert!(renders[0].get("createSurface").is_some());
+    assert!(matches!(renders[0].payload, AgentPayload::CreateSurface(_)));
 
-    // Something renderable was emitted well before the generation finished.
-    assert!(
-        renders.len() > 3,
-        "expected several progressive updates, got {}",
-        renders.len()
-    );
-
-    // Placeholders stood in for components still on the wire.
-    let placeholders: Vec<&Value> = renders
+    // Something renderable was emitted well before the generation finished:
+    // the component list grows, and each time it does it is sent again whole.
+    let lists: Vec<usize> = renders
         .iter()
-        .filter_map(|message| message.pointer("/updateComponents/components"))
-        .filter_map(Value::as_array)
-        .flatten()
-        .filter(|component| {
-            component
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id.starts_with("loading_"))
+        .filter_map(|message| match &message.payload {
+            AgentPayload::UpdateComponents(update) => Some(update.components.len()),
+            _ => None,
         })
         .collect();
-    assert!(!placeholders.is_empty(), "expected loading placeholders");
+    assert!(lists.len() > 1, "expected several progressive updates");
+    assert!(lists.windows(2).all(|pair| pair[0] <= pair[1]), "{lists:?}");
+    assert_eq!(lists.last(), Some(&4));
 
-    // The last component update is the finished tree, with no placeholders left.
-    let final_components = renders
-        .iter()
-        .rev()
-        .find_map(|message| message.pointer("/updateComponents/components"))
-        .and_then(Value::as_array)
-        .expect("a final component update");
-    let ids: Vec<&str> = final_components
-        .iter()
-        .filter_map(|component| component.get("id").and_then(Value::as_str))
-        .collect();
-    assert!(!ids.iter().any(|id| id.starts_with("loading_")), "{ids:?}");
-    for expected in ["root", "heading", "items", "row"] {
-        assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
-    }
-
-    // And what streamed out validates as a whole surface.
-    let components: Vec<Component> = final_components
-        .iter()
-        .map(|component| serde_json::from_value(component.clone()).expect("a component"))
-        .collect();
-    let data = renders
-        .iter()
-        .rev()
-        .find_map(|message| message.pointer("/updateDataModel/value"))
-        .cloned()
-        .expect("a data model update");
-    let report = Validator::new(&Catalog::basic()).validate_surface(&components, Some(&data));
-    assert!(report.is_valid(), "{:?}", report.errors);
+    // What streamed out is what a whole read leaves, and it is a whole surface.
+    let mut whole = processor.create_state();
+    processor
+        .parse_response_in(CREATE_RESPONSE, &mut whole)
+        .unwrap();
+    assert_eq!(state, whole);
+    state.check_trees(["order"]).unwrap();
 }
 
 #[test]
 fn a_catalog_is_negotiated_then_pruned_into_the_prompt() {
-    // The renderer prefers a catalog the agent has, and adds one component of
-    // its own.
-    let agent_catalogs = vec![json!({
-        "catalogId": "example.com:design-system",
-        "components": {
-            "Text": {"type": "object", "properties": {"component": {"const": "Text"}}},
-            "Chart": {"type": "object", "properties": {"component": {"const": "Chart"}}}
-        }
-    })];
-    let renderer = ClientCapabilities {
-        supported_catalog_ids: vec!["example.com:extended".to_string()],
-        inline_catalogs: vec![
-            json!({"catalogId":"example.com:extended","components": {"Text":{}, "Sparkline": {"type": "object"}}}),
-        ],
-        ..ClientCapabilities::default()
-    };
+    // The agent registers a design system and lets the model use part of it.
+    let design_system = CatalogDocument::load(
+        json!({
+            "catalogId": "example.com:design-system",
+            "components": {
+                "Text": {"type": "object", "properties": {"component": {"const": "Text"}}},
+                "Chart": {"type": "object", "properties": {"component": {"const": "Chart"}}}
+            }
+        }),
+        None,
+        Some(A2uiVersion::V0_9),
+    )
+    .unwrap();
+    let generator = A2uiGenerator::new(vec![
+        CatalogConfig::new(design_system).keeping_components(["Text"]),
+    ])
+    .accepting_inline_catalogs(true);
 
-    let negotiated = select_catalog_schema(&agent_catalogs, &renderer, true).unwrap();
-    assert_eq!(negotiated["catalogId"], "example.com:extended");
-    assert!(negotiated["components"]["Sparkline"].is_object());
-
-    // The prompt carries only the components this turn is allowed to use.
-    let bundle = SchemaBundle {
-        s2c: json!({"title": "envelope"}),
-        common_types: json!({"$defs": {"ComponentId": {"type": "string"}}}),
-        catalog: negotiated,
-        custom_cuttable_keys: None,
-    }
-    .prune(&["Text".to_string(), "Sparkline".to_string()], &[]);
-
-    assert!(bundle.catalog["components"]["Chart"].is_null());
-
-    let catalog = Catalog::empty("example.com:design-system");
-    let prompt = build_subagent_prompt(
-        &PromptSpec::new("You build UI.", "Chart my week.", &catalog).with_schemas(&bundle),
+    // The renderer draws the agent's catalog, and sends one of its own inline.
+    let renderer = RendererCapabilities::supporting(
+        A2uiVersion::V0_9,
+        ["example.com:extended", "example.com:design-system"],
+    )
+    .with_inline_catalogs(
+        A2uiVersion::V0_9,
+        vec![json!({
+            "catalogId": "example.com:extended",
+            "components": {"Text": {}, "Sparkline": {"type": "object"}}
+        })],
     );
-    assert!(prompt.contains("## Workflow Description:"));
+    let processor = generator.create_processor(Some(&renderer)).unwrap();
+    let active: Vec<&str> = processor
+        .active_catalogs()
+        .iter()
+        .map(CatalogDocument::catalog_id)
+        .collect();
+    // The catalogs the agent registered come first, then the renderer's own.
+    assert_eq!(
+        active,
+        ["example.com:design-system", "example.com:extended"]
+    );
+
+    // The prompt carries the renderer's catalog as it sent it, and of the
+    // agent's only the components this agent allows.
+    let prompt = processor.prompt_snippet();
     assert!(prompt.contains("---BEGIN A2UI JSON SCHEMA---"));
     assert!(prompt.contains("Sparkline"));
     assert!(
-        !prompt.contains("Chart\":"),
+        !prompt.contains("\"Chart\":"),
         "the pruned component must be gone"
     );
+
+    // And a surface is held to the catalog it names.
+    let answer = r#"<a2ui-json>[
+      {"version": "v0.9", "createSurface": {"surfaceId": "week", "catalogId": "example.com:extended"}},
+      {"version": "v0.9", "updateComponents": {"surfaceId": "week", "components": [
+        {"id": "root", "component": "Sparkline"}]}}
+    ]</a2ui-json>"#;
+    processor.parse_response(answer).unwrap();
+    let pruned = answer
+        .replace("example.com:extended", "example.com:design-system")
+        .replace("Sparkline", "Chart");
+    let rejected = processor.parse_response(&pruned).unwrap_err();
+    assert!(rejected.error.to_string().contains("unknown_component"));
 }

@@ -68,12 +68,12 @@ pub enum Error {
     ///
     /// Carries the full machine-readable error list so a caller can feed it
     #[cfg_attr(
-        feature = "toolkit",
-        doc = "straight back to a model; see [`crate::toolkit::recovery`]."
+        feature = "agent",
+        doc = "straight back to a model; see [`RetryDriver`](crate::agent::RetryDriver)."
     )]
     #[cfg_attr(
-        not(feature = "toolkit"),
-        doc = "straight back to a model; see `toolkit::recovery`, behind the `toolkit` feature."
+        not(feature = "agent"),
+        doc = "straight back to a model; see `agent::RetryDriver`, behind the `agent` feature."
     )]
     #[error("A2UI validation failed with {} error(s):\n{errors}", errors.len())]
     Validation {
@@ -191,7 +191,7 @@ impl ValidationErrors {
 /// One line per error, code first so a model can see the kind at a glance,
 /// then the locator, then the sentence explaining the fix. Empty for no
 /// errors. The retry prompt of every layer is built from this.
-#[cfg(any(feature = "toolkit", feature = "agent"))]
+#[cfg(feature = "agent")]
 pub(crate) fn correction_request(errors: &[crate::protocol::validate::ValidationError]) -> String {
     if errors.is_empty() {
         return String::new();
@@ -211,7 +211,7 @@ pub(crate) fn correction_request(errors: &[crate::protocol::validate::Validation
 
 /// `prompt`, followed by the [`correction_request`] for `errors`. The prompt
 /// itself when there is nothing to correct.
-#[cfg(any(feature = "toolkit", feature = "agent"))]
+#[cfg(feature = "agent")]
 pub(crate) fn prompt_with_corrections(
     prompt: &str,
     errors: &[crate::protocol::validate::ValidationError],

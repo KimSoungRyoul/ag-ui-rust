@@ -230,18 +230,20 @@ already displayed output transactional with `A2uiAuthor` correction attempts.
 ## Catalog negotiation
 
 ```rust
-use ag_ui_a2ui::toolkit::negotiate::{ClientCapabilitiesWire, select_catalog_schema};
+use ag_ui_a2ui::A2uiVersion;
+use ag_ui_a2ui::agent::{CatalogConfig, CatalogDocument, RendererCapabilities, resolve_catalogs};
 use serde_json::json;
 
-let wire = ClientCapabilitiesWire::from_json(&json!({
+let cards = CatalogDocument::load(
+    json!({"catalogId":"example.com:cards","components":{}}),
+    None,
+    Some(A2uiVersion::V0_9),
+).unwrap();
+let renderer = RendererCapabilities::from_json(&json!({
     "v0.9":{"supportedCatalogIds":["example.com:cards"]}
 })).unwrap();
-let chosen = select_catalog_schema(
-    &[json!({"catalogId":"example.com:cards","components":{}})],
-    &wire.v0_9,
-    false,
-).unwrap();
-assert_eq!(chosen["catalogId"], "example.com:cards");
+let active = resolve_catalogs(&[CatalogConfig::new(cards)], Some(&renderer), false).unwrap();
+assert_eq!(active[0].catalog_id(), "example.com:cards");
 ```
 
 `from_json` requires `schema-validation` and checks the official capabilities

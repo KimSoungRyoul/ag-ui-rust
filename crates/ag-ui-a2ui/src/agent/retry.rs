@@ -1,6 +1,6 @@
 //! Deciding what to do with a model's answer, without calling the model.
 
-use super::format::ResponsePart;
+use super::format::{ResponseError, ResponsePart};
 use super::processor::A2uiRequestProcessor;
 use super::state::RendererState;
 use crate::error::{Error, prompt_with_corrections};
@@ -27,6 +27,9 @@ use crate::protocol::validate::{ErrorCode, ValidationError};
 /// | [`Error::Parse`]: a block could not be read. | [`Verdict::Retry`], with one error at `response` that says why. |
 /// | [`Error::Catalog`]: the state holds other catalogs than the processor. | [`Verdict::GiveUp`], at once, with the error. |
 /// | Any of the first two, on the last attempt. | [`Verdict::GiveUp`], with [`Error::RecoveryExhausted`] and the last attempt's errors. |
+///
+/// An answer that stands and is still not what the caller asked for is turned
+/// down with [`RetryDriver::reject`], which gives the same two outcomes.
 ///
 /// A wrong catalog id is on the retry side because the answer wrote it. For a
 /// renderer the same thing is a catalog error (`CatalogError` in the core
@@ -141,9 +144,50 @@ impl RetryDriver {
     /// nothing: after [`Verdict::Retry`] and [`Verdict::GiveUp`], `state` is
     /// exactly what it was before the call.
     pub fn judge(&mut self, answer: &str, state: &mut RendererState) -> Verdict {
-        self.attempts += 1;
         let fits = self.processor.accepts_state(state);
-        let rejected = match self.processor.parse_response_in(answer, state) {
+        let read = self.processor.parse_response_in(answer, state);
+        self.settle(fits, read)
+    }
+
+    /// Judges an answer that is one block with no tags around it: the
+    /// argument of a tool call, or the answer of a model that was told to
+    /// write the block and nothing else. Read as
+    /// [`A2uiRequestProcessor::parse_block_in`] reads one, and otherwise as
+    /// [`RetryDriver::judge`], all or nothing included.
+    pub fn judge_block(&mut self, block: &str, state: &mut RendererState) -> Verdict {
+        let fits = self.processor.accepts_state(state);
+        let read = self.processor.parse_block_in(block, state);
+        self.settle(fits, read)
+    }
+
+    /// Turns down the answer that was just judged [`Verdict::Done`], for a
+    /// reason of the caller's own: the answer is valid A2UI and still not what
+    /// was asked for, say it draws on another surface than the one requested.
+    ///
+    /// `errors` say what is wrong, located in the answer the way the driver's
+    /// own are (`messages[0].createSurface.surfaceId`). What comes back is
+    /// what a rejected answer gets: the feedback to ask again with. The
+    /// answer was counted when it was judged, and is not counted again.
+    ///
+    /// The driver does not put the state back: the answer's messages were
+    /// applied when it stood. A caller with rules of its own judges into a
+    /// copy of its state and keeps the copy only when the answer passes them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RecoveryExhausted`] with `errors` when the attempts
+    /// are used up: give up, as after [`Verdict::GiveUp`].
+    pub fn reject(&mut self, errors: Vec<ValidationError>) -> Result<Feedback, Error> {
+        self.turn_down(errors)
+    }
+
+    fn settle(
+        &mut self,
+        fits: bool,
+        read: std::result::Result<Vec<ResponsePart>, ResponseError>,
+    ) -> Verdict {
+        self.attempts += 1;
+        let rejected = match read {
             Ok(parts) => return Verdict::Done(parts),
             Err(rejected) => rejected.error,
         };
@@ -161,13 +205,22 @@ impl RetryDriver {
                 other.to_string(),
             )],
         };
+        match self.turn_down(errors) {
+            Ok(feedback) => Verdict::Retry(feedback),
+            Err(error) => Verdict::GiveUp(error),
+        }
+    }
+
+    /// What a rejected attempt gets: the feedback to ask again with, or the
+    /// error to give up with once the attempts are used up.
+    fn turn_down(&self, errors: Vec<ValidationError>) -> Result<Feedback, Error> {
         if self.attempts >= self.max_attempts {
-            return Verdict::GiveUp(Error::RecoveryExhausted {
+            return Err(Error::RecoveryExhausted {
                 attempts: self.attempts,
                 last: errors.into(),
             });
         }
-        Verdict::Retry(Feedback {
+        Ok(Feedback {
             errors,
             attempt: self.attempts,
         })
