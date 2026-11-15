@@ -2,6 +2,7 @@
 //!
 //! Run with `cargo run -p xtask -- <subcommand>`.
 
+mod docs_check;
 mod drift;
 
 use std::process::ExitCode;
@@ -19,6 +20,11 @@ SUBCOMMANDS
     drift-check            Compare the Rust event types against the vendored
                            snapshot of the AG-UI 1.0 schema.
                            Offline and deterministic; this is the CI gate.
+    docs-check             Check the skills, the plugin manifests and the
+                           skills' sources.md against the repository: the
+                           workspace version, the README's dependency blocks,
+                           paths that exist, no merged crate names in e2e/ and
+                           examples/. Offline; exits 1 on a stale statement.
 
 DRIFT-CHECK OPTIONS
     --local               Compare the vendored schema at
@@ -60,6 +66,7 @@ fn dispatch(args: &[String]) -> Result<u8, String> {
             Ok(drift::EXIT_OK)
         }
         "drift-check" => drift::run(parse_drift_args(options)?),
+        "docs-check" => docs_check::run(options),
         other => Err(format!(
             "unknown subcommand `{other}`.\nRun `cargo run -p xtask -- --help` for the list."
         )),

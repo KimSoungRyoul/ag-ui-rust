@@ -62,7 +62,8 @@ and registry-only dependencies before treating alpha.2 as verified for download.
 [QA PR #14](https://github.com/KimSoungRyoul/ag-ui-rust/pull/14) stages
 `0.5.0-alpha.1` from [upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778)
 at `a459eace`. Its `ag-ui` source is identical to that upstream head; the
-standalone workspace retains `ag-ui-a2ui` and independent applications.
+standalone workspace retains `ag-ui-a2ui` and independent applications. The PR
+branch has since been rebased; its head `564be45` carries the same `ag-ui` source.
 
 | Gate | Observed result |
 | --- | --- |

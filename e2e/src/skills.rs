@@ -18,7 +18,8 @@
 //! that no longer exists, as long as it does so in a sentence rather than in a
 //! code block — which is why each skill directory carries a `sources.md` naming
 //! the files its sections were written from, and why the skills state the
-//! workspace version they were written against.
+//! workspace version they were written against. `xtask docs-check` holds both
+//! to the repository.
 //!
 //! Adding a skill does not add it here. The list is written out rather than
 //! globbed, for the same reason the website's is: a page whose snippets are not

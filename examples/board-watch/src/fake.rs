@@ -18,7 +18,7 @@
 //!
 //! # Why so much of it is raw `emit`
 //!
-//! `ag-ui-server`'s typestate handles bracket what they open, which is exactly
+//! `ag_ui::server`'s typestate handles bracket what they open, which is exactly
 //! what a chunk event is defined not to do — there is no `ctx.text_chunk()`,
 //! and two overlapping [`ToolCallHandle`](ag_ui::server::ToolCallHandle)s are a
 //! borrow-check error by design. Producing provider-shaped output therefore
@@ -400,7 +400,7 @@ pub fn router(agent: Awkward) -> Router {
         .route_agui(ROUTE, agent)
 }
 
-/// A hand-framed `text/event-stream`, bypassing `ag-ui-server` entirely.
+/// A hand-framed `text/event-stream`, bypassing `ag_ui::server` entirely.
 ///
 /// The server's own verifier will not emit a malformed stream — that is what it
 /// is for — so the only way to hand the *client's* verifier something to reject

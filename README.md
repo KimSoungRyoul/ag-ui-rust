@@ -6,7 +6,7 @@ This is an independent project, not an official AG-UI SDK.
 
 This source targets the `0.5.0-alpha.3` prerelease. Its AG-UI core is based on
 [upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778) at
-`a459eace56b3aae72d0927bf1cdabda05de75c0f`; the A2UI companion incorporates
+`564be451743105db9c46ef775dc90bdc69f30e2f`; the A2UI companion incorporates
 [the Rust A2UI follow-up at `5033ef049`](https://github.com/KimSoungRyoul/ag-ui/commit/5033ef049).
 The previous stable release is `0.4.5`. Choose the guide that matches your dependency:
 [0.5.0-alpha.3](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.3/start/)
@@ -145,8 +145,9 @@ commands. Each project consumes the public SDK rather than copying its reducers.
 
 The [0.5 migration notes](docs/migration-0.5.md) cover AG-UI 1.0
 wire behavior and API changes from 0.4.5. Version 0.4 changed the conversation
-API and A2UI data-update semantics; see [that migration guide](docs/migration-0.4.md) and
-[the reviewed design](docs/sdk-api-improvement-proposal.ko.md).
+API and A2UI data-update semantics; see [that migration guide](docs/migration-0.4.md).
+[The 0.3 → 0.4 design record](docs/sdk-api-improvement-proposal.ko.md) is kept as
+history, not as the current design.
 
 The [0.5 QA record](docs/QA.md) records
 the independent consumers, QWENCLOUD run, and release gates. Check
@@ -164,6 +165,7 @@ cargo test --doc --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo run --locked -p xtask -- drift-check
 cargo run --locked -p xtask -- drift-check --local
+cargo run --locked -p xtask -- docs-check
 prek run --all-files
 ```
 

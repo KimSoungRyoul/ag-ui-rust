@@ -393,7 +393,8 @@ jobs:
             rc=1
           fi
 
-          href=$(grep -rhoE 'href="ag_ui_[a-z_]*::[^"]*"' "${dirs[@]}" | sort | uniq -c)
+          # Both crate names: `ag_ui::…` and `ag_ui_a2ui::…` (note the digit).
+          href=$(grep -rhoE 'href="ag_ui(_[a-z0-9_]+)?::[^"]*"' "${dirs[@]}" | sort | uniq -c)
           if [ -n "$href" ]; then
             echo "$href"
             echo "::error::those hrefs are Rust paths rather than URLs and will 404; use an absolute https://kimsoungryoul.github.io/ag-ui-rust/api/ link"
@@ -439,6 +440,21 @@ jobs:
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features schema-validation
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features author
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features ag-ui-server
+
+  # The skills, the plugin manifests and the skills' sources.md restate the
+  # workspace version, the README's dependency blocks and repository paths by
+  # hand, and nothing compiles a version line or a list of paths. All three had
+  # gone stale — skills on alpha.1, manifests on 0.4.1, fifteen moved paths —
+  # before this asked. Offline; the rules are in xtask/src/docs_check.rs.
+  docs-consistency:
+    name: docs consistency (skills, plugin, sources)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --locked -p xtask -- docs-check
 
   # Every published crate must carry the metadata and files crates.io needs, and
   # must not ship anything it should not. `--list` is offline and does not

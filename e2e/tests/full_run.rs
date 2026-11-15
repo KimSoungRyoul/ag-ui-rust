@@ -2,7 +2,7 @@
 //!
 //! The agent emits every family that has an emitter — reasoning, a tool call
 //! with its result, streamed assistant text, a state publish — all inside a
-//! step. The assertions are on what `ag-ui-client` assembled after the bytes
+//! step. The assertions are on what `ag_ui::client` assembled after the bytes
 //! came back off a socket, so a fault anywhere in SSE framing, event decoding
 //! or delta application lands here.
 
