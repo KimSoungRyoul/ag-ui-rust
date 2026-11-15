@@ -220,6 +220,31 @@ These are on `main` and not yet in a published version.
   The documentation no longer presents the check as a CSRF defence: a required JSON media
   type means a browser must preflight a cross-origin run request, which leaves the decision
   to your CORS policy, and it is not authentication.
+- An explicit `null` in one of the 23 optional fields AG-UI 1.0 registers in its
+  deprecations list (`parentRunId` on `RUN_STARTED`, `rawEvent` on any event,
+  `outcome` on `RUN_FINISHED`, a tool's `parameters`, …) reads as the omitted field
+  instead of failing the run. The hosted endpoint does the same for the four that sit
+  in a request: `forwardedProps`, a tool's `parameters`, a resume entry's `payload`
+  and a media part's `metadata`. A `null` in any other optional field is still
+  rejected. `ResumeEntry::resolved(id, Value::Null)` is now written without `payload`.
+- The SDK no longer prints to stderr. What the compatibility boundary removes or
+  translates (an unrecognised field, enum member or event, a retired `THINKING_*`
+  event, a deprecated `null`, a newer `protocolVersion`) is a warning returned to the
+  caller. A `Thread` run yields each as the new `Update::Warning(String)`, not as an
+  error, and keeps it in `RunReport.diagnostics` with kind `warning`, within
+  `diagnostic_limit`; the run is unaffected. A match on `Update` that treats every
+  variant it does not name as an error should let warnings through.
+  `RemoteAgent::run_events`, `decode_events` and `Transport::run` discard warnings,
+  and the new `transport::enforce_events` hands each to a callback. Within a run, a
+  warning already delivered is not delivered again, so a pre-1.0 producer streaming
+  `THINKING_*` tokens yields one warning per kind of event, not one per token. On the
+  server, `AgentEndpoint::on_input_warnings` receives a request's warnings and
+  `extract::decode_with_warnings` returns them; `AgUiInput` and `extract::decode`
+  discard them. A warning repeats at most 64 characters of input text, with control
+  characters escaped, and names a dropped event by its type.
+- A path in a protocol error or warning names a list member by its index in the
+  input. It used to skip the members dropped before it, so the third of
+  `[unknown, unknown, malformed]` was reported as `/0`.
 - `BaseEvent::new()` is removed. Use `BaseEvent::default()`, which it returned.
 - `client::Verifier::is_finished()` is removed, and nothing replaces it. A caller that needs
   to know whether a run ended watches for `RUN_FINISHED` or `RUN_ERROR` itself.

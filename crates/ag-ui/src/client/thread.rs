@@ -18,9 +18,10 @@ use crate::client::{
         Applier, Changed, MessageChangeKind, ReasoningChangeKind, Subagent, SubagentChangeKind,
     },
     chunks::ChunkNormalizer,
+    enforce::{Checked, CheckedStream},
     error::{Error, Result},
     interrupts::InterruptExt,
-    transport::{EventStream, Transport},
+    transport::Transport,
     verify::Verifier,
 };
 use crate::{
@@ -78,6 +79,16 @@ pub enum Update<S = Value> {
     /// Not necessarily fatal — a run survives a patch it could not apply. When
     /// it is fatal, the matching [`Update::Done`] follows.
     Error(Error),
+    /// Not an error: the stream was accepted, with a correction or an omission
+    /// the application may want to log. An unrecognised field, enum member or
+    /// event was dropped, a retired `THINKING_*` event was translated, a
+    /// deprecated `null` was read as omitted, or the producer declared a newer
+    /// protocol version. The run is unaffected.
+    ///
+    /// Each text is delivered once per run and repeats at most 64 characters
+    /// of input, with control characters escaped. [`RunReport::diagnostics`]
+    /// keeps it with kind `warning`.
+    Warning(String),
     /// The run ended, and how. Always the last update of a run, on every path
     /// out: the agent finishing, the agent failing, and the transport dying
     /// mid-sentence.
@@ -166,7 +177,7 @@ pub struct StateViewError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunDiagnostic {
     /// A stable broad category (`state`, `protocol`, `patch`, `transport`, `run`,
-    /// or `unsupported`).
+    /// `unsupported`, or `warning` for an [`Update::Warning`]).
     pub kind: &'static str,
     /// Human-readable cause.
     pub message: String,
@@ -1034,7 +1045,7 @@ impl AbortHandle {
 pub struct RunStream<'a, T, S = Value> {
     thread: &'a mut Thread<T, S>,
     prepared: Option<(RunAgentInput, Option<Message>)>,
-    events: Option<EventStream>,
+    events: Option<CheckedStream>,
     normalizer: ChunkNormalizer,
     verifier: Option<Verifier>,
     expanded: Vec<Event>,
@@ -1094,6 +1105,19 @@ impl<T, S> RunStream<'_, T, S> {
             self.diagnostics_omitted += 1;
         }
         self.ready.push_back(Update::Error(error));
+    }
+    /// Kept like a diagnostic, within the same limit, but delivered as a
+    /// warning: the run is unaffected.
+    fn warning(&mut self, warning: String) {
+        if self.diagnostics.len() < self.thread.diagnostic_limit {
+            self.diagnostics.push(RunDiagnostic {
+                kind: "warning",
+                message: warning.clone(),
+            });
+        } else {
+            self.diagnostics_omitted += 1;
+        }
+        self.ready.push_back(Update::Warning(warning));
     }
     fn terminate(&mut self, end: RunEnd) {
         if self.done {
@@ -1436,7 +1460,7 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
                         status: SubmissionStatus::InFlight,
                     });
                 }
-                this.events = Some(this.thread.agent.run_events(input));
+                this.events = Some(this.thread.agent.run_checked(input));
             }
             match this
                 .events
@@ -1446,7 +1470,8 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
                 .poll_next(cx)
             {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Ok(event))) => this.ingest(event),
+                Poll::Ready(Some(Ok(Checked::Event(event)))) => this.ingest(event),
+                Poll::Ready(Some(Ok(Checked::Warning(warning)))) => this.warning(warning),
                 // After RUN_FINISHED a broken connection truncates nothing:
                 // the run already ended, so the break is only reported.
                 Poll::Ready(Some(Err(error @ Error::Transport(_)))) if this.finished.is_some() => {

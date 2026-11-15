@@ -66,12 +66,7 @@ async fn every_schema_usage_field_survives_success_and_error_events() {
 
 #[tokio::test]
 async fn malformed_cache_write_counts_fail_on_both_transports() {
-    for count in [
-        json!(-1),
-        json!(1.5),
-        json!(null),
-        json!(9007199254740992_u64),
-    ] {
+    for count in [json!(-1), json!(1.5), json!(9007199254740992_u64)] {
         let value = json!({
             "type":"RUN_FINISHED", "threadId":"t", "runId":"r",
             "usage":[{"cacheWriteInputTokens":count}]
@@ -80,6 +75,16 @@ async fn malformed_cache_write_counts_fail_on_both_transports() {
             let error = result.unwrap_err().to_string();
             assert!(error.contains("/usage/0/cacheWriteInputTokens"), "{error}");
         }
+    }
+    // AG-UI 1.0 registers a `null` count on a RUN_FINISHED usage entry as an
+    // omitted one (tests/optional_null_input.rs). Nowhere else.
+    let value = json!({
+        "type":"RUN_ERROR", "message":"failed",
+        "usage":[{"cacheWriteInputTokens":null}]
+    });
+    for result in decoded_by_both_transports(&value).await {
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("/usage/0/cacheWriteInputTokens"), "{error}");
     }
 }
 
