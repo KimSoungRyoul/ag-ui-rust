@@ -277,6 +277,9 @@ These are on `main` and not yet in a published version.
   activity, is skipped. `Applier::apply` returns `Error::Patch` ("no activity message has
   this id, so the delta was skipped"), and a `Thread` reports it as a `patch` diagnostic and
   carries on. Alpha.3 created an empty activity from the delta and patched that.
+- An `ACTIVITY_DELTA` that applies gives the activity its own `activityType`, so a delta
+  can retype the activity it amends. Alpha.3 kept the type the snapshot set. A producer
+  that does not mean to retype repeats the current type, which 1.0 requires of it.
 - The client verifier brackets a reasoning block. `REASONING_START` for a block that is
   already open, `REASONING_END` for one that is not, and `RUN_FINISHED` while one is open
   are protocol errors, as they already were for a hosted run. Alpha.3 accepted all three.
@@ -286,6 +289,11 @@ These are on `main` and not yet in a published version.
   in the message is dropped, and one with only an `id` is sent unchanged. This applies to
   `Thread` runs and `RemoteAgent::run_events`; the messages the application holds are not
   rewritten. Alpha.3 sent the `binary` part, which a 1.0 agent strips.
+- The same translation applies on the way in. A `binary` part in the messages of
+  `MESSAGES_SNAPSHOT` or of the `RUN_STARTED` input echo, or in a `TOOL_CALL_RESULT`, is
+  read as its media part, with a warning naming it ("translated retired binary content part
+  at /messages/0/content/1 to image"). The client used to drop the part as unrecognised.
+  One with only an `id` is still dropped, with the "unrecognised union member" warning.
 - A `Thread` reports a second `RUN_STARTED` inside an active run as "RUN_STARTED arrived
   twice in one stream" whatever ids it carries. Alpha.3 reported a different run id as
   "RUN_STARTED does not match the requested thread and run IDs". With `verify(false)` the
