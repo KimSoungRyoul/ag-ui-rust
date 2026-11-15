@@ -19,10 +19,14 @@
 //! | How is a data binding written, and a function call? | [`A2uiVersion::path_key`], [`A2uiVersion::call_key`], [`A2uiVersion::path`], [`A2uiVersion::call`] |
 //! | Which keys of a component are its envelope and not its properties? | [`A2uiVersion::component_keys`] |
 //! | Is a leading `@` reserved in a dynamic value? | [`A2uiVersion::reserves_at_keys`] |
+//! | Must a component's id and type be Unicode identifiers, and is a catalog held to the rules v1.0 gave catalogs? | [`A2uiVersion::names_are_identifiers`] |
+//! | May a catalog keep a function from the renderer? | [`A2uiVersion::restricts_function_callers`] |
+//! | Is a function call resolved when a message is read, and `@index` held to a template? | [`A2uiVersion::resolves_function_calls`] |
 //! | Does a `null` value in `updateDataModel` remove, or is it stored? | [`A2uiVersion::null_removes`] |
 //! | Does removing a path that holds nothing still create what leads to it? | [`A2uiVersion::removal_pads`] |
 //! | May a surface mix catalogs, each component naming its own? | [`A2uiVersion::mixes_catalogs`] |
 //! | Which basic catalog is published for it? | [`A2uiVersion::basic_catalog_id`] |
+//! | Under which metadata keys do capabilities and the data model travel? | [`A2uiVersion::capabilities_key`], [`A2uiVersion::capabilities_entry`], [`A2uiVersion::data_model_key`] |
 //!
 //! Adding a version is therefore a change to this file: a variant, its
 //! discriminator, and an arm in each method.
@@ -302,6 +306,71 @@ impl A2uiVersion {
         }
     }
 
+    /// Whether a component's `id` and `component` have to be identifiers as
+    /// Unicode Standard Annex #31 defines one: `user_card`, not `user-card` or
+    /// `1st_item`.
+    ///
+    /// From v1.0. Before it an id is any non-empty string.
+    ///
+    /// The same goes for the names a catalog gives its components and
+    /// functions, and with it the other rules v1.0 holds a catalog document
+    /// to when it is read; see
+    /// [`Catalog::from_schema`](crate::Catalog::from_schema).
+    pub const fn names_are_identifiers(self) -> bool {
+        match self.family() {
+            Family::V0_9 => false,
+            Family::V1_0 => true,
+        }
+    }
+
+    /// Whether a catalog's `allowedCallers` binds: a function it gives to the
+    /// agent alone may then not stand in a component property or a local
+    /// action, both of which a renderer evaluates.
+    ///
+    /// From v1.0. A v0.9 catalog may state `allowedCallers`, and it restricts
+    /// nothing there.
+    pub const fn restricts_function_callers(self) -> bool {
+        match self.family() {
+            Family::V0_9 => false,
+            Family::V1_0 => true,
+        }
+    }
+
+    /// Whether a function call is resolved when a message is read: its
+    /// catalog found, its name looked up there, a `formatString` template
+    /// parsed, and `@index` allowed only where a list template gives it an
+    /// item to count.
+    ///
+    /// From v1.0, which says how a call finds its catalog and where `@index`
+    /// may stand. Before it a call is the catalog schema's to describe and
+    /// the renderer's to run.
+    pub const fn resolves_function_calls(self) -> bool {
+        match self.family() {
+            Family::V0_9 => false,
+            Family::V1_0 => true,
+        }
+    }
+
+    /// The keys that are a component's envelope in another version and not in
+    /// this one: `@catalogId`, `@accessibility`, `@checks` and `@metadata` on
+    /// a surface older than v1.0, the bare `accessibility` and `checks` on a
+    /// v1.0 one.
+    ///
+    /// On a component they are ordinary properties, which its catalog declares
+    /// or does not.
+    pub(crate) fn foreign_component_keys(self) -> Vec<&'static str> {
+        let own = self.component_keys();
+        let mut foreign = Vec::new();
+        for other in Self::ALL {
+            for key in other.component_keys().all() {
+                if !own.contains(key) && !foreign.contains(&key) {
+                    foreign.push(key);
+                }
+            }
+        }
+        foreign
+    }
+
     /// The keys of a component object that are its envelope rather than
     /// properties its catalog declares.
     ///
@@ -349,6 +418,18 @@ impl A2uiVersion {
         }
     }
 
+    /// Whether a catalog's `allowedParents` and `allowedChildren` are part of
+    /// the protocol, so that a [`Validator`](crate::validate::Validator) and a
+    /// [`MessageProcessor`](crate::processor::MessageProcessor) refuse a
+    /// surface that breaks them. From v1.0, whose catalog definition has both.
+    ///
+    /// In the v0.9 family they are this crate's own reading of a catalog:
+    /// [`Catalog::composition_violations`](crate::Catalog::composition_violations)
+    /// reports them to a caller that asks.
+    pub const fn constrains_composition(self) -> bool {
+        matches!(self, Self::V1_0)
+    }
+
     /// Whether a surface may mix catalogs: `createSurface` need not name one,
     /// and a component or a function call may name its own.
     ///
@@ -386,6 +467,35 @@ impl A2uiVersion {
         match self.family() {
             Family::V0_9 => "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
             Family::V1_0 => "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
+        }
+    }
+
+    /// The transport metadata key a renderer's capabilities travel under:
+    /// `a2uiClientCapabilities`, or `a2uiRendererCapabilities` from v1.0,
+    /// which calls the two sides agent and renderer throughout.
+    pub const fn capabilities_key(self) -> &'static str {
+        match self.family() {
+            Family::V0_9 => "a2uiClientCapabilities",
+            Family::V1_0 => "a2uiRendererCapabilities",
+        }
+    }
+
+    /// The key inside a capabilities object that holds this version's entry:
+    /// `v0.9` for both v0.9 and v0.9.1, `1.0` for v1.0.
+    pub const fn capabilities_entry(self) -> &'static str {
+        match self.family() {
+            Family::V0_9 => "v0.9",
+            Family::V1_0 => "1.0",
+        }
+    }
+
+    /// The transport metadata key a renderer's data model travels under, for
+    /// a surface created with `sendDataModel`: `a2uiClientDataModel`, or
+    /// `a2uiRendererDataModel` from v1.0.
+    pub const fn data_model_key(self) -> &'static str {
+        match self.family() {
+            Family::V0_9 => "a2uiClientDataModel",
+            Family::V1_0 => "a2uiRendererDataModel",
         }
     }
 
@@ -568,6 +678,13 @@ mod tests {
                 json!({"call": "f", "args": {"x": 1}})
             );
             assert!(!version.reserves_at_keys());
+            assert!(!version.names_are_identifiers());
+            assert!(!version.restricts_function_callers());
+            assert!(!version.resolves_function_calls());
+            assert_eq!(
+                version.foreign_component_keys(),
+                ["@catalogId", "@accessibility", "@checks", "@metadata"]
+            );
             assert!(!version.null_removes());
             assert!(version.removal_pads());
             assert!(!version.mixes_catalogs());
@@ -579,6 +696,13 @@ mod tests {
         assert_eq!(version.path("/a"), json!({"@path": "/a"}));
         assert_eq!(version.call("f", json!(null)), json!({"@call": "f"}));
         assert!(version.reserves_at_keys());
+        assert!(version.names_are_identifiers());
+        assert!(version.restricts_function_callers());
+        assert!(version.resolves_function_calls());
+        assert_eq!(
+            version.foreign_component_keys(),
+            ["accessibility", "checks"]
+        );
         assert!(version.null_removes());
         assert!(!version.removal_pads());
         assert!(version.mixes_catalogs());
@@ -609,5 +733,17 @@ mod tests {
             A2uiVersion::V0_9.basic_catalog_id(),
             A2uiVersion::V1_0.basic_catalog_id()
         );
+        // v1.0 says renderer where the v0.9 family says client.
+        for version in [A2uiVersion::V0_9, A2uiVersion::V0_9_1] {
+            assert_eq!(version.capabilities_key(), "a2uiClientCapabilities");
+            assert_eq!(version.capabilities_entry(), "v0.9");
+            assert_eq!(version.data_model_key(), "a2uiClientDataModel");
+        }
+        assert_eq!(
+            A2uiVersion::V1_0.capabilities_key(),
+            "a2uiRendererCapabilities"
+        );
+        assert_eq!(A2uiVersion::V1_0.capabilities_entry(), "1.0");
+        assert_eq!(A2uiVersion::V1_0.data_model_key(), "a2uiRendererDataModel");
     }
 }

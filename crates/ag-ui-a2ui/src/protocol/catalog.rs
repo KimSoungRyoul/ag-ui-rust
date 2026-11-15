@@ -7,9 +7,20 @@
 //!
 //! Two ways in:
 //!
-//! - [`Catalog::basic`] — the 18-component standard catalog, built in.
+//! - [`Catalog::basic`] and [`Catalog::basic_for`] — the published basic
+//!   catalog of a protocol version, 18 components, read from the document
+//!   this crate ships.
 //! - [`Catalog::from_schema`] — parse any A2UI catalog JSON Schema document,
 //!   which is how custom design systems are described.
+//!
+//! # One surface, several catalogs
+//!
+//! Before v1.0 a surface has the one catalog it was created with. From v1.0
+//! it may mix them: a component names its own with `@catalogId`, and falls
+//! back to the surface's default. [`Catalogs`] is what a surface may draw
+//! from, and answers which catalog a component is defined in. All the
+//! catalogs of one surface are written against the surface's protocol
+//! version ([`Catalog::version`]).
 //!
 //! # Structural properties are what make validation possible
 //!
@@ -35,15 +46,18 @@
 //! loosely must not turn into false failures.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 
-use crate::constants::{BASIC_CATALOG_ID, ROOT_ID, SURFACE_COMPONENT};
+use crate::constants::{ROOT_ID, SURFACE_COMPONENT};
 use crate::error::{Error, Result};
 use crate::protocol::message::Component;
+use crate::protocol::validate::{ErrorCode, ValidationError, is_identifier};
+use crate::protocol::version::A2uiVersion;
 
-/// Component types of the basic catalog, in specification order.
+/// Component types of the basic catalog, in the order the published
+/// documents of v0.9, v0.9.1 and v1.0 all declare them.
 pub const BASIC_COMPONENTS: [&str; 18] = [
     "Text",
     "Image",
@@ -55,14 +69,14 @@ pub const BASIC_COMPONENTS: [&str; 18] = [
     "List",
     "Card",
     "Tabs",
-    "Divider",
     "Modal",
+    "Divider",
     "Button",
-    "CheckBox",
     "TextField",
-    "DateTimeInput",
+    "CheckBox",
     "ChoicePicker",
     "Slider",
+    "DateTimeInput",
 ];
 
 /// Icon names the basic catalog's `Icon` component accepts.
@@ -259,21 +273,6 @@ impl PropDef {
             required,
         }
     }
-
-    fn typed(mut self, value_type: PropType) -> Self {
-        self.value_type = value_type;
-        self
-    }
-
-    fn described(mut self, description: &str) -> Self {
-        self.description = Some(description.to_string());
-        self
-    }
-
-    fn with_enum(mut self, values: &[&str]) -> Self {
-        self.enum_values = values.iter().map(|v| (*v).to_string()).collect();
-        self
-    }
 }
 
 /// One component type in a catalog.
@@ -297,9 +296,19 @@ pub struct ComponentDef {
     pub allowed_children: Option<Vec<String>>,
     /// Declaration order of properties, for stable prompt rendering.
     prop_order: Vec<String>,
+    /// Whether the component takes check rules: its schema composes the
+    /// common `Checkable` type, or declares `checks` itself.
+    checkable: bool,
+    /// The definition's own `metadata`, where a v1.0 catalog gives it one.
+    metadata: Option<Value>,
+    /// Properties declared only inside a `oneOf` or `anyOf` branch. They are
+    /// not in `props`, since no one branch is the component's shape, and
+    /// they are still names the component has.
+    branch_props: BTreeSet<String>,
 }
 
 impl ComponentDef {
+    #[cfg(test)]
     fn new(name: &str, description: &str, props: Vec<PropDef>) -> Self {
         let required = props
             .iter()
@@ -316,7 +325,37 @@ impl ComponentDef {
             allowed_parents: None,
             allowed_children: None,
             prop_order,
+            checkable: false,
+            metadata: None,
+            branch_props: BTreeSet::new(),
         }
+    }
+
+    /// Whether the definition declares a property of this name anywhere: in
+    /// itself, in what it is composed of, or in one of its alternatives.
+    ///
+    /// Wider than [`ComponentDef::props`], which leaves out a property that
+    /// only a `oneOf` or `anyOf` branch declares. It is what decides whether
+    /// a bare `metadata` or `catalogId` on a v1.0 component is the
+    /// component's own property or the envelope key of the v1.0 drafts.
+    pub fn declares(&self, name: &str) -> bool {
+        self.props.contains_key(name) || self.branch_props.contains(name)
+    }
+
+    /// Whether a component of this type may carry check rules (`checks`, or
+    /// `@checks` from v1.0): its schema composes the common `Checkable` type,
+    /// or declares a `checks` property itself.
+    pub fn is_checkable(&self) -> bool {
+        self.checkable
+    }
+
+    /// The metadata the catalog gives this component type: an object with an
+    /// `extensions` map. From v1.0; `None` for a definition that carries none.
+    ///
+    /// It says something about the type, in the catalog. The `@metadata` of a
+    /// component on a surface says something about that one component.
+    pub fn metadata(&self) -> Option<&Value> {
+        self.metadata.as_ref()
     }
 
     /// Properties in declaration order.
@@ -403,8 +442,55 @@ pub struct ComponentRef {
     pub id: String,
 }
 
+/// Which side may call a catalog function. A v1.0 catalog states it per
+/// function, as `allowedCallers`.
+///
+/// Non-exhaustive, so that a caller can be added without breaking a `match`
+/// written outside this crate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AllowedCallers {
+    /// The renderer alone, in a binding or an action. The default, and what
+    /// every function is before v1.0.
+    #[default]
+    RendererOnly,
+    /// The agent alone: a renderer asks the agent to run it. It cannot be
+    /// bound to a component property or run by a local action.
+    AgentOnly,
+    /// Either side.
+    RendererOrAgent,
+}
+
+impl AllowedCallers {
+    /// The catalog's spelling: `rendererOnly`, `agentOnly`, `rendererOrAgent`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RendererOnly => "rendererOnly",
+            Self::AgentOnly => "agentOnly",
+            Self::RendererOrAgent => "rendererOrAgent",
+        }
+    }
+
+    /// Reads the catalog's spelling. `None` for any other string.
+    pub fn parse(text: &str) -> Option<Self> {
+        [Self::RendererOnly, Self::AgentOnly, Self::RendererOrAgent]
+            .into_iter()
+            .find(|callers| callers.as_str() == text)
+    }
+
+    /// Whether a renderer may run the function itself, which is what a
+    /// binding and a local action ask of it.
+    pub const fn includes_renderer(self) -> bool {
+        !matches!(self, Self::AgentOnly)
+    }
+}
+
 /// One function in a catalog.
+///
+/// Non-exhaustive: a later protocol version may say more about a function.
+/// Build one with [`FunctionDef::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FunctionDef {
     /// Function name, e.g. `formatString`.
     pub name: String,
@@ -412,6 +498,25 @@ pub struct FunctionDef {
     pub description: Option<String>,
     /// Declared return type, when the catalog states one.
     pub return_type: Option<String>,
+    /// Which side may call it. [`AllowedCallers::RendererOnly`] unless a v1.0
+    /// catalog says otherwise.
+    pub allowed_callers: AllowedCallers,
+    /// Whether the function runs only in answer to a user's gesture, such as
+    /// `openUrl`. From v1.0.
+    pub requires_user_activation: bool,
+}
+
+impl FunctionDef {
+    /// A function a renderer runs, with nothing else said about it.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            return_type: None,
+            allowed_callers: AllowedCallers::default(),
+            requires_user_activation: false,
+        }
+    }
 }
 
 /// A set of component and function definitions, identified by `catalogId`.
@@ -433,10 +538,13 @@ pub struct Catalog {
     /// The document the catalog was read from. Shared, so that cloning a
     /// catalog does not copy it.
     document: Option<Arc<Value>>,
+    /// The protocol version the catalog is written against.
+    version: A2uiVersion,
 }
 
 impl Catalog {
-    /// An empty catalog with the given id.
+    /// An empty catalog with the given id, written against
+    /// [`A2uiVersion::DEFAULT`].
     pub fn empty(catalog_id: impl Into<String>) -> Self {
         Self {
             catalog_id: catalog_id.into(),
@@ -447,7 +555,42 @@ impl Catalog {
             functions: BTreeMap::new(),
             component_order: Vec::new(),
             document: None,
+            version: A2uiVersion::DEFAULT,
         }
+    }
+
+    /// The protocol version the catalog is written against: how its
+    /// components spell a binding, and which surfaces may draw from it.
+    ///
+    /// A document states it as `protocolVersion`. One that states none is a
+    /// v0.9 catalog, which is how the specification reads it: `protocolVersion`
+    /// arrived with v1.0, and a catalog for v1.0 has to state it.
+    pub fn version(&self) -> A2uiVersion {
+        self.version
+    }
+
+    /// The same catalog, said to be written against `version`.
+    ///
+    /// For a catalog built in code, and for a v0.9.1 document, which states no
+    /// version and would be read as v0.9. The document is not rewritten.
+    #[must_use]
+    pub fn with_version(mut self, version: A2uiVersion) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// The same catalog under another id.
+    ///
+    /// For a renderer that registers a published catalog under a name of its
+    /// own, as AG-UI's toolkit does with the v0.9 basic catalog
+    /// ([`BASIC_CATALOG_ID`](crate::constants::BASIC_CATALOG_ID)). The catalog
+    /// is then no longer the one its document names, so [`Catalog::document`]
+    /// is `None` afterwards.
+    #[must_use]
+    pub fn with_catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
+        self.catalog_id = catalog_id.into();
+        self.document = None;
+        self
     }
 
     /// The document this catalog was read from, exactly as
@@ -460,10 +603,10 @@ impl Catalog {
     /// is what a schema validator, a prompt or a renderer is handed.
     ///
     /// `None` for a catalog that was not read from a document:
-    /// [`Catalog::basic`], [`Catalog::empty`], and any catalog after
-    /// [`Catalog::insert_component`], which makes it another catalog than the
-    /// one its document describes. Changing the public fields does not rewrite
-    /// the document.
+    /// [`Catalog::empty`], and any catalog after
+    /// [`Catalog::insert_component`] or [`Catalog::with_catalog_id`], which
+    /// make it another catalog than the one its document describes. Changing
+    /// the public fields does not rewrite the document.
     ///
     /// ```
     /// use ag_ui_a2ui::Catalog;
@@ -482,7 +625,9 @@ impl Catalog {
     /// // The document reads back into the same catalog.
     /// assert_eq!(Catalog::from_schema(catalog.document().unwrap())?, catalog);
     ///
-    /// assert!(Catalog::basic().document().is_none());
+    /// // The basic catalog is read from the published document, and gives it back.
+    /// assert_eq!(Catalog::basic().document().unwrap()["catalogId"], Catalog::basic().catalog_id);
+    /// assert!(Catalog::empty("x").document().is_none());
     /// # Ok::<(), ag_ui_a2ui::Error>(())
     /// ```
     pub fn document(&self) -> Option<&Value> {
@@ -536,27 +681,66 @@ impl Catalog {
             .unwrap_or_default()
     }
 
-    /// The standard 18-component basic catalog.
+    /// The basic catalog published for v0.9: [`Catalog::basic_for`] with
+    /// [`A2uiVersion::V0_9`].
+    ///
+    /// Its `catalog_id` is the published one,
+    /// [`OFFICIAL_BASIC_CATALOG_ID`](crate::constants::OFFICIAL_BASIC_CATALOG_ID).
     pub fn basic() -> Self {
-        let mut catalog = Self::empty(BASIC_CATALOG_ID);
-        catalog.title = Some("A2UI Basic Catalog".to_string());
-        catalog.description =
-            Some("The baseline set of A2UI components and client-side functions.".to_string());
+        Self::basic_for(A2uiVersion::V0_9)
+    }
 
-        for def in basic_component_defs() {
-            catalog.insert_component(def);
-        }
-        for (name, description, return_type) in BASIC_FUNCTION_DEFS {
-            catalog.functions.insert(
-                name.to_string(),
-                FunctionDef {
-                    name: name.to_string(),
-                    description: Some(description.to_string()),
-                    return_type: Some(return_type.to_string()),
-                },
-            );
-        }
-        catalog
+    /// The basic catalog published for `version`: 18 components and 14
+    /// functions, read from the document this crate ships, which
+    /// [`Catalog::document`] gives back. No file or network is touched.
+    ///
+    /// The three documents differ. v0.9 has `List.listStyle` and v0.9.1 does
+    /// not, though the two carry one id. v1.0 is another catalog under another
+    /// id, with `Video.posterUrl`, `TextField.placeholder` and `Slider.steps`,
+    /// and its components spell bindings the v1.0 way.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{A2uiVersion, Catalog};
+    ///
+    /// let v0_9 = Catalog::basic_for(A2uiVersion::V0_9);
+    /// let v0_9_1 = Catalog::basic_for(A2uiVersion::V0_9_1);
+    /// let v1_0 = Catalog::basic_for(A2uiVersion::V1_0);
+    /// assert!(v0_9.component("List").unwrap().props.contains_key("listStyle"));
+    /// assert!(!v0_9_1.component("List").unwrap().props.contains_key("listStyle"));
+    /// assert_eq!(v0_9.catalog_id, v0_9_1.catalog_id);
+    /// assert_eq!(v1_0.catalog_id, A2uiVersion::V1_0.basic_catalog_id());
+    /// assert_eq!(v1_0.version(), A2uiVersion::V1_0);
+    /// assert!(v1_0.component("TextField").unwrap().props.contains_key("placeholder"));
+    /// ```
+    pub fn basic_for(version: A2uiVersion) -> Self {
+        static V0_9: OnceLock<Catalog> = OnceLock::new();
+        static V0_9_1: OnceLock<Catalog> = OnceLock::new();
+        static V1_0: OnceLock<Catalog> = OnceLock::new();
+        let (cell, document) = match version {
+            A2uiVersion::V0_9 => (&V0_9, include_str!("../../schemas/v0_9/catalog.json")),
+            A2uiVersion::V0_9_1 => (&V0_9_1, include_str!("../../schemas/v0_9_1/catalog.json")),
+            A2uiVersion::V1_0 => (&V1_0, include_str!("../../schemas/v1_0/catalog.json")),
+        };
+        cell.get_or_init(|| {
+            // The documents are part of this crate, and a test reads each one.
+            let parsed: Value =
+                serde_json::from_str(document).expect("the shipped basic catalog is JSON");
+            let mut catalog = Self::from_schema(&parsed)
+                .expect("the shipped basic catalog is a catalog")
+                .with_version(version);
+            // A `Value` does not keep the order a document declares its
+            // components in, and that order is the specification's.
+            if let Ok(declared) = serde_json::from_str::<DeclaredOrder>(document) {
+                catalog.component_order = declared
+                    .components
+                    .0
+                    .into_iter()
+                    .filter(|name| catalog.components.contains_key(name))
+                    .collect();
+            }
+            catalog
+        })
+        .clone()
     }
 
     /// Parses an A2UI catalog JSON Schema document, and keeps it:
@@ -568,10 +752,37 @@ impl Catalog {
     /// `allOf` members are merged; `$ref`s to `ComponentId` and `ChildList` are
     /// what mark a property structural.
     ///
+    /// The catalog's version is the document's `protocolVersion`, written as
+    /// a number (`"1.0"`, `"0.9.1"`), and v0.9 when the document states none
+    /// ([`Catalog::version`]).
+    ///
+    /// # What v1.0 asks of a catalog
+    ///
+    /// A document that states `"protocolVersion": "1.0"` is held to the rules
+    /// v1.0 gave catalogs, and is refused when it breaks one:
+    ///
+    /// - A component name and a function name are identifiers
+    ///   (`^[\p{XID_Start}_][\p{XID_Continue}]*$`), so no `-`, and no `@`,
+    ///   which belongs to the protocol. `Surface` is the protocol's own
+    ///   component and cannot be defined.
+    /// - A `$ref` stays inside the catalog or points at `common_types.json`.
+    ///   Nothing is ever fetched, so any other target could not be read.
+    /// - `requiresUserActivation` is for a function the renderer alone may
+    ///   call: a user's gesture happens there.
+    /// - The names in a component's `metadata.extensions` are identifiers.
+    ///
+    /// Where the document lists its components in `$defs/anyComponent`, or its
+    /// functions in `$defs/anyFunction`, the catalog defines the listed ones:
+    /// an entry the union leaves out is one no message can use.
+    ///
+    /// A v0.9 or v0.9.1 document is read as before, with none of this.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::Catalog`] if the document is not an object or has no
-    /// `catalogId`.
+    /// Returns [`Error::Catalog`] if the document is not an object, has no
+    /// `catalogId`, states a `protocolVersion` this crate does not speak, or is
+    /// a v1.0 catalog that breaks one of the rules above;
+    /// [`Error::Validation`] for an extension name that is not an identifier.
     pub fn from_schema(schema: &Value) -> Result<Self> {
         let root = schema
             .as_object()
@@ -584,31 +795,77 @@ impl Catalog {
             .ok_or_else(|| Error::catalog("catalog document is missing 'catalogId'"))?;
 
         let mut catalog = Self::empty(catalog_id);
+        catalog.version = match root.get("protocolVersion") {
+            None | Some(Value::Null) => A2uiVersion::V0_9,
+            Some(Value::String(stated)) => A2uiVersion::from_number(stated).ok_or_else(|| {
+                Error::catalog(format!(
+                    "catalog '{catalog_id}' targets protocol version '{stated}', which this \
+                     crate does not speak"
+                ))
+            })?,
+            Some(_) => {
+                return Err(Error::catalog(format!(
+                    "catalog '{catalog_id}' declares a 'protocolVersion' that is not a string"
+                )));
+            }
+        };
         catalog.title = string_field(root.get("title"));
         catalog.description = string_field(root.get("description"));
         catalog.instructions = string_field(root.get("instructions"));
 
+        let held_to_rules = catalog.version.names_are_identifiers();
+        if held_to_rules {
+            check_catalog_rules(catalog.version, catalog_id, root)?;
+        }
+        // The entries a union lists, where the document has one.
+        let listed = |union: &str, section: &str| -> Option<BTreeSet<String>> {
+            let branches = root.get("$defs")?.get(union)?.get("oneOf")?.as_array()?;
+            let prefix = format!("#/{section}/");
+            held_to_rules.then(|| {
+                branches
+                    .iter()
+                    .filter_map(|branch| branch.get("$ref")?.as_str()?.strip_prefix(&prefix))
+                    .map(|name| name.replace("~1", "/").replace("~0", "~"))
+                    .collect()
+            })
+        };
+        let listed_components = listed("anyComponent", "components");
+        let listed_functions = listed("anyFunction", "functions");
+        let is_listed = |listed: &Option<BTreeSet<String>>, name: &str| {
+            listed.as_ref().is_none_or(|listed| listed.contains(name))
+        };
+
         if let Some(Value::Object(components)) = root.get("components") {
             for (name, component_schema) in components {
-                catalog.insert_component(component_def_from_schema(name, component_schema));
+                if is_listed(&listed_components, name) {
+                    catalog.insert_component(component_def_from_schema(name, component_schema));
+                }
             }
         }
         if let Some(Value::Object(functions)) = root.get("functions") {
             for (name, function_schema) in functions {
+                if !is_listed(&listed_functions, name) {
+                    continue;
+                }
                 // A function is a schema for its call, so the specification
                 // states the return type as the constant the call's
                 // `returnType` has to be. The bare field is the shorthand.
                 let return_type = function_schema
                     .get("returnType")
                     .or_else(|| function_schema.pointer("/properties/returnType/const"));
-                catalog.functions.insert(
-                    name.to_string(),
-                    FunctionDef {
-                        name: name.to_string(),
-                        description: string_field(function_schema.get("description")),
-                        return_type: string_field(return_type),
-                    },
-                );
+                let mut function = FunctionDef::new(name);
+                function.description = string_field(function_schema.get("description"));
+                function.return_type = string_field(return_type);
+                // An unknown caller is the schema's to refuse; read as the
+                // default, it allows no more than a renderer.
+                function.allowed_callers = function_schema
+                    .get("allowedCallers")
+                    .and_then(Value::as_str)
+                    .and_then(AllowedCallers::parse)
+                    .unwrap_or_default();
+                function.requires_user_activation =
+                    function_schema.get("requiresUserActivation") == Some(&Value::Bool(true));
+                catalog.functions.insert(name.to_string(), function);
             }
         }
         if let Some(Value::Array(functions)) = root.get("functions") {
@@ -620,14 +877,10 @@ impl Catalog {
                 if catalog.functions.contains_key(name) {
                     return Err(Error::catalog(format!("duplicate function {name}")));
                 }
-                catalog.functions.insert(
-                    name.into(),
-                    FunctionDef {
-                        name: name.into(),
-                        description: string_field(definition.get("description")),
-                        return_type: string_field(definition.get("returnType")),
-                    },
-                );
+                let mut function = FunctionDef::new(name);
+                function.description = string_field(definition.get("description"));
+                function.return_type = string_field(definition.get("returnType"));
+                catalog.functions.insert(name.into(), function);
             }
         }
         catalog.document = Some(Arc::new(schema.clone()));
@@ -759,6 +1012,43 @@ fn string_field(value: Option<&Value>) -> Option<String> {
     value.and_then(Value::as_str).map(str::to_string)
 }
 
+/// The order a catalog document declares its components in.
+#[derive(serde::Deserialize)]
+struct DeclaredOrder {
+    components: KeysInOrder,
+}
+
+/// The keys of a JSON object in the order its text writes them.
+struct KeysInOrder(Vec<String>);
+
+impl<'de> serde::Deserialize<'de> for KeysInOrder {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Keys;
+        impl<'de> serde::de::Visitor<'de> for Keys {
+            type Value = KeysInOrder;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut keys = Vec::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                    keys.push(key);
+                }
+                Ok(KeysInOrder(keys))
+            }
+        }
+        deserializer.deserialize_map(Keys)
+    }
+}
+
 /// Merges an `allOf` chain into a flat view of properties and requirements.
 fn component_def_from_schema(name: &str, schema: &Value) -> ComponentDef {
     let mut props: BTreeMap<String, PropDef> = BTreeMap::new();
@@ -768,12 +1058,44 @@ fn component_def_from_schema(name: &str, schema: &Value) -> ComponentDef {
     let mut description = None;
     let mut allowed_parents = None;
     let mut allowed_children = None;
+    let mut checkable = false;
+    let mut branch_props: BTreeSet<String> = BTreeSet::new();
 
     let mut stack = vec![schema];
     while let Some(current) = stack.pop() {
         let Some(object) = current.as_object() else {
             continue;
         };
+        // What the alternatives declare, by name only: a branch is not the
+        // component's shape, so nothing in it is required or typed here.
+        let mut branches: Vec<&Value> = ["oneOf", "anyOf"]
+            .iter()
+            .filter_map(|keyword| object.get(*keyword)?.as_array())
+            .flatten()
+            .collect();
+        while let Some(branch) = branches.pop() {
+            let Some(branch) = branch.as_object() else {
+                continue;
+            };
+            if let Some(Value::Object(properties)) = branch.get("properties") {
+                branch_props.extend(properties.keys().cloned());
+            }
+            branches.extend(
+                ["allOf", "oneOf", "anyOf"]
+                    .iter()
+                    .filter_map(|keyword| branch.get(*keyword)?.as_array())
+                    .flatten(),
+            );
+        }
+        // The check rules come from the common `Checkable` type, which a
+        // component composes by reference.
+        if object
+            .get("$ref")
+            .and_then(Value::as_str)
+            .is_some_and(|reference| reference.rsplit('/').next() == Some("Checkable"))
+        {
+            checkable = true;
+        }
         if description.is_none() {
             description = string_field(object.get("description"));
         }
@@ -832,6 +1154,7 @@ fn component_def_from_schema(name: &str, schema: &Value) -> ComponentDef {
         }
     }
 
+    checkable |= props.contains_key("checks");
     ComponentDef {
         name: name.to_string(),
         description,
@@ -840,7 +1163,210 @@ fn component_def_from_schema(name: &str, schema: &Value) -> ComponentDef {
         allowed_parents,
         allowed_children,
         prop_order,
+        checkable,
+        metadata: schema
+            .get("metadata")
+            .filter(|value| value.is_object())
+            .cloned(),
+        branch_props,
     }
+}
+
+/// The rules v1.0 holds a catalog document to when it is read. See
+/// [`Catalog::from_schema`].
+fn check_catalog_rules(
+    version: A2uiVersion,
+    catalog_id: &str,
+    root: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    let entries = |section: &str| {
+        root.get(section)
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+    };
+    let envelope = version.component_keys();
+    for (name, definition) in entries("components") {
+        if !is_identifier(name) {
+            return Err(Error::catalog(format!(
+                "Invalid UAX #31 component identifier '{name}' in catalog '{catalog_id}': a \
+                 letter or '_' first, then letters, digits and '_'"
+            )));
+        }
+        if name == SURFACE_COMPONENT {
+            return Err(Error::catalog(format!(
+                "catalog '{catalog_id}' defines '{SURFACE_COMPONENT}', which is the protocol's \
+                 own component for a surface"
+            )));
+        }
+        // The properties the definition declares, in itself and in what it
+        // is composed of. The envelope's keys are the protocol's.
+        let own = definition.get("properties");
+        let composed = definition
+            .get("allOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|branch| branch.get("properties"));
+        let declared = std::iter::once(own)
+            .chain(composed)
+            .filter_map(|properties| properties?.as_object())
+            .flat_map(serde_json::Map::keys);
+        for property in declared {
+            if !envelope.contains(property) && !is_identifier(property) {
+                return Err(Error::catalog(format!(
+                    "Invalid UAX #31 property identifier '{property}' of component '{name}' in \
+                     catalog '{catalog_id}': a letter or '_' first, then letters, digits and '_'"
+                )));
+            }
+        }
+        let extensions = definition
+            .get("metadata")
+            .and_then(|metadata| metadata.get("extensions"))
+            .and_then(Value::as_object);
+        for key in extensions.into_iter().flatten().map(|(key, _)| key) {
+            if !is_identifier(key) {
+                return Err(Error::Validation {
+                    errors: vec![ValidationError::new(
+                        ErrorCode::InvalidValue,
+                        format!("components.{name}.metadata.extensions.{key}"),
+                        format!(
+                            "Extension name '{key}' of component '{name}' in catalog \
+                             '{catalog_id}' must be a valid identifier: a letter or '_' first, \
+                             then letters, digits and '_'."
+                        ),
+                    )]
+                    .into(),
+                });
+            }
+        }
+    }
+    for (name, definition) in entries("functions") {
+        if !is_identifier(name) {
+            return Err(Error::catalog(format!(
+                "Invalid UAX #31 function identifier '{name}' in catalog '{catalog_id}': a \
+                 letter or '_' first, then letters, digits and '_'; '@' is the protocol's"
+            )));
+        }
+        if let Some(argument) = argument_names(definition, root)
+            .into_iter()
+            .find(|argument| !is_identifier(argument))
+        {
+            return Err(Error::catalog(format!(
+                "Invalid UAX #31 argument identifier '{argument}' of function '{name}' in \
+                 catalog '{catalog_id}': a letter or '_' first, then letters, digits and '_'"
+            )));
+        }
+        let needs_gesture = definition.get("requiresUserActivation") == Some(&Value::Bool(true));
+        let callers = definition.get("allowedCallers").and_then(Value::as_str);
+        if needs_gesture && callers.is_some_and(|callers| callers != "rendererOnly") {
+            return Err(Error::catalog(format!(
+                "function '{name}' of catalog '{catalog_id}' sets requiresUserActivation with \
+                 allowedCallers '{}': a user's gesture happens on the renderer, so only a \
+                 rendererOnly function may require one",
+                callers.unwrap_or_default()
+            )));
+        }
+    }
+    // Every `$ref` in the document, wherever it sits.
+    let mut stack: Vec<&Value> = root.values().collect();
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::Array(items) => stack.extend(items),
+            Value::Object(map) => {
+                if let Some(Value::String(reference)) = map.get("$ref") {
+                    let document = reference.split('#').next().unwrap_or_default();
+                    let own = document.is_empty();
+                    let common_types =
+                        document == "common_types.json" || document.ends_with("/common_types.json");
+                    if !own && !common_types {
+                        return Err(Error::catalog(format!(
+                            "Unsupported external $ref '{reference}' in catalog \
+                             '{catalog_id}': a catalog refers to its own definitions and to \
+                             common_types.json, and no other document is ever fetched"
+                        )));
+                    }
+                }
+                stack.extend(map.values());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The argument names a function's definition declares.
+///
+/// A published document writes a function as the schema of a call to it, so
+/// the arguments are the properties of its `args`. A shorter definition gives
+/// them under `args` or `parameters`, as a schema or as a plain map of names.
+/// A reference into the catalog's own `$defs` is followed.
+fn argument_names<'a>(
+    definition: &'a Value,
+    root: &'a serde_json::Map<String, Value>,
+) -> Vec<&'a str> {
+    let object = |value: Option<&'a Value>| value.filter(|value| value.is_object());
+    let Some(arguments) = object(definition.pointer("/properties/args"))
+        .or_else(|| object(definition.get("args")))
+        .or_else(|| object(definition.get("parameters")))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+    const COMBINERS: [&str; 3] = ["allOf", "anyOf", "oneOf"];
+    let is_schema = arguments.get("properties").is_some_and(Value::is_object)
+        || arguments.get("$ref").is_some_and(Value::is_string)
+        || COMBINERS
+            .iter()
+            .any(|keyword| arguments.get(*keyword).is_some_and(Value::is_array));
+    if !is_schema {
+        // A plain map of names: nothing in it is a keyword of a schema.
+        let is_map = !arguments.get("type").is_some_and(Value::is_string)
+            && !arguments.contains_key("not")
+            && arguments
+                .values()
+                .all(|value| value.is_object() || value.is_boolean());
+        return match is_map {
+            true => arguments.keys().map(String::as_str).collect(),
+            false => Vec::new(),
+        };
+    }
+    let mut names = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut stack = vec![arguments];
+    while let Some(node) = stack.pop() {
+        if let Some(properties) = node.get("properties").and_then(Value::as_object) {
+            names.extend(properties.keys().map(String::as_str));
+        }
+        let referred = node
+            .get("$ref")
+            .and_then(Value::as_str)
+            .filter(|reference| reference.starts_with("#/$defs/") && visited.insert(*reference))
+            .and_then(|reference| {
+                reference[1..]
+                    .split('/')
+                    .skip(1)
+                    .try_fold(None::<&Value>, |at, segment| {
+                        let segment = segment.replace("~1", "/").replace("~0", "~");
+                        match at {
+                            None => root.get(&segment).map(Some),
+                            Some(at) => at.get(&segment).map(Some),
+                        }
+                    })
+                    .flatten()
+            });
+        let branches = COMBINERS
+            .iter()
+            .filter_map(|keyword| node.get(*keyword)?.as_array())
+            .flatten();
+        stack.extend(
+            referred
+                .into_iter()
+                .chain(branches)
+                .filter_map(Value::as_object),
+        );
+    }
+    names
 }
 
 fn string_list(value: Option<&Value>) -> Option<Vec<String>> {
@@ -982,7 +1508,8 @@ fn ref_kind(reference: Option<&Value>) -> Option<PropKind> {
     let reference = reference?.as_str()?;
     let target = reference.rsplit('/').next()?;
     match target {
-        "ComponentId" => Some(PropKind::ComponentRef),
+        // `Child` is v1.0's name for a reference to a single child.
+        "ComponentId" | "Child" => Some(PropKind::ComponentRef),
         "ChildList" => Some(PropKind::ChildList),
         _ => None,
     }
@@ -1031,7 +1558,7 @@ fn prop_type_from_schema(schema: &Value) -> PropType {
 /// The JSON type behind a `$ref` to one of the published common types.
 fn ref_type(reference: &str) -> PropType {
     match reference.rsplit('/').next().unwrap_or_default() {
-        "ComponentId" | "DynamicString" => PropType::String,
+        "ComponentId" | "Child" | "DynamicString" => PropType::String,
         "DynamicNumber" => PropType::Number,
         "DynamicBoolean" => PropType::Boolean,
         "DynamicStringList" => PropType::Array,
@@ -1040,346 +1567,6 @@ fn ref_type(reference: &str) -> PropType {
         // anything at all. Neither narrows to one type.
         _ => PropType::Unconstrained,
     }
-}
-
-const BASIC_FUNCTION_DEFS: [(&str, &str, &str); 14] = [
-    (
-        "required",
-        "Checks that the value is not null, undefined, or empty.",
-        "boolean",
-    ),
-    (
-        "regex",
-        "Checks that the value matches a regular expression string.",
-        "boolean",
-    ),
-    ("length", "Checks string length constraints.", "boolean"),
-    ("numeric", "Checks numeric range constraints.", "boolean"),
-    (
-        "email",
-        "Checks that the value is a valid email address.",
-        "boolean",
-    ),
-    (
-        "formatString",
-        "Interpolates data model values and function results into a string.",
-        "string",
-    ),
-    (
-        "formatNumber",
-        "Formats a number with grouping and precision.",
-        "string",
-    ),
-    (
-        "formatCurrency",
-        "Formats a number as a currency string.",
-        "string",
-    ),
-    (
-        "formatDate",
-        "Formats a date/time using a pattern.",
-        "string",
-    ),
-    (
-        "pluralize",
-        "Selects a localized string based on a numeric count.",
-        "string",
-    ),
-    ("openUrl", "Opens a URL in a browser.", "void"),
-    (
-        "and",
-        "Logical AND over a list of boolean values.",
-        "boolean",
-    ),
-    ("or", "Logical OR over a list of boolean values.", "boolean"),
-    ("not", "Logical NOT of a boolean value.", "boolean"),
-];
-
-/// The standard catalog's component definitions, transcribed from
-/// `basic_catalog.json` of the v0.9 specification.
-///
-/// Property types come from that document, and
-/// `the_built_in_basic_catalog_types_match_the_vendored_specification_document`
-/// in this module's tests is what keeps the transcription honest.
-fn basic_component_defs() -> Vec<ComponentDef> {
-    use PropKind::{ChildList, ComponentRef, ObjectListRefs, Value as Val};
-    use PropType::{Array as Arr, Boolean as Bool, Number as Num, Object as Obj, String as Str};
-
-    let align = ["start", "center", "end", "stretch"];
-    let justify = [
-        "start",
-        "center",
-        "end",
-        "spaceBetween",
-        "spaceAround",
-        "spaceEvenly",
-        "stretch",
-    ];
-    let checks = || {
-        PropDef::new("checks", Val, false)
-            .described("Function calls that must return true for this component to be valid.")
-    };
-
-    vec![
-        ComponentDef::new(
-            "Text",
-            "Displays text. Supports simple Markdown.",
-            vec![
-                PropDef::new("text", Val, true)
-                    .typed(Str)
-                    .described("The text content to display."),
-                PropDef::new("variant", Val, false)
-                    .typed(Str)
-                    .described("A hint for the base text style.")
-                    .with_enum(&["h1", "h2", "h3", "h4", "h5", "caption", "body"]),
-            ],
-        ),
-        ComponentDef::new(
-            "Image",
-            "Displays an image from a URL.",
-            vec![
-                PropDef::new("url", Val, true)
-                    .typed(Str)
-                    .described("The image URL."),
-                PropDef::new("description", Val, false)
-                    .typed(Str)
-                    .described("Alternative text describing the image."),
-                PropDef::new("fit", Val, false).typed(Str).with_enum(&[
-                    "contain",
-                    "cover",
-                    "fill",
-                    "none",
-                    "scaleDown",
-                ]),
-                PropDef::new("variant", Val, false).typed(Str).with_enum(&[
-                    "icon",
-                    "avatar",
-                    "smallFeature",
-                    "mediumFeature",
-                    "largeFeature",
-                    "header",
-                ]),
-            ],
-        ),
-        ComponentDef::new(
-            "Icon",
-            "Displays a system-provided icon from a predefined list.",
-            vec![
-                PropDef::new("name", Val, true)
-                    .described("The icon name, an {svgPath} object, or a data binding.")
-                    .with_enum(&BASIC_ICON_NAMES),
-            ],
-        ),
-        ComponentDef::new(
-            "Video",
-            "Displays a video from a URL.",
-            vec![
-                PropDef::new("url", Val, true)
-                    .typed(Str)
-                    .described("The video URL."),
-            ],
-        ),
-        ComponentDef::new(
-            "AudioPlayer",
-            "A player for audio content from a URL.",
-            vec![
-                PropDef::new("url", Val, true)
-                    .typed(Str)
-                    .described("The audio URL."),
-                PropDef::new("description", Val, false)
-                    .typed(Str)
-                    .described("Text describing the audio content."),
-            ],
-        ),
-        ComponentDef::new(
-            "Row",
-            "A layout container that arranges its children horizontally.",
-            vec![
-                PropDef::new("children", ChildList, true),
-                PropDef::new("justify", Val, false)
-                    .typed(Str)
-                    .described("Arrangement along the main (horizontal) axis.")
-                    .with_enum(&justify),
-                PropDef::new("align", Val, false)
-                    .typed(Str)
-                    .described("Alignment along the cross (vertical) axis.")
-                    .with_enum(&align),
-            ],
-        ),
-        ComponentDef::new(
-            "Column",
-            "A layout container that arranges its children vertically.",
-            vec![
-                PropDef::new("children", ChildList, true),
-                PropDef::new("justify", Val, false)
-                    .typed(Str)
-                    .with_enum(&justify),
-                PropDef::new("align", Val, false)
-                    .typed(Str)
-                    .with_enum(&align),
-            ],
-        ),
-        ComponentDef::new(
-            "List",
-            "A scrollable list of components.",
-            vec![
-                PropDef::new("children", ChildList, true),
-                PropDef::new("direction", Val, false)
-                    .typed(Str)
-                    .with_enum(&["vertical", "horizontal"]),
-                PropDef::new("align", Val, false)
-                    .typed(Str)
-                    .with_enum(&align),
-            ],
-        ),
-        ComponentDef::new(
-            "Card",
-            "A container with card-like styling.",
-            vec![
-                PropDef::new("child", ComponentRef, true)
-                    .typed(Str)
-                    .described(
-                        "The single child to render inside the card. Wrap multiple elements in a \
-                 Row or Column and pass that container's id.",
-                    ),
-            ],
-        ),
-        ComponentDef::new(
-            "Tabs",
-            "A set of tabs, each with a title and a child component.",
-            vec![
-                PropDef::new(
-                    "tabs",
-                    ObjectListRefs {
-                        ref_keys: vec!["child".to_string()],
-                    },
-                    true,
-                )
-                .typed(Arr)
-                .described("Array of {title, child} objects."),
-            ],
-        ),
-        ComponentDef::new(
-            "Divider",
-            "A horizontal or vertical dividing line.",
-            vec![
-                PropDef::new("axis", Val, false)
-                    .typed(Str)
-                    .with_enum(&["horizontal", "vertical"]),
-            ],
-        ),
-        ComponentDef::new(
-            "Modal",
-            "A dialog shown over the main content, opened by a trigger component.",
-            vec![
-                PropDef::new("trigger", ComponentRef, true)
-                    .typed(Str)
-                    .described("The component that opens the modal."),
-                PropDef::new("content", ComponentRef, true)
-                    .typed(Str)
-                    .described("The component shown inside the modal."),
-            ],
-        ),
-        ComponentDef::new(
-            "Button",
-            "A clickable button that dispatches an action.",
-            vec![
-                PropDef::new("child", ComponentRef, true)
-                    .typed(Str)
-                    .described("The button's label component, usually a Text."),
-                PropDef::new("action", Val, true)
-                    .typed(Obj)
-                    .described("An {event} sent to the agent, or a local {functionCall}."),
-                PropDef::new("variant", Val, false).typed(Str).with_enum(&[
-                    "default",
-                    "primary",
-                    "borderless",
-                ]),
-                checks(),
-            ],
-        ),
-        ComponentDef::new(
-            "CheckBox",
-            "A checkbox with a label and a boolean value.",
-            vec![
-                PropDef::new("label", Val, true).typed(Str),
-                PropDef::new("value", Val, true)
-                    .typed(Bool)
-                    .described("Two-way bound boolean, usually {\"path\": ...}."),
-                checks(),
-            ],
-        ),
-        ComponentDef::new(
-            "TextField",
-            "A field for user text input.",
-            vec![
-                PropDef::new("label", Val, true).typed(Str),
-                PropDef::new("value", Val, false)
-                    .typed(Str)
-                    .described("Two-way bound string, usually {\"path\": ...}."),
-                PropDef::new("variant", Val, false).typed(Str).with_enum(&[
-                    "shortText",
-                    "longText",
-                    "number",
-                    "obscured",
-                ]),
-                PropDef::new("validationRegexp", Val, false).typed(Str),
-                checks(),
-            ],
-        ),
-        ComponentDef::new(
-            "DateTimeInput",
-            "An input for a date and/or a time.",
-            vec![
-                PropDef::new("value", Val, true)
-                    .typed(Str)
-                    .described("ISO 8601 value, two-way bound."),
-                PropDef::new("label", Val, false).typed(Str),
-                PropDef::new("enableDate", Val, false).typed(Bool),
-                PropDef::new("enableTime", Val, false).typed(Bool),
-                // ISO 8601 bounds. The specification narrows the format further
-                // (`date`, `time` or `date-time`); this crate checks the type
-                // only, which is the part a generating model gets wrong.
-                PropDef::new("min", Val, false).typed(Str),
-                PropDef::new("max", Val, false).typed(Str),
-                checks(),
-            ],
-        ),
-        ComponentDef::new(
-            "ChoicePicker",
-            "Selects one or more options from a list.",
-            vec![
-                PropDef::new("options", Val, true)
-                    .typed(Arr)
-                    .described("Array of {label, value} options."),
-                PropDef::new("value", Val, true)
-                    .typed(Arr)
-                    .described("Selected values as a string array, two-way bound."),
-                PropDef::new("label", Val, false).typed(Str),
-                PropDef::new("variant", Val, false)
-                    .typed(Str)
-                    .with_enum(&["mutuallyExclusive", "multipleSelection"]),
-                PropDef::new("displayStyle", Val, false)
-                    .typed(Str)
-                    .with_enum(&["checkbox", "chips"]),
-                PropDef::new("filterable", Val, false).typed(Bool),
-                checks(),
-            ],
-        ),
-        ComponentDef::new(
-            "Slider",
-            "A slider for selecting a numeric value within a range.",
-            vec![
-                PropDef::new("value", Val, true)
-                    .typed(Num)
-                    .described("Two-way bound number."),
-                PropDef::new("max", Val, true).typed(Num),
-                PropDef::new("min", Val, false).typed(Num),
-                PropDef::new("label", Val, false).typed(Str),
-                checks(),
-            ],
-        ),
-    ]
 }
 
 #[cfg(test)]
@@ -1406,8 +1593,14 @@ mod tests {
         assert_eq!(again, catalog);
 
         // A catalog that was not read from a document has none, and one that
-        // has been added to no longer has the one it was read from.
-        assert!(Catalog::basic().document().is_none());
+        // has been added to or renamed no longer has the one it was read from.
+        assert!(Catalog::basic().document().is_some());
+        assert!(
+            Catalog::basic()
+                .with_catalog_id(crate::constants::BASIC_CATALOG_ID)
+                .document()
+                .is_none()
+        );
         assert!(Catalog::empty("x").document().is_none());
         let mut extended = catalog.clone();
         assert_eq!(extended.document(), Some(&document));
@@ -1459,17 +1652,139 @@ mod tests {
 
     #[test]
     fn basic_catalog_has_the_eighteen_components_and_fourteen_functions() {
-        let catalog = Catalog::basic();
-        assert_eq!(catalog.components.len(), 18);
-        assert_eq!(catalog.functions.len(), 14);
-        for name in BASIC_COMPONENTS {
-            assert!(catalog.has_component(name), "missing {name}");
+        assert_eq!(Catalog::basic(), Catalog::basic_for(A2uiVersion::V0_9));
+        for &version in A2uiVersion::ALL {
+            let catalog = Catalog::basic_for(version);
+            assert_eq!(catalog.version(), version);
+            assert_eq!(catalog.catalog_id, version.basic_catalog_id());
+            assert_eq!(catalog.components.len(), 18, "{version}");
+            assert_eq!(catalog.functions.len(), 14, "{version}");
+            // The order is the document's, which a parsed value does not keep.
+            let order: Vec<&str> = catalog
+                .components_in_order()
+                .map(|d| d.name.as_str())
+                .collect();
+            assert_eq!(order, BASIC_COMPONENTS.to_vec(), "{version}");
+            // The catalog is the document, and gives it back.
+            let document = catalog.document().expect("read from a document");
+            assert_eq!(
+                Catalog::from_schema(document).unwrap().components,
+                catalog.components
+            );
         }
-        let order: Vec<&str> = catalog
-            .components_in_order()
-            .map(|d| d.name.as_str())
-            .collect();
-        assert_eq!(order, BASIC_COMPONENTS.to_vec());
+    }
+
+    #[test]
+    fn the_three_basic_catalogs_are_three_documents() {
+        let [v0_9, v0_9_1, v1_0] =
+            [A2uiVersion::V0_9, A2uiVersion::V0_9_1, A2uiVersion::V1_0].map(Catalog::basic_for);
+        let has = |catalog: &Catalog, component: &str, prop: &str| {
+            catalog
+                .component(component)
+                .unwrap()
+                .props
+                .contains_key(prop)
+        };
+        // v0.9 got `listStyle` back; v0.9.1 never had it.
+        assert!(has(&v0_9, "List", "listStyle"));
+        assert!(!has(&v0_9_1, "List", "listStyle"));
+        assert!(!has(&v1_0, "List", "listStyle"));
+        // What v1.0 added and took away.
+        assert!(has(&v1_0, "Video", "posterUrl"));
+        assert!(has(&v1_0, "TextField", "placeholder"));
+        assert!(has(&v1_0, "Slider", "steps"));
+        assert!(!has(&v1_0, "TextField", "validationRegexp"));
+        assert!(has(&v0_9, "TextField", "validationRegexp"));
+        assert!(
+            v1_0.component("TextField")
+                .unwrap()
+                .required
+                .contains(&"value".to_string())
+        );
+
+        // The input components take checks in every version; the others never.
+        for catalog in [&v0_9, &v0_9_1, &v1_0] {
+            for (component, checkable) in [("Button", true), ("TextField", true), ("Text", false)] {
+                assert_eq!(
+                    catalog.component(component).unwrap().is_checkable(),
+                    checkable,
+                    "{component} of {}",
+                    catalog.version()
+                );
+            }
+        }
+
+        // A reference to one child is `ComponentId` before v1.0 and `Child` in it.
+        for catalog in [&v0_9, &v1_0] {
+            assert_eq!(
+                catalog.component("Card").unwrap().props["child"].kind,
+                PropKind::ComponentRef
+            );
+        }
+
+        // v1.0 says who may call a function, and which need a user's gesture.
+        let open_url = &v1_0.functions["openUrl"];
+        assert!(open_url.requires_user_activation);
+        assert_eq!(open_url.allowed_callers, AllowedCallers::RendererOnly);
+        assert_eq!(
+            v1_0.functions["required"].return_type.as_deref(),
+            Some("validationResult")
+        );
+        assert_eq!(
+            v0_9.functions["required"].return_type.as_deref(),
+            Some("boolean")
+        );
+        assert!(!v0_9.functions["openUrl"].requires_user_activation);
+    }
+
+    #[test]
+    fn a_catalog_states_its_version_or_is_a_v0_9_one() {
+        let read = |version: Value| {
+            let mut document = json!({"catalogId": "c"});
+            if !version.is_null() {
+                document["protocolVersion"] = version;
+            }
+            Catalog::from_schema(&document)
+        };
+        assert_eq!(read(json!(null)).unwrap().version(), A2uiVersion::V0_9);
+        assert_eq!(read(json!("0.9")).unwrap().version(), A2uiVersion::V0_9);
+        assert_eq!(read(json!("0.9.1")).unwrap().version(), A2uiVersion::V0_9_1);
+        assert_eq!(
+            read(json!("v0.9.1")).unwrap().version(),
+            A2uiVersion::V0_9_1
+        );
+        assert_eq!(read(json!("1.0")).unwrap().version(), A2uiVersion::V1_0);
+        for other in [json!("0.8"), json!("2.0"), json!(1.0), json!(true)] {
+            assert!(
+                matches!(read(other.clone()), Err(Error::Catalog(_))),
+                "{other}"
+            );
+        }
+        assert_eq!(
+            Catalog::empty("c")
+                .with_version(A2uiVersion::V1_0)
+                .version(),
+            A2uiVersion::V1_0
+        );
+
+        // What a v1.0 catalog says of a function, and what it says nothing of.
+        let catalog = Catalog::from_schema(&json!({
+            "catalogId": "c",
+            "protocolVersion": "1.0",
+            "functions": {
+                "fetchData": {"returnType": "object", "allowedCallers": "agentOnly"},
+                "both": {"returnType": "string", "allowedCallers": "rendererOrAgent"},
+                "plain": {"returnType": "string"},
+                "odd": {"returnType": "string", "allowedCallers": "everyone"}
+            }
+        }))
+        .unwrap();
+        let callers = |name: &str| catalog.functions[name].allowed_callers;
+        assert_eq!(callers("fetchData"), AllowedCallers::AgentOnly);
+        assert!(!callers("fetchData").includes_renderer());
+        assert_eq!(callers("both"), AllowedCallers::RendererOrAgent);
+        assert_eq!(callers("plain"), AllowedCallers::RendererOnly);
+        assert_eq!(callers("odd"), AllowedCallers::RendererOnly);
     }
 
     #[test]

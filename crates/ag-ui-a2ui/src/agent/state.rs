@@ -308,7 +308,14 @@ impl RendererState {
             let origin = self.store().origin(surface_id);
             let found = Validator::new(summary).validate_stored(self.store(), surface);
             report.errors.extend(found.errors);
-            for violation in summary.composition_violations(&surface.components) {
+            // A version that constrains composition has it in the report
+            // already.
+            let violations = if surface.spoken_version().constrains_composition() {
+                Vec::new()
+            } else {
+                summary.composition_violations(&surface.components)
+            };
+            for violation in violations {
                 // `components[3].children[0]`: the position in the surface,
                 // then where in that component. Name the message instead when
                 // one of this answer's wrote the component.

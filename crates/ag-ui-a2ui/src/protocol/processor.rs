@@ -7,12 +7,18 @@
 //! - **A catalog registry.** A surface names its catalog by id when it is
 //!   created. The processor holds the catalogs this context speaks, refuses a
 //!   surface whose catalog it does not hold, and validates every surface
-//!   against its own.
+//!   against its own. From v1.0 a surface may mix catalogs: a component names
+//!   its own with `@catalogId`, the surface's is the default, and a surface
+//!   may be created with none. Every catalog a surface draws from is written
+//!   against the surface's wire format ([`Catalog::version`]).
 //! - **Raw messages, checked in one order.** The envelope and the nesting of
 //!   the JSON as it arrived, and its version when the context speaks one
 //!   ([`MessageProcessor::accepting_version`]); then the surface's place in
 //!   its life; then the JSON Schemas, when the catalog has them registered;
-//!   then the components, against the catalog and as a graph.
+//!   then the components, against the catalog and as a graph. From v1.0 the
+//!   components a message carries are checked against their catalogs before
+//!   the schemas are: a catalog or a function that cannot be found is then
+//!   said in those words, and not as a value that matches no schema.
 //! - **Transactions.** A message changes the state or is refused and changes
 //!   nothing, and so does a batch ([`MessageProcessor::process_all`]). A batch
 //!   that arrives a message at a time is [`MessageProcessor::begin_batch`] and
@@ -32,10 +38,10 @@
 //!
 //! | Suite category | [`RejectionKind`] | [`Error`] | What it is |
 //! |---|---|---|---|
-//! | `IntegrityError` | [`Integrity`](RejectionKind::Integrity) | [`Validation`](Error::Validation) | The surface is not in the state the message needs: created while it is live, or updated while it is not. One error, `invalid_value` at `messages[i]`. Also a child reference to a component that does not exist (`unresolved_child`). |
+//! | `IntegrityError` | [`Integrity`](RejectionKind::Integrity) | [`Validation`](Error::Validation) | The surface is not in the state the message needs: created while it is live, or updated while it is not. One error, `invalid_value` at `messages[i]`. Also a child reference to a component that does not exist (`unresolved_child`), and a component id that is used twice (`duplicate_id`). |
 //! | `RecursionError` | [`Recursion`](RejectionKind::Recursion) | [`Validation`](Error::Validation) | The component graph loops (`child_cycle`) or nests too deep (`max_depth_exceeded`). |
-//! | `ValidationError` | [`Validation`](RejectionKind::Validation) | [`Validation`](Error::Validation) | Anything else a message gets wrong: its envelope, a component, a property, a path. |
-//! | `CatalogError` | [`Catalog`](RejectionKind::Catalog) | [`Catalog`](Error::Catalog) | The surface names a catalog that is not registered. |
+//! | `ValidationError` | [`Validation`](RejectionKind::Validation) | [`Validation`](Error::Validation) | Anything else a message gets wrong: its envelope, a component, a property, a path. Also a component where its catalog's `allowedParents` or `allowedChildren` does not let it be (`unallowed_parent`, `unallowed_child`), which a renderer reports as `UNALLOWED_PARENT` or `UNALLOWED_CHILD`. |
+//! | `CatalogError` | [`Catalog`](RejectionKind::Catalog) | [`Catalog`](Error::Catalog) | The surface names a catalog that is not registered. From v1.0 also a component or a function call that does, and one with no catalog to fall back on. |
 //!
 //! A message that is not JSON of the expected shape is a `Validation` refusal
 //! too, located at `messages[i]`: no [`Error::Json`] or [`Error::Parse`] leaves
@@ -63,14 +69,25 @@
 //! catalog's pattern, a function argument of the wrong type. A catalog with no
 //! schema registered is checked as before.
 //!
-//! # The component keys of v1.0
+//! A schema is one catalog's. A v1.0 message in which a component or a
+//! function call names another catalog than its surface's own is therefore
+//! not held to the surface's schema: its catalogs, components and functions
+//! are checked by name, and the properties and arguments drawn from the other
+//! catalog are not checked against that catalog's schema.
 //!
-//! A2UI v1.0 gives a component an envelope of its own: `@metadata`,
-//! `@catalogId`, `@accessibility` and `@checks`. Before v1.0 those keys mean
-//! nothing, and the reference renderers refuse a component that carries one
-//! unless its catalog declares a property by that name. A processor does the
-//! same, whatever its options leave unchecked: a model that has seen v1.0
-//! writes these, and a v0.9 renderer would refuse the message.
+//! # The versions of a context
+//!
+//! A message is read as its own `version` spells it, and a surface is held to
+//! the version it was created under: its bindings, the keys of a component
+//! that are its envelope, how a removal is written. The validator asks the
+//! version ([`A2uiVersion`]), so one processor takes a v0.9 surface and a v1.0
+//! surface side by side. [`MessageProcessor::accepting_version`] narrows a
+//! context to one wire format.
+//!
+//! A v1.0 `createSurface` may carry the surface's first components and data
+//! itself. They are checked as an `updateComponents` right after the creation
+//! would be, and located in the creation:
+//! `messages[0].createSurface.components[1].text`.
 //!
 //! # Deleting a surface that is not there
 //!
@@ -92,9 +109,11 @@ use super::operation::Operation;
 #[cfg(feature = "schema-validation")]
 use super::schema_validation::SchemaValidator;
 use super::surface::{Lifecycle, SurfaceStore};
+#[cfg(feature = "schema-validation")]
+use super::validate::names_another_catalog;
 use super::validate::{
-    ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator, check_envelope,
-    check_value_depth, foldable,
+    ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator, carried_components,
+    check_envelope, check_value_depth, foldable, stated_version,
 };
 use super::version::A2uiVersion;
 use crate::error::{Error, Result, ValidationErrors};
@@ -420,10 +439,18 @@ impl MessageProcessor {
     /// registered.
     pub fn report(&self, surface_id: &str) -> Option<ValidationReport> {
         let surface = self.store.get(surface_id).filter(|s| !s.deleted)?;
-        let catalog = self.catalogs.get(surface.catalog_id.as_deref()?)?;
-        Some(
-            Validator::with_options(catalog, self.options.clone())
-                .validate_stored(&self.store, surface),
+        if let Some(named) = surface.catalog_id.as_deref() {
+            self.catalogs.get(named)?;
+        }
+        Some(self.validator().validate_stored(&self.store, surface))
+    }
+
+    /// A validator over the registered catalogs, with this processor's
+    /// options.
+    fn validator(&self) -> Validator<'_> {
+        Validator::over(
+            self.catalogs.values().map(Arc::as_ref),
+            self.options.clone(),
         )
     }
 
@@ -446,23 +473,13 @@ impl MessageProcessor {
         if self.options.check_envelope {
             check_envelope(message, &locator, &mut report);
         }
-        check_value_depth(
-            message,
-            &locator,
-            1,
-            self.options.max_depth,
-            self.options.max_function_call_depth,
-            &mut report,
-        );
+        let stated = stated_version(message);
+        check_value_depth(message, &locator, 1, &self.options, stated, &mut report);
         if !report.errors.is_empty() {
             return Err(invalid(report.errors));
         }
         if let Some(spoken) = self.version {
-            let stated = message
-                .get("version")
-                .and_then(Value::as_str)
-                .and_then(A2uiVersion::parse);
-            if let Some(stated) = stated.filter(|stated| !spoken.accepts(*stated)) {
+            if !spoken.accepts(stated) {
                 return Err(invalid(vec![ValidationError::new(
                     ErrorCode::InvalidValue,
                     format!("{locator}.version"),
@@ -495,12 +512,34 @@ impl MessageProcessor {
         let operation = Operation::of(message);
         match operation {
             Some(Operation::CreateSurface) => {
-                let catalog_id = message
+                let named = message
                     .pointer("/createSurface/catalogId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if !self.catalogs.contains_key(catalog_id) {
-                    return Err(unregistered(index, message, catalog_id));
+                    .and_then(Value::as_str);
+                match named {
+                    Some(catalog_id) => {
+                        let Some(catalog) = self.catalogs.get(catalog_id) else {
+                            return Err(unregistered(index, message, catalog_id));
+                        };
+                        // A surface and its catalog are of one wire format.
+                        if !stated.accepts(catalog.version()) {
+                            return Err(Rejection::new(
+                                RejectionKind::Catalog,
+                                index,
+                                message,
+                                Error::catalog(format!(
+                                    "Protocol version mismatch: cannot mix catalog \
+                                     '{catalog_id}' ({}) with surface version {stated}.",
+                                    catalog.version()
+                                )),
+                            ));
+                        }
+                    }
+                    // Before v1.0 a surface names its one catalog.
+                    None if !stated.mixes_catalogs() => {
+                        return Err(unregistered(index, message, ""));
+                    }
+                    // From v1.0 it may name none, and its components theirs.
+                    None => {}
                 }
                 if lifecycle == Lifecycle::Live {
                     return Err(out_of_place(format!(
@@ -527,10 +566,31 @@ impl MessageProcessor {
             _ => {}
         }
 
-        // The message as its schemas see it, when its catalog has them.
+        // The components the message carries: an update's, or the ones a v1.0
+        // creation brings with it.
+        let components = carried_components(message).map(|(_, components)| components);
+        let validator = self.validator();
+        // Where a version resolves what a component names, that comes first:
+        // a catalog or a function that is not there is a clearer thing to be
+        // told than a value no schema matches.
+        let read_as = store
+            .get(surface_id)
+            .filter(|surface| !surface.deleted)
+            .map_or(stated, |surface| surface.spoken_version());
+        if let Some(components) = components.filter(|_| read_as.resolves_function_calls()) {
+            self.default_is_held(store, index, message, surface_id)?;
+            let report = validator.validate_unfolded(store, index, message, components);
+            if !report.errors.is_empty() {
+                return Err(invalid(report.errors));
+            }
+        }
+
+        // The message as its schemas see it, when its catalog has them and
+        // everything in the message is drawn from that catalog.
         #[cfg(feature = "schema-validation")]
         {
-            let catalog_id = match operation {
+            // The surface's own catalog, as the message or the store names it.
+            let own_catalog = match operation {
                 Some(Operation::CreateSurface) => message
                     .pointer("/createSurface/catalogId")
                     .and_then(Value::as_str),
@@ -538,7 +598,9 @@ impl MessageProcessor {
                     .get(surface_id)
                     .and_then(|surface| surface.catalog_id.as_deref()),
             };
-            let schema = catalog_id.and_then(|catalog_id| self.schemas.get(catalog_id));
+            let schema = own_catalog
+                .filter(|_| !names_another_catalog(read_as, message, own_catalog))
+                .and_then(|catalog_id| self.schemas.get(catalog_id));
             if let Some(Err(error)) = schema.map(|schema| schema.validate_message(message)) {
                 return Err(match error {
                     Error::Validation { errors } => invalid(
@@ -556,50 +618,11 @@ impl MessageProcessor {
             }
         }
 
-        let components = message
-            .pointer("/updateComponents/components")
-            .and_then(Value::as_array);
-
-        // The component envelope of v1.0, which this surface is older than.
-        let carries_later_key = |component: &Value| {
-            LATER_COMPONENT_KEYS
-                .iter()
-                .any(|key| component.get(key).is_some())
-        };
-        if components.is_some_and(|components| components.iter().any(carries_later_key)) {
-            let catalog = self.catalog_of(store, index, message, surface_id)?;
-            let mut undeclared = Vec::new();
-            for (position, component) in components.into_iter().flatten().enumerate() {
-                let declared = component
-                    .get("component")
-                    .and_then(Value::as_str)
-                    .and_then(|name| catalog.component(name));
-                for key in LATER_COMPONENT_KEYS {
-                    if component.get(key).is_some()
-                        && !declared.is_some_and(|declared| declared.props.contains_key(key))
-                    {
-                        undeclared.push(ValidationError::new(
-                            ErrorCode::InvalidValue,
-                            format!("{locator}.updateComponents.components[{position}].{key}"),
-                            format!(
-                                "'{key}' is a component key of A2UI v1.0, and this surface is \
-                                 older; the component declares no property by that name."
-                            ),
-                        ));
-                    }
-                }
-            }
-            if !undeclared.is_empty() {
-                return Err(invalid(undeclared));
-            }
-        }
-
         // Components the store cannot key by id are located one by one; serde
         // would only say that the message did not decode.
         if let Some(components) = components.filter(|components| !foldable(components)) {
-            let catalog = self.catalog_of(store, index, message, surface_id)?;
-            let report = Validator::with_options(catalog, self.options.clone())
-                .validate_unfolded(index, components);
+            self.default_is_held(store, index, message, surface_id)?;
+            let report = validator.validate_unfolded(store, index, message, components);
             return Err(if report.errors.is_empty() {
                 at_message(
                     ErrorCode::InvalidValue,
@@ -617,7 +640,7 @@ impl MessageProcessor {
 
         // The surface the message changed, as a whole.
         let changed = match operation {
-            Some(Operation::UpdateComponents) => true,
+            Some(Operation::UpdateComponents | Operation::CreateSurface) => components.is_some(),
             Some(Operation::UpdateDataModel) => self.options.check_bindings,
             _ => false,
         };
@@ -626,9 +649,8 @@ impl MessageProcessor {
                 .get(surface_id)
                 .filter(|surface| !surface.deleted && !surface.components.is_empty());
             if let Some(surface) = surface {
-                let catalog = self.catalog_of(store, index, message, surface_id)?;
-                let report = Validator::with_options(catalog, self.options.clone())
-                    .validate_stored(store, surface);
+                self.default_is_held(store, index, message, surface_id)?;
+                let report = validator.validate_stored(store, surface);
                 if !report.errors.is_empty() {
                     return Err(invalid(report.errors));
                 }
@@ -637,22 +659,24 @@ impl MessageProcessor {
         Ok(typed)
     }
 
-    /// The catalog of a surface `store` holds.
-    fn catalog_of(
+    /// Refuses a message for a surface whose own catalog is not registered.
+    /// A surface that names none has none to hold.
+    fn default_is_held(
         &self,
         store: &SurfaceStore,
         index: usize,
         message: &Value,
         surface_id: &str,
-    ) -> std::result::Result<&Catalog, Rejection> {
-        let catalog_id = store
+    ) -> std::result::Result<(), Rejection> {
+        match store
             .get(surface_id)
             .and_then(|surface| surface.catalog_id.as_deref())
-            .unwrap_or_default();
-        self.catalogs
-            .get(catalog_id)
-            .map(Arc::as_ref)
-            .ok_or_else(|| unregistered(index, message, catalog_id))
+        {
+            Some(catalog_id) if !self.catalogs.contains_key(catalog_id) => {
+                Err(unregistered(index, message, catalog_id))
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -674,10 +698,6 @@ fn located(message: &str, pointer: &str) -> String {
     }
     locator
 }
-
-/// The keys of the component envelope A2UI v1.0 introduces. On a surface of
-/// an earlier version they are refused unless the catalog declares them.
-const LATER_COMPONENT_KEYS: [&str; 4] = ["@metadata", "@catalogId", "@accessibility", "@checks"];
 
 fn unregistered(index: usize, message: &Value, catalog_id: &str) -> Rejection {
     Rejection::new(
@@ -707,7 +727,9 @@ pub enum RejectionKind {
     Integrity,
     /// The component graph loops, or nests too deep.
     Recursion,
-    /// The surface names a catalog that is not registered.
+    /// The surface, or one of its components, names a catalog that is not
+    /// registered, or one written against another wire format than the
+    /// surface.
     Catalog,
     /// Anything else the message gets wrong.
     Validation,
@@ -761,7 +783,8 @@ impl RejectionKind {
     fn of(errors: &[ValidationError]) -> Self {
         match errors.first().map(|error| error.code) {
             Some(ErrorCode::ChildCycle | ErrorCode::MaxDepthExceeded) => Self::Recursion,
-            Some(ErrorCode::UnresolvedChild) => Self::Integrity,
+            Some(ErrorCode::UnresolvedChild | ErrorCode::DuplicateId) => Self::Integrity,
+            Some(ErrorCode::UnknownCatalog) => Self::Catalog,
             _ => Self::Validation,
         }
     }
@@ -806,14 +829,15 @@ impl Rejection {
     }
 
     fn invalid(index: usize, message: &Value, errors: Vec<ValidationError>) -> Self {
-        Self::new(
-            RejectionKind::of(&errors),
-            index,
-            message,
-            Error::Validation {
+        let kind = RejectionKind::of(&errors);
+        let error = match (kind, errors.first()) {
+            // A catalog a component names is refused as one the surface names.
+            (RejectionKind::Catalog, Some(first)) => Error::catalog(first.message.clone()),
+            _ => Error::Validation {
                 errors: ValidationErrors(errors),
             },
-        )
+        };
+        Self::new(kind, index, message, error)
     }
 
     /// The validation errors of the refusal; none for a
@@ -860,10 +884,16 @@ impl Rejection {
             let path = first.map_or_else(|| "/".to_string(), |error| payload_pointer(&error.path));
             extensions.insert("path".to_string(), Value::String(path));
         }
+        // A composition failure has a code of its own.
+        let code = match first.map(|error| error.code) {
+            Some(ErrorCode::UnallowedParent) => "UNALLOWED_PARENT",
+            Some(ErrorCode::UnallowedChild) => "UNALLOWED_CHILD",
+            _ => self.kind.renderer_code(),
+        };
         RendererMessage {
             version: self.version.as_str().to_string(),
             payload: RendererPayload::Error(RendererError {
-                code: self.kind.renderer_code().to_string(),
+                code: code.to_string(),
                 message: first
                     .map_or_else(|| self.error.to_string(), |error| error.message.clone()),
                 surface_id: Some(self.surface_id.clone().unwrap_or_default()),
@@ -1139,7 +1169,13 @@ mod tests {
             ),
         ] {
             let refused = processor.process(&update("s", components)).unwrap_err();
-            assert_eq!(refused.kind, RejectionKind::Validation);
+            // An id used twice is a fault of the surface's integrity, as the
+            // reference processors file it; the rest are the message's own.
+            let kind = match code {
+                ErrorCode::DuplicateId => RejectionKind::Integrity,
+                _ => RejectionKind::Validation,
+            };
+            assert_eq!(refused.kind, kind, "{code}");
             assert_eq!(
                 (refused.errors()[0].code, refused.errors()[0].path.as_str()),
                 (code, path)

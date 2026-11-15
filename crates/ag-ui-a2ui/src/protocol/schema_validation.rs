@@ -2,6 +2,7 @@
 
 use super::operation::Operation;
 use super::schema::SchemaBundle;
+use super::version::A2uiVersion;
 use crate::{Error, ErrorCode, Result, ValidationError};
 use jsonschema::Evaluation;
 use jsonschema::error::ValidationErrorKind;
@@ -25,6 +26,32 @@ impl jsonschema::Retrieve for NoExternalResources {
 
 /// A compiled envelope and catalog schema. Construct once, reuse across requests.
 /// Unknown `$ref`s fail construction; URLs never cause network requests.
+///
+/// One validator holds messages to one version's schemas and one catalog:
+/// the bundle it was compiled from ([`SchemaBundle::for_version`]).
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::schema::SchemaBundle;
+/// use ag_ui_a2ui::schema_validation::SchemaValidator;
+/// use serde_json::json;
+///
+/// let v1_0 = SchemaValidator::new(&SchemaBundle::for_version(A2uiVersion::V1_0)?, &BTreeMap::new())?;
+/// // A v1.0 creation may carry its components, and writes a binding as `@path`.
+/// v1_0.validate_message(&json!({"version": "1.0", "createSurface": {
+///     "surfaceId": "s",
+///     "components": [{"id": "root", "component": "Text", "text": {"@path": "/title"}}],
+///     "dataModel": {"title": "Hello"}
+/// }}))?;
+/// // The v0.9 spelling of the same binding is not a v1.0 value.
+/// assert!(v1_0.validate_message(&json!({"version": "1.0", "updateComponents": {
+///     "surfaceId": "s",
+///     "components": [{"id": "root", "component": "Text", "text": {"path": "/title"}}]
+/// }})).is_err());
+/// # Ok::<(), ag_ui_a2ui::Error>(())
+/// ```
 #[derive(Debug)]
 pub struct SchemaValidator {
     compiled: jsonschema::Validator,
@@ -42,10 +69,25 @@ impl SchemaValidator {
     /// the same, and a reference to nothing does not compile. For such a
     /// catalog the validator supplies the definition: any theme that is an
     /// object, which is what the reference renderers accept for it. A catalog
-    /// that declares a theme is held to it.
+    /// that declares a theme is held to it. An envelope that has no theme, as
+    /// v1.0's has none, asks for no such definition.
+    ///
+    /// # How the documents find each other
+    ///
+    /// The envelope and the common types are registered under the `$id` each
+    /// declares. The envelope names its catalog by the relative reference
+    /// `catalog.json`, so the catalog is registered as the envelope's sibling
+    /// of that name, and under its own `$id` when it declares one. A v1.0
+    /// catalog names the common types by a relative reference as well, so
+    /// they are also registered as the catalog's sibling `common_types.json`.
+    /// These are resolver aliases, not ids on the wire. A catalog that
+    /// declares no `$id` is the envelope's sibling alone.
     pub fn new(bundle: &SchemaBundle, resources: &BTreeMap<String, Value>) -> Result<Self> {
-        let mut documents = resources.clone();
-        let mut register = |id: &str, value: &Value| -> Result<()> {
+        fn register(
+            documents: &mut BTreeMap<String, Value>,
+            id: &str,
+            value: &Value,
+        ) -> Result<()> {
             if let Some(prior) = documents.get(id) {
                 if prior != value {
                     return Err(Error::catalog(format!("conflicting schema resource {id}")));
@@ -53,22 +95,49 @@ impl SchemaValidator {
             }
             documents.insert(id.into(), value.clone());
             Ok(())
-        };
-        for document in [&bundle.s2c, &bundle.common_types, &bundle.catalog] {
-            let id = document
-                .get("$id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Error::catalog("full schema documents require an absolute $id"))?;
-            register(id, document)?;
         }
-        // Official s2c references this relative URI while the catalog declares
-        // its own, longer canonical URI. This is a resolver alias, not a wire ID alias.
-        register(CATALOG_ALIAS, &bundle.catalog)?;
-        if let Some(catalog) = with_any_theme(&bundle.catalog) {
-            let own = bundle.catalog.get("$id").and_then(Value::as_str);
-            for id in own.into_iter().chain([CATALOG_ALIAS]) {
-                documents.insert(id.to_string(), catalog.clone());
+        fn declared(document: &Value) -> Option<&str> {
+            document.get("$id").and_then(Value::as_str)
+        }
+        let mut documents = resources.clone();
+        let envelope_id = declared(&bundle.s2c)
+            .ok_or_else(|| Error::catalog("full schema documents require an absolute $id"))?;
+        let common_id = declared(&bundle.common_types)
+            .ok_or_else(|| Error::catalog("full schema documents require an absolute $id"))?;
+        register(&mut documents, envelope_id, &bundle.s2c)?;
+        register(&mut documents, common_id, &bundle.common_types)?;
+
+        // Only an envelope that carries a theme refers to the catalog's. A
+        // catalog given a theme, or the unions of its entries, is a document
+        // of this validator's own, so it takes the place of whatever was
+        // registered under its names.
+        let themed = serde_json::to_string(&bundle.s2c)?.contains("#/$defs/theme");
+        let completed = with_unions(&bundle.catalog);
+        let given_theme = match themed {
+            true => with_any_theme(completed.as_ref().unwrap_or(&bundle.catalog)).or(completed),
+            false => completed,
+        };
+        let catalog_alias = sibling(envelope_id, "catalog.json");
+        let own = declared(&bundle.catalog);
+        match &given_theme {
+            Some(catalog) => {
+                for id in own.into_iter().chain([catalog_alias.as_str()]) {
+                    documents.insert(id.to_string(), catalog.clone());
+                }
             }
+            None => {
+                for id in own.into_iter().chain([catalog_alias.as_str()]) {
+                    register(&mut documents, id, &bundle.catalog)?;
+                }
+            }
+        }
+        // A catalog that names the common types by a relative reference
+        // reaches them as its own sibling.
+        if let Some(own) = own {
+            let common_alias = sibling(own, "common_types.json");
+            documents
+                .entry(common_alias)
+                .or_insert_with(|| bundle.common_types.clone());
         }
         // Each document keeps the draft its own `$schema` declares. An unknown
         // `$schema` is a meta-schema the retriever would have to fetch, so it
@@ -197,8 +266,52 @@ impl SchemaValidator {
     }
 }
 
-/// The URI the envelope schema reaches the surface's catalog by.
-const CATALOG_ALIAS: &str = "https://a2ui.org/specification/v0_9/catalog.json";
+/// The document a relative reference `name` reaches from the document at
+/// `uri`: the same place, under another last segment.
+fn sibling(uri: &str, name: &str) -> String {
+    match uri.rfind('/') {
+        Some(slash) => format!("{}{name}", &uri[..=slash]),
+        None => name.to_string(),
+    }
+}
+
+/// A catalog that does not list its components or its functions in
+/// `$defs/anyComponent` and `$defs/anyFunction`, with the unions of all of
+/// them, which is what the envelope and the common types reach a catalog's
+/// entries through. A section with no entries is a union nothing matches.
+/// `None` for a catalog that lists both, or that is not a document a
+/// definition could be added to.
+fn with_unions(catalog: &Value) -> Option<Value> {
+    let missing = |union: &str| catalog.pointer(&format!("/$defs/{union}")).is_none();
+    if !missing("anyComponent") && !missing("anyFunction") {
+        return None;
+    }
+    let union_of = |section: &str| match catalog.get(section).and_then(Value::as_object) {
+        Some(entries) if !entries.is_empty() => {
+            let branches: Vec<Value> = entries
+                .keys()
+                .map(|name| {
+                    let name = name.replace('~', "~0").replace('/', "~1");
+                    serde_json::json!({"$ref": format!("#/{section}/{name}")})
+                })
+                .collect();
+            serde_json::json!({ "oneOf": branches })
+        }
+        _ => Value::Bool(false),
+    };
+    let mut completed = catalog.clone();
+    let definitions = completed
+        .as_object_mut()?
+        .entry("$defs")
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()?;
+    for (union, section) in [("anyComponent", "components"), ("anyFunction", "functions")] {
+        definitions
+            .entry(union)
+            .or_insert_with(|| union_of(section));
+    }
+    Some(completed)
+}
 
 /// A catalog that declares no `$defs/theme`, with one that takes any theme
 /// object. `None` for a catalog that declares its own, or that is not a
@@ -567,9 +680,42 @@ impl SurfaceValidator {
 /// failure, located by JSON Pointer within `value`, and [`Error::Catalog`]
 /// when the common types define no `definition`.
 pub fn validate_common_type(definition: &str, value: &Value) -> Result<()> {
-    const CATALOG: &str = "https://a2ui.org/specification/v0_9/catalog.json";
-    let common: Value =
-        serde_json::from_str(include_str!("../../schemas/v0_9_1/common_types.json"))?;
+    validate_common_type_in(A2uiVersion::V0_9_1, definition, value)
+}
+
+/// [`validate_common_type`] against the common types of `version`.
+///
+/// The three sets differ. v1.0 writes a binding as `{"@path": …}` and a call
+/// as `{"@call": …}`, reserves a leading `@`, and adds `Child`, `Extensions`,
+/// `FunctionCommon`, `IndexSystemFunction`, `FunctionResponse` and `Surface`.
+///
+/// ```
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::schema_validation::validate_common_type_in;
+/// use serde_json::json;
+///
+/// let v1_0 = A2uiVersion::V1_0;
+/// validate_common_type_in(v1_0, "DynamicValue", &json!({"@path": "/user/name"}))?;
+/// // A plain object is a literal map, unless one of its keys is reserved.
+/// validate_common_type_in(v1_0, "DynamicValue", &json!({"path": "/var/log"}))?;
+/// assert!(validate_common_type_in(v1_0, "DynamicValue", &json!({"@if": true})).is_err());
+/// validate_common_type_in(v1_0, "DynamicValue", &json!({"@@type": "literal"}))?;
+/// # Ok::<(), ag_ui_a2ui::Error>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`validate_common_type`].
+pub fn validate_common_type_in(
+    version: A2uiVersion,
+    definition: &str,
+    value: &Value,
+) -> Result<()> {
+    let common: Value = serde_json::from_str(match version {
+        A2uiVersion::V0_9 => include_str!("../../schemas/v0_9/common_types.json"),
+        A2uiVersion::V0_9_1 => include_str!("../../schemas/v0_9_1/common_types.json"),
+        A2uiVersion::V1_0 => include_str!("../../schemas/v1_0/common_types.json"),
+    })?;
     let defined = common.get("$defs").and_then(Value::as_object);
     if !defined.is_some_and(|defined| defined.contains_key(definition)) {
         let names: Vec<&str> = defined
@@ -586,17 +732,7 @@ pub fn validate_common_type(definition: &str, value: &Value) -> Result<()> {
         .and_then(Value::as_str)
         .ok_or_else(|| Error::catalog("the common types document has no $id"))?
         .to_string();
-    // The catalog the common types refer to, standing in for all of them: any
-    // function, called with the keys a call has.
-    let any_catalog = serde_json::json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": CATALOG,
-        "$defs": {"anyFunction": {
-            "type": "object",
-            "properties": {"call": true, "args": true, "returnType": true},
-            "additionalProperties": false
-        }}
-    });
+    let catalog = sibling(&id, "catalog.json");
     let pointer = definition.replace('~', "~0").replace('/', "~1");
     let schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -607,8 +743,8 @@ pub fn validate_common_type(definition: &str, value: &Value) -> Result<()> {
         .extend([
             (id, jsonschema::Resource::from_contents(common)),
             (
-                CATALOG.to_string(),
-                jsonschema::Resource::from_contents(any_catalog),
+                catalog.clone(),
+                jsonschema::Resource::from_contents(any_catalog(version, &catalog)),
             ),
         ])
         .and_then(jsonschema::RegistryBuilder::prepare)
@@ -639,17 +775,111 @@ pub fn validate_common_type(definition: &str, value: &Value) -> Result<()> {
     }
 }
 
-/// Validates raw `a2uiClientCapabilities` metadata using the pinned official schema.
+/// The catalog the common types refer to, standing in for all of them: any
+/// function, called with the keys a call of `version` has, and any component.
+fn any_catalog(version: A2uiVersion, id: &str) -> Value {
+    let any_function = if version.reserves_at_keys() {
+        // A catalog's function is any that is not a system one: those are
+        // `@`-prefixed, and the common types define them beside the catalog's.
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "@call": {"type": "string", "pattern": "^[^@]"},
+                "args": true
+            }
+        })
+    } else {
+        serde_json::json!({
+            "type": "object",
+            "properties": {"call": true, "args": true, "returnType": true},
+            "additionalProperties": false
+        })
+    };
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": id,
+        "$defs": {"anyFunction": any_function, "anyComponent": true}
+    })
+}
+
+/// Validates raw `a2uiClientCapabilities` metadata using the pinned official
+/// schema of the v0.9 family: [`validate_capabilities_in`] with
+/// [`A2uiVersion::V0_9_1`].
 pub fn validate_capabilities(value: &Value) -> Result<()> {
-    let schema: Value = serde_json::from_str(include_str!(
-        "../../schemas/v0_9_1/client_capabilities.json"
-    ))?;
-    let validator = jsonschema::options()
-        .with_draft(jsonschema::Draft::Draft202012)
-        .with_retriever(NoExternalResources)
-        .build(&schema)
-        .map_err(Error::catalog)?;
+    validate_capabilities_in(A2uiVersion::V0_9_1, value)
+}
+
+/// Validates a renderer's raw capabilities, the value under
+/// [`A2uiVersion::capabilities_key`], against the pinned official schema of
+/// `version`: `client_capabilities.json`, or `renderer_capabilities.json`
+/// from v1.0, whose inline catalogs are held to `catalog_definition.json`.
+///
+/// # Errors
+///
+/// Returns [`Error::Catalog`] with the first failure.
+pub fn validate_capabilities_in(version: A2uiVersion, value: &Value) -> Result<()> {
+    let (schema, resources): (&str, &[&str]) = match version {
+        A2uiVersion::V0_9 => (
+            include_str!("../../schemas/v0_9/client_capabilities.json"),
+            &[],
+        ),
+        A2uiVersion::V0_9_1 => (
+            include_str!("../../schemas/v0_9_1/client_capabilities.json"),
+            &[],
+        ),
+        A2uiVersion::V1_0 => (
+            include_str!("../../schemas/v1_0/renderer_capabilities.json"),
+            &[
+                include_str!("../../schemas/v1_0/catalog_definition.json"),
+                include_str!("../../schemas/v1_0/common_types.json"),
+            ],
+        ),
+    };
+    let schema: Value = serde_json::from_str(schema)?;
+    let validator = compile_with(version, &schema, resources)?;
     validator
         .validate(value)
         .map_err(|e| Error::catalog(message(&e)))
+}
+
+/// Compiles `schema` against local `resources`, each registered under the
+/// `$id` it declares, and a stand-in for the catalog the common types name.
+/// Nothing is retrieved.
+pub(crate) fn compile_with(
+    version: A2uiVersion,
+    schema: &Value,
+    resources: &[&str],
+) -> Result<jsonschema::Validator> {
+    let mut registered = Vec::new();
+    for resource in resources {
+        let document: Value = serde_json::from_str(resource)?;
+        let id = document
+            .get("$id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::catalog("a schema resource has no $id"))?
+            .to_string();
+        if id.ends_with("/common_types.json") {
+            let catalog = sibling(&id, "catalog.json");
+            registered.push((
+                catalog.clone(),
+                jsonschema::Resource::from_contents(any_catalog(version, &catalog)),
+            ));
+        }
+        registered.push((id, jsonschema::Resource::from_contents(document)));
+    }
+    let mut options = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .should_validate_formats(true)
+        .with_retriever(NoExternalResources);
+    let registry;
+    if !registered.is_empty() {
+        registry = jsonschema::Registry::new()
+            .retriever(NoExternalResources)
+            .extend(registered)
+            .and_then(jsonschema::RegistryBuilder::prepare)
+            .map_err(Error::catalog)?;
+        options = options.with_registry(&registry);
+        return options.build(schema).map_err(Error::catalog);
+    }
+    options.build(schema).map_err(Error::catalog)
 }
