@@ -45,15 +45,6 @@ pub enum Error {
     #[error("not supported by this client: {0}")]
     Unsupported(String),
 
-    /// Not a failure. The compatibility boundary accepted the stream after
-    /// removing or translating something this version does not use: an
-    /// unrecognised field, enum member or event, a retired `THINKING_*`
-    /// event, a deprecated optional `null`, a newer declared protocol version.
-    /// The run carries on. Quotes at most 64 characters of input text, with
-    /// control characters escaped.
-    #[error("protocol warning: {0}")]
-    Warning(String),
-
     /// An RFC 6902 patch could not be applied.
     ///
     /// The target document is left exactly as it was: [`json_patch::patch`]

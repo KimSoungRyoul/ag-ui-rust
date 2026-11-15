@@ -1,6 +1,7 @@
 //! What the compatibility boundary removes or translates is reported to the
-//! caller: as a `warning` diagnostic on the `Thread` run that saw it, or to the
-//! callback of a standalone decoder.
+//! caller, once per run for each distinct text: as an `Update::Warning` and a
+//! `warning` diagnostic on the `Thread` run that saw it, or to the callback of
+//! a standalone decoder.
 #![cfg(feature = "client")]
 
 use std::cell::RefCell;
@@ -9,7 +10,7 @@ use ag_ui::RunAgentInput;
 use ag_ui::client::transport::{
     RawTransportFuture, Transport, TransportFuture, boxed_raw_stream, enforce_events,
 };
-use ag_ui::client::{Error, RunEnd, RunReport, Thread, Update};
+use ag_ui::client::{RunEnd, RunReport, RunStream, Thread, Update};
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, json};
 
@@ -50,6 +51,20 @@ async fn report(events: Vec<Value>) -> RunReport {
         .unwrap()
         .collect_report()
         .await
+}
+
+/// Drains a run, returning its `Update::Warning` texts. Any error fails the test.
+async fn warning_updates(run: &mut RunStream<'_, Wire>) -> Vec<String> {
+    let mut warnings = Vec::new();
+    while let Some(update) = run.next().await {
+        match update {
+            Update::Warning(warning) => warnings.push(warning),
+            Update::Error(error) => panic!("a warning is not an error: {error}"),
+            Update::Done(end) => assert_eq!(end, RunEnd::Success { result: None }),
+            _ => {}
+        }
+    }
+    warnings
 }
 
 fn warnings(report: &RunReport) -> Vec<&str> {
@@ -141,7 +156,7 @@ async fn a_registered_null_is_reported_once_per_run() {
 }
 
 #[tokio::test]
-async fn every_warning_is_an_update_and_the_report_keeps_the_retention_limit() {
+async fn every_warning_is_a_warning_update_and_the_report_keeps_the_retention_limit() {
     let mut thread = thread(
         vec![
             json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r", "a": 1, "b": 2, "c": 3}),
@@ -150,17 +165,8 @@ async fn every_warning_is_an_update_and_the_report_keeps_the_retention_limit() {
         1,
     );
     let mut run = thread.send("go").unwrap();
-    let mut warnings = Vec::new();
-    while let Some(update) = run.next().await {
-        match update {
-            Update::Error(Error::Warning(warning)) => warnings.push(warning),
-            Update::Error(error) => panic!("{error}"),
-            Update::Done(end) => assert_eq!(end, RunEnd::Success { result: None }),
-            _ => {}
-        }
-    }
     assert_eq!(
-        warnings,
+        warning_updates(&mut run).await,
         [
             "unrecognised property at /a",
             "unrecognised property at /b",
@@ -170,11 +176,67 @@ async fn every_warning_is_an_update_and_the_report_keeps_the_retention_limit() {
     let report = run.collect_report().await;
     assert_eq!(report.diagnostics.len(), 1, "{:?}", report.diagnostics);
     assert_eq!(report.diagnostics[0].kind, "warning");
-    assert_eq!(
-        report.diagnostics[0].message,
-        "protocol warning: unrecognised property at /a"
-    );
+    assert_eq!(report.diagnostics[0].message, "unrecognised property at /a");
     assert_eq!(report.diagnostics_omitted, 2);
+}
+
+#[tokio::test]
+async fn a_warning_repeated_through_a_run_is_delivered_once() {
+    // A legacy producer streams reasoning one THINKING_* event per token.
+    let mut events = vec![
+        started(),
+        json!({"type": "THINKING_START"}),
+        json!({"type": "THINKING_TEXT_MESSAGE_START"}),
+    ];
+    events.extend((0..50).map(|token| {
+        json!({"type": "THINKING_TEXT_MESSAGE_CONTENT", "delta": format!("token {token} ")})
+    }));
+    events.extend([
+        json!({"type": "THINKING_TEXT_MESSAGE_END"}),
+        json!({"type": "THINKING_END"}),
+        finished(),
+    ]);
+    let mut thread = thread(events, 100);
+    let mut run = thread.send("go").unwrap();
+    let delivered = warning_updates(&mut run).await;
+    let distinct = [
+        "translated retired THINKING_START to REASONING_START",
+        "translated retired THINKING_TEXT_MESSAGE_START to REASONING_MESSAGE_START",
+        "translated retired THINKING_TEXT_MESSAGE_CONTENT to REASONING_MESSAGE_CONTENT",
+        "translated retired THINKING_TEXT_MESSAGE_END to REASONING_MESSAGE_END",
+        "translated retired THINKING_END to REASONING_END",
+    ];
+    assert_eq!(delivered, distinct);
+    let report = run.collect_report().await;
+    assert_eq!(warnings(&report), distinct);
+    assert_eq!(report.diagnostics.len(), distinct.len());
+    assert_eq!(report.diagnostics_omitted, 0);
+    assert_eq!(thread.reasoning().len(), 1, "the reasoning itself is kept");
+}
+
+#[tokio::test]
+async fn the_callback_hears_a_repeated_warning_once_per_run() {
+    let run = |id: &str| {
+        let mut events = vec![json!({"type": "RUN_STARTED", "threadId": "t", "runId": id})];
+        events.extend(
+            (0..20).map(|_| json!({"type": "THINKING_TEXT_MESSAGE_CONTENT", "delta": "x"})),
+        );
+        events.extend((0..3).map(|_| json!({"type": "STEP_STARTED", "stepName": "s", "extra": 1})));
+        events.push(json!({"type": "RUN_FINISHED", "threadId": "t", "runId": id}));
+        events
+    };
+    // Two runs on one stream: each reports its own warnings.
+    let raw = stream::iter(run("r1").into_iter().chain(run("r2")).map(Ok));
+    let mut warnings = Vec::new();
+    let events: Vec<_> = enforce_events(raw, |warning| warnings.push(warning))
+        .collect()
+        .await;
+    assert!(events.iter().all(Result::is_ok), "{events:?}");
+    let once = [
+        "translated retired THINKING_TEXT_MESSAGE_CONTENT to REASONING_MESSAGE_CONTENT",
+        "unrecognised property at /extra",
+    ];
+    assert_eq!(warnings, [once, once].concat());
 }
 
 #[tokio::test]

@@ -74,12 +74,21 @@ pub enum Update<S = Value> {
     /// [`Thread::resume`] — one update per pending interrupt.
     Interrupt(Interrupt),
     /// Something went wrong: a malformed stream, a patch that would not apply,
-    /// a transport failure, a `RUN_ERROR`. Or, as [`Error::Warning`], something
-    /// the compatibility boundary removed or translated.
+    /// a transport failure, a `RUN_ERROR`.
     ///
     /// Not necessarily fatal — a run survives a patch it could not apply. When
     /// it is fatal, the matching [`Update::Done`] follows.
     Error(Error),
+    /// Not an error: the stream was accepted, with a correction or an omission
+    /// the application may want to log. An unrecognised field, enum member or
+    /// event was dropped, a retired `THINKING_*` event was translated, a
+    /// deprecated `null` was read as omitted, or the producer declared a newer
+    /// protocol version. The run is unaffected.
+    ///
+    /// Each text is delivered once per run and repeats at most 64 characters
+    /// of input, with control characters escaped. [`RunReport::diagnostics`]
+    /// keeps it with kind `warning`.
+    Warning(String),
     /// The run ended, and how. Always the last update of a run, on every path
     /// out: the agent finishing, the agent failing, and the transport dying
     /// mid-sentence.
@@ -168,8 +177,7 @@ pub struct StateViewError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunDiagnostic {
     /// A stable broad category (`state`, `protocol`, `patch`, `transport`, `run`,
-    /// `unsupported`, or `warning` for what the compatibility boundary removed
-    /// or translated; see [`Error::Warning`]).
+    /// `unsupported`, or `warning` for an [`Update::Warning`]).
     pub kind: &'static str,
     /// Human-readable cause.
     pub message: String,
@@ -1084,7 +1092,6 @@ impl<T, S> RunStream<'_, T, S> {
                 Error::State(_) => "state",
                 Error::Protocol(_) | Error::InvalidPatchDocument { .. } => "protocol",
                 Error::Unsupported(_) => "unsupported",
-                Error::Warning(_) => "warning",
                 Error::Patch { .. } => "patch",
                 Error::Run { .. } => "run",
                 Error::Json(_) | Error::Decode(_) => "decode",
@@ -1098,6 +1105,19 @@ impl<T, S> RunStream<'_, T, S> {
             self.diagnostics_omitted += 1;
         }
         self.ready.push_back(Update::Error(error));
+    }
+    /// Kept like a diagnostic, within the same limit, but delivered as a
+    /// warning: the run is unaffected.
+    fn warning(&mut self, warning: String) {
+        if self.diagnostics.len() < self.thread.diagnostic_limit {
+            self.diagnostics.push(RunDiagnostic {
+                kind: "warning",
+                message: warning.clone(),
+            });
+        } else {
+            self.diagnostics_omitted += 1;
+        }
+        self.ready.push_back(Update::Warning(warning));
     }
     fn terminate(&mut self, end: RunEnd) {
         if self.done {
@@ -1451,9 +1471,7 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
             {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Some(Ok(Checked::Event(event)))) => this.ingest(event),
-                Poll::Ready(Some(Ok(Checked::Warning(warning)))) => {
-                    this.diagnostic(Error::Warning(warning));
-                }
+                Poll::Ready(Some(Ok(Checked::Warning(warning)))) => this.warning(warning),
                 // After RUN_FINISHED a broken connection truncates nothing:
                 // the run already ended, so the break is only reported.
                 Poll::Ready(Some(Err(error @ Error::Transport(_)))) if this.finished.is_some() => {

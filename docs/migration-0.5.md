@@ -230,14 +230,18 @@ These are on `main` and not yet in a published version.
 - The SDK no longer prints to stderr. What the compatibility boundary removes or
   translates (an unrecognised field, enum member or event, a retired `THINKING_*`
   event, a deprecated `null`, a newer `protocolVersion`) is a warning returned to the
-  caller. A `Thread` run yields each as `Update::Error(Error::Warning(..))` and keeps
-  it in `RunReport.diagnostics` with kind `warning`, within `diagnostic_limit`; it
-  does not fail the run. `RemoteAgent::run_events`, `decode_events` and
-  `Transport::run` discard warnings, and the new `transport::enforce_events` hands
-  each to a callback. On the server, `AgentEndpoint::on_input_warnings` receives a
-  request's warnings and `extract::decode_with_warnings` returns them; `AgUiInput`
-  and `extract::decode` discard them. A warning repeats at most 64 characters of
-  input text, with control characters escaped, and names a dropped event by its type.
+  caller. A `Thread` run yields each as the new `Update::Warning(String)`, not as an
+  error, and keeps it in `RunReport.diagnostics` with kind `warning`, within
+  `diagnostic_limit`; the run is unaffected. A match on `Update` that treats every
+  variant it does not name as an error should let warnings through.
+  `RemoteAgent::run_events`, `decode_events` and `Transport::run` discard warnings,
+  and the new `transport::enforce_events` hands each to a callback. Within a run, a
+  warning already delivered is not delivered again, so a pre-1.0 producer streaming
+  `THINKING_*` tokens yields one warning per kind of event, not one per token. On the
+  server, `AgentEndpoint::on_input_warnings` receives a request's warnings and
+  `extract::decode_with_warnings` returns them; `AgUiInput` and `extract::decode`
+  discard them. A warning repeats at most 64 characters of input text, with control
+  characters escaped, and names a dropped event by its type.
 - A path in a protocol error or warning names a list member by its index in the
   input. It used to skip the members dropped before it, so the third of
   `[unknown, unknown, malformed]` was reported as `/0`.

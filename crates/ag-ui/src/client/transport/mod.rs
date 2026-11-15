@@ -172,10 +172,12 @@ pub fn boxed_raw_stream(stream: impl Stream<Item = Result<Value>> + 'static) -> 
 /// A warning says what the boundary removed or translated on the way: an
 /// unrecognised field, enum member or event, a retired `THINKING_*` event, a
 /// deprecated optional `null`, a newer declared protocol version. It arrives
-/// before the event it concerns. [`decode_events`], [`Transport::run`] and
+/// before the event it concerns, and a text already handed on in the same run
+/// is not handed on again. [`decode_events`], [`Transport::run`] and
 /// [`RemoteAgent::run_events`](crate::client::RemoteAgent::run_events) apply
 /// the same boundary and discard them; a [`Thread`](crate::client::Thread)
-/// reports them as diagnostics. Nothing in this crate prints them.
+/// yields them as [`Update::Warning`](crate::client::Update::Warning). Nothing
+/// in this crate prints them.
 ///
 /// ```
 /// use ag_ui::client::transport::{decode_raw_events, enforce_events};

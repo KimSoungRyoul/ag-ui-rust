@@ -6,10 +6,11 @@
 //! verification gives the same decision to every SSE consumer.
 //!
 //! Whatever is removed or translated on the way becomes a warning in the
-//! stream, ahead of the event it concerns. A `Thread` records each one; the
-//! plain event streams drop them unless their caller asks for them.
+//! stream, ahead of the event it concerns, once per run for each distinct
+//! text. A `Thread` records each one; the plain event streams drop them unless
+//! their caller asks for them.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::pin::Pin;
 
 use futures_core::Stream;
@@ -86,8 +87,13 @@ where
     })
 }
 
+/// The distinct warnings remembered in one run. Past this many, a new warning
+/// is still delivered but not remembered, so what a producer can make the
+/// boundary hold stays bounded however long the run.
+const REMEMBERED: usize = 256;
+
 /// The boundary with its warnings in the stream, each ahead of the event it
-/// concerns. An error is the last item.
+/// concerns and each text once per run. An error is the last item.
 pub(crate) fn checked<S>(raw: S) -> impl Stream<Item = Result<Checked>>
 where
     S: Stream<Item = Result<Value>>,
@@ -97,6 +103,7 @@ where
         legacy: Legacy::default(),
         ready: VecDeque::new(),
         out: VecDeque::new(),
+        delivered: HashSet::new(),
         done: false,
     };
     futures_util::stream::unfold(boundary, |mut boundary| async move {
@@ -120,6 +127,10 @@ where
             }
             match boundary.raw.next().await? {
                 Ok(value) => {
+                    // A later run on the same stream reports its own warnings.
+                    if value.get("type").and_then(Value::as_str) == Some("RUN_STARTED") {
+                        boundary.delivered.clear();
+                    }
                     let translated = boundary.legacy.translate(value, &mut warnings);
                     boundary.warn(warnings);
                     match translated {
@@ -141,16 +152,24 @@ struct Boundary<S> {
     ready: VecDeque<Value>,
     /// Items waiting to be handed on.
     out: VecDeque<Result<Checked>>,
+    /// Warnings handed on in this run, up to [`REMEMBERED`] of them.
+    delivered: HashSet<String>,
     done: bool,
 }
 
 impl<S> Boundary<S> {
+    /// Hands on each warning whose text this run has not delivered yet. A
+    /// legacy producer would otherwise repeat one per reasoning token.
     fn warn(&mut self, warnings: Vec<String>) {
-        self.out.extend(
-            warnings
-                .into_iter()
-                .map(|warning| Ok(Checked::Warning(warning))),
-        );
+        for warning in warnings {
+            if self.delivered.contains(&warning) {
+                continue;
+            }
+            if self.delivered.len() < REMEMBERED {
+                self.delivered.insert(warning.clone());
+            }
+            self.out.push_back(Ok(Checked::Warning(warning)));
+        }
     }
 
     fn fail(&mut self, error: Error) {
