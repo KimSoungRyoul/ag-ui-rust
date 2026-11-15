@@ -175,55 +175,100 @@ fn the_run_ending_closes_an_open_chunk_stream_before_it() {
 }
 
 #[test]
-fn an_explicit_end_is_not_duplicated() {
-    // A producer that opens with a chunk and closes explicitly gets exactly one
-    // TEXT_MESSAGE_END.
-    let events = normalize_all([
-        text_chunk(Some("msg-1"), Some("Hi")),
-        Event::text_message_end("msg-1"),
-    ])
-    .expect("normalizes");
+fn an_explicit_event_ends_the_chunk_stream_it_names_rather_than_joining_it() {
+    // AG-UI 1.0, "The chunked form": the two spellings do not mix within one
+    // item. An explicit event carrying the id a chunk stream is assembling
+    // ends the shorthand, and is then judged by the rules of the explicit
+    // form. The local streams `explicit-content-after-chunk-fatal` and
+    // `chunk-after-explicit-start-fatal` hold the same on every lane.
+    for (explicit, said) in [
+        (
+            Event::text_message_end("msg-1"),
+            r#"TEXT_MESSAGE_END for message "msg-1", which is not open"#,
+        ),
+        (
+            Event::text_message_content("msg-1", "!"),
+            r#"TEXT_MESSAGE_CONTENT for message "msg-1", which is not open"#,
+        ),
+    ] {
+        let kind = explicit.event_type();
+        let events = normalize_all([
+            Event::run_started("t", "r"),
+            text_chunk(Some("msg-1"), Some("Hi")),
+            explicit,
+        ])
+        .expect("normalizes");
 
-    assert_eq!(
-        types(&events),
-        [
-            EventType::TextMessageStart,
-            EventType::TextMessageContent,
-            EventType::TextMessageEnd,
-        ]
-    );
-}
+        // The end the chunk stream is owed comes first, and is the only one
+        // the normalizer adds.
+        assert_eq!(
+            types(&events),
+            [
+                EventType::RunStarted,
+                EventType::TextMessageStart,
+                EventType::TextMessageContent,
+                EventType::TextMessageEnd,
+                kind,
+            ]
+        );
+        let error = verify_all(&events).expect_err("the message closed with its chunk stream");
+        assert!(error.to_string().contains(said), "{error}");
+    }
 
-#[test]
-fn an_explicit_message_absorbs_a_following_bare_chunk() {
-    // Deliberately more tolerant than upstream. `transformChunks` tracks only
-    // the streams it opened itself — an explicit TEXT_MESSAGE_START never sets
-    // its `mode` — so upstream throws "First TEXT_MESSAGE_CHUNK must have a
-    // messageId" here. There is exactly one message open and the chunk can only
-    // mean that one, so accepting is the interoperable reading.
+    // An explicit start is the one explicit event that may follow: the
+    // message has closed, and a closed message may be reopened.
     let events = normalize_all([
+        Event::run_started("t", "r"),
+        text_chunk(Some("msg-1"), Some("Hel")),
         Event::text_message_start("msg-1", TextMessageRole::Assistant),
-        Event::text_message_content("msg-1", "Hel"),
-        text_chunk(None, Some("lo")),
+        Event::text_message_content("msg-1", "lo"),
         Event::text_message_end("msg-1"),
+        Event::run_finished_success("t", "r"),
     ])
     .expect("normalizes");
-
-    assert_eq!(
-        types(&events),
-        [
-            EventType::TextMessageStart,
-            EventType::TextMessageContent,
-            EventType::TextMessageContent,
-            EventType::TextMessageEnd,
-        ]
-    );
-
+    verify_all(&events).expect("a reopened message is a valid stream");
     let mut applier = Applier::new();
     for event in &events {
         applier.apply(event).expect("applies");
     }
     assert_eq!(applier.text_of("msg-1"), Some("Hello"));
+}
+
+#[test]
+fn an_explicitly_opened_message_is_not_a_stream_a_chunk_can_continue() {
+    // "An item opened by a `*_START` is continued and closed explicitly." A
+    // chunk that names no id continues a chunk stream, and an explicit start
+    // does not open one. The reference client rejects this stream the same
+    // way; alpha.3 appended the chunk to the open message.
+    let error = normalize_all([
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_content("msg-1", "Hel"),
+        text_chunk(None, Some("lo")),
+        Event::text_message_end("msg-1"),
+    ])
+    .expect_err("no chunk opened anything for it to continue");
+    assert!(
+        error
+            .to_string()
+            .contains("carries no messageId and no message is open as a chunk stream"),
+        "{error}"
+    );
+
+    // One that names the open message's id is the first chunk of a new item
+    // under that id, which the verifier refuses as a second start.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        text_chunk(Some("msg-1"), Some("lo")),
+    ])
+    .expect("normalizes");
+    let error = verify_all(&events).expect_err("msg-1 is already open");
+    assert!(
+        error
+            .to_string()
+            .contains(r#"TEXT_MESSAGE_START for message "msg-1", which is already open"#),
+        "{error}"
+    );
 }
 
 #[test]
@@ -443,14 +488,18 @@ fn a_continuation_chunk_may_repeat_what_its_opener_said_but_not_contradict_it() 
         "{error}"
     );
 
-    // A chunk continuing a message a TEXT_MESSAGE_START opened answers to
-    // that start.
-    let error = normalize_all([
+    // Only a chunk's own opener is repeated. A message a TEXT_MESSAGE_START
+    // opened is not a chunk stream, so a chunk naming it has nothing to
+    // contradict: it opens the id a second time, which is the verifier's to
+    // refuse.
+    let events = normalize_all([
+        Event::run_started("t", "r"),
         Event::text_message_start("msg-1", TextMessageRole::User),
         role(assistant),
     ])
-    .expect_err("the start said user");
-    assert!(error.to_string().contains("does not match"), "{error}");
+    .expect("the chunk opens a stream of its own");
+    let error = verify_all(&events).expect_err("msg-1 is already open");
+    assert!(error.to_string().contains("already open"), "{error}");
 }
 
 #[test]
@@ -653,18 +702,58 @@ fn the_normalizer_reports_whether_a_stream_is_open() {
 }
 
 #[test]
-fn the_applier_also_assembles_raw_chunks_on_its_own() {
-    // Normalization is the recommended path, but an applier driven straight
-    // from a raw stream must not silently drop the payload.
+#[allow(deprecated)]
+fn the_applier_leaves_a_retired_thinking_event_to_the_compatibility_boundary() {
+    // The boundary translates THINKING_* to REASONING_* on both transport
+    // forms, so the applier has no translation of its own to disagree with.
     let mut applier = Applier::new();
-    for event in [
+    for retired in [
+        Event::thinking_start(None),
+        Event::thinking_text_message_start(),
+        Event::thinking_text_message_content("hmm"),
+        Event::thinking_text_message_end(),
+        Event::thinking_end(),
+    ] {
+        let error = applier.apply(&retired).expect_err("a retired event");
+        assert!(
+            matches!(error, ag_ui::client::Error::Unsupported(_)),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("REASONING_*"), "{error}");
+    }
+    assert!(applier.reasoning().is_empty());
+}
+
+#[test]
+fn the_applier_takes_a_chunk_only_in_its_expanded_form() {
+    // What a chunk continues is decided in one place, the normalizer. An
+    // applier handed a raw chunk says so rather than dropping the payload or
+    // assembling it by rules of its own.
+    let mut applier = Applier::new();
+    for chunk in [
+        text_chunk(Some("msg-1"), Some("Hel")),
+        tool_chunk(Some("call-1"), Some("t"), Some("{}")),
+        Event::reasoning_message_chunk(Some(MessageId::new("r-1")), Some("Think".into())),
+    ] {
+        let error = applier.apply(&chunk).expect_err("not the explicit form");
+        assert!(
+            matches!(error, ag_ui::client::Error::Unsupported(_)),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("ChunkNormalizer"), "{error}");
+    }
+    assert!(applier.messages().is_empty() && applier.reasoning().is_empty());
+
+    // Through the normalizer, the same events assemble.
+    let events = normalize_all([
         text_chunk(Some("msg-1"), Some("Hel")),
         text_chunk(None, Some("lo")),
         tool_chunk(Some("call-1"), Some("t"), Some("{}")),
-    ] {
-        applier.apply(&event).expect("applies");
+    ])
+    .expect("normalizes");
+    for event in &events {
+        applier.apply(event).expect("applies");
     }
-
     assert_eq!(applier.text_of("msg-1"), Some("Hello"));
     let ag_ui::Message::Assistant(assistant) = &applier.messages()[1] else {
         panic!("expected the tool call's message");

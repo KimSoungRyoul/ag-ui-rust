@@ -684,24 +684,29 @@ fn mismatches(expect: &Value, seen: &Seen, strict: bool) -> Vec<String> {
 /// on the client lanes, and the rule the server verifier names for it.
 const REJECTIONS: &[(&str, &str, &str)] = &[
     (
+        "chunk-after-explicit-start-fatal",
+        r#"TEXT_MESSAGE_START for message "chunk-after-start-m1", which is already open"#,
+        "duplicate-start",
+    ),
+    (
         "chunk-conflicting-role-fatal",
         "does not match the open stream's role",
-        "",
+        "malformed-chunk",
     ),
     (
         "chunk-conflicting-tool-name-fatal",
         "does not match the open stream's toolCallName",
-        "",
+        "malformed-chunk",
     ),
     (
         "content-without-start-fatal",
-        r#"TEXT_MESSAGE_CONTENT for message "orphan-content-m1", which was never opened"#,
+        r#"TEXT_MESSAGE_CONTENT for message "orphan-content-m1", which is not open"#,
         "not-open",
     ),
     (
         "custom-closes-chunk-stream-fatal",
         "TEXT_MESSAGE_CHUNK carries no messageId and no message is open",
-        "",
+        "malformed-chunk",
     ),
     (
         "event-after-run-finished-fatal",
@@ -709,9 +714,14 @@ const REJECTIONS: &[(&str, &str, &str)] = &[
         "run-ended",
     ),
     (
+        "explicit-content-after-chunk-fatal",
+        r#"TEXT_MESSAGE_CONTENT for message "content-after-chunk-m1", which is not open"#,
+        "not-open",
+    ),
+    (
         "first-chunk-missing-id-fatal",
         "TEXT_MESSAGE_CHUNK carries no messageId and no message is open",
-        "",
+        "malformed-chunk",
     ),
     (
         "first-event-not-run-started-fatal",
@@ -721,7 +731,7 @@ const REJECTIONS: &[(&str, &str, &str)] = &[
     (
         "first-tool-chunk-missing-name-fatal",
         "without a toolCallName",
-        "",
+        "malformed-chunk",
     ),
     ("malformed-known-field-fatal", "/delta must be string", ""),
     (
@@ -736,7 +746,7 @@ const REJECTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "reasoning-discipline-verified",
-        r#"REASONING_MESSAGE_CONTENT for reasoning message "m-reasoning-discipline-1", which was never opened"#,
+        r#"REASONING_MESSAGE_CONTENT for reasoning message "m-reasoning-discipline-1", which is not open"#,
         "not-open",
     ),
     (
@@ -865,7 +875,6 @@ fn pins() -> Vec<Pin> {
     let one_run = "reads one run per stream";
     let apart = "streamed reasoning is kept in `reasoning()`, not in the message list";
     let no_peer_version = "no peer-version setting, so no version-selected downgrade (1.0: MAY)";
-    let self_contained = "the server verifier takes *_CHUNK events as self-contained";
     let phantom = json!([
         {"id": "span-reasoning-span-1", "content": ""},
         {"id": "m-reasoning-span-1", "content": "weighing the options"},
@@ -883,7 +892,7 @@ fn pins() -> Vec<Pin> {
         expect
     };
 
-    let mut pins = vec![
+    vec![
         // ---- pending #44: several runs on one stream ----------------------
         // The second run is not read. #44 has to flip each of these.
         pin(
@@ -1082,38 +1091,7 @@ fn pins() -> Vec<Pin> {
             no_peer_version,
             quiet(delegated),
         ),
-        // ---- #37: where the server verifier and the client differ ---------
-        // A hosted run sends nothing after a terminal event, so its verifier
-        // refuses the late RUN_ERROR 1.0 lets a producer send.
-        pin(
-            "late-run-error-after-finished-run-continues",
-            Producer,
-            Divergence,
-            37,
-            "the server verifier takes nothing after RUN_FINISHED",
-            json!({"outcome": "failed", "errorContains": "run-ended", "at": 5}),
-        ),
-    ];
-    // server/verify.rs, "What it lets through": the chunk rules a consumer
-    // enforces while expanding are not the server verifier's.
-    for stream in [
-        "chunk-conflicting-role-fatal",
-        "chunk-conflicting-tool-name-fatal",
-        "custom-closes-chunk-stream-fatal",
-        "first-chunk-missing-id-fatal",
-        "first-tool-chunk-missing-name-fatal",
-    ] {
-        let accepts = json!({"outcome": "completed", "at": null});
-        pins.push(pin(
-            stream,
-            Producer,
-            Divergence,
-            37,
-            self_contained,
-            accepts,
-        ));
-    }
-    pins
+    ]
 }
 
 // ---- the table ----------------------------------------------------------

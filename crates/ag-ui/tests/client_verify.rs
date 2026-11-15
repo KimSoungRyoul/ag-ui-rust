@@ -26,7 +26,7 @@ fn content_for_a_message_that_was_never_opened_is_rejected() {
         Event::run_started("t", "r"),
         Event::text_message_content("msg-1", "orphan"),
     ]);
-    assert!(said.contains("never opened"), "{said}");
+    assert!(said.contains("is not open"), "{said}");
     assert!(said.contains("msg-1"), "{said}");
 }
 
@@ -38,7 +38,7 @@ fn content_for_a_message_other_than_the_one_that_was_opened_is_rejected() {
         Event::text_message_content("msg-2", "wrong message"),
     ]);
     assert!(said.contains("msg-2"), "{said}");
-    assert!(said.contains("never opened"), "{said}");
+    assert!(said.contains("is not open"), "{said}");
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn reasoning_content_needs_its_message_opened_first() {
         Event::run_started("t", "r"),
         Event::reasoning_message_content("r-1", "thinking"),
     ]);
-    assert!(said.contains("never opened"), "{said}");
+    assert!(said.contains("is not open"), "{said}");
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn a_reasoning_block_is_bracketed_like_every_other_streamed_entity() {
 
     let said = complaint(&[started.clone(), Event::reasoning_end("block-1")]);
     assert!(
-        said.contains(r#"REASONING_END for reasoning block "block-1", which was never opened"#),
+        said.contains(r#"REASONING_END for reasoning block "block-1", which is not open"#),
         "{said}"
     );
 
@@ -194,7 +194,7 @@ fn a_reasoning_block_is_bracketed_like_every_other_streamed_entity() {
         Event::reasoning_start("block-1"),
         Event::reasoning_message_content("block-1", "orphan"),
     ]);
-    assert!(said.contains("never opened"), "{said}");
+    assert!(said.contains("is not open"), "{said}");
 
     // A block may hold several messages, share its id with one of them, and
     // be opened again once it has closed.
@@ -449,15 +449,38 @@ fn a_stream_that_stops_early_is_a_violation_of_its_own() {
 }
 
 #[test]
-fn chunk_events_are_left_to_the_normalizer() {
-    // The verifier runs after normalization, so chunks it does see are opaque
-    // rather than violations.
+fn a_chunk_that_reaches_the_verifier_is_judged_as_the_events_it_stands_for() {
+    // A `Thread` expands chunks first, so its verifier never sees one. A
+    // verifier handed a raw stream expands each chunk itself, by the same
+    // model, so the stream gets the verdict it would get through a `Thread`.
     verify_all(&[
         Event::run_started("t", "r"),
         Event::text_message_chunk(Some("msg-1".into()), Some("hi".into())),
+        Event::text_message_chunk(None, Some(" there".into())),
         Event::run_finished_success("t", "r"),
     ])
-    .expect("chunks are not an ordering violation");
+    .expect("a chunk stream is closed by the event that ends it");
+
+    // 1.0: "whichever stage meets a malformed chunk first rejects it".
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::text_message_chunk(None, Some("orphan".into())),
+    ]);
+    assert!(
+        said.contains("TEXT_MESSAGE_CHUNK carries no messageId and no message is open"),
+        "{said}"
+    );
+
+    // And the two spellings do not mix here either.
+    let said = complaint(&[
+        Event::run_started("t", "r"),
+        Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        Event::text_message_chunk(Some("msg-1".into()), Some("hi".into())),
+    ]);
+    assert!(
+        said.contains(r#"TEXT_MESSAGE_CHUNK for message "msg-1", which is already open"#),
+        "{said}"
+    );
 }
 
 #[tokio::test]
@@ -481,7 +504,7 @@ async fn a_thread_reports_a_malformed_stream_and_does_not_apply_it() {
         .collect();
 
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("never opened"), "{}", errors[0]);
+    assert!(errors[0].contains("is not open"), "{}", errors[0]);
     // Only the user's own message: the rejected event was not applied.
     assert_eq!(thread.messages().len(), 1);
 }

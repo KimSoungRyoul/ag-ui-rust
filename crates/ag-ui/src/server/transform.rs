@@ -19,6 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::streams::{Kind, Opener, Streams};
 use crate::{Event, Message, MessageId, PatchOperation, SubagentRunId, ToolCallId};
 use serde_json::Value;
 
@@ -237,12 +238,12 @@ impl StreamTransformer for FilterToolCalls {
     }
 
     fn transform(&mut self, event: Event) -> Vec<Event> {
-        let tag = event.subagent_run_id().cloned();
         let bare_tool = match &event {
             Event::ToolCallChunk(chunk) if chunk.tool_call_id.is_none() => self
                 .streams
-                .resolve(Family::Tool, &chunk.subagent_run_id)
-                .map(|(_, stream)| ToolCallId::new(stream.id)),
+                .continued(Kind::Tool, &chunk.subagent_run_id)
+                .ok()
+                .map(|stream| ToolCallId::new(&stream.id)),
             _ => None,
         };
         let drop = match &event {
@@ -281,11 +282,7 @@ impl StreamTransformer for FilterToolCalls {
 
         // Observe the unfiltered input. A removed start still changes where
         // the producer's later ID-less chunks belong.
-        let owner = tag.clone().or_else(|| {
-            SubagentFilter::entity(&event)
-                .and_then(|(family, id)| self.streams.owner_of_open(family, id))
-        });
-        self.streams.observe(&event, &owner, &tag);
+        self.streams.track(&event);
 
         if drop { Vec::new() } else { vec![event] }
     }
@@ -503,12 +500,12 @@ impl SubagentVisibility {
 
 /// The transformer behind [`SubagentVisibility`].
 ///
-/// Both modes keep the consuming normalizer's model of the stream — one open
-/// chunk-continuable stream per owner — because a `*_CHUNK` event that names
-/// no id is resolved *through its attribution* on the consuming side, and
-/// stripping the attribution would send it to the wrong stream. Such a chunk
-/// is given the id it resolves to (and, for a tool call, the name the
-/// consumer needs to reopen it) before its tag goes.
+/// Both modes keep the model of the stream a consumer expands chunks by — one
+/// chunk stream per owner, ended by what AG-UI 1.0 says ends it — because a
+/// `*_CHUNK` event that names no id is resolved *through its attribution* on
+/// the consuming side, and stripping the attribution would send it to the
+/// wrong stream. Such a chunk is given the id it resolves to (and, for a tool
+/// call, the name the consumer needs to reopen it) before its tag goes.
 ///
 /// [`Hidden`](SubagentVisibility::Hidden) additionally remembers what each
 /// subagent owns — messages, tool calls, activities — for the rest of the
@@ -536,36 +533,10 @@ pub struct SubagentFilter {
     /// Every activity seen, and whether a subagent owns it.
     activities: HashMap<MessageId, bool>,
     /// What is open, and whether the consumer saw it open.
-    open_visibility: HashMap<(Family, String), bool>,
+    open_visibility: HashMap<(Kind, String), bool>,
     /// Whether the consumer saw each tool call start, for the result that
     /// may arrive long after the call closed.
     call_visibility: HashMap<ToolCallId, bool>,
-}
-
-/// The families a `*_CHUNK` event may continue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Family {
-    Text,
-    Reasoning,
-    Tool,
-}
-
-/// One open stream, as the consuming normalizer models it.
-#[derive(Clone, Debug)]
-struct Stream {
-    family: Family,
-    id: String,
-    /// What a chunk reopening a tool call on the consuming side must carry.
-    tool_name: Option<String>,
-    parent_message_id: Option<MessageId>,
-}
-
-/// The open streams: one per owner, replaced by the next that owner opens,
-/// closed by a terminator or — for whoever executed it — by a tool result.
-#[derive(Clone, Debug, Default)]
-struct Streams {
-    parent: Option<Stream>,
-    subagents: HashMap<SubagentRunId, Stream>,
 }
 
 /// What a chunk naming no id turned out to be.
@@ -575,186 +546,11 @@ enum Bare {
     /// Resolved to a stream, and given its id.
     Resolved {
         owner: Option<SubagentRunId>,
-        family: Family,
+        kind: Kind,
         id: String,
     },
     /// Nothing to resolve it against; the consumer will say so.
     Unresolved,
-}
-
-impl Streams {
-    /// `owner` now has `stream` open, and nothing else — unless it is the
-    /// same stream, in which case what is known about it is kept.
-    fn open(&mut self, owner: &Option<SubagentRunId>, stream: Stream) {
-        let current = match owner {
-            None => &mut self.parent,
-            Some(owner) => match self.subagents.get_mut(owner) {
-                Some(current) => {
-                    Self::replace(current, stream);
-                    return;
-                }
-                None => {
-                    self.subagents.insert(owner.clone(), stream);
-                    return;
-                }
-            },
-        };
-        match current {
-            Some(current) => Self::replace(current, stream),
-            None => *current = Some(stream),
-        }
-    }
-
-    fn replace(current: &mut Stream, stream: Stream) {
-        if current.family == stream.family && current.id == stream.id {
-            if current.tool_name.is_none() {
-                current.tool_name = stream.tool_name;
-            }
-            if current.parent_message_id.is_none() {
-                current.parent_message_id = stream.parent_message_id;
-            }
-        } else {
-            *current = stream;
-        }
-    }
-
-    fn close_id(&mut self, family: Family, id: &str) {
-        if self
-            .parent
-            .as_ref()
-            .is_some_and(|open| open.family == family && open.id == id)
-        {
-            self.parent = None;
-        }
-        self.subagents
-            .retain(|_, open| !(open.family == family && open.id == id));
-    }
-
-    fn close_owner(&mut self, owner: &Option<SubagentRunId>) {
-        match owner {
-            None => self.parent = None,
-            Some(owner) => {
-                self.subagents.remove(owner);
-            }
-        }
-    }
-
-    fn clear(&mut self) {
-        self.parent = None;
-        self.subagents.clear();
-    }
-
-    /// The subagent under which `id` is open, if it is open under one.
-    fn owner_of_open(&self, family: Family, id: &str) -> Option<SubagentRunId> {
-        self.subagents
-            .iter()
-            .find(|(_, open)| open.family == family && open.id == id)
-            .map(|(owner, _)| owner.clone())
-    }
-
-    /// The stream a chunk naming no id continues — the normalizer's rule:
-    /// the tagged owner's open stream; untagged, the parent's, else the only
-    /// open one.
-    fn resolve(
-        &self,
-        family: Family,
-        tag: &Option<SubagentRunId>,
-    ) -> Option<(Option<SubagentRunId>, Stream)> {
-        let of_family = |open: &&Stream| open.family == family;
-        if let Some(owner) = tag {
-            return self
-                .subagents
-                .get(owner)
-                .filter(of_family)
-                .map(|open| (Some(owner.clone()), open.clone()));
-        }
-        if let Some(open) = self.parent.as_ref().filter(of_family) {
-            return Some((None, open.clone()));
-        }
-        let mut candidates = self
-            .subagents
-            .iter()
-            .filter(|(_, open)| open.family == family);
-        match (candidates.next(), candidates.next()) {
-            (Some((owner, open)), None) => Some((Some(owner.clone()), open.clone())),
-            _ => None,
-        }
-    }
-
-    /// Folds an event with an id into the model. `owner` is whose the event
-    /// is; `tag` is what it carries, which is what a result closes by.
-    fn observe(
-        &mut self,
-        event: &Event,
-        owner: &Option<SubagentRunId>,
-        tag: &Option<SubagentRunId>,
-    ) {
-        let text = |id: &MessageId| Stream {
-            family: Family::Text,
-            id: id.as_str().to_owned(),
-            tool_name: None,
-            parent_message_id: None,
-        };
-        let reasoning = |id: &MessageId| Stream {
-            family: Family::Reasoning,
-            id: id.as_str().to_owned(),
-            tool_name: None,
-            parent_message_id: None,
-        };
-        let tool = |id: &ToolCallId, name: Option<&String>, parent: Option<&MessageId>| Stream {
-            family: Family::Tool,
-            id: id.as_str().to_owned(),
-            tool_name: name.cloned(),
-            parent_message_id: parent.cloned(),
-        };
-        match event {
-            Event::TextMessageStart(e) => self.open(owner, text(&e.message_id)),
-            Event::TextMessageContent(e) => self.open(owner, text(&e.message_id)),
-            Event::TextMessageEnd(e) => self.close_id(Family::Text, e.message_id.as_str()),
-            Event::TextMessageChunk(e) => {
-                if let Some(id) = &e.message_id {
-                    self.open(owner, text(id));
-                }
-            }
-            Event::ReasoningMessageStart(e) => self.open(owner, reasoning(&e.message_id)),
-            Event::ReasoningMessageContent(e) => self.open(owner, reasoning(&e.message_id)),
-            Event::ReasoningMessageEnd(e) => {
-                self.close_id(Family::Reasoning, e.message_id.as_str());
-            }
-            Event::ReasoningEnd(e) => self.close_id(Family::Reasoning, e.message_id.as_str()),
-            Event::ReasoningMessageChunk(e) => {
-                if let Some(id) = &e.message_id {
-                    self.open(owner, reasoning(id));
-                }
-            }
-            Event::ToolCallStart(e) => self.open(
-                owner,
-                tool(
-                    &e.tool_call_id,
-                    Some(&e.tool_call_name),
-                    e.parent_message_id.as_ref(),
-                ),
-            ),
-            Event::ToolCallArgs(e) => self.open(owner, tool(&e.tool_call_id, None, None)),
-            Event::ToolCallEnd(e) => self.close_id(Family::Tool, e.tool_call_id.as_str()),
-            Event::ToolCallChunk(e) => {
-                if let Some(id) = &e.tool_call_id {
-                    self.open(
-                        owner,
-                        tool(id, e.tool_call_name.as_ref(), e.parent_message_id.as_ref()),
-                    );
-                }
-            }
-            // A result answers a call, so the call is over — and the party
-            // answering has moved on from whatever else it had open.
-            Event::ToolCallResult(e) => {
-                self.close_id(Family::Tool, e.tool_call_id.as_str());
-                self.close_owner(tag);
-            }
-            Event::RunFinished(_) | Event::RunError(_) => self.clear(),
-            _ => {}
-        }
-    }
 }
 
 impl SubagentFilter {
@@ -778,23 +574,23 @@ impl SubagentFilter {
     }
 
     /// The stream a stream-bearing event belongs to, if it names one.
-    fn entity(event: &Event) -> Option<(Family, &str)> {
+    fn entity(event: &Event) -> Option<(Kind, &str)> {
         Some(match event {
-            Event::TextMessageStart(e) => (Family::Text, e.message_id.as_str()),
-            Event::TextMessageContent(e) => (Family::Text, e.message_id.as_str()),
-            Event::TextMessageEnd(e) => (Family::Text, e.message_id.as_str()),
-            Event::TextMessageChunk(e) => (Family::Text, e.message_id.as_ref()?.as_str()),
-            Event::ReasoningStart(e) => (Family::Reasoning, e.message_id.as_str()),
-            Event::ReasoningMessageStart(e) => (Family::Reasoning, e.message_id.as_str()),
-            Event::ReasoningMessageContent(e) => (Family::Reasoning, e.message_id.as_str()),
-            Event::ReasoningMessageEnd(e) => (Family::Reasoning, e.message_id.as_str()),
-            Event::ReasoningEnd(e) => (Family::Reasoning, e.message_id.as_str()),
-            Event::ReasoningMessageChunk(e) => (Family::Reasoning, e.message_id.as_ref()?.as_str()),
-            Event::ToolCallStart(e) => (Family::Tool, e.tool_call_id.as_str()),
-            Event::ToolCallArgs(e) => (Family::Tool, e.tool_call_id.as_str()),
-            Event::ToolCallEnd(e) => (Family::Tool, e.tool_call_id.as_str()),
-            Event::ToolCallResult(e) => (Family::Tool, e.tool_call_id.as_str()),
-            Event::ToolCallChunk(e) => (Family::Tool, e.tool_call_id.as_ref()?.as_str()),
+            Event::TextMessageStart(e) => (Kind::Text, e.message_id.as_str()),
+            Event::TextMessageContent(e) => (Kind::Text, e.message_id.as_str()),
+            Event::TextMessageEnd(e) => (Kind::Text, e.message_id.as_str()),
+            Event::TextMessageChunk(e) => (Kind::Text, e.message_id.as_ref()?.as_str()),
+            Event::ReasoningStart(e) => (Kind::Reasoning, e.message_id.as_str()),
+            Event::ReasoningMessageStart(e) => (Kind::Reasoning, e.message_id.as_str()),
+            Event::ReasoningMessageContent(e) => (Kind::Reasoning, e.message_id.as_str()),
+            Event::ReasoningMessageEnd(e) => (Kind::Reasoning, e.message_id.as_str()),
+            Event::ReasoningEnd(e) => (Kind::Reasoning, e.message_id.as_str()),
+            Event::ReasoningMessageChunk(e) => (Kind::Reasoning, e.message_id.as_ref()?.as_str()),
+            Event::ToolCallStart(e) => (Kind::Tool, e.tool_call_id.as_str()),
+            Event::ToolCallArgs(e) => (Kind::Tool, e.tool_call_id.as_str()),
+            Event::ToolCallEnd(e) => (Kind::Tool, e.tool_call_id.as_str()),
+            Event::ToolCallResult(e) => (Kind::Tool, e.tool_call_id.as_str()),
+            Event::ToolCallChunk(e) => (Kind::Tool, e.tool_call_id.as_ref()?.as_str()),
             _ => return None,
         })
     }
@@ -815,56 +611,68 @@ impl SubagentFilter {
         if tag.is_some() {
             return tag.clone();
         }
-        let (family, id) = Self::entity(event)?;
-        let recorded = match family {
-            Family::Text => self.hidden_text.get(&MessageId::new(id)).cloned(),
-            Family::Reasoning => self.hidden_reasoning.get(&MessageId::new(id)).cloned(),
-            Family::Tool => Self::carrier(event)
+        let (kind, id) = Self::entity(event)?;
+        let recorded = match kind {
+            Kind::Text => self.hidden_text.get(&MessageId::new(id)).cloned(),
+            Kind::Reasoning => self.hidden_reasoning.get(&MessageId::new(id)).cloned(),
+            Kind::Tool => Self::carrier(event)
                 .and_then(|parent| self.hidden_text.get(parent).cloned())
                 .or_else(|| self.hidden_tool_calls.get(&ToolCallId::new(id)).cloned()),
         };
-        recorded.or_else(|| self.streams.owner_of_open(family, id))
+        // Untagged, it continues whatever chunk stream is assembling its id.
+        recorded.or_else(|| {
+            let holder = self.streams.holder(kind, id)?;
+            holder.owner.clone()
+        })
     }
 
     /// Gives a chunk naming no id the id its attribution resolves to on the
     /// consuming side, so that stripping the attribution afterwards cannot
     /// send it to another stream.
     fn fill_bare(&self, event: &mut Event, tag: &Option<SubagentRunId>) -> Bare {
-        let family = match event {
-            Event::TextMessageChunk(e) if e.message_id.is_none() => Family::Text,
-            Event::ReasoningMessageChunk(e) if e.message_id.is_none() => Family::Reasoning,
-            Event::ToolCallChunk(e) if e.tool_call_id.is_none() => Family::Tool,
+        let kind = match event {
+            Event::TextMessageChunk(e) if e.message_id.is_none() => Kind::Text,
+            Event::ReasoningMessageChunk(e) if e.message_id.is_none() => Kind::Reasoning,
+            Event::ToolCallChunk(e) if e.tool_call_id.is_none() => Kind::Tool,
             _ => return Bare::No,
         };
-        let Some((owner, stream)) = self.streams.resolve(family, tag) else {
+        let Ok(stream) = self.streams.continued(kind, tag) else {
             return Bare::Unresolved;
         };
-        let id = stream.id.clone();
+        let (owner, id) = (stream.owner.clone(), stream.id.clone());
         match event {
             Event::TextMessageChunk(e) => e.message_id = Some(MessageId::new(&id)),
             Event::ReasoningMessageChunk(e) => e.message_id = Some(MessageId::new(&id)),
             Event::ToolCallChunk(e) => {
                 e.tool_call_id = Some(ToolCallId::new(&id));
-                if e.tool_call_name.is_none() {
-                    e.tool_call_name = stream.tool_name;
-                }
-                if e.parent_message_id.is_none() {
-                    e.parent_message_id = stream.parent_message_id;
+                // What a chunk reopening the call on the consuming side must
+                // carry: there the id alone opens nothing.
+                if let Opener::Tool {
+                    name,
+                    parent_message_id,
+                } = &stream.opener
+                {
+                    if e.tool_call_name.is_none() {
+                        e.tool_call_name = Some(name.clone());
+                    }
+                    if e.parent_message_id.is_none() {
+                        e.parent_message_id.clone_from(parent_message_id);
+                    }
                 }
             }
             _ => unreachable!("matched above"),
         }
-        Bare::Resolved { owner, family, id }
+        Bare::Resolved { owner, kind, id }
     }
 
     /// Strips the subagent surface from an event, or drops it entirely when
     /// it *is* the subagent surface — the lifecycle, and a subagent's steps.
     fn inline(&mut self, mut event: Event) -> Vec<Event> {
         let tag = event.subagent_run_id().cloned();
-        if let Bare::No = self.fill_bare(&mut event, &tag) {
-            let owner = self.owner_for(&event, &tag);
-            self.streams.observe(&event, &owner, &tag);
-        }
+        // Filled before it is tracked: with its id a chunk continues the
+        // stream it resolved to, which is what the consumer will see.
+        self.fill_bare(&mut event, &tag);
+        self.streams.track(&event);
         let subagents_step =
             matches!(event, Event::StepStarted(_) | Event::StepFinished(_)) && tag.is_some();
         if subagents_step {
@@ -913,15 +721,17 @@ impl SubagentFilter {
         let owned = tag.is_some();
         let keep = match self.fill_bare(&mut event, &tag) {
             // The chunk continues a stream: it goes where the stream went.
-            Bare::Resolved { owner, family, id } => self
+            Bare::Resolved { owner, kind, id } => self
                 .open_visibility
-                .get(&(family, id))
+                .get(&(kind, id))
                 .copied()
                 .unwrap_or(owner.is_none()),
             Bare::Unresolved => !owned,
             Bare::No => {
+                // Before the event is tracked: it may end the stream that
+                // says whose it is.
                 let owner = self.owner_for(&event, &tag);
-                self.streams.observe(&event, &owner, &tag);
+                self.streams.track(&event);
                 self.judge(&event, &tag, owner.as_ref())
             }
         };
@@ -976,25 +786,25 @@ impl SubagentFilter {
                 false
             }
 
-            Event::TextMessageStart(e) => self.opened(Family::Text, &e.message_id, owner),
+            Event::TextMessageStart(e) => self.opened(Kind::Text, &e.message_id, owner),
             Event::TextMessageChunk(e) => match &e.message_id {
-                Some(id) => self.opened(Family::Text, id, owner),
+                Some(id) => self.opened(Kind::Text, id, owner),
                 None => unreachable!("a bare chunk was resolved or passed through"),
             },
-            Event::TextMessageContent(e) => self.continued(Family::Text, &e.message_id, owned),
-            Event::TextMessageEnd(e) => self.closed(Family::Text, &e.message_id, owned),
+            Event::TextMessageContent(e) => self.continued(Kind::Text, &e.message_id, owned),
+            Event::TextMessageEnd(e) => self.closed(Kind::Text, &e.message_id, owned),
 
-            Event::ReasoningStart(e) => self.opened(Family::Reasoning, &e.message_id, owner),
-            Event::ReasoningMessageStart(e) => self.opened(Family::Reasoning, &e.message_id, owner),
+            Event::ReasoningStart(e) => self.opened(Kind::Reasoning, &e.message_id, owner),
+            Event::ReasoningMessageStart(e) => self.opened(Kind::Reasoning, &e.message_id, owner),
             Event::ReasoningMessageChunk(e) => match &e.message_id {
-                Some(id) => self.opened(Family::Reasoning, id, owner),
+                Some(id) => self.opened(Kind::Reasoning, id, owner),
                 None => unreachable!("a bare chunk was resolved or passed through"),
             },
             Event::ReasoningMessageContent(e) => {
-                self.continued(Family::Reasoning, &e.message_id, owned)
+                self.continued(Kind::Reasoning, &e.message_id, owned)
             }
-            Event::ReasoningMessageEnd(e) => self.closed(Family::Reasoning, &e.message_id, owned),
-            Event::ReasoningEnd(e) => self.closed(Family::Reasoning, &e.message_id, owned),
+            Event::ReasoningMessageEnd(e) => self.closed(Kind::Reasoning, &e.message_id, owned),
+            Event::ReasoningEnd(e) => self.closed(Kind::Reasoning, &e.message_id, owned),
 
             Event::ToolCallStart(e) => self.call_opened(&e.tool_call_id, owner),
             Event::ToolCallChunk(e) => match &e.tool_call_id {
@@ -1005,7 +815,7 @@ impl SubagentFilter {
             Event::ToolCallEnd(e) => {
                 let keep = self.call_continued(&e.tool_call_id, owned);
                 self.open_visibility
-                    .remove(&(Family::Tool, e.tool_call_id.as_str().to_owned()));
+                    .remove(&(Kind::Tool, e.tool_call_id.as_str().to_owned()));
                 keep
             }
             // A result goes where its call went, whoever executed it: one for
@@ -1063,50 +873,49 @@ impl SubagentFilter {
         }
     }
 
-    fn owners_mut(&mut self, family: Family) -> &mut HashMap<MessageId, SubagentRunId> {
-        match family {
-            Family::Text => &mut self.hidden_text,
-            Family::Reasoning => &mut self.hidden_reasoning,
-            Family::Tool => unreachable!("tool calls have their own map"),
+    fn owners_mut(&mut self, kind: Kind) -> &mut HashMap<MessageId, SubagentRunId> {
+        match kind {
+            Kind::Text => &mut self.hidden_text,
+            Kind::Reasoning => &mut self.hidden_reasoning,
+            Kind::Tool => unreachable!("tool calls have their own map"),
         }
     }
 
-    fn is_hidden(&self, family: Family, id: &str) -> bool {
-        match family {
-            Family::Text => self.hidden_text.contains_key(&MessageId::new(id)),
-            Family::Reasoning => self.hidden_reasoning.contains_key(&MessageId::new(id)),
-            Family::Tool => self.hidden_tool_calls.contains_key(&ToolCallId::new(id)),
+    fn is_hidden(&self, kind: Kind, id: &str) -> bool {
+        match kind {
+            Kind::Text => self.hidden_text.contains_key(&MessageId::new(id)),
+            Kind::Reasoning => self.hidden_reasoning.contains_key(&MessageId::new(id)),
+            Kind::Tool => self.hidden_tool_calls.contains_key(&ToolCallId::new(id)),
         }
     }
 
     /// A message opens under `owner` — the first writer keeps it — and the
     /// consumer sees it iff the owner is the parent, unless it is already
     /// open, in which case it keeps the visibility it was opened with.
-    fn opened(&mut self, family: Family, id: &MessageId, owner: Option<&SubagentRunId>) -> bool {
+    fn opened(&mut self, kind: Kind, id: &MessageId, owner: Option<&SubagentRunId>) -> bool {
         if let Some(owner) = owner {
-            self.owners_mut(family)
+            self.owners_mut(kind)
                 .entry(id.clone())
                 .or_insert_with(|| owner.clone());
         }
         *self
             .open_visibility
-            .entry((family, id.as_str().to_owned()))
+            .entry((kind, id.as_str().to_owned()))
             .or_insert(owner.is_none())
     }
 
-    fn continued(&self, family: Family, id: &MessageId, owned: bool) -> bool {
+    fn continued(&self, kind: Kind, id: &MessageId, owned: bool) -> bool {
         !owned
             && self
                 .open_visibility
-                .get(&(family, id.as_str().to_owned()))
+                .get(&(kind, id.as_str().to_owned()))
                 .copied()
-                .unwrap_or_else(|| !self.is_hidden(family, id.as_str()))
+                .unwrap_or_else(|| !self.is_hidden(kind, id.as_str()))
     }
 
-    fn closed(&mut self, family: Family, id: &MessageId, owned: bool) -> bool {
-        let keep = self.continued(family, id, owned);
-        self.open_visibility
-            .remove(&(family, id.as_str().to_owned()));
+    fn closed(&mut self, kind: Kind, id: &MessageId, owned: bool) -> bool {
+        let keep = self.continued(kind, id, owned);
+        self.open_visibility.remove(&(kind, id.as_str().to_owned()));
         keep
     }
 
@@ -1118,7 +927,7 @@ impl SubagentFilter {
         }
         let visible = *self
             .open_visibility
-            .entry((Family::Tool, id.as_str().to_owned()))
+            .entry((Kind::Tool, id.as_str().to_owned()))
             .or_insert(owner.is_none());
         self.call_visibility.insert(id.clone(), visible);
         visible
@@ -1128,7 +937,7 @@ impl SubagentFilter {
         !owned
             && self
                 .open_visibility
-                .get(&(Family::Tool, id.as_str().to_owned()))
+                .get(&(Kind::Tool, id.as_str().to_owned()))
                 .copied()
                 .unwrap_or_else(|| !self.hidden_tool_calls.contains_key(id))
     }
@@ -1163,19 +972,19 @@ impl SubagentFilter {
                     .collect(),
                 _ => Vec::new(),
             };
-            let family = match message {
-                crate::Message::Reasoning(_) => Family::Reasoning,
-                _ => Family::Text,
+            let kind = match message {
+                crate::Message::Reasoning(_) => Kind::Reasoning,
+                _ => Kind::Text,
             };
             match owner {
                 Some(owner) => {
                     for call in calls {
                         self.hidden_tool_calls.insert(call, owner.clone());
                     }
-                    self.owners_mut(family).insert(id, owner);
+                    self.owners_mut(kind).insert(id, owner);
                 }
                 None if authoritative => {
-                    self.owners_mut(family).remove(&id);
+                    self.owners_mut(kind).remove(&id);
                     for call in &calls {
                         self.hidden_tool_calls.remove(call);
                     }

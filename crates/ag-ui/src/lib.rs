@@ -163,6 +163,13 @@ mod serde_util;
 #[cfg(any(feature = "client", feature = "axum"))]
 mod protocol;
 
+// The protocol rules both runtimes enforce, each in one place: the order
+// events may arrive in, and what a `*_CHUNK` event stands for.
+#[cfg(any(feature = "client", all(feature = "server", feature = "verify")))]
+mod ordering;
+#[cfg(any(feature = "client", feature = "server"))]
+mod streams;
+
 #[cfg(any(feature = "sse", feature = "protobuf"))]
 pub mod encode;
 

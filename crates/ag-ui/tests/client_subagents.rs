@@ -6,7 +6,7 @@
 
 use ag_ui::client::apply::{Applier, Changed, SubagentChange, SubagentChangeKind, SubagentStatus};
 use ag_ui::client::transport::ReplayTransport;
-use ag_ui::client::{RunEnd, Thread, Update, verify_all};
+use ag_ui::client::{ChunkNormalizer, RunEnd, Thread, Update, verify_all};
 use ag_ui::{
     Event, Interrupt, JsonObject, SubagentErrorEvent, SubagentFinishedEvent, SubagentOutcome,
     SubagentRunId, SubagentStartedEvent, TextMessageRole,
@@ -308,9 +308,24 @@ fn metadata_merges_into_what_each_event_builds() {
 
 #[test]
 fn a_chunk_without_an_id_continues_its_own_subagents_stream() {
+    // The applier takes the explicit form, so the chunks go through the
+    // normalizer first, as they do in a `Thread`.
+    fn feed(
+        normalizer: &mut ChunkNormalizer,
+        applier: &mut Applier,
+        event: Event,
+    ) -> ag_ui::client::Result<()> {
+        let mut expanded = Vec::new();
+        normalizer.normalize(event, &mut expanded)?;
+        for event in &expanded {
+            applier.apply(event)?;
+        }
+        Ok(())
+    }
+    let mut normalizer = ChunkNormalizer::new();
     let mut applier = Applier::new();
-    applier.apply(&Event::run_started("t", "r")).unwrap();
     for event in [
+        Event::run_started("t", "r"),
         tagged(
             Event::text_message_chunk(Some("m1".into()), Some("A ".into())),
             "s1",
@@ -322,28 +337,21 @@ fn a_chunk_without_an_id_continues_its_own_subagents_stream() {
         tagged(Event::text_message_chunk(None, Some("one".into())), "s1"),
         tagged(Event::text_message_chunk(None, Some("two".into())), "s2"),
     ] {
-        applier.apply(&event).unwrap();
+        feed(&mut normalizer, &mut applier, event).unwrap();
     }
     assert_eq!(applier.text_of("m1"), Some("A one"));
     assert_eq!(applier.text_of("m2"), Some("B two"));
 
     // Two subagents' streams open and no parent's: nothing to resolve
     // against, so an untagged chunk is refused rather than guessed at.
-    let error = applier
-        .apply(&Event::text_message_chunk(None, Some("?".into())))
-        .unwrap_err();
+    let bare = |delta: &str| Event::text_message_chunk(None, Some(delta.into()));
+    let error = feed(&mut normalizer, &mut applier, bare("?")).unwrap_err();
     assert!(error.to_string().contains("several"), "{error}");
 
     // The parent's own stream is what an untagged chunk continues.
-    applier
-        .apply(&Event::text_message_chunk(
-            Some("m3".into()),
-            Some("P ".into()),
-        ))
-        .unwrap();
-    applier
-        .apply(&Event::text_message_chunk(None, Some("arent".into())))
-        .unwrap();
+    let opening = Event::text_message_chunk(Some("m3".into()), Some("P ".into()));
+    feed(&mut normalizer, &mut applier, opening).unwrap();
+    feed(&mut normalizer, &mut applier, bare("arent")).unwrap();
     assert_eq!(applier.text_of("m3"), Some("P arent"));
     assert_eq!(
         applier
