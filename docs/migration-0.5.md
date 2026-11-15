@@ -407,10 +407,10 @@ These are on `main` and not yet in a published version.
   for tool calls without a result, and `client::Error::PendingInterrupts(ids)` for
   interrupts without an answer. Both were `Error::Request(text)`. The message text is
   unchanged; a match on `Error::Request` no longer sees these two.
-- `MessageUpdate`, `ReasoningUpdate`, `SubagentUpdate`, `RunDiagnostic`, `RunReport` and
-  `ResumeSubmission` in `client` are `#[non_exhaustive]`. They are still read field by
-  field; a struct pattern needs `..`, and code outside the crate can no longer build one
-  with a struct literal.
+- `MessageUpdate`, `ReasoningUpdate`, `SubagentUpdate`, `RunDiagnostic`, `RunReport`,
+  `ResumeSubmission` and `Subagent` in `client` are `#[non_exhaustive]`. They are still
+  read field by field; a struct pattern needs `..`, and code outside the crate can no
+  longer build one with a struct literal.
 - `ExecutionCapabilities.max_iterations` and `max_execution_time` are `Option<u64>`, as
   the schema's `minimum: 0` says; they were `Option<i64>`. A negative number, which some
   frameworks send for "no limit", now reads as `None` instead of being kept, so it is
