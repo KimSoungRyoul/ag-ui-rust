@@ -29,6 +29,7 @@
 //! | [`model`] | The data model, including the undefined slots JSON cannot express. |
 //! | [`surface`] | The surface state machine: lifecycle, and folding a stream of operations. Every stream is folded through it. |
 //! | [`validate`] | The semantic checks JSON Schema cannot express: does every child reference resolve, is there a root, is the tree acyclic. Plus the two a generating model gets wrong often enough to be worth checking without a schema engine: the message envelope, and property values against the type the catalog declares. |
+//! | [`schema`] | The three JSON Schema documents that describe a surface (envelope, common types, catalog), and pruning them to what a model needs. |
 // Gate module links with their features so minimal rustdoc builds resolve them.
 #![cfg_attr(
     feature = "schema-validation",
@@ -42,10 +43,9 @@
 //!
 //! ## What depends on what
 //!
-//! The protocol modules reach into nothing above them, with one exception that
-//! is on its way out: the JSON Schema validator takes its three schema
-//! documents as a `toolkit::schema::SchemaBundle`, so the `schema-validation`
-//! feature still implies `toolkit`.
+//! The protocol modules reach into nothing above them. The `schema-validation`
+//! feature still turns `toolkit` on, for the callers that came to rely on it;
+//! nothing in the validator needs it.
 //!
 //! With default features off, the protocol modules are all there is, and they
 //! need only `serde`, `serde_json`, `thiserror` and `jsonptr`.
@@ -146,7 +146,7 @@ mod protocol;
 
 #[doc(inline)]
 pub use crate::protocol::{
-    binding, catalog, message, model, operation, surface, validate, version,
+    binding, catalog, message, model, operation, schema, surface, validate, version,
 };
 #[cfg(feature = "schema-validation")]
 #[doc(inline)]

@@ -11,6 +11,7 @@ pub(crate) mod graph;
 pub mod message;
 pub mod model;
 pub mod operation;
+pub mod schema;
 pub mod surface;
 pub mod validate;
 pub mod version;
