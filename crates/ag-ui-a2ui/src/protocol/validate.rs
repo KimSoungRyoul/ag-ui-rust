@@ -47,7 +47,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::binding::{ModelScope, collect_bindings};
+use super::binding::{ModelScope, collect_bindings, names_the_scope};
 use super::catalog::{Catalog, ComponentDef, PropKind};
 use super::graph::{Cycle, Finding, Graph};
 use super::message::{AgentMessage, Component};
@@ -632,22 +632,7 @@ impl<'a> Validator<'a> {
                 },
             };
             if let (false, Some(components)) = (folded, components) {
-                // No folded surface will hold these, so they are checked here,
-                // alone: their root and their children may be elsewhere.
-                let options = ValidateOptions {
-                    require_root: false,
-                    allow_dangling_children: true,
-                    check_bindings: false,
-                    ..self.options.clone()
-                };
-                let list = format!("messages[{index}].updateComponents.components");
-                let nodes: Vec<Node<'_>> = components
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| Node::from_json(i, v).at(format!("{list}[{i}]")))
-                    .collect();
-                let report =
-                    Validator::with_options(self.catalog, options).run(&nodes, None, &list);
+                let report = self.validate_unfolded(index, components);
                 message_report.errors.extend(report.errors);
             }
         }
@@ -674,6 +659,27 @@ impl<'a> Validator<'a> {
             message_report.unreachable.extend(report.unreachable);
         }
         (message_report, store)
+    }
+
+    /// Validates the components of an `updateComponents` message that no
+    /// surface will hold, because the message could not be folded: one of them
+    /// has no usable id or type, or its surface is not live. They are checked
+    /// alone, since their root and their children may be elsewhere, and are
+    /// located in message `index`.
+    pub(crate) fn validate_unfolded(&self, index: usize, components: &[Value]) -> ValidationReport {
+        let options = ValidateOptions {
+            require_root: false,
+            allow_dangling_children: true,
+            check_bindings: false,
+            ..self.options.clone()
+        };
+        let list = format!("messages[{index}].updateComponents.components");
+        let nodes: Vec<Node<'_>> = components
+            .iter()
+            .enumerate()
+            .map(|(i, v)| Node::from_json(i, v).at(format!("{list}[{i}]")))
+            .collect();
+        Validator::with_options(self.catalog, options).run(&nodes, None, &list)
     }
 
     /// Validates updates against explicit previously observed renderer state.
@@ -1088,8 +1094,11 @@ impl<'a> Validator<'a> {
             }
             let node = &nodes[index];
             for binding in &bindings[index] {
-                let absolute = binding.path.is_empty() || binding.path.starts_with('/');
-                if !absolute && !in_template {
+                let absolute = binding.path.starts_with('/');
+                // The empty path and `.` name the scope the binding is in,
+                // which outside a template is the whole model: nothing about
+                // them needs a template to mean something.
+                if !absolute && !in_template && !names_the_scope(&binding.path) {
                     report.errors.push(ValidationError::new(
                         ErrorCode::UnresolvedBinding,
                         node.locator(&binding.location),
@@ -1133,7 +1142,7 @@ impl<'a> Validator<'a> {
             };
             for edge in graph.edges(index) {
                 if let Some(path) = template_path(component, &edge.location) {
-                    let resolver = if path.is_empty() || path.starts_with('/') {
+                    let resolver = if path.starts_with('/') {
                         root_scope.as_ref()
                     } else {
                         scope.as_ref()

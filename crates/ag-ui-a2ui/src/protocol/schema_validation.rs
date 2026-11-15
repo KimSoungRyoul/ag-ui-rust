@@ -36,6 +36,13 @@ pub struct SchemaValidator {
 impl SchemaValidator {
     /// Compiles the official envelope against the supplied catalog and common types.
     /// Additional resources must be supplied locally, keyed by their absolute URI.
+    ///
+    /// A catalog need not declare a theme: the published VegaChart and MCP
+    /// catalogs do not. The envelope refers to the catalog's `$defs/theme` all
+    /// the same, and a reference to nothing does not compile. For such a
+    /// catalog the validator supplies the definition: any theme that is an
+    /// object, which is what the reference renderers accept for it. A catalog
+    /// that declares a theme is held to it.
     pub fn new(bundle: &SchemaBundle, resources: &BTreeMap<String, Value>) -> Result<Self> {
         let mut documents = resources.clone();
         let mut register = |id: &str, value: &Value| -> Result<()> {
@@ -56,10 +63,13 @@ impl SchemaValidator {
         }
         // Official s2c references this relative URI while the catalog declares
         // its own, longer canonical URI. This is a resolver alias, not a wire ID alias.
-        register(
-            "https://a2ui.org/specification/v0_9/catalog.json",
-            &bundle.catalog,
-        )?;
+        register(CATALOG_ALIAS, &bundle.catalog)?;
+        if let Some(catalog) = with_any_theme(&bundle.catalog) {
+            let own = bundle.catalog.get("$id").and_then(Value::as_str);
+            for id in own.into_iter().chain([CATALOG_ALIAS]) {
+                documents.insert(id.to_string(), catalog.clone());
+            }
+        }
         // Each document keeps the draft its own `$schema` declares. An unknown
         // `$schema` is a meta-schema the retriever would have to fetch, so it
         // fails here rather than reaching the network.
@@ -185,6 +195,26 @@ impl SchemaValidator {
             .into(),
         })
     }
+}
+
+/// The URI the envelope schema reaches the surface's catalog by.
+const CATALOG_ALIAS: &str = "https://a2ui.org/specification/v0_9/catalog.json";
+
+/// A catalog that declares no `$defs/theme`, with one that takes any theme
+/// object. `None` for a catalog that declares its own, or that is not a
+/// document a definition could be added to.
+fn with_any_theme(catalog: &Value) -> Option<Value> {
+    if catalog.pointer("/$defs/theme").is_some() {
+        return None;
+    }
+    let mut catalog = catalog.clone();
+    let root = catalog.as_object_mut()?;
+    let definitions = root
+        .entry("$defs")
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()?;
+    definitions.insert("theme".to_string(), serde_json::json!({"type": "object"}));
+    Some(catalog)
 }
 
 // jsonschema 0.61 words a failed `enum` as `"x" is not one of "a", "b" or 5
@@ -490,6 +520,119 @@ impl SurfaceValidator {
     /// Observed accepted state, for incremental streams and lossless replay.
     pub fn state(&self) -> &crate::protocol::surface::SurfaceStore {
         &self.state
+    }
+}
+
+/// Validates a value against one definition of the published common types,
+/// `common_types.json`: `DynamicString`, `DynamicValue`, `ChildList`,
+/// `Action`, `FunctionCall` and the rest of its `$defs`.
+///
+/// The common types are what a catalog builds its properties from, so this is
+/// the check for one value on its own: a literal a catalog author wants to
+/// try, or a value an agent is about to put into a component. A whole message
+/// is [`SchemaValidator::validate_message`]'s to check.
+///
+/// The document is the one this crate ships, which v0.9 and v0.9.1 share.
+///
+/// # Function calls
+///
+/// In the published document a `FunctionCall` is whatever the surface's
+/// catalog says one is, through `catalog.json#/$defs/anyFunction`. A value on
+/// its own has no catalog. So a call is held to the type's own shape, with any
+/// function name: `call`, optional `args` and `returnType`, and no other key.
+/// Whether a catalog defines the function, and takes those arguments, is the
+/// message validator's to say.
+///
+/// ```
+/// use ag_ui_a2ui::schema_validation::validate_common_type;
+/// use serde_json::json;
+///
+/// validate_common_type("ChildList", &json!(["header", "body"]))?;
+/// validate_common_type("ChildList", &json!({"componentId": "row", "path": "/items"}))?;
+/// assert!(validate_common_type("ChildList", &json!("header")).is_err());
+///
+/// // A binding and a call are different values: an object that is both is neither.
+/// validate_common_type("DynamicValue", &json!({"path": "/user/name"}))?;
+/// validate_common_type("DynamicValue", &json!({"call": "now"}))?;
+/// assert!(validate_common_type("DynamicValue", &json!({"path": "/a", "call": "now"})).is_err());
+/// # Ok::<(), ag_ui_a2ui::Error>(())
+/// ```
+///
+/// # Errors
+///
+/// Returns [`Error::Validation`] with one `invalid_value` error for each
+/// failure, located by JSON Pointer within `value`, and [`Error::Catalog`]
+/// when the common types define no `definition`.
+pub fn validate_common_type(definition: &str, value: &Value) -> Result<()> {
+    const CATALOG: &str = "https://a2ui.org/specification/v0_9/catalog.json";
+    let common: Value =
+        serde_json::from_str(include_str!("../../schemas/v0_9_1/common_types.json"))?;
+    let defined = common.get("$defs").and_then(Value::as_object);
+    if !defined.is_some_and(|defined| defined.contains_key(definition)) {
+        let names: Vec<&str> = defined
+            .into_iter()
+            .flat_map(|defined| defined.keys().map(String::as_str))
+            .collect();
+        return Err(Error::catalog(format!(
+            "the common types define no {definition:?}; they define {}",
+            names.join(", ")
+        )));
+    }
+    let id = common
+        .get("$id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::catalog("the common types document has no $id"))?
+        .to_string();
+    // The catalog the common types refer to, standing in for all of them: any
+    // function, called with the keys a call has.
+    let any_catalog = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": CATALOG,
+        "$defs": {"anyFunction": {
+            "type": "object",
+            "properties": {"call": true, "args": true, "returnType": true},
+            "additionalProperties": false
+        }}
+    });
+    let pointer = definition.replace('~', "~0").replace('/', "~1");
+    let schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": format!("{id}#/$defs/{pointer}"),
+    });
+    let registry = jsonschema::Registry::new()
+        .retriever(NoExternalResources)
+        .extend([
+            (id, jsonschema::Resource::from_contents(common)),
+            (
+                CATALOG.to_string(),
+                jsonschema::Resource::from_contents(any_catalog),
+            ),
+        ])
+        .and_then(jsonschema::RegistryBuilder::prepare)
+        .map_err(Error::catalog)?;
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .with_retriever(NoExternalResources)
+        .with_registry(&registry)
+        .build(&schema)
+        .map_err(Error::catalog)?;
+    let errors: Vec<ValidationError> = validator
+        .iter_errors(value)
+        .take(16)
+        .map(|error| {
+            ValidationError::new(
+                ErrorCode::InvalidValue,
+                error.instance_path().to_string(),
+                bounded_diagnostic(&masked_message(&error)),
+            )
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Validation {
+            errors: errors.into(),
+        })
     }
 }
 

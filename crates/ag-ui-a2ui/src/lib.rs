@@ -28,6 +28,7 @@
 //! | [`binding`] | JSON Pointer resolution, template scopes and the `formatString` interpolation grammar, so an agent can check its own bindings before shipping them. |
 //! | [`model`] | The data model, including the undefined slots JSON cannot express. |
 //! | [`surface`] | The surface state machine: lifecycle, and folding a stream of operations. Every stream is folded through it. |
+//! | [`processor`] | Taking raw messages into a surface store: the catalogs a context speaks, the order of the checks, a batch as a transaction, and the kinds of refusal. |
 //! | [`validate`] | The semantic checks JSON Schema cannot express: does every child reference resolve, is there a root, is the tree acyclic. Plus the two a generating model gets wrong often enough to be worth checking without a schema engine: the message envelope, and property values against the type the catalog declares. |
 //! | [`schema`] | The three JSON Schema documents that describe a surface (envelope, common types, catalog), and pruning them to what a model needs. |
 // Gate module links with their features so minimal rustdoc builds resolve them.
@@ -48,7 +49,7 @@
 //! nothing in the validator needs it.
 //!
 //! With default features off, the protocol modules are all there is, and they
-//! need only `serde`, `serde_json`, `thiserror` and `jsonptr`.
+//! need only `serde`, `serde_json`, `thiserror`, `jsonptr` and `unicode-ident`.
 //!
 //! # Around the protocol
 //!
@@ -159,7 +160,7 @@ mod protocol;
 
 #[doc(inline)]
 pub use crate::protocol::{
-    binding, catalog, message, model, operation, schema, surface, validate, version,
+    binding, catalog, message, model, operation, processor, schema, surface, validate, version,
 };
 #[cfg(feature = "schema-validation")]
 #[doc(inline)]
@@ -184,8 +185,9 @@ pub use crate::protocol::message::{
     AgentMessage, AgentPayload, ChildList, ChildTemplate, ClientDataModel, Component,
     DataModelUpdate, RendererMessage, RendererPayload,
 };
-pub use crate::protocol::model::{DataModel, ModelValue};
+pub use crate::protocol::model::{DataModel, ModelChange, ModelValue};
 pub use crate::protocol::operation::Operation;
+pub use crate::protocol::processor::MessageProcessor;
 pub use crate::protocol::surface::{Lifecycle, SurfaceState, SurfaceStore};
 pub use crate::protocol::validate::{
     ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator,

@@ -469,6 +469,64 @@ These are on `main` and not yet in a published version.
   pre-1.0 `events.proto` could carry. Upstream's 1.0 `events.proto` covers every 1.0 event
   type, so there is no gap left to check. `ProtobufFormatter` is unchanged and still
   refuses to encode.
+- `binding::absolute_path(scope, path)` is new: the absolute data-model path a binding
+  path resolves to in a scope, without a data model.
+- The empty path and `.` are relative, and name the scope a binding is in: inside a
+  template they are the item being drawn. `Scope::resolve`, `Scope::resolve_pointer`,
+  `Scope::item`, `ModelScope::resolve`, `ModelScope::item` and the validator read the
+  empty path as the whole model in every scope, and `.` as a key named `.`. Write `/`
+  for the whole model from inside a template. Outside a template nothing changes for
+  the empty path, and `.` is no longer reported as a relative path with no template.
+- `DataModel::apply_reporting` and `ModelChange` are new: a write that reports, for any
+  path, whether the value there is different afterwards.
+- `DataModel` refuses a path with a segment `__proto__`, `constructor` or `prototype`
+  (`model::FORBIDDEN_PATH_SEGMENTS`), in `apply`, `apply_reporting` and `lookup`, with
+  `Error::Pointer`. alpha.3 stored and read such a key. A JavaScript renderer refuses
+  these paths, so a model that took them held a state the renderer did not. Name the
+  key something else. A value written at another path may still have such a key; only
+  the path is checked.
+- `DataModel::apply` refuses a list index above `model::MAX_LIST_INDEX` (10,000), which
+  is the bound the reference renderers put on a write, for the same reason. alpha.3
+  took any index the growth budget allowed, up to 65,536 new slots. The budget
+  (`DEFAULT_ARRAY_GROWTH_LIMIT`) still counts every slot one update adds, so it is the
+  bound for a path that grows several lists at once, and for a caller that lowers it.
+- `binding::parse_template` and `TemplatePart` are new: a `formatString` template
+  parsed into its parts without evaluating it. `Scope::format_string` and
+  `format_string_with` now parse with it, so they accept the grammar the reference
+  renderers do, with `~0` and `~1` in a path besides, and nothing else:
+  - An expression that does not parse is `Error::Binding`. The old scanner read
+    anything it did not recognize as a path, so `${a b}` or `${count:}` resolved to
+    an empty string.
+  - In a quoted string `\n`, `\t` and `\r` are the control characters and a
+    backslash before any other character is that character. Only `\'` and `\"` were
+    unescaped.
+  - `+1`, `.5` and `1.` are numbers, and a trailing comma after the last argument of
+    a call is accepted.
+  - An expression may nest 100 levels deep (`MAX_TEMPLATE_DEPTH`); the limit was 10.
+    A template of more than 10,000 characters or 1,000 parts is an error
+    (`MAX_TEMPLATE_CHARS`, `MAX_TEMPLATE_PARTS`); there was no limit.
+- `ag-ui-a2ui` depends on `unicode-ident`, for the `XID_Continue` table.
+- The `processor` module is new: `MessageProcessor` takes raw messages into a
+  `SurfaceStore`, with the catalogs a context speaks registered by id, each message or
+  batch as a transaction, and a refusal as a `Rejection` that names its kind
+  (`RejectionKind`: integrity, recursion, catalog, validation). A `deleteSurface` for
+  a surface that is not live does nothing there; `SurfaceStore::apply` still refuses
+  it.
+- `SurfaceStore::client_data_model` is new: the `a2uiClientDataModel` metadata for the
+  surfaces created with `sendDataModel: true`.
+- `Catalog::document` is new: the document a catalog was read from with
+  `Catalog::from_schema`, unchanged. Two catalogs are equal when their documents are
+  too, so two documents that summarize alike are no longer equal catalogs.
+- `Catalog::from_schema` reads a function's return type from the schema of its call,
+  `properties.returnType.const`, which is how the specification's catalogs state it.
+  `FunctionDef::return_type` was `None` for every function of a published catalog.
+- `schema_validation::validate_common_type` is new: one value against one definition
+  of the published common types (`DynamicValue`, `ChildList`, `Action`, …).
+- `SchemaValidator::new` and `SurfaceValidator::register` take a catalog that declares
+  no `$defs/theme`, as the published VegaChart and MCP catalogs do not. alpha.3 failed
+  on it with `Pointer '/$defs/theme' does not exist`, because the envelope schema
+  refers to that definition. A surface of such a catalog takes any theme that is an
+  object. A catalog that declares a theme is held to it, as before.
 - `ag-ui-a2ui` has a new feature, `agent`, and a module behind it,
   `ag_ui_a2ui::agent`: catalog negotiation (`RendererCapabilities`, `resolve_catalogs`),
   `A2uiGenerator` and the per-request `A2uiRequestProcessor`, the `OutputFormat` trait
