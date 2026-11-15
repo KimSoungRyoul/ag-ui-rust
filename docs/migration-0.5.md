@@ -164,6 +164,13 @@ These are on `main` and not yet in a published version.
   with `Error::Cancelled`.
 - Without the `verify` feature, nothing is sent after `RUN_FINISHED` or `RUN_ERROR` any more:
   such an emit fails with `Rule::RunEnded`, as it already did with `verify` on.
+- A hosted run learns the conversation it continues from the request's `messages`, whether
+  or not `echo_input` is on. A resumed run can now report `TOOL_CALL_RESULT` for a tool call
+  an earlier run opened; alpha.3 ended such a run with `RUN_ERROR` (rule `unknown-id`)
+  unless the input was echoed. `FilterToolCalls` and `SubagentVisibility::hidden()` judge
+  that result by the earlier call, with or without the echo. `StreamTransformer` gains a
+  provided `seed(&mut self, history: &[Message])` method that receives the same history;
+  existing implementations compile unchanged.
 
 ## Verify the upgrade
 

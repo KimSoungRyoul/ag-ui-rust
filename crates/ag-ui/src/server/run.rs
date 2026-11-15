@@ -139,6 +139,11 @@ impl<A> Runner<A> {
     /// Echoes the request back on `RUN_STARTED`, so a recorded stream replays
     /// without the original HTTP body. Off by default — it is the largest
     /// payload in the protocol.
+    ///
+    /// This decides only what goes on the wire. The verifier and every
+    /// transformer learn the request's history either way (see
+    /// [`StreamTransformer::seed`]), so a resumed run behaves the same with
+    /// and without the echo.
     #[must_use]
     pub fn echo_input(mut self, echo: bool) -> Self {
         self.echo_input = echo;
@@ -201,6 +206,9 @@ async fn drive<A: Agent>(agent: A, input: RunAgentInput, mut sink: EventSink, ec
     let thread_id = input.thread_id.clone();
     let run_id = input.run_id.clone();
 
+    // The history is the request's whether or not RUN_STARTED echoes it: a
+    // resumed run may answer a tool call the interrupted run opened.
+    sink.seed(&input.messages);
     let mut started = RunStartedEvent::new(thread_id.clone(), run_id.clone());
     started.parent_run_id = input.parent_run_id.clone();
     if echo_input {

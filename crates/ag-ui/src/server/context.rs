@@ -59,7 +59,10 @@ impl<S: AgentState> RunContext<S> {
     /// isolation.
     pub fn new(input: RunAgentInput) -> Result<(Self, EventReceiver)> {
         let (tx, rx) = mpsc::unbounded();
-        let sink = EventSink::new(tx, TransformerChain::new(), CancellationToken::new());
+        let mut sink = EventSink::new(tx, TransformerChain::new(), CancellationToken::new());
+        // As the driver does, so an agent that answers a call from an earlier
+        // run behaves here as it will in a real one.
+        sink.seed(&input.messages);
         let state = decode_state(&input.state)?;
         Ok((Self::from_parts(input, state, sink), EventReceiver::new(rx)))
     }

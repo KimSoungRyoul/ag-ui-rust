@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{Event, MessageId, PatchOperation, SubagentRunId, ToolCallId};
+use crate::{Event, Message, MessageId, PatchOperation, SubagentRunId, ToolCallId};
 use serde_json::Value;
 
 /// Rewrites events on their way from an agent to the transport.
@@ -34,6 +34,18 @@ use serde_json::Value;
 pub trait StreamTransformer: Send {
     /// Rewrites one event into zero or more events.
     fn transform(&mut self, event: Event) -> Vec<Event>;
+
+    /// Learns the conversation the run continues — the request's `messages` —
+    /// once, before the run's first event.
+    ///
+    /// Called whether or not `RUN_STARTED` echoes the input, which is optional
+    /// and off by default. A transformer that judges an event by the id it
+    /// names needs it: a resumed run may answer a tool call the interrupted
+    /// run opened, and that call is in the history, not in this run's events.
+    /// The default ignores it.
+    fn seed(&mut self, history: &[Message]) {
+        let _ = history;
+    }
 }
 
 /// Transformers applied in sequence.
@@ -101,6 +113,15 @@ impl TransformerChain {
 impl StreamTransformer for TransformerChain {
     fn transform(&mut self, event: Event) -> Vec<Event> {
         Self::transform(self, event)
+    }
+
+    /// Every transformer in the chain learns the history as the request
+    /// carries it: what one transformer would do to the history is a rewrite
+    /// of the stream, and the history is not part of the stream.
+    fn seed(&mut self, history: &[Message]) {
+        for transformer in &mut self.transformers {
+            transformer.seed(history);
+        }
     }
 }
 
@@ -203,6 +224,18 @@ impl FilterToolCalls {
 }
 
 impl StreamTransformer for FilterToolCalls {
+    /// A call an earlier run made is judged by its name like a new one, so the
+    /// result a resumed run reports for it goes the way the call went.
+    fn seed(&mut self, history: &[Message]) {
+        for message in history {
+            if let Message::Assistant(assistant) = message {
+                for call in assistant.tool_calls.iter().flatten() {
+                    self.judge(&call.id, &call.function.name);
+                }
+            }
+        }
+    }
+
     fn transform(&mut self, event: Event) -> Vec<Event> {
         let tag = event.subagent_run_id().cloned();
         let bare_tool = match &event {
@@ -1173,6 +1206,14 @@ impl SubagentFilter {
 }
 
 impl StreamTransformer for SubagentFilter {
+    /// History, as the `RUN_STARTED` echo would carry it: what a subagent
+    /// owned in an earlier run stays hidden in this one, echo or not.
+    fn seed(&mut self, history: &[Message]) {
+        if self.mode == SubagentVisibility::Hidden {
+            self.seed_hidden(history, false);
+        }
+    }
+
     fn transform(&mut self, event: Event) -> Vec<Event> {
         match self.mode {
             SubagentVisibility::Attributed => vec![event],

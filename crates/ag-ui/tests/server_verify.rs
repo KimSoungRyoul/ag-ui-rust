@@ -6,8 +6,11 @@
 #![cfg(feature = "server")]
 #![cfg(feature = "verify")]
 
-use ag_ui::server::{Agent, Error, EventReceiver, Result, Rule, RunContext, run};
-use ag_ui::{Event, EventType, Interrupt, RunAgentInput, RunOutcome, TextMessageRole};
+use ag_ui::server::{Agent, Error, EventReceiver, Result, Rule, RunContext, Runner, run};
+use ag_ui::{
+    AssistantMessage, Event, EventType, Interrupt, Message, ResumeEntry, RunAgentInput, RunOutcome,
+    TextMessageRole, ToolCall,
+};
 use futures_util::StreamExt as _;
 
 fn context() -> (RunContext<()>, EventReceiver) {
@@ -205,6 +208,70 @@ fn a_result_for_an_unknown_call_is_rejected() {
     let error = ctx
         .emit(Event::tool_call_result("m1", "c-nope", "ok"))
         .expect_err("c-nope was never started");
+    assert_eq!(rule(error), Rule::UnknownId);
+}
+
+/// The request a resumed run answers: the interrupted run's assistant message
+/// opened `c1` and nothing has answered it yet. History the consumer already
+/// holds is not streamed again, so the run learns it from `messages` alone.
+fn resumed_input() -> RunAgentInput {
+    let mut input = RunAgentInput::new("t", "r-2");
+    input.messages = vec![
+        Message::user("u1", "Move the funds."),
+        Message::Assistant(AssistantMessage {
+            id: "a1".into(),
+            tool_calls: Some(vec![ToolCall::new("c1", "transfer_funds", "{}")]),
+            ..Default::default()
+        }),
+    ];
+    input.resume = Some(vec![ResumeEntry::resolved("i1", serde_json::json!(true))]);
+    input
+}
+
+#[tokio::test]
+async fn a_resumed_run_can_answer_a_call_an_earlier_run_opened() {
+    struct Executes;
+
+    impl Agent for Executes {
+        type State = ();
+
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            ctx.emit(Event::tool_call_result("t1", "c1", "transferred"))?;
+            ctx.say("Done.")?;
+            Ok(RunOutcome::Success)
+        }
+    }
+
+    // The input echo is optional and off by default; the history is not.
+    for echo in [false, true] {
+        let events: Vec<Event> = Runner::new(Executes)
+            .echo_input(echo)
+            .run(resumed_input())
+            .map(|event| event.expect("the run stream should not break"))
+            .collect()
+            .await;
+        let Some(Event::RunFinished(_)) = events.last() else {
+            panic!("echo {echo}: expected RUN_FINISHED, got {events:#?}");
+        };
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::ToolCallResult(result) if result.tool_call_id.as_str() == "c1"
+            )),
+            "echo {echo}: {events:#?}"
+        );
+    }
+}
+
+#[test]
+fn the_test_harness_knows_the_history_too() {
+    let (mut ctx, _events) =
+        RunContext::<()>::new(resumed_input()).expect("an empty state always decodes");
+    ctx.emit(Event::tool_call_result("t1", "c1", "transferred"))
+        .expect("c1 is in the history");
+    let error = ctx
+        .emit(Event::tool_call_result("t2", "c-nope", "ok"))
+        .expect_err("c-nope is in no history");
     assert_eq!(rule(error), Rule::UnknownId);
 }
 

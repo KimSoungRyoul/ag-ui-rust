@@ -430,6 +430,132 @@ async fn a_custom_transformer_can_stamp_every_event() {
     );
 }
 
+// ---- a resumed run ----------------------------------------------------------
+
+/// The request a resumed run answers. The interrupted run left three calls
+/// unanswered: one to a public tool, one to a tool the filter denies, and
+/// one made by a subagent.
+fn resumed_input() -> RunAgentInput {
+    use ag_ui::{AssistantMessage, Message, ToolCall};
+
+    let mut input = RunAgentInput::new("t", "r-2");
+    input.messages = vec![
+        Message::user("u1", "Go on."),
+        Message::Assistant(AssistantMessage {
+            id: "a1".into(),
+            tool_calls: Some(vec![
+                ToolCall::new("c-public", "search", "{}"),
+                ToolCall::new("c-private", "internal_debug", "{}"),
+            ]),
+            ..Default::default()
+        }),
+        Message::Assistant(AssistantMessage {
+            id: "a2".into(),
+            tool_calls: Some(vec![ToolCall::new("c-sub", "search", "{}")]),
+            subagent_run_id: Some("s1".into()),
+            ..Default::default()
+        }),
+    ];
+    input
+}
+
+/// Answers every call the earlier run left open.
+struct AnswersEarlierCalls;
+
+impl Agent for AnswersEarlierCalls {
+    type State = serde_json::Value;
+
+    async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+        for (message, call) in [("t1", "c-public"), ("t2", "c-private"), ("t3", "c-sub")] {
+            ctx.emit(Event::tool_call_result(message, call, "done"))?;
+        }
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// The calls whose results reached the consumer, and how the run ended.
+async fn answered(runner: Runner<AnswersEarlierCalls>) -> (Vec<String>, EventType) {
+    let events: Vec<Event> = runner
+        .run(resumed_input())
+        .map(|event| event.expect("the run stream should not break"))
+        .collect()
+        .await;
+    let answered = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::ToolCallResult(result) => Some(result.tool_call_id.as_str().to_owned()),
+            _ => None,
+        })
+        .collect();
+    (
+        answered,
+        events.last().expect("a terminal event").event_type(),
+    )
+}
+
+/// The history is the request's, not the `RUN_STARTED` echo's: a filter judges
+/// a result for an earlier run's call by that call, echo or not.
+#[tokio::test]
+async fn the_filters_judge_an_earlier_runs_calls_the_same_with_and_without_the_echo() {
+    for echo in [false, true] {
+        let filtered = Runner::new(AnswersEarlierCalls)
+            .echo_input(echo)
+            .transformer(FilterToolCalls::deny(["internal_debug"]));
+        assert_eq!(
+            answered(filtered).await,
+            (
+                vec!["c-public".to_owned(), "c-sub".to_owned()],
+                EventType::RunFinished
+            ),
+            "FilterToolCalls, echo {echo}"
+        );
+
+        let hidden = Runner::new(AnswersEarlierCalls)
+            .echo_input(echo)
+            .transformer(SubagentVisibility::hidden());
+        assert_eq!(
+            answered(hidden).await,
+            (
+                vec!["c-public".to_owned(), "c-private".to_owned()],
+                EventType::RunFinished
+            ),
+            "SubagentVisibility::hidden, echo {echo}"
+        );
+    }
+}
+
+/// A transformer of your own is told the same history, once, before the run's
+/// first event.
+#[tokio::test]
+async fn a_custom_transformer_is_seeded_with_the_history_before_the_first_event() {
+    use std::sync::{Arc, Mutex};
+
+    struct Records(Arc<Mutex<Vec<String>>>);
+
+    impl StreamTransformer for Records {
+        fn seed(&mut self, history: &[ag_ui::Message]) {
+            let mut seen = self.0.lock().unwrap();
+            seen.extend(
+                history
+                    .iter()
+                    .map(|message| message.id().as_str().to_owned()),
+            );
+        }
+
+        fn transform(&mut self, event: Event) -> Vec<Event> {
+            if let Event::RunStarted(_) = &event {
+                self.0.lock().unwrap().push("RUN_STARTED".to_owned());
+            }
+            vec![event]
+        }
+    }
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runner = Runner::new(AnswersEarlierCalls).transformer(Records(Arc::clone(&seen)));
+    let _ = answered(runner).await;
+    assert_eq!(*seen.lock().unwrap(), ["u1", "a1", "a2", "RUN_STARTED"]);
+}
+
 // ---- subagent visibility --------------------------------------------------
 
 /// Says something, delegates to a subagent that says something and calls a

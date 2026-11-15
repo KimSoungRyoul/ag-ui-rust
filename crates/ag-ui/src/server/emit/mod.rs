@@ -122,7 +122,7 @@ mod tool;
 
 use std::num::NonZeroUsize;
 
-use crate::{Event, RunErrorEvent, SubagentErrorEvent, SubagentRunId};
+use crate::{Event, Message, RunErrorEvent, SubagentErrorEvent, SubagentRunId};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_core::Stream;
 use futures_util::StreamExt as _;
@@ -130,7 +130,7 @@ use futures_util::StreamExt as _;
 use crate::server::cancel::CancellationToken;
 use crate::server::error::{Error, Result, Rule, VerificationError};
 use crate::server::state::StateManager;
-use crate::server::transform::TransformerChain;
+use crate::server::transform::{StreamTransformer, TransformerChain};
 use crate::server::verify::Verifier;
 
 pub use message::MessageHandle;
@@ -201,6 +201,18 @@ impl EventSink {
     pub(crate) fn with_event_buffer_capacity(mut self, capacity: Option<NonZeroUsize>) -> Self {
         self.event_buffer_capacity = capacity;
         self
+    }
+
+    /// Tells the verifier and the transformers the conversation the run
+    /// continues — the request's `messages` — before its first event.
+    ///
+    /// History the consumer already holds is not streamed again, and the
+    /// `RUN_STARTED` echo that could carry it is optional. Without this a
+    /// resumed run answering a call the interrupted run opened would read as
+    /// a result for a call that never started.
+    pub(crate) fn seed(&mut self, history: &[Message]) {
+        self.verifier.seed(history);
+        StreamTransformer::seed(&mut self.chain, history);
     }
 
     /// Emits one event, unless the run was cancelled.
