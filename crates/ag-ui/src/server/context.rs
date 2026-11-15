@@ -4,7 +4,8 @@ use std::future::Future;
 
 use crate::{
     Context, Event, Message, MessageId, ResumeEntry, RunAgentInput, RunId, StepName, SubagentRunId,
-    SubagentStartedEvent, TextMessageRole, ThreadId, Tool, ToolCallId,
+    SubagentStartedEvent, TextMessageRole, ThreadId, TokenUsage, Tool, ToolCallId,
+    ToolCallStartEvent,
 };
 use futures_channel::mpsc;
 use futures_util::future::{Either, select};
@@ -47,6 +48,25 @@ pub struct RunContext<S> {
     next_message: u64,
     next_tool_call: u64,
     next_subagent: u64,
+    terminal: Terminal,
+}
+
+/// What the agent asked the driver to put on the terminal event.
+#[derive(Debug, Default)]
+pub(crate) struct Terminal {
+    /// `RUN_FINISHED.result`.
+    pub(crate) result: Option<Value>,
+    /// One entry per model call, summed per `(provider, model)` at the end.
+    pub(crate) usage: Vec<TokenUsage>,
+}
+
+impl Terminal {
+    /// The `usage` list for a terminal event, or `None` when nothing was
+    /// reported.
+    pub(crate) fn usage(&self) -> Option<Vec<TokenUsage>> {
+        let usage = crate::aggregate_token_usage(&self.usage);
+        (!usage.is_empty()).then_some(usage)
+    }
 }
 
 impl<S: AgentState> RunContext<S> {
@@ -79,6 +99,7 @@ impl<S: AgentState> RunContext<S> {
             next_message: 0,
             next_tool_call: 0,
             next_subagent: 0,
+            terminal: Terminal::default(),
         }
     }
 
@@ -240,9 +261,17 @@ impl<S> RunContext<S> {
         Ok(())
     }
 
-    /// A handle a transport can trip on client disconnect.
-    pub fn cancel_token(&self) -> CancellationToken {
+    /// A handle a transport can trip on client disconnect. The same token
+    /// [`Runner::cancellation_token`](crate::server::Runner::cancellation_token)
+    /// returns.
+    pub fn cancellation_token(&self) -> CancellationToken {
         self.sink.cancel_token().clone()
+    }
+
+    /// The old name of [`cancellation_token`](Self::cancellation_token).
+    #[deprecated(since = "0.5.0", note = "renamed to `cancellation_token`")]
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancellation_token()
     }
 
     /// Resolves once the run is cancelled.
@@ -475,16 +504,49 @@ impl<S> RunContext<S> {
         id: impl Into<ToolCallId>,
         name: &str,
     ) -> Result<ToolCallHandle<'_, S>> {
-        let id = id.into();
+        self.tool_call_with(ToolCallStartEvent::new(id, name))
+    }
+
+    /// Opens a call from a `TOOL_CALL_START` you built — for
+    /// `parentMessageId`, the assistant message that requested the call.
+    ///
+    /// ```
+    /// # use ag_ui::{Event, RunAgentInput, ToolCallStartEvent};
+    /// # use ag_ui::server::RunContext;
+    /// # let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
+    /// let message_id = ctx.say("Let me check the forecast.")?;
+    ///
+    /// let id = ctx.new_tool_call_id();
+    /// let start = ToolCallStartEvent::new(id, "get_weather").with_parent_message_id(message_id.clone());
+    /// ctx.tool_call_with(start)?.result("21 C")?;
+    ///
+    /// let Event::ToolCallStart(start) = &events.drain()[3] else { unreachable!() };
+    /// assert_eq!(start.parent_message_id.as_ref(), Some(&message_id));
+    /// # Ok::<(), ag_ui::server::Error>(())
+    /// ```
+    pub fn tool_call_with(&mut self, start: ToolCallStartEvent) -> Result<ToolCallHandle<'_, S>> {
         let result_message_id = self.new_message_id();
-        ToolCallHandle::start(
-            &mut self.sink,
-            &mut self.state,
-            id,
-            name,
-            None,
-            result_message_id,
-        )
+        ToolCallHandle::start(&mut self.sink, &mut self.state, start, result_message_id)
+    }
+
+    /// Sets the run's return value: the `result` of `RUN_FINISHED`.
+    ///
+    /// The driver writes it when the run finishes, whatever the outcome. A run
+    /// that ends in `RUN_ERROR` has no result. `Value::Null` clears it.
+    pub fn set_result(&mut self, result: impl Into<Value>) {
+        let result = result.into();
+        self.terminal.result = (!result.is_null()).then_some(result);
+    }
+
+    /// Records the token usage of one model call.
+    ///
+    /// The driver sums the entries per `(provider, model)` and reports them as
+    /// `usage` on the terminal event, `RUN_FINISHED` or `RUN_ERROR`. An entry
+    /// with no counts is ignored.
+    pub fn add_usage(&mut self, usage: TokenUsage) {
+        if usage.has_counts() {
+            self.terminal.usage.push(usage);
+        }
     }
 
     /// Opens a named step — `STEP_STARTED`.
@@ -501,9 +563,10 @@ impl<S> RunContext<S> {
     }
 
     /// Recovers the sink so the run driver can emit the terminal event through
-    /// the same transformers and the same verifier the agent used.
-    pub(crate) fn into_sink(self) -> EventSink {
-        self.sink
+    /// the same transformers and the same verifier the agent used, with what
+    /// the agent asked to have written on it.
+    pub(crate) fn into_parts(self) -> (EventSink, Terminal) {
+        (self.sink, self.terminal)
     }
 }
 
@@ -596,7 +659,7 @@ mod tests {
     #[test]
     fn a_cancelled_run_fails_every_emit() {
         let (mut ctx, _events) = context::<()>(RunAgentInput::new("t", "r"));
-        ctx.cancel_token().cancel();
+        ctx.cancellation_token().cancel();
         assert!(ctx.is_cancelled());
         let error = ctx.say("too late").expect_err("emit should fail");
         assert!(error.is_cancelled(), "{error}");

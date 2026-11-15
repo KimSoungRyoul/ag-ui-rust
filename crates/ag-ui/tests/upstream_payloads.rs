@@ -522,8 +522,19 @@ fn capability_caps_stay_integers_on_the_wire() {
     assert_eq!(serde_json::to_string(&execution).unwrap(), payload);
 
     // Frameworks that spell "no limit" as -1 must not fail the whole document.
-    let unlimited: ExecutionCapabilities = serde_json::from_str(r#"{"maxIterations":-1}"#).unwrap();
-    assert_eq!(unlimited.max_iterations, Some(-1));
+    // The schema says `minimum: 0`, so it reads as no cap declared and is
+    // never written back.
+    let unlimited: ExecutionCapabilities =
+        serde_json::from_str(r#"{"maxIterations":-1,"maxExecutionTime":-1,"sandboxed":true}"#)
+            .unwrap();
+    assert_eq!(unlimited.max_iterations, None);
+    assert_eq!(unlimited.max_execution_time, None);
+    assert_eq!(
+        serde_json::to_string(&unlimited).unwrap(),
+        r#"{"sandboxed":true}"#
+    );
+    // A number that is not an integer is still malformed.
+    assert!(serde_json::from_str::<ExecutionCapabilities>(r#"{"maxIterations":1.5}"#).is_err());
 }
 
 #[test]
@@ -555,11 +566,11 @@ fn subagents_use_the_1_0_key_and_the_old_spelling_is_not_read() {
     assert_eq!(
         multi_agent.sub_agents,
         Some(vec![
-            SubAgentInfo {
+            SubagentInfo {
                 name: "a".into(),
                 description: None
             },
-            SubAgentInfo {
+            SubagentInfo {
                 name: "b".into(),
                 description: Some("B".into())
             },

@@ -48,6 +48,55 @@ fn answers() -> Vec<ResumeEntry> {
 }
 
 #[tokio::test]
+async fn a_refused_request_says_what_is_outstanding_without_its_text_being_read() {
+    // Paused on two interrupts: a run that answers neither is refused.
+    let mut thread = Thread::new(script(pause()), "t");
+    thread.send("go").unwrap().collect_report().await;
+    for refused in [thread.send("again").err(), thread.run().err()] {
+        let Some(Error::PendingInterrupts(ids)) = refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(ids, ["first", "second"]);
+    }
+    assert_eq!(
+        thread.send("again").unwrap_err().to_string(),
+        "request rejected: pending interrupts must be answered with resume_many"
+    );
+
+    // A tool call nobody answered: every way of starting a run names it.
+    let call = Message::Assistant(ag_ui::AssistantMessage {
+        id: "m-1".into(),
+        tool_calls: Some(vec![
+            ag_ui::ToolCall::new("call-1", "pick_file", "{}"),
+            ag_ui::ToolCall::new("call-2", "pick_file", "{}"),
+        ]),
+        ..Default::default()
+    });
+    let mut thread = Thread::<_>::builder(script(success()), "t")
+        .messages(vec![call])
+        .build()
+        .unwrap();
+    for refused in [
+        thread.send("go").err(),
+        thread.run().err(),
+        thread
+            .send_message(Message::tool("m-2", "call-1", "a.pdf"))
+            .err(),
+    ] {
+        match refused {
+            Some(Error::UnansweredToolCalls(ids)) => {
+                assert_eq!(ids.last().map(|id| id.as_str()), Some("call-2"))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(
+        thread.send("go").unwrap_err().to_string(),
+        "request rejected: unanswered tool calls must be answered with tool messages, or abandoned, before another run: call-1, call-2"
+    );
+}
+
+#[tokio::test]
 async fn a_thread_declares_its_version_unless_its_peer_is_pinned_as_legacy() {
     let current = script(success());
     let mut thread = Thread::new(current.clone(), "t");

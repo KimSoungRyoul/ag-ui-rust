@@ -186,8 +186,11 @@ pub use capabilities::{
     AgentCapabilities, ExecutionCapabilities, HumanInTheLoopCapabilities, IdentityCapabilities,
     MultiAgentCapabilities, MultimodalCapabilities, MultimodalInputCapabilities,
     MultimodalOutputCapabilities, OutputCapabilities, ReasoningCapabilities, StateCapabilities,
-    SubAgentInfo, ToolsCapabilities, TransportCapabilities,
+    SubagentInfo, ToolsCapabilities, TransportCapabilities,
 };
+// The pre-1.0 spelling, kept as a deprecated alias.
+#[allow(deprecated)]
+pub use capabilities::SubAgentInfo;
 pub use context::Context;
 pub use error::{Error, Result};
 pub use event::{

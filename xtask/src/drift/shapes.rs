@@ -126,7 +126,7 @@ pub const MAPPING: &[(&str, Rust)] = &[
     ("Context", Rust::Struct("Context")),
     ("Tool", Rust::Struct("Tool")),
     ("RunAgentInput", Rust::Struct("RunAgentInput")),
-    ("SubagentInfo", Rust::Struct("SubAgentInfo")),
+    ("SubagentInfo", Rust::Struct("SubagentInfo")),
     ("IdentityCapabilities", Rust::Struct("IdentityCapabilities")),
     (
         "TransportCapabilities",
@@ -239,11 +239,6 @@ const PATCH_VALUE: &str = "Read leniently: an omitted `value` reads as JSON null
     failing the whole STATE_DELTA over it would fail the run. Always written. See \
     crates/ag-ui/src/patch.rs.";
 
-const EXECUTION_SIGNED: &str = "`i64` where the schema says `minimum: 0`: some frameworks \
-    send -1 for no limit and the reference SDKs accept it, so this SDK reads it rather than \
-    fail the whole capabilities document. It will also write a negative value the schema \
-    rejects. See crates/ag-ui/src/capabilities.rs.";
-
 /// The differences this SDK keeps on purpose. Each is printed on every run;
 /// one that stops matching fails the check until it is deleted here.
 pub const EXCEPTIONS: &[Exception] = &[
@@ -279,18 +274,6 @@ pub const EXCEPTIONS: &[Exception] = &[
         subject: "value",
         difference: Difference::Optionality,
         why: PATCH_VALUE,
-    },
-    Exception {
-        shape: "ExecutionCapabilities",
-        subject: "maxIterations",
-        difference: Difference::WireType,
-        why: EXECUTION_SIGNED,
-    },
-    Exception {
-        shape: "ExecutionCapabilities",
-        subject: "maxExecutionTime",
-        difference: Difference::WireType,
-        why: EXECUTION_SIGNED,
     },
 ];
 
@@ -880,7 +863,7 @@ mod tests {
             "MultiAgentCapabilities",
             vec![
                 rust_field("supported", false, "Option<bool>"),
-                rust_field(key, false, "Option<Vec<SubAgentInfo>>"),
+                rust_field(key, false, "Option<Vec<SubagentInfo>>"),
             ],
         )]);
         (shapes, rust)

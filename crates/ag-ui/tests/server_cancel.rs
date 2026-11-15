@@ -30,7 +30,7 @@ async fn cancelling_mid_run_stops_the_agent_at_its_next_emit() {
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
             ctx.say("one")?;
             // Stand in for the transport noticing the client disconnected.
-            ctx.cancel_token().cancel();
+            ctx.cancellation_token().cancel();
             ctx.say("two")?;
             ctx.say("three")?;
             Ok(RunOutcome::Success)
@@ -127,7 +127,7 @@ async fn an_agent_can_check_cancellation_itself() {
                     return Err(Error::Cancelled);
                 }
                 ctx.say(chunk)?;
-                ctx.cancel_token().cancel();
+                ctx.cancellation_token().cancel();
             }
             Ok(RunOutcome::Success)
         }
@@ -183,7 +183,7 @@ async fn cancelling_mid_message_closes_the_message_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut message = ctx.assistant_message()?;
             message.delta("partial")?;
             token.cancel();
@@ -214,7 +214,7 @@ async fn cancelling_mid_tool_call_closes_the_call_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut call = ctx.tool_call("search")?;
             call.args(r#"{"q":"#)?;
             token.cancel();
@@ -245,7 +245,7 @@ async fn a_result_after_cancellation_closes_the_call_but_is_not_sent() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut call = ctx.tool_call("search")?;
             call.args("{}")?;
             token.cancel();
@@ -275,7 +275,7 @@ async fn cancelling_mid_reasoning_closes_both_halves_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut reasoning = ctx.reasoning()?;
             reasoning.delta("first")?;
             token.cancel();
@@ -307,7 +307,7 @@ async fn cancelling_mid_step_closes_the_step_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut outer = ctx.step("plan")?;
             let mut inner = outer.step("search")?;
             inner.say("looking")?;
@@ -343,7 +343,7 @@ async fn cancelling_inside_a_subagent_closes_it_and_finishes_cancelled() {
         type State = ();
 
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            let token = ctx.cancel_token();
+            let token = ctx.cancellation_token();
             let mut planner = ctx.subagent("planner")?;
             let mut estimator = planner.subagent("estimator")?;
             let mut message = estimator.assistant_message()?;
@@ -400,7 +400,7 @@ async fn a_subagent_can_still_be_closed_explicitly_after_cancellation() {
         async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
             let mut worker = ctx.subagent("worker")?;
             worker.say("halfway")?;
-            worker.cancel_token().cancel();
+            worker.cancellation_token().cancel();
             worker.fail_with_code("stopped by the user", "USER_STOP")?;
             ctx.check_cancelled()?;
             Ok(RunOutcome::Success)

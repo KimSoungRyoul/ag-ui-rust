@@ -97,6 +97,7 @@ pub enum Update<S = Value> {
 
 /// A message that changed, and the message as it now stands.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct MessageUpdate {
     /// Index into [`Thread::messages`].
     pub index: usize,
@@ -110,6 +111,7 @@ pub struct MessageUpdate {
 
 /// Reasoning that changed, and the reasoning as it now stands.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ReasoningUpdate {
     /// The reasoning message's id.
     pub id: MessageId,
@@ -121,6 +123,7 @@ pub struct ReasoningUpdate {
 
 /// A subagent that changed, and the subagent as it now stands.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SubagentUpdate {
     /// Index into [`Thread::subagents`].
     pub index: usize,
@@ -175,6 +178,7 @@ pub struct StateViewError {
 
 /// One retained diagnostic, independent of the terminal outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RunDiagnostic {
     /// A stable broad category (`state`, `protocol`, `patch`, `transport`, `run`,
     /// `unsupported`, or `warning` for an [`Update::Warning`]).
@@ -185,6 +189,7 @@ pub struct RunDiagnostic {
 
 /// Results from the whole run, including updates consumed before `collect_report`.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct RunReport {
     /// The observed terminal outcome.
     pub end: RunEnd,
@@ -198,6 +203,7 @@ pub struct RunReport {
 
 /// Local observation of an interrupt response submission.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ResumeSubmission {
     /// The request that carried these responses.
     pub run_id: RunId,
@@ -540,6 +546,15 @@ impl<T, S: DeserializeOwned> Thread<T, S> {
 impl<T: Transport, S> Thread<T, S> {
     /// Prepare a user turn. Pending decisions and ambiguous submissions are checked
     /// before changing history. Dispatch and history insertion occur on first poll.
+    ///
+    /// # Errors
+    ///
+    /// Like [`send_message`](Self::send_message), [`run`](Self::run) and
+    /// [`resume_many`](Self::resume_many), this refuses a request the
+    /// conversation is not ready for, before anything is sent:
+    /// [`Error::UnansweredToolCalls`] names the tool calls still awaiting a
+    /// result, [`Error::PendingInterrupts`] the interrupts still awaiting an
+    /// answer, and [`Error::Request`] says why in any other case.
     pub fn send(&mut self, text: impl Into<String>) -> Result<RunStream<'_, T, S>> {
         self.preflight(None, None)?;
         let id = self.fresh_id(false)?;
@@ -597,8 +612,11 @@ impl<T: Transport, S> Thread<T, S> {
         }
         match resume {
             None if !self.interrupts.is_empty() => {
-                return Err(Error::Request(
-                    "pending interrupts must be answered with resume_many".into(),
+                return Err(Error::PendingInterrupts(
+                    self.interrupts
+                        .iter()
+                        .map(|interrupt| interrupt.id.clone())
+                        .collect(),
                 ));
             }
             Some(entries) => validate_responses(&self.interrupts, entries, true)?,
@@ -621,14 +639,7 @@ impl<T: Transport, S> Thread<T, S> {
             pending_tools.retain(|id| !approval_ids.contains(id));
         }
         if !pending_tools.is_empty() {
-            let ids = pending_tools
-                .iter()
-                .map(ToolCallId::as_str)
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(Error::Request(format!(
-                "unanswered tool calls must be answered with tool messages, or abandoned, before another run: {ids}"
-            )));
+            return Err(Error::UnansweredToolCalls(pending_tools));
         }
         if let Some(id) = &self.next_run_id {
             if id.as_str().is_empty() || self.run_ids.contains(id) {

@@ -66,12 +66,7 @@ impl Agent for Deployer {
 
 /// client에게 무엇을 묻는지, 그리고 그 답이 어떤 모양이어야 하는지.
 fn request() -> Interrupt {
-    Interrupt {
-        id: APPROVE_DEPLOY.to_owned(),
-        reason: "tool_approval".to_owned(),
-        message: Some("Deploy build 42 to production?".to_owned()),
-        ..Default::default()
-    }
+    Interrupt::new(APPROVE_DEPLOY, "tool_approval").with_message("Deploy build 42 to production?")
 }
 
 #[tokio::main]
@@ -110,7 +105,9 @@ async fn main() {
 ## interrupt에 무엇을 담을 것인가
 
 `Interrupt::new(id, reason)`은 필수 필드 두 개를 채웁니다. 나머지는 선택입니다. client가
-여러분의 agent를 전혀 몰라도 질문을 그릴 수 있도록 있는 것들입니다.
+여러분의 agent를 전혀 몰라도 질문을 그릴 수 있도록 있는 것들입니다. `with_message`,
+`with_tool_call_id`, `with_response_schema`, `with_subagent_run_id`를 이어 붙일 수 있고,
+나머지 필드는 public이라 직접 채웁니다.
 
 | 필드 | 무엇을 위한 것인가 |
 | --- | --- |
@@ -137,13 +134,9 @@ fn confirm_clear(count: usize) -> Interrupt {
     );
     schema.insert("required".to_owned(), json!(["confirm"]));
 
-    Interrupt {
-        id: "confirm-clear".to_owned(),
-        reason: "tool_approval".to_owned(),
-        message: Some(format!("Clear the board? {count} task(s) will be removed.")),
-        response_schema: Some(schema),
-        ..Default::default()
-    }
+    Interrupt::new("confirm-clear", "tool_approval")
+        .with_message(format!("Clear the board? {count} task(s) will be removed."))
+        .with_response_schema(schema)
 }
 
 fn main() {

@@ -159,7 +159,7 @@ impl Agent for Chatty {
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
         ctx.say("one")?;
         // client가 끊은 것을 transport가 알아챈 상황을 대신합니다.
-        ctx.cancel_token().cancel();
+        ctx.cancellation_token().cancel();
         ctx.say("two")?;   // 실패하고, `?`가 반환합니다
         ctx.say("three")?;
         Ok(RunOutcome::Success)
@@ -238,7 +238,7 @@ async fn main() -> ag_ui::server::Result<()> {
     assert_eq!(answer.as_deref(), Some("the model's reply"));
 
     // 이미 발동된 token을 상대로, 결코 완료되지 않는 future.
-    ctx.cancel_token().cancel();
+    ctx.cancellation_token().cancel();
     let never = futures_util::future::pending::<String>();
     assert!(ctx.until_cancelled(never).await.is_none());
     Ok(())
