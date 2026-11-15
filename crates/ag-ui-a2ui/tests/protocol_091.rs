@@ -352,11 +352,14 @@ fn upserts_match_reference_renderer_container_and_sparse_array_behavior() {
             .unwrap(),
         json!(3)
     );
+    // Removing past the end of a list changes nothing: the list is not
+    // padded out to the index (`@a2ui/web_core` 0.15.0, and the protocol's
+    // conformance suite for v0.9).
     model.apply("/items/4", &DataModelUpdate::Remove).unwrap();
     let Some(ModelValue::Array(items)) = model.lookup("/items").unwrap() else {
         panic!("expected array")
     };
-    assert_eq!(items.len(), 5);
+    assert_eq!(items.len(), 3);
     let before = model.clone();
     assert!(
         model

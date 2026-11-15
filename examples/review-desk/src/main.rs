@@ -33,14 +33,21 @@ async fn main() -> AppResult<()> {
             println!("{}", serde_json::to_string_pretty(&evidence)?);
         }
         "export-a2ui" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&review_desk::interop::fixture().await?)?
-            );
+            // With no version, the v0.9.1 fixture the command has always
+            // exported. A version exports the same steps written in it.
+            let fixture = match args.get(1) {
+                None => review_desk::interop::fixture().await?,
+                Some(version) => {
+                    let version = ag_ui_a2ui::A2uiVersion::from_number(version)
+                        .ok_or_else(|| format!("not an A2UI version: {version}"))?;
+                    review_desk::interop::fixture_for(version).await?
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&fixture)?);
         }
         "--help" | "-h" => {
             println!(
-                "review-desk demo [SNAPSHOT.json]\nreview-desk serve [127.0.0.1:8091]\nreview-desk run [http://127.0.0.1:8091/agent]\nreview-desk export-a2ui"
+                "review-desk demo [SNAPSHOT.json]\nreview-desk serve [127.0.0.1:8091]\nreview-desk run [http://127.0.0.1:8091/agent]\nreview-desk export-a2ui [VERSION]"
             );
         }
         other => return Err(format!("unknown command: {other}").into()),

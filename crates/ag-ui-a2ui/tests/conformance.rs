@@ -171,7 +171,7 @@ const SUITES: &[Suite] = &[
     // --- executed --------------------------------------------------------------------------
     run("core/validator_v0_9.yaml", [39, 3, 5, 0]),
     run("core/data_context.yaml", [9, 2, 0, 0]),
-    run("core/data_model.yaml", [45, 4, 1, 2]),
+    run("core/data_model.yaml", [47, 4, 1, 0]),
     run("core/expressions.yaml", [97, 0, 1, 0]),
     run("core/message_processor_v0_9.yaml", [42, 2, 4, 0]),
     run("core/catalog.yaml", [48, 8, 16, 1]),
@@ -459,20 +459,6 @@ impl Tally {
 /// A check listed here must fail: one that starts passing fails the suite
 /// until it is taken off the list, so the list cannot outlive its entries.
 const KNOWN_FAILURES: &[(&str, &str)] = &[
-    // Removing a path that is not there. Upstream's newer cases want nothing
-    // to happen. `tests/protocol_091.rs` and `examples/review-desk/interop`,
-    // which runs the official renderer core 0.11.0, assert what this crate
-    // does today. Issue #42 is where the rule is read again, when that
-    // harness moves to a newer renderer.
-    (
-        "core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]",
-        "removing an index past the end of a list pads the list out to it with undefined \
-         slots, as the pinned renderer does (#42)",
-    ),
-    (
-        "core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]",
-        "removing a path that does not exist creates the containers on the way to it (#42)",
-    ),
     // A schema is one catalog's. What a message draws from another catalog
     // than its surface's own is checked by name, and not against that
     // catalog's schema.

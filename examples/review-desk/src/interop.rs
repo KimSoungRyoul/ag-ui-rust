@@ -3,7 +3,6 @@
 use ag_ui::server::RunContext;
 use ag_ui::{Event, RunAgentInput};
 use ag_ui_a2ui::adapters::agui::{Painted, SurfacePainter, unwrap_operations_envelope};
-use ag_ui_a2ui::constants::OFFICIAL_BASIC_CATALOG_ID;
 use ag_ui_a2ui::{A2uiAuthor, A2uiVersion, AgentMessage, Component};
 use serde_json::{Value, json};
 
@@ -36,16 +35,22 @@ fn sent(events: Vec<Event>) -> AppResult<Painted> {
 /// activity as it stands after the batch. No field is changed by the
 /// JavaScript consumer before processing.
 pub async fn fixture() -> AppResult<Value> {
-    let version = A2uiVersion::V0_9_1;
+    fixture_for(A2uiVersion::V0_9_1).await
+}
+
+/// [`fixture`], written in `version`: the same steps, with the catalog, the
+/// binding and the removal each as that version writes them.
+pub async fn fixture_for(version: A2uiVersion) -> AppResult<Value> {
     let id = "official-interop";
+    let catalog_id = version.basic_catalog_id();
     let author = A2uiAuthor::basic(version)?;
     let initial = vec![
-        AgentMessage::create_surface(id, OFFICIAL_BASIC_CATALOG_ID).with_version(version),
+        AgentMessage::create_surface(id, catalog_id).with_version(version),
         AgentMessage::update_components(
             id,
             vec![
                 Component::new("root", "Column").with("children", json!(["title"])),
-                Component::new("title", "Text").with("text", json!({"path": "/title"})),
+                Component::new("title", "Text").with("text", version.path("/title")),
             ],
         )
         .with_version(version),
@@ -157,7 +162,7 @@ pub async fn fixture() -> AppResult<Value> {
     steps.push(Step {
         name: "recreate",
         messages: vec![
-            AgentMessage::create_surface(id, OFFICIAL_BASIC_CATALOG_ID).with_version(version),
+            AgentMessage::create_surface(id, catalog_id).with_version(version),
             AgentMessage::update_components(
                 id,
                 vec![Component::new("root", "Text").with("text", json!("Recreated surface"))],
@@ -211,8 +216,6 @@ pub async fn fixture() -> AppResult<Value> {
         .ok_or("recreated surface missing")?
         .data_model
         .to_json()?;
-    Ok(
-        json!({"version": version.as_str(), "catalogId": OFFICIAL_BASIC_CATALOG_ID,
-        "surfaceId": id, "steps": exported_steps, "finalSdkData": final_data}),
-    )
+    Ok(json!({"version": version.as_str(), "catalogId": catalog_id,
+        "surfaceId": id, "steps": exported_steps, "finalSdkData": final_data}))
 }
