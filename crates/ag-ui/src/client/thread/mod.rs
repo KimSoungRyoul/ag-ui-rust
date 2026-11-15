@@ -19,11 +19,25 @@
 //! | --- | --- | --- |
 //! | replayed, before the requested run | any way | keeps what it delivered and reports it; owes nothing new |
 //! | requested | success, interrupt | confirms a resume [submission](Thread::submission); pending [interrupts](Thread::interrupts) cleared, or set |
-//! | requested | cancelled, `RUN_ERROR`, cut short | leaves a submission unconfirmed, and the interrupts as they were |
+//! | requested | cancelled | settles a resume submission; pending interrupts cleared |
+//! | requested | `RUN_ERROR`, cut short | leaves a submission unconfirmed, and the interrupts as they were |
 //! | after the requested run | success, cancelled | pending interrupts cleared |
 //! | after the requested run | interrupt | pending interrupts set |
 //! | after the requested run | `RUN_ERROR`, cut short | pending interrupts left |
 //! | after the requested run, a submission unconfirmed | any `RUN_FINISHED` | pending interrupts left, with an [`Update::Warning`] |
+//!
+//! A requested run that ends `cancelled` took the answers of a resume and
+//! reported how it ended, so the submission is settled like a confirmed one.
+//! AG-UI 1.0 (`events/lifecycle`, "Cancelled runs"): "A cancelled run waits
+//! for nothing. Its outcome carries no interrupts, and the next run on the
+//! thread is an ordinary new run, not a resume." It did not complete, so a
+//! tool call one of the answers approved is still in
+//! [`Thread::unanswered_tool_calls`] when the run left it without a result.
+//!
+//! A `RUN_ERROR` that opens the stream belongs to no run. With nothing after
+//! it, it is the requested run failing before it began, and is read as the
+//! requested run above. With a run after it, it is history, like a replayed
+//! run: at most one run of a stream is the requested one.
 //!
 //! The request went the way the last run from the requested one on ended:
 //! that is [`Update::Done`], [`RunReport::end`] and [`Thread::last_run_end`].
@@ -185,6 +199,10 @@ pub struct Thread<T, S = Value> {
     verify: bool,
     interrupts: Vec<Interrupt>,
     decided_interrupt_tool_call_ids: HashSet<ToolCallId>,
+    /// The tool messages `abandon_tool_call` made, by id: stand-ins for a
+    /// result, which a merge tells from one by this record and not by what
+    /// the message says.
+    abandoned: HashSet<MessageId>,
     submission: Option<ResumeSubmission>,
     run_ids: HashSet<RunId>,
     next_run_id: Option<RunId>,
@@ -538,6 +556,7 @@ impl<T, S> ThreadBuilder<T, S> {
             verify: self.verify,
             interrupts: Vec::new(),
             decided_interrupt_tool_call_ids: HashSet::new(),
+            abandoned: HashSet::new(),
             submission: None,
             run_ids: HashSet::new(),
             next_run_id: None,
@@ -562,12 +581,17 @@ pub(crate) fn random_id() -> Result<String> {
     Ok(id)
 }
 
+/// Rejects a list that holds an id twice.
+///
+/// Not an empty id: AG-UI 1.0 makes every identifier an opaque string and
+/// its schema sets no minimum length, so the empty string is an id like any
+/// other, and a run may leave one.
 fn unique<'a>(ids: impl IntoIterator<Item = &'a str>, label: &str) -> Result<()> {
     let mut seen = HashSet::new();
     for id in ids {
-        if id.is_empty() || !seen.insert(id) {
+        if !seen.insert(id) {
             return Err(Error::Snapshot(format!(
-                "{label} ID {id:?} is empty or duplicated"
+                "{label} ID {id:?} is held more than once"
             )));
         }
     }

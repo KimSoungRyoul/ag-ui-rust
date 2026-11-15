@@ -10,7 +10,8 @@
 //! | --- | --- | --- |
 //! | replayed | any way | accumulates what it delivered, reports it, owes nothing new |
 //! | requested | success, interrupt | confirms a resume submission; pending interrupts cleared, set |
-//! | requested | cancelled, `RUN_ERROR`, cut short | leaves the submission unconfirmed and the interrupts as they were |
+//! | requested | cancelled | settles a resume submission; pending interrupts cleared |
+//! | requested | `RUN_ERROR`, cut short | leaves the submission unconfirmed and the interrupts as they were |
 //! | after it | success, cancelled | pending interrupts cleared |
 //! | after it | interrupt | pending interrupts set |
 //! | after it | `RUN_ERROR`, cut short | pending interrupts left |
@@ -449,14 +450,99 @@ async fn a_stream_that_opens_with_run_error_may_go_on_to_the_requested_run() {
     let report = thread.run().unwrap().collect_report().await;
     assert_eq!(report.end, RunEnd::Success { result: None });
     assert_eq!(kinds(&report), ["run"]);
-    // The failure has no run id: it is the requested run failing before it
-    // began, and then the requested run.
+    // The failure has no run id. A run followed it, so it was not the
+    // requested run failing before it began: one run answers a request.
     assert!(
         matches!(&report.runs[..], [failed, requested]
-            if failed.run_id.is_none() && failed.requested && name(&failed.end) == "failed"
+            if failed.run_id.is_none() && !failed.requested && name(&failed.end) == "failed"
                 && summary("r", true)(requested)),
         "{report:?}"
     );
+}
+
+#[tokio::test]
+async fn a_failure_that_opens_the_stream_is_the_requested_run_only_when_no_run_follows() {
+    // Alone, it is the requested run failing before it began, and it is
+    // reported when the stream ends: until then a run may still follow.
+    let mut thread = reads([(vec![Event::run_error("unreachable")], Then::Close)]);
+    let updates: Vec<_> = thread.run().unwrap().collect().await;
+    assert!(
+        matches!(
+            &updates[..],
+            [Update::Error(_), Update::RunEnded(failed), Update::Done(RunEnd::Failed { message, .. })]
+                if failed.run_id.is_none() && failed.requested && message == "unreachable"
+        ),
+        "{updates:?}"
+    );
+
+    // Followed by runs none of which is the requested one, it is history
+    // like them, and the request was not answered.
+    let mut events = vec![Event::run_error("unreachable")];
+    events.extend(run("historical", "m-1"));
+    let mut thread = reads([(events, Then::Close)]);
+    let report = thread.run().unwrap().collect_report().await;
+    assert_eq!(name(&report.end), "failed");
+    assert_eq!(kinds(&report), ["run", "protocol"]);
+    assert!(
+        report.runs.iter().all(|run| !run.requested),
+        "{:?}",
+        report.runs
+    );
+    assert_eq!(ends(&report), ["failed", "success"]);
+}
+
+#[tokio::test]
+async fn a_failure_that_opens_the_stream_does_not_unconfirm_a_resume_the_next_run_confirms() {
+    // The submission is in flight until the requested run says how it went.
+    // Before: it went unconfirmed at the leading RUN_ERROR and was confirmed
+    // by the run after it, and both were reported as the requested run.
+    let events = vec![Event::run_error("not yet"), started("r")];
+    let mut thread = paused((events, Then::Hang)).await;
+    let mut stream = thread.resume_many(answers()).unwrap();
+    let mut updates = Vec::new();
+    while let Some(update) = stream.next().now_or_never().flatten() {
+        updates.push(update);
+    }
+    assert!(
+        matches!(
+            &updates[..],
+            [Update::Error(_), Update::RunEnded(failed)] if !failed.requested
+        ),
+        "{updates:?}"
+    );
+    assert_eq!(
+        stream.thread().submission().unwrap().status,
+        SubmissionStatus::InFlight
+    );
+    drop(stream);
+
+    let events = vec![Event::run_error("not yet"), started("r"), finished("r")];
+    let mut thread = paused((events, Then::Close)).await;
+    let report = thread
+        .resume_many(answers())
+        .unwrap()
+        .collect_report()
+        .await;
+    assert_eq!(report.end, RunEnd::Success { result: None });
+    let requested: Vec<_> = report.runs.iter().map(|run| run.requested).collect();
+    assert_eq!(requested, [false, true], "{:?}", report.runs);
+    assert!(thread.submission().is_none());
+    assert!(thread.interrupts().is_empty());
+
+    // With nothing after it, the failure is the resume failing before it
+    // began: nothing confirmed the submission.
+    let mut thread = paused((vec![Event::run_error("not yet")], Then::Close)).await;
+    let report = thread
+        .resume_many(answers())
+        .unwrap()
+        .collect_report()
+        .await;
+    assert_eq!(name(&report.end), "failed");
+    assert_eq!(
+        thread.submission().unwrap().status,
+        SubmissionStatus::Unconfirmed
+    );
+    assert_eq!(pending(&thread), ["first", "second"]);
 }
 
 // ---- which run answers the request --------------------------------------
@@ -796,25 +882,27 @@ fn thread_with_later_run(later: Vec<Event>) -> Thread<Wire> {
 
 #[tokio::test]
 async fn a_later_run_leaves_the_interrupts_an_unconfirmed_submission_answers() {
-    // The requested run was a resume and did not confirm it: cancelled, or
-    // failed. The submission stays until the application reconciles it, and
-    // its entries answer exactly the pending interrupts, so a run after it
-    // does not replace them. That is said, once, for that run.
+    // The requested run was a resume and failed, so nothing says whether the
+    // agent took the answers. The submission stays until the application
+    // reconciles it, and its entries answer exactly the pending interrupts,
+    // so a run after it does not replace them. That is said, once, for that
+    // run.
+    let failed = || vec![started("r"), Event::run_error("failed")];
     let cases: Vec<(Vec<Event>, Vec<Event>, &str, &str)> = vec![
         (
-            vec![started("r"), cancelled("r")],
+            failed(),
             vec![started("r-2"), interrupted("r-2", &["other"])],
             "interrupted",
             "`interrupt`",
         ),
         (
-            vec![started("r"), Event::run_error("failed")],
+            failed(),
             vec![started("r-2"), finished("r-2")],
             "success",
             "`success`",
         ),
         (
-            vec![started("r"), cancelled("r")],
+            failed(),
             vec![started("r-2"), cancelled("r-2")],
             "cancelled",
             "`cancelled`",
@@ -863,15 +951,47 @@ async fn a_later_run_leaves_the_interrupts_an_unconfirmed_submission_answers() {
     }
 
     // The requested run's own ending is not a later run's: nothing is said.
-    let mut thread = paused((vec![started("r"), cancelled("r")], Then::Close)).await;
+    let mut thread = paused((failed(), Then::Close)).await;
     let report = thread
         .resume_many(answers())
         .unwrap()
         .collect_report()
         .await;
-    assert_eq!(report.end, RunEnd::Cancelled);
-    assert!(report.diagnostics.is_empty(), "{report:?}");
+    assert_eq!(name(&report.end), "failed");
+    assert_eq!(kinds(&report), ["run"], "{report:?}");
     assert_eq!(pending(&thread), ["first", "second"]);
+}
+
+#[tokio::test]
+async fn a_cancelled_resume_is_settled_so_a_run_after_it_moves_the_thread_on() {
+    // 1.0, "Cancelled runs": "A cancelled run waits for nothing. Its outcome
+    // carries no interrupts, and the next run on the thread is an ordinary
+    // new run, not a resume." The requested run reported RUN_FINISHED, so
+    // the submission is settled, and a run after it is read like any other.
+    let cases: Vec<(Vec<Event>, &str, Vec<&str>)> = vec![
+        (vec![], "cancelled", vec![]),
+        (
+            vec![started("r-2"), interrupted("r-2", &["other"])],
+            "interrupted",
+            vec!["other"],
+        ),
+        (vec![started("r-2"), cancelled("r-2")], "cancelled", vec![]),
+    ];
+    for (later, end, owed) in cases {
+        let mut events = vec![started("r"), cancelled("r")];
+        events.extend(later);
+        let mut thread = paused((events.clone(), Then::Close)).await;
+        let report = thread
+            .resume_many(answers())
+            .unwrap()
+            .collect_report()
+            .await;
+        assert_eq!(name(&report.end), end, "{events:?}");
+        assert!(report.diagnostics.is_empty(), "{events:?}: {report:?}");
+        assert_eq!(thread.submission(), None, "{events:?}");
+        assert_eq!(pending(&thread), owed, "{events:?}");
+        Thread::<_>::restore(wire([]), thread.snapshot()).expect("the snapshot restores");
+    }
 }
 
 #[tokio::test]

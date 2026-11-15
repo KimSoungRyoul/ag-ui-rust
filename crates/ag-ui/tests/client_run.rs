@@ -395,11 +395,7 @@ fn an_encrypted_reasoning_blob_attaches_to_its_entity() {
 
 /// One reasoning change, short enough to compare a whole run against.
 fn thought(index: usize, id: &str, kind: ReasoningChangeKind) -> Changed {
-    Changed::Reasoning(ReasoningChange {
-        index,
-        id: id.into(),
-        kind,
-    })
+    Changed::Reasoning(ReasoningChange::new(index, id, kind))
 }
 
 /// `ctx.think()` on the server emits `REASONING_MESSAGE_END` *and*

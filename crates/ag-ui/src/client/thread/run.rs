@@ -20,17 +20,19 @@ use crate::client::{
     transport::Transport,
     verify::{Verifier, nested_run_started},
 };
+use crate::protocol::excerpt;
 use crate::{
     Event, Interrupt, Message, MessageId, ReasoningEncryptedValueEvent,
-    ReasoningEncryptedValueSubtype, ResumeEntry, RunAgentInput, RunId, RunOutcome, ToolCallId,
+    ReasoningEncryptedValueSubtype, ResumeEntry, RunAgentInput, RunId, RunOutcome, SubagentRunId,
+    ToolCallId,
 };
 use futures_core::Stream;
 use futures_util::{StreamExt, task::AtomicWaker};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use super::pending::{ResumeSubmission, SubmissionStatus, validate_responses};
-use super::{StateViewError, Thread, unique};
+use super::pending::{ResumeSubmission, SubmissionStatus, unread_expiries, validate_responses};
+use super::{StateViewError, Thread};
 
 /// Something a view should react to.
 ///
@@ -106,7 +108,10 @@ pub enum Update<S = Value> {
     /// only run of a stream included, once nothing can change how it ended:
     /// at its `RUN_ERROR`, or for a run that reported `RUN_FINISHED` at
     /// whatever follows it — the next `RUN_STARTED`, a late `RUN_ERROR`, the
-    /// end of the stream. [`Update::Done`] follows the last one.
+    /// end of the stream. A `RUN_ERROR` that opens the stream is reported at
+    /// whatever follows it as well, because that decides whether it was the
+    /// requested run; its [`Update::Error`] comes when it arrives.
+    /// [`Update::Done`] follows the last one.
     RunEnded(RunSummary),
     /// The stream ended, and how the request went: the [`RunEnd`] of the
     /// requested run — of the last run on the stream, should the producer
@@ -216,7 +221,10 @@ pub struct RunSummary {
     pub end: RunEnd,
     /// Whether this is the run the request asked for: the one whose
     /// `RUN_STARTED` carried the request's run id, or a failure that opened
-    /// the stream, which is that run failing before it began.
+    /// the stream and that no run followed, which is that run failing before
+    /// it began. At most one run of a stream is the requested one: a failure
+    /// that opened the stream and that a run followed is history, like a
+    /// replayed run.
     pub requested: bool,
 }
 
@@ -224,8 +232,18 @@ pub struct RunSummary {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RunDiagnostic {
-    /// A stable broad category (`state`, `protocol`, `patch`, `transport`, `run`,
-    /// `unsupported`, or `warning` for an [`Update::Warning`]).
+    /// A stable broad category: `warning` for an [`Update::Warning`], and for
+    /// an [`Update::Error`] one of these, by the [`Error`] it carries.
+    ///
+    /// | Kind | The error |
+    /// | --- | --- |
+    /// | `state` | [`Error::State`]: the state does not fit the caller's type |
+    /// | `protocol` | [`Error::Protocol`], [`Error::InvalidPatchDocument`]: the stream broke a rule |
+    /// | `patch` | [`Error::Patch`]: a patch did not apply, and the run went on |
+    /// | `decode` | [`Error::Json`], [`Error::Decode`]: a frame or its payload could not be read |
+    /// | `run` | [`Error::Run`]: the agent reported `RUN_ERROR` |
+    /// | `unsupported` | [`Error::Unsupported`] |
+    /// | `transport` | any other error: the connection, the HTTP response |
     pub kind: &'static str,
     /// Human-readable cause.
     pub message: String,
@@ -307,11 +325,13 @@ impl<T: Transport, S> Thread<T, S> {
             run: None,
             runs: Vec::new(),
             opened: false,
+            leading: None,
             live: false,
             outcome: None,
             diagnostics: Vec::new(),
             diagnostics_omitted: 0,
             initial_ids,
+            shared_ids: HashSet::new(),
         })
     }
 }
@@ -336,9 +356,27 @@ struct OpenRun {
     finished: Option<(RunOutcome, Option<Value>)>,
     /// The tool calls this run started.
     started_tool_calls: HashSet<ToolCallId>,
-    /// The warnings this run gave about encrypted values it dropped, up to
-    /// [`REMEMBERED`] of them.
-    dropped: HashSet<String>,
+    /// What this run has warned about once and does not repeat: an encrypted
+    /// value it dropped, a message or tool call it had nowhere to keep. Up
+    /// to [`REMEMBERED`] keys.
+    said: HashSet<String>,
+}
+
+/// "a" or "an", for the role that follows it in a warning.
+fn article(role: &str) -> &'static str {
+    if role.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    }
+}
+
+/// What a warning calls an owner.
+fn whose(owner: &Option<SubagentRunId>) -> String {
+    match owner {
+        None => "the parent agent".to_owned(),
+        Some(id) => format!("subagent \"{}\"", excerpt(id.as_str(), false)),
+    }
 }
 
 #[derive(Default)]
@@ -391,9 +429,12 @@ pub struct RunStream<'a, T, S = Value> {
     run: Option<OpenRun>,
     /// Every run whose end is settled, in stream order.
     runs: Vec<RunSummary>,
-    /// Whether a `RUN_STARTED` has arrived. A `RUN_ERROR` before any is the
-    /// requested run failing before it began.
+    /// Whether a `RUN_STARTED` has arrived.
     opened: bool,
+    /// A `RUN_ERROR` that opened the stream, held until the stream says what
+    /// follows it: with nothing after it, it is the requested run failing
+    /// before it began; with a run after it, it is history.
+    leading: Option<RunEnd>,
     /// Whether the requested run has started. A run from then on is live:
     /// its end says where the conversation stands.
     live: bool,
@@ -403,6 +444,9 @@ pub struct RunStream<'a, T, S = Value> {
     diagnostics_omitted: usize,
     initial_ids: HashSet<MessageId>,
     request_run_id: RunId,
+    /// The ids a start of one kind, text or reasoning, has found held by a
+    /// message of the other kind on this stream, up to [`REMEMBERED`].
+    shared_ids: HashSet<MessageId>,
 }
 impl<T, S> std::fmt::Debug for RunStream<'_, T, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -467,6 +511,8 @@ impl<T, S> RunStream<'_, T, S> {
             return;
         }
         debug_assert!(self.run.is_none(), "the run being read is settled first");
+        // Nothing followed a failure that opened the stream.
+        self.settle_leading(Place::Requested);
         self.done = true;
         self.events = None;
         self.prepared = None;
@@ -551,6 +597,8 @@ impl<T, S> RunStream<'_, T, S> {
     }
     /// The stream ended.
     fn end_of_input(&mut self) {
+        // A failure that opened the stream, and nothing after it.
+        self.settle_leading(Place::Requested);
         // A run that reported how it ended is over. One still active was cut
         // short, and so was a stream no run arrived on.
         if !self.settle_reported() && (self.run.is_some() || self.runs.is_empty()) {
@@ -599,6 +647,18 @@ impl<T, S> RunStream<'_, T, S> {
         self.settle(Some(run.run_id), run.place, &run.started_tool_calls, end);
         true
     }
+    /// Places a failure that opened the stream, if one is held: as the
+    /// requested run when nothing followed it, and as history when a run
+    /// did. AG-UI 1.0, `events/lifecycle`: "`RUN_ERROR` is admitted first
+    /// because a run can fail before it begins". One run answers a request,
+    /// so a stream that goes on to a run did not carry the requested one
+    /// before it.
+    fn settle_leading(&mut self, place: Place) {
+        if let Some(end) = self.leading.take() {
+            self.live |= place == Place::Requested;
+            self.settle(None, place, &HashSet::new(), end);
+        }
+    }
     /// Ends the run being read, if there is one, short of an ending of its
     /// own: reading stopped, or the stream was rejected. A `RUN_FINISHED` it
     /// had reported is withdrawn.
@@ -629,6 +689,15 @@ impl<T, S> RunStream<'_, T, S> {
             if confirms {
                 self.thread
                     .confirm_interrupt_tool_decisions(started_tool_calls);
+                self.thread.submission = None;
+            } else if end == RunEnd::Cancelled {
+                // AG-UI 1.0, `events/lifecycle`, "Cancelled runs": "A
+                // cancelled run waits for nothing. Its outcome carries no
+                // interrupts, and the next run on the thread is an ordinary
+                // new run, not a resume." The run took the answers and
+                // reported how it ended, so nothing is left to reconcile. It
+                // did not complete, so a tool call an answer approved is not
+                // recorded as decided: without a result it is still owed.
                 self.thread.submission = None;
             } else {
                 self.thread.unconfirm();
@@ -788,11 +857,20 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
                     self.fail(Error::protocol("RUN_FINISHED does not match RUN_STARTED"));
                     return;
                 }
+                // AG-UI 1.0, `basic/patterns/interrupt-resume`: "Each
+                // interrupt's `id` MUST be unique within the run; a resume
+                // entry answers it by this id."
                 if let Some(RunOutcome::Interrupt { interrupts }) = &finished.outcome {
-                    if let Err(error) =
-                        unique(interrupts.iter().map(|i| i.id.as_str()), "interrupt")
-                    {
-                        self.fail(Error::protocol(error.to_string()));
+                    let mut seen = HashSet::new();
+                    let repeated = interrupts
+                        .iter()
+                        .find(|interrupt| !seen.insert(interrupt.id.as_str()));
+                    if let Some(repeated) = repeated {
+                        self.fail(Error::protocol(format!(
+                            "RUN_FINISHED carries interrupt id \"{}\" more than once: an \
+                             interrupt's id is unique within its run",
+                            crate::protocol::excerpt(&repeated.id, false)
+                        )));
                         return;
                     }
                 }
@@ -814,16 +892,17 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
         };
         match self.thread.applier.apply(&event) {
             Ok(changed) => {
-                if let (Event::ReasoningEncryptedValue(value), Changed::Nothing) =
-                    (&event, &changed)
-                {
-                    self.dropped(value);
-                }
+                self.remark(&event, &changed);
                 if let Some(id) = started_tool_call {
                     self.thread.decided_interrupt_tool_call_ids.remove(&id);
                     if let Some(run) = &mut self.run {
                         run.started_tool_calls.insert(id);
                     }
+                }
+                if let Event::ToolCallResult(result) = &event {
+                    // A result that arrives under the id of a stand-in for
+                    // one replaces it, and is a result.
+                    self.thread.abandoned.remove(&result.message_id);
                 }
                 self.emit(changed);
             }
@@ -845,6 +924,9 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
         } else {
             Place::Replayed
         };
+        // A failure that opened the stream was not the requested run: a run
+        // follows it.
+        self.settle_leading(Place::Replayed);
         self.opened = true;
         self.live |= place == Place::Requested;
         // A new run starts with nothing open.
@@ -854,7 +936,7 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
             place,
             finished: None,
             started_tool_calls: HashSet::new(),
-            dropped: HashSet::new(),
+            said: HashSet::new(),
         });
     }
     /// Warns that an encrypted value was dropped, once per text per run:
@@ -870,17 +952,189 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
         let warning = format!(
             "REASONING_ENCRYPTED_VALUE for {noun} \"{}\" was dropped: the thread holds no \
              {noun} with that id that can store it",
-            crate::protocol::excerpt(&event.entity_id, false)
+            excerpt(&event.entity_id, false)
         );
-        if let Some(run) = &mut self.run {
-            if run.dropped.contains(&warning) {
-                return;
+        if self.first(warning.clone()) {
+            self.warning(warning);
+        }
+    }
+    /// Whether `key` has not come up before in the run being read, so that
+    /// what it stands for is said once per run. Up to [`REMEMBERED`] keys are
+    /// kept; past that, and outside a run, everything is said.
+    fn first(&mut self, key: String) -> bool {
+        let Some(run) = &mut self.run else {
+            return true;
+        };
+        if run.said.contains(&key) {
+            return false;
+        }
+        if run.said.len() < REMEMBERED {
+            run.said.insert(key);
+        }
+        true
+    }
+    /// Warns about what an event the applier took could not do, or did
+    /// somewhere other than where it said. None of it fails the run: the
+    /// verifier accepted the stream, and a consumer that cannot keep
+    /// something says so and carries on, as the reference client does.
+    fn remark(&mut self, event: &Event, changed: &Changed) {
+        match (event, changed) {
+            (Event::ReasoningEncryptedValue(value), Changed::Nothing) => self.dropped(value),
+            (Event::MessagesSnapshot(snapshot), _) => self.repeated(&snapshot.messages),
+            (Event::ToolCallStart(start), Changed::Message(change)) => {
+                let named = start.parent_message_id.as_ref();
+                if let Some(parent) = named.filter(|parent| **parent != change.id) {
+                    self.carried_apart(&start.tool_call_id, parent, &change.id);
+                }
             }
-            if run.dropped.len() < REMEMBERED {
-                run.dropped.insert(warning.clone());
+            (Event::TextMessageStart(start), Changed::Message(change)) => {
+                self.shared(event, &start.subagent_run_id, change.index, "text");
+            }
+            (Event::ReasoningMessageStart(start), Changed::Reasoning(change)) => {
+                self.shared(event, &start.subagent_run_id, change.index, "reasoning");
+            }
+            (_, Changed::Nothing) => self.unplaced(event),
+            _ => {}
+        }
+    }
+    /// Warns that an event of a message or a tool call was dropped because
+    /// the thread has nowhere to keep it, once per item per run.
+    ///
+    /// This is what follows a `MESSAGES_SNAPSHOT` that removed a message, or
+    /// restated one without a call, while the run still had it open. AG-UI
+    /// 1.0 (`basic/patterns/snapshots`): "A consumer MUST replace its copy
+    /// with the snapshot's content — a snapshot is not a merge". The
+    /// snapshot closes nothing, so the events that follow are in order, and
+    /// they have nothing to continue. The same goes for text streamed into
+    /// an id an activity message holds.
+    fn unplaced(&mut self, event: &Event) {
+        let held = |id: &MessageId| match self.thread.applier.message(id) {
+            Some(Message::Activity(_)) => {
+                "the thread holds an activity message with that id, which takes no text"
+            }
+            _ => "the thread holds no message with that id",
+        };
+        let (noun, id, why) = match event {
+            Event::TextMessageStart(e) => ("message", e.message_id.as_str(), held(&e.message_id)),
+            Event::TextMessageContent(e) => ("message", e.message_id.as_str(), held(&e.message_id)),
+            Event::TextMessageEnd(e) => ("message", e.message_id.as_str(), held(&e.message_id)),
+            Event::ReasoningMessageStart(e) => (
+                "reasoning message",
+                e.message_id.as_str(),
+                held(&e.message_id),
+            ),
+            Event::ReasoningMessageContent(e) => (
+                "reasoning message",
+                e.message_id.as_str(),
+                held(&e.message_id),
+            ),
+            Event::ReasoningMessageEnd(e) => (
+                "reasoning message",
+                e.message_id.as_str(),
+                held(&e.message_id),
+            ),
+            Event::ToolCallStart(e) => (
+                "tool call",
+                e.tool_call_id.as_str(),
+                "the thread holds no message that can carry it",
+            ),
+            Event::ToolCallArgs(e) => (
+                "tool call",
+                e.tool_call_id.as_str(),
+                "no message the thread holds has that call",
+            ),
+            Event::ToolCallEnd(e) => (
+                "tool call",
+                e.tool_call_id.as_str(),
+                "no message the thread holds has that call",
+            ),
+            _ => return,
+        };
+        let warning = format!(
+            "{} for {noun} \"{}\" was dropped: {why}",
+            event.event_type(),
+            excerpt(id, false)
+        );
+        if self.first(format!("unplaced {noun} {id}")) {
+            self.warning(warning);
+        }
+    }
+    /// Warns that a tool call is on a message of its own because the parent
+    /// it named is not an assistant message, once per call per run.
+    fn carried_apart(&mut self, call: &ToolCallId, parent: &MessageId, carrier: &MessageId) {
+        let Some(named) = self.thread.applier.message(parent) else {
+            return;
+        };
+        let role = named.role().as_str();
+        let warning = format!(
+            "TOOL_CALL_START for tool call \"{}\" names parent message \"{}\", which is {} \
+             {role} message and carries no tool calls: the call is on message \"{}\"",
+            excerpt(call.as_str(), false),
+            excerpt(parent.as_str(), false),
+            article(role),
+            excerpt(carrier.as_str(), false)
+        );
+        if self.first(format!("carried apart {call}")) {
+            self.warning(warning);
+        }
+    }
+    /// Warns that a text message and a reasoning message of different owners
+    /// share an id, when a start of one kind lands on a message the other
+    /// kind made: an id names one message, so what the start opens goes into
+    /// the other owner's message. Checked at the first such start of an id
+    /// on the stream, which is the one whose attribution opens the item; a
+    /// later one continues it.
+    ///
+    /// The ordering rules keep the two kinds apart, as the reference
+    /// verifier does, and accept the stream. This says what the conversation
+    /// made of it.
+    fn shared(&mut self, event: &Event, from: &Option<SubagentRunId>, index: usize, what: &str) {
+        let Some(message) = self.thread.applier.messages().get(index) else {
+            return;
+        };
+        let reasoning = matches!(message, Message::Reasoning(_));
+        if reasoning == (what == "reasoning") {
+            return;
+        }
+        if self.shared_ids.len() >= REMEMBERED || !self.shared_ids.insert(message.id().clone()) {
+            return;
+        }
+        let owner = message.subagent_run_id().cloned();
+        if *from == owner {
+            return;
+        }
+        let role = message.role().as_str();
+        let warning = format!(
+            "{} for message \"{}\" is from {}, and the thread holds {} {role} message with \
+             that id from {}: the id is shared across owners, and the {what} goes into that \
+             message",
+            event.event_type(),
+            excerpt(message.id().as_str(), false),
+            whose(from),
+            article(role),
+            whose(&owner)
+        );
+        self.warning(warning);
+    }
+    /// Warns that a `MESSAGES_SNAPSHOT` carried a message id more than once,
+    /// once per id per run. AG-UI 1.0, `basic`: a `messageId` "MUST be
+    /// unique within its thread". The applier kept the last copy.
+    fn repeated(&mut self, messages: &[Message]) {
+        let mut seen = HashSet::with_capacity(messages.len());
+        let mut told = HashSet::new();
+        for id in messages.iter().map(Message::id) {
+            if seen.insert(id) || !told.insert(id) {
+                continue;
+            }
+            let warning = format!(
+                "MESSAGES_SNAPSHOT carries message id \"{}\" more than once: the last copy is \
+                 kept, where the first stood. A message id is unique within its thread",
+                excerpt(id.as_str(), false)
+            );
+            if self.first(warning.clone()) {
+                self.warning(warning);
             }
         }
-        self.warning(warning);
     }
     fn emit(&mut self, changed: Changed) {
         match changed {
@@ -941,15 +1195,22 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
                 });
                 let end = RunEnd::Failed { message, code };
                 if !self.settle_stopped(end.clone()) {
-                    // No run to fail. Before any RUN_STARTED, it is the
-                    // requested run that failed before it began.
-                    let place = match (self.opened, self.live) {
-                        (false, _) => Place::Requested,
-                        (true, true) => Place::Later,
-                        (true, false) => Place::Replayed,
-                    };
-                    self.live |= place == Place::Requested;
-                    self.settle(None, place, &HashSet::new(), end);
+                    // No run to fail.
+                    match (self.opened, self.live) {
+                        // Before any RUN_STARTED. Whether it is the requested
+                        // run failing before it began shows in what follows,
+                        // so it is held until then. A second one, which only
+                        // a stream nothing verifies carries, makes the first
+                        // history.
+                        (false, _) => {
+                            self.settle_leading(Place::Replayed);
+                            self.leading = Some(end);
+                        }
+                        (true, true) => self.settle(None, Place::Later, &HashSet::new(), end),
+                        (true, false) => {
+                            self.settle(None, Place::Replayed, &HashSet::new(), end);
+                        }
+                    }
                 }
             }
         }
@@ -979,6 +1240,10 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
                         this.fail(error);
                         continue;
                     }
+                    // Said once, with the request that sends the answer.
+                    for warning in unread_expiries(&this.thread.interrupts, entries) {
+                        this.warning(warning);
+                    }
                 }
                 this.dispatched = true;
                 this.thread.applier.reset_streams();
@@ -996,6 +1261,11 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
                     });
                 }
                 this.events = Some(this.thread.agent.run_checked(input));
+                // What dispatching had to say is delivered before the first
+                // event is waited for.
+                if !this.ready.is_empty() {
+                    continue;
+                }
             }
             match this
                 .events

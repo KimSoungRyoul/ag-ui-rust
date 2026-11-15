@@ -10,7 +10,8 @@ use crate::client::{
     transport::Transport,
 };
 use crate::{
-    Interrupt, Message, ResumeEntry, ResumeStatus, RunId, ToolCallId, ToolContent, ToolMessage,
+    Interrupt, Message, MessageId, ResumeEntry, ResumeStatus, RunId, ToolCallId, ToolContent,
+    ToolMessage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,11 +32,18 @@ pub struct ResumeSubmission {
 }
 
 /// A submission is never retried automatically.
+///
+/// A thread holds one from the dispatch of a resume until the requested run
+/// reports `RUN_FINISHED`, whatever its outcome. `#[non_exhaustive]`: match
+/// with a wildcard arm.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum SubmissionStatus {
     /// Dispatched and still being observed. Restoring this becomes `Unconfirmed`.
     InFlight,
-    /// Consumption stopped without a validated success or interrupt terminal.
+    /// Reading stopped before the requested run reported `RUN_FINISHED`: the
+    /// run failed, the stream was cut short or rejected, or it never carried
+    /// the requested run. Nothing says whether the agent took the answers.
     Unconfirmed,
 }
 
@@ -89,6 +97,21 @@ impl<T: Transport, S> Thread<T, S> {
     /// stored interrupt: an expired one can only be cancelled. Response schemas
     /// are retained for the application/server to validate; this
     /// transport-neutral API does not execute arbitrary schemas.
+    ///
+    /// # Expiry
+    ///
+    /// AG-UI 1.0 leaves the format of `expiresAt` open, so whether an
+    /// interrupt has expired is the consumer's reading of it. An interrupt
+    /// has expired when its `expiresAt` names an instant that is now or
+    /// earlier. Two forms name one: a date and time with its UTC offset, as
+    /// RFC 3339 writes it (`2026-01-31T12:00:00Z`,
+    /// `2026-01-31T21:00:00.5+09:00`), and a date alone (`2026-01-31`), read
+    /// as the start of that day in UTC.
+    ///
+    /// Any other value is not evidence of expiry, a date and time with no
+    /// offset included: the interrupt can be answered, the stream yields one
+    /// [`Update::Warning`](super::Update::Warning) naming it when the answer
+    /// is sent, and the agent, which enforces expiry in any case, decides.
     pub fn resume_many(
         &mut self,
         entries: impl IntoIterator<Item = ResumeEntry>,
@@ -288,14 +311,17 @@ impl<T: Transport, S> Thread<T, S> {
             )));
         }
         let reason = reason.into();
-        let message_id = self.fresh_id(false)?;
+        let message_id = MessageId::new(self.fresh_id(false)?);
         self.applier.push_message(Message::Tool(ToolMessage {
-            id: message_id.into(),
+            id: message_id.clone(),
             content: ToolContent::Text(reason.clone()),
             tool_call_id: id.clone(),
             error: Some(reason),
             ..Default::default()
         }));
+        // Remembered as a stand-in: a merge leaves it out when the other
+        // thread holds the result this one never got.
+        self.abandoned.insert(message_id);
         Ok(())
     }
 }
@@ -323,37 +349,15 @@ pub(super) fn validate_responses(
                 Error::Request(format!("unknown interrupt ID {}", entry.interrupt_id))
             })?;
         // Expiry ends answering, not abandoning: an interrupt nobody answered
-        // in time is cancelled, which is how the thread moves past it.
+        // in time is cancelled, which is how the thread moves past it. Only
+        // an `expiresAt` that names an instant is evidence of expiry.
         if expiry && entry.status == ResumeStatus::Resolved {
-            if let Some(timestamp) = &interrupt.expires_at {
-                let expires = chrono::DateTime::parse_from_rfc3339(timestamp).map_err(|_| {
-                    Error::Request(format!(
-                        "interrupt {} has an invalid expiry timestamp; it can only be declined",
-                        interrupt.id
-                    ))
-                })?;
-                // RFC 3339 leap seconds can only end a UTC month.
-                if expires.timestamp_subsec_nanos() >= 1_000_000_000 {
-                    let utc_date = expires.naive_utc().date();
-                    let ends_month = utc_date
-                        .succ_opt()
-                        .is_some_and(|next| chrono::Datelike::day(&next) == 1);
-                    if expires.timestamp().rem_euclid(86_400) != 86_399 || !ends_month {
-                        return Err(Error::Request(format!(
-                            "interrupt {} has an invalid expiry timestamp; it can only be declined",
-                            interrupt.id
-                        )));
-                    }
-                }
-                // Preserve the previous parser's leap-second clamp and full year range.
-                let expires_nanos = i128::from(expires.timestamp()) * 1_000_000_000
-                    + i128::from(expires.timestamp_subsec_nanos().min(999_999_999));
-                if expires_nanos <= now_unix_nanos() {
-                    return Err(Error::Request(format!(
-                        "interrupt {} has expired; it can only be declined",
-                        interrupt.id
-                    )));
-                }
+            let expires = interrupt.expires_at.as_deref().and_then(instant);
+            if expires.is_some_and(|expires| expires <= now_unix_nanos()) {
+                return Err(Error::Request(format!(
+                    "interrupt {} has expired; it can only be declined",
+                    interrupt.id
+                )));
             }
         }
     }
@@ -363,6 +367,88 @@ pub(super) fn validate_responses(
         ));
     }
     Ok(())
+}
+
+/// One warning for each interrupt `entries` answer whose `expiresAt` the
+/// thread cannot read as a date, for the request that sends the answers.
+pub(super) fn unread_expiries(pending: &[Interrupt], entries: &[ResumeEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|entry| entry.status == ResumeStatus::Resolved)
+        .filter_map(|entry| {
+            let interrupt = pending
+                .iter()
+                .find(|interrupt| interrupt.id == entry.interrupt_id)?;
+            let timestamp = interrupt.expires_at.as_deref()?;
+            instant(timestamp).is_none().then(|| {
+                format!(
+                    "interrupt \"{}\" carries an expiresAt this thread does not read as a date, \
+                     \"{}\": the answer is sent as in time, and the agent decides whether it is",
+                    crate::protocol::excerpt(&interrupt.id, false),
+                    crate::protocol::excerpt(timestamp, false)
+                )
+            })
+        })
+        .collect()
+}
+
+/// The instant an `expiresAt` names, in nanoseconds since the Unix epoch, or
+/// `None` for a value that names none this thread can compare with now.
+///
+/// AG-UI 1.0 leaves the format open (`basic/patterns/interrupt-resume`:
+/// "whether an interrupt has expired is the judging consumer's own reading
+/// of it — the reference reads it as a date and treats now-or-earlier as
+/// expired") and names ISO 8601 as the convention. Two forms are read, the
+/// two the reference reads the same in every time zone:
+///
+/// - a date and time with its UTC offset, as RFC 3339 writes it;
+/// - a date alone, `YYYY-MM-DD`, as the start of that day in UTC, which is
+///   what ECMAScript makes of it.
+///
+/// A date and time with no offset is not read. The reference reads it in the
+/// viewer's own time zone, so there is no reading that agrees with it
+/// everywhere, and 1.0 names no zone. Nor is anything else: a value that
+/// cannot be read is not evidence of expiry (1.0, the schema: "a value that
+/// is not one leaves the interrupt looking permanently unexpired"), and the
+/// agent enforces expiry whatever the consumer makes of the value.
+fn instant(timestamp: &str) -> Option<i128> {
+    if let Some(midnight) = date_alone(timestamp) {
+        return Some(i128::from(midnight) * 1_000_000_000);
+    }
+    let expires = chrono::DateTime::parse_from_rfc3339(timestamp).ok()?;
+    // RFC 3339 leap seconds can only end a UTC month.
+    if expires.timestamp_subsec_nanos() >= 1_000_000_000 {
+        let utc_date = expires.naive_utc().date();
+        let ends_month = utc_date
+            .succ_opt()
+            .is_some_and(|next| chrono::Datelike::day(&next) == 1);
+        if expires.timestamp().rem_euclid(86_400) != 86_399 || !ends_month {
+            return None;
+        }
+    }
+    // A leap second is read as the last nanosecond before it.
+    Some(
+        i128::from(expires.timestamp()) * 1_000_000_000
+            + i128::from(expires.timestamp_subsec_nanos().min(999_999_999)),
+    )
+}
+
+/// The start in UTC of the day a `YYYY-MM-DD` names, in seconds since the
+/// Unix epoch. Exactly that shape: four digits, two and two.
+fn date_alone(timestamp: &str) -> Option<i64> {
+    let bytes = timestamp.as_bytes();
+    let shaped = bytes.len() == 10
+        && bytes.iter().enumerate().all(|(at, byte)| match at {
+            4 | 7 => *byte == b'-',
+            _ => byte.is_ascii_digit(),
+        });
+    if !shaped {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| timestamp[range].parse::<u32>().ok();
+    let year = i32::try_from(number(0..4)?).ok()?;
+    let date = chrono::NaiveDate::from_ymd_opt(year, number(5..7)?, number(8..10)?)?;
+    Some(date.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
 }
 
 #[cfg(not(target_family = "wasm"))]
