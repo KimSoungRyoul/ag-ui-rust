@@ -746,8 +746,8 @@ mod tests {
         }
         assert_eq!([counter.next(), counter.next(), counter.next()], [3, 5, 6]);
 
-        // One short of it: the last number is handed out once, then the
-        // same.
+        // One short of it: the largest number is handed out, once, and the
+        // count starts again after it.
         let mut counter = IdCounter::default();
         counter.note(1);
         counter.note(u64::MAX - 1);
