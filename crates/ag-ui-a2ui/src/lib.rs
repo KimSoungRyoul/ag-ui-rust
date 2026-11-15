@@ -98,25 +98,20 @@
 #[doc = include_str!("../README.md")]
 mod readme {}
 
-pub mod binding;
-pub mod catalog;
 pub mod constants;
+pub mod core;
 pub mod error;
-pub mod message;
-pub mod model;
-pub mod surface;
+
+pub use crate::core::{binding, catalog, message, model, surface, validate};
+#[cfg(feature = "schema-validation")]
+pub use crate::core::{client_schema, schema_validation};
 
 #[cfg(feature = "author")]
 pub mod author;
-#[cfg(feature = "schema-validation")]
-pub mod client_schema;
-#[cfg(feature = "schema-validation")]
-pub mod schema_validation;
 #[cfg(feature = "author")]
 pub use author::{A2uiAuthor, AuthorRequest, ValidatedSurface};
 pub use message::{A2uiVersion, DataModelUpdate};
 pub use model::{DataModel, ModelValue};
-pub mod validate;
 
 #[cfg(feature = "toolkit")]
 pub mod toolkit;

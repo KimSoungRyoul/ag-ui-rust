@@ -444,8 +444,9 @@ impl SurfaceValidator {
 
 /// Validates raw `a2uiClientCapabilities` metadata using the pinned official schema.
 pub fn validate_capabilities(value: &Value) -> Result<()> {
-    let schema: Value =
-        serde_json::from_str(include_str!("../schemas/v0_9_1/client_capabilities.json"))?;
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../schemas/v0_9_1/client_capabilities.json"
+    ))?;
     let validator = jsonschema::options()
         .with_draft(jsonschema::Draft::Draft202012)
         .with_retriever(NoExternalResources)

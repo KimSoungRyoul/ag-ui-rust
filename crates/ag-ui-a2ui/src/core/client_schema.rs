@@ -23,8 +23,8 @@ impl ClientSchemaValidator {
                 .map_err(Error::catalog)
         };
         Ok(Self {
-            message: compile(include_str!("../schemas/v0_9_1/client_to_server.json"))?,
-            data_model: compile(include_str!("../schemas/v0_9_1/client_data_model.json"))?,
+            message: compile(include_str!("../../schemas/v0_9_1/client_to_server.json"))?,
+            data_model: compile(include_str!("../../schemas/v0_9_1/client_data_model.json"))?,
         })
     }
 
