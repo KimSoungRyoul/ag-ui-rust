@@ -40,7 +40,8 @@ pub enum Error {
     /// [`Thread::merge_messages_from`](crate::client::Thread::merge_messages_from)
     /// refused to merge two threads, and changed neither: they are different
     /// conversations, one of them still owes an answer or has a request in
-    /// flight, or a tool call has a result on each.
+    /// flight, a tool call has a result on each, or the receiving thread gave
+    /// up a call the other holds a result for.
     #[error("threads not merged: {0}")]
     Merge(String),
 

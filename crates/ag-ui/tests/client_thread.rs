@@ -316,78 +316,134 @@ async fn expiry_comes_from_stored_interrupt_not_a_forged_argument() {
     assert_eq!(thread.interrupts().len(), 1);
 }
 
-#[tokio::test]
-async fn expiry_preflight_handles_offsets_fractional_seconds_and_invalid_dates() {
-    for (timestamp, expected_error) in [
-        ("9999-12-31T23:59:59.999999999+09:00", None),
-        ("2999-01-01t00:00:00.123456789z", None),
-        ("2000-01-01T09:00:00+09:00", Some("expired")),
-        ("1969-12-31T23:59:59.999999999Z", Some("expired")),
-        ("2016-12-31T23:59:60Z", Some("expired")),
-        ("2017-01-01T08:59:60+09:00", Some("expired")),
-        ("2999-01-01T12:00:60Z", Some("invalid expiry timestamp")),
-        ("2999-02-30T00:00:00Z", Some("invalid expiry timestamp")),
-        ("2999-01-01T00:00:00", Some("invalid expiry timestamp")),
-        (
-            "Fri, 01 Jan 2999 00:00:00 GMT",
-            Some("invalid expiry timestamp"),
-        ),
-        (
-            "2999-01-01T00:00:00Z trailing",
-            Some("invalid expiry timestamp"),
-        ),
-    ] {
-        let mut interrupt = Interrupt::new("first", "approval");
-        interrupt.expires_at = Some(timestamp.into());
-        let transport = script([
+/// What resuming an interrupt with a given `expiresAt` does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Expiry {
+    /// The value names an instant that has passed: refused before dispatch.
+    Expired,
+    /// It names one still to come: sent, and nothing is said.
+    InTime,
+    /// It names no instant the thread reads: sent, with one warning.
+    Unread,
+}
+
+/// A thread paused on one interrupt with this `expiresAt`, and the transport
+/// that answers one more run with success.
+async fn paused_until(timestamp: &str) -> (Thread<ReplayTransport>, ReplayTransport, Interrupt) {
+    let mut interrupt = Interrupt::new("first", "approval");
+    interrupt.expires_at = Some(timestamp.into());
+    let transport = ReplayTransport::with_runs([
+        vec![
             Event::run_started("t", "r"),
             Event::run_finished_interrupt("t", "r", vec![interrupt.clone()]),
-        ]);
-        let mut thread = Thread::new(transport.clone(), "t");
-        thread.send("go").unwrap().collect_report().await;
+        ],
+        success(),
+    ])
+    .matching_requests();
+    let mut thread = Thread::new(transport.clone(), "t");
+    thread.send("go").unwrap().collect_report().await;
+    (thread, transport, interrupt)
+}
+
+/// AG-UI 1.0, `basic/patterns/interrupt-resume`: "`expiresAt` is deliberately
+/// format-unconstrained, so *whether* an interrupt has expired is the judging
+/// consumer's own reading of it — the reference reads it as a date and treats
+/// now-or-earlier as expired." And the schema: "a value that is not one
+/// leaves the interrupt looking permanently unexpired."
+///
+/// Before, every value below that is not RFC 3339 made `resume` refuse with
+/// "has an invalid expiry timestamp; it can only be declined".
+#[tokio::test]
+async fn an_interrupt_expires_only_by_a_value_that_names_an_instant() {
+    use Expiry::{Expired, InTime, Unread};
+    for (timestamp, expected) in [
+        // A date and time with its offset.
+        ("9999-12-31T23:59:59.999999999+09:00", InTime),
+        ("2999-01-01t00:00:00.123456789z", InTime),
+        ("2000-01-01T09:00:00+09:00", Expired),
+        ("2000-01-01T09:00:00.123456789+09:00", Expired),
+        ("1969-12-31T23:59:59.999999999Z", Expired),
+        ("2016-12-31T23:59:60Z", Expired),
+        ("2017-01-01T08:59:60+09:00", Expired),
+        // A date alone is the start of that day in UTC, as ECMAScript and so
+        // the reference client read it in every time zone.
+        ("2099-01-01", InTime),
+        ("2000-01-01", Expired),
+        // A date and time with no offset names a different instant in each
+        // zone, and the reference reads it in the viewer's: not read here,
+        // even when it is past everywhere.
+        ("2099-01-01T00:00:00", Unread),
+        ("2000-01-01T00:00:00", Unread),
+        // Not a date the thread reads at all.
+        ("20990101T000000Z", Unread),
+        ("4102444800000", Unread),
+        ("Fri, 01 Jan 2999 00:00:00 GMT", Unread),
+        ("2999-01-01T00:00:00Z trailing", Unread),
+        ("2999-01-01T12:00:60Z", Unread),
+        ("2000-02-30T00:00:00Z", Unread),
+        ("2000-02-30", Unread),
+        ("2000-1-1", Unread),
+        ("not-a-timestamp", Unread),
+    ] {
+        let (mut thread, transport, interrupt) = paused_until(timestamp).await;
         let before = thread.snapshot();
-        match expected_error {
-            Some(message) => assert!(
-                thread
-                    .resume(&interrupt, true)
-                    .unwrap_err()
-                    .to_string()
-                    .contains(message),
-                "{timestamp}"
-            ),
-            None => drop(thread.resume(&interrupt, true).unwrap()),
+
+        if expected == Expired {
+            let refused = thread.resume(&interrupt, true).unwrap_err().to_string();
+            assert!(refused.contains("has expired"), "{timestamp}: {refused}");
+            assert_eq!(thread.snapshot(), before, "{timestamp}");
+            assert_eq!(transport.requests().len(), 1, "{timestamp}");
+            continue;
         }
+
+        // Preparing the request changes nothing and sends nothing.
+        drop(thread.resume(&interrupt, true).unwrap());
         assert_eq!(thread.snapshot(), before, "{timestamp}");
         assert_eq!(transport.requests().len(), 1, "{timestamp}");
+
+        let updates: Vec<_> = thread.resume(&interrupt, true).unwrap().collect().await;
+        assert!(
+            matches!(
+                updates.last(),
+                Some(Update::Done(RunEnd::Success { result: None }))
+            ),
+            "{timestamp}: {updates:?}"
+        );
+        let warnings: Vec<_> = updates
+            .iter()
+            .filter_map(|update| match update {
+                Update::Warning(warning) => Some(warning.as_str()),
+                _ => None,
+            })
+            .collect();
+        if expected == Unread {
+            assert_eq!(
+                warnings,
+                [format!(
+                    "interrupt \"first\" carries an expiresAt this thread does not read as a \
+                     date, \"{timestamp}\": the answer is sent as in time, and the agent decides \
+                     whether it is"
+                )],
+                "{timestamp}"
+            );
+            // It is the first thing the stream says, before any event.
+            assert!(matches!(updates[0], Update::Warning(_)), "{timestamp}");
+        } else {
+            assert!(warnings.is_empty(), "{timestamp}: {warnings:?}");
+        }
+        let sent = transport.last_request().unwrap().resume.unwrap();
+        assert_eq!(sent, [ResumeEntry::resolved("first", true)], "{timestamp}");
+        assert!(thread.interrupts().is_empty(), "{timestamp}");
     }
 }
 
 #[tokio::test]
-async fn expiry_rejects_invalid_and_offset_timestamps_before_dispatch() {
-    for (timestamp, expected) in [
-        ("2000-01-01T09:00:00.123456789+09:00", "expired"),
-        ("not-a-timestamp", "invalid expiry"),
-        ("2000-02-30T00:00:00Z", "invalid expiry"),
-    ] {
-        let mut interrupt = Interrupt::new("first", "approval");
-        interrupt.expires_at = Some(timestamp.into());
-        let transport = script([
-            Event::run_started("t", "r"),
-            Event::run_finished_interrupt("t", "r", vec![interrupt]),
-        ]);
-        let mut thread = Thread::new(transport.clone(), "t");
-        thread.send("go").unwrap().collect_report().await;
-        let before = thread.snapshot();
-        let pending = thread.interrupts()[0].clone();
-        assert!(
-            thread
-                .resume(&pending, true)
-                .unwrap_err()
-                .to_string()
-                .contains(expected)
-        );
-        assert_eq!(thread.snapshot(), before);
-        assert_eq!(transport.requests().len(), 1);
+async fn declining_says_nothing_about_an_expiry_whether_it_is_read_or_not() {
+    for timestamp in ["2000-01-01T00:00:00Z", "whenever"] {
+        let (mut thread, _, interrupt) = paused_until(timestamp).await;
+        let report = thread.decline(&interrupt).unwrap().collect_report().await;
+        assert_eq!(report.end, RunEnd::Success { result: None }, "{timestamp}");
+        assert!(report.diagnostics.is_empty(), "{timestamp}: {report:?}");
     }
 }
 

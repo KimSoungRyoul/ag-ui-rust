@@ -388,6 +388,35 @@ fn an_empty_interrupt_outcome_is_a_protocol_error() {
     );
 }
 
+/// AG-UI 1.0, `basic/patterns/interrupt-resume`: "Each interrupt's `id` MUST
+/// be unique within the run; a resume entry answers it by this id." The
+/// refusal says that, about the event. Before: "protocol violation: invalid
+/// thread snapshot: interrupt ID "i-1" is empty or duplicated".
+#[tokio::test]
+async fn an_interrupt_id_repeated_in_one_outcome_fails_the_run_in_the_events_words() {
+    let twice = vec![
+        Interrupt::new("i-1", "tool_approval"),
+        Interrupt::new("i-1", "input_required"),
+    ];
+    let transport = ReplayTransport::new([
+        Event::run_started("t", "r"),
+        Event::run_finished_interrupt("t", "r", twice),
+    ])
+    .matching_requests();
+    let mut thread = Thread::new(transport, "t");
+    let report = thread.send("go").unwrap().collect_report().await;
+    let RunEnd::Failed { message, .. } = &report.end else {
+        panic!("{report:?}");
+    };
+    assert_eq!(
+        message,
+        "protocol violation: RUN_FINISHED carries interrupt id \"i-1\" more than once: an \
+         interrupt's id is unique within its run"
+    );
+    assert_eq!(report.diagnostics[0].kind, "protocol");
+    assert!(thread.interrupts().is_empty());
+}
+
 #[test]
 fn resume_run_keeps_everything_but_the_run_id_and_the_answers() {
     let previous = RunAgentInput {

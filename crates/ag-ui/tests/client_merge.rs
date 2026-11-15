@@ -527,6 +527,173 @@ fn a_call_both_threads_answered_is_refused_and_the_list_merge_keeps_both_results
     assert_eq!(report.added, ["a-2", "t-2", "t-2-again"]);
 }
 
+/// The module docs' second thread, made while the long run waits for the
+/// result of a tool the server is running. The copy owes that call, gives it
+/// up, and asks its question; the long run then gets the result. Before, the
+/// merge into `main` was refused for good: "tool call c-5 has a result on
+/// each thread".
+#[tokio::test]
+async fn a_copy_made_while_a_call_was_running_gives_it_up_and_merges_into_the_thread_with_the_result()
+ {
+    let long_run = vec![
+        Event::run_started(THREAD, "r"),
+        ToolCallStartEvent::new("c-5", "build_report")
+            .with_parent_message_id("a-5")
+            .into(),
+        Event::tool_call_end("c-5"),
+        Event::tool_call_result("t-5", "c-5", "report.pdf"),
+        Event::text_message_start("a-6", TextMessageRole::Assistant),
+        Event::text_message_content("a-6", "Here it is."),
+        Event::text_message_end("a-6"),
+        Event::run_finished_success(THREAD, "r"),
+    ];
+    let transport = script([
+        long_run,
+        reply("a-side", "Noon."),
+        reply("a-next", "You are welcome."),
+    ]);
+    let mut main = Thread::new(transport.clone(), THREAD);
+    let mut long = main.send("Write the report").unwrap();
+    // Read up to the end of the call: the server is running the tool.
+    loop {
+        match long.next().await.expect("the run goes on") {
+            Update::Message(update)
+                if matches!(update.change, MessageChangeKind::ToolCallEnded { .. }) =>
+            {
+                break;
+            }
+            _ => {}
+        }
+    }
+    let mut side = Thread::<_>::restore(transport.clone(), long.thread().snapshot()).unwrap();
+
+    // The copy owes the call, which is given up there first.
+    let Err(Error::UnansweredToolCalls(owed)) = side.send("What time is it?") else {
+        panic!("the copy owes c-5");
+    };
+    assert_eq!(owed, ["c-5"]);
+    side.abandon_tool_call(&"c-5".into(), "run on the main thread")
+        .unwrap();
+    let stand_in = side.messages().last().unwrap().id().clone();
+    let quick = side
+        .send("What time is it?")
+        .unwrap()
+        .collect_report()
+        .await;
+    assert_eq!(quick.end, RunEnd::Success { result: None });
+    long.collect_report().await;
+
+    // Saved and restored, the copy still knows its stand-in for one ...
+    let saved = side.snapshot();
+    assert_eq!(saved.abandoned, std::slice::from_ref(&stand_in));
+    let side = Thread::<_>::restore(ReplayTransport::new([]), saved.clone()).unwrap();
+    let before = main.snapshot();
+
+    // ... so the main thread keeps its result, and takes the rest.
+    let merged = main.merge_messages_from(&side).unwrap();
+    assert_eq!(merged.superseded, std::slice::from_ref(&stand_in));
+    assert_eq!(merged.added.len(), 2, "{merged:?}");
+    assert!(merged.differing.is_empty(), "{merged:?}");
+    let asked = main.messages()[0].id().to_string();
+    let question = merged.added[0].to_string();
+    assert_eq!(
+        ids(main.messages()),
+        [
+            asked.as_str(),
+            "a-5",
+            "t-5",
+            "a-6",
+            question.as_str(),
+            "a-side"
+        ]
+    );
+    assert!(main.unanswered_tool_calls().is_empty());
+    let report = main.send("Thanks").unwrap().collect_report().await;
+    assert_eq!(report.end, RunEnd::Success { result: None });
+
+    // The other way round, the copy would have to drop its own stand-in:
+    // refused, and it says which way to merge.
+    let mut copy = Thread::<_>::restore(ReplayTransport::new([]), saved.clone()).unwrap();
+    let main_before = Thread::<_>::restore(ReplayTransport::new([]), before.clone()).unwrap();
+    let why = refused(copy.merge_messages_from(&main_before));
+    assert_eq!(
+        why,
+        format!(
+            "tool call c-5 was given up on this thread, with message {stand_in}, and has a \
+             result on the other thread, message t-5: merge this thread into the one that \
+             holds the result"
+        )
+    );
+    assert_eq!(copy.snapshot(), saved, "a refused merge changes nothing");
+
+    // A snapshot that does not record its stand-ins — written before the
+    // record existed, or a version 1 one — counts every tool message as a
+    // result, and two results stay refused.
+    let mut older = serde_json::to_value(&saved).unwrap();
+    older.as_object_mut().unwrap().remove("abandoned");
+    let older = Thread::<_>::restore(
+        ReplayTransport::new([]),
+        serde_json::from_value(older).unwrap(),
+    )
+    .unwrap();
+    let mut main = Thread::<_>::restore(ReplayTransport::new([]), before).unwrap();
+    let why = refused(main.merge_messages_from(&older));
+    assert!(why.contains("has a result on each thread"), "{why}");
+}
+
+#[test]
+fn a_stand_in_gives_way_only_to_an_answer_and_only_by_its_record() {
+    // A tool message with an error is a result like any other unless the
+    // thread made it a stand-in.
+    let ours = grown([
+        calling("a-1", &["c-1"]),
+        Message::tool("t-here", "c-1", "figures"),
+    ]);
+    let failed = |id: &str| {
+        let Message::Tool(mut answer) = Message::tool(id, "c-1", "not run") else {
+            unreachable!()
+        };
+        answer.error = Some("not run".into());
+        Message::Tool(answer)
+    };
+    let mut main = holding(ours.clone());
+    let why = refused(main.merge_messages_from(&holding(grown([
+        calling("a-1", &["c-1"]),
+        failed("t-there"),
+    ]))));
+    assert!(why.contains("has a result on each thread"), "{why}");
+
+    // Given up on both: this thread's stand-in stands, and the other's gives
+    // way to it.
+    let gave_up = || {
+        let mut thread = holding(grown([calling("a-1", &["c-1"])]));
+        thread.abandon_tool_call(&"c-1".into(), "not run").unwrap();
+        thread
+    };
+    let mut main = gave_up();
+    let side = gave_up();
+    let merged = main.merge_messages_from(&side).unwrap();
+    assert_eq!(merged.superseded, [side.messages()[3].id().clone()]);
+    assert!(merged.added.is_empty());
+    assert_eq!(main.messages().len(), 4);
+
+    // A stand-in for a call this thread never answered is added, and stays
+    // a stand-in here.
+    let mut main = holding(grown([calling("a-1", &["c-1"])]));
+    main.push_message(Message::tool("t-here", "c-1", "figures"))
+        .unwrap();
+    let mut empty = holding(start());
+    let merged = empty.merge_messages_from(&side).unwrap();
+    assert_eq!(merged.added.len(), 2);
+    assert!(merged.superseded.is_empty());
+    assert_eq!(
+        empty.snapshot().abandoned,
+        [side.messages()[3].id().clone()]
+    );
+    let merged = main.merge_messages_from(&empty).unwrap();
+    assert_eq!(merged.superseded, [side.messages()[3].id().clone()]);
+}
+
 // ---- reasoning and activity -------------------------------------------------
 
 #[tokio::test]

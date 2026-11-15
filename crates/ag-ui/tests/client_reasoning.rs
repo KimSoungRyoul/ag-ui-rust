@@ -106,13 +106,7 @@ fn a_span_opens_no_message_and_the_message_inside_it_joins_the_conversation() {
     assert_eq!(changes[6], Changed::Nothing, "REASONING_END");
 
     // The message reports each change once, with its place in the list.
-    let thought = |kind| {
-        Changed::Reasoning(ReasoningChange {
-            index: 0,
-            id: "think-1".into(),
-            kind,
-        })
-    };
+    let thought = |kind| Changed::Reasoning(ReasoningChange::new(0, "think-1", kind));
     let content = |delta: &str| ReasoningChangeKind::Content {
         delta: delta.to_owned(),
     };
@@ -362,11 +356,11 @@ fn an_encrypted_value_is_stored_only_where_something_can_hold_it() {
     // A reasoning message says so as reasoning; any other message as itself.
     assert_eq!(
         applier.apply(&value("think-1")).expect("applies"),
-        Changed::Reasoning(ReasoningChange {
-            index: 2,
-            id: "think-1".into(),
-            kind: ReasoningChangeKind::EncryptedValue,
-        })
+        Changed::Reasoning(ReasoningChange::new(
+            2,
+            "think-1",
+            ReasoningChangeKind::EncryptedValue
+        ))
     );
     assert_eq!(applier.messages()[2], encrypted("think-1", "hm", "opaque"));
     assert!(matches!(
@@ -845,7 +839,7 @@ fn a_snapshot_is_refused_when_its_version_and_its_reasoning_list_disagree() {
         .push(json!({"id": "think-1", "content": "again"}));
     assert_eq!(
         restore(repeated),
-        Err("invalid thread snapshot: reasoning ID \"think-1\" is empty or duplicated".to_owned())
+        Err("invalid thread snapshot: reasoning ID \"think-1\" is held more than once".to_owned())
     );
 
     let mut newer = saved_by_alpha_3();

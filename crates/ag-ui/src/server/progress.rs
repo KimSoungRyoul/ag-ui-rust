@@ -75,6 +75,15 @@
 //! in the conversation, and a client accepts a `TOOL_CALL_RESULT` for a call
 //! it did not see open.
 //!
+//! One thing comes before the snapshot. A `MESSAGES_SNAPSHOT` the run sent
+//! while a message, a reasoning message or a tool call was open, and that
+//! left it out, dropped it on every client, and a snapshot closes nothing:
+//! what the entity sends next has nowhere to go and is dropped too. So with
+//! [`Prelude::messages`] such an entity is opened right after `RUN_STARTED`
+//! (and the subagents, which then come before it), by its start alone, the
+//! snapshot that follows drops it again, and it is taken out of the
+//! messages given. A client ends holding what one that read the run holds.
+//!
 //! An entity that a `*_CHUNK` event opened is restated as one chunk, not as
 //! a start and a content event. A chunk stream ends when something else
 //! arrives in its lane, and an entity opened explicitly would not: the
@@ -181,7 +190,7 @@
 //! A client that already holds a different copy of an open entity ends in
 //! the same place. The snapshot replaces its copy of a message the snapshot
 //! carries and drops one it leaves out, and the restated content then lands
-//! on an empty entity. Two cases are beyond what a prelude can do:
+//! on an empty entity. Three cases are beyond what a prelude can do:
 //!
 //! - **An entity that held something before.** A start for an id that was
 //!   in use before, in the history or earlier in the run, adds to what the
@@ -196,6 +205,10 @@
 //!   restated content is added to it. Supply the reasoning messages in the
 //!   list when clients come back holding some. A list folded with the
 //!   `Applier` has them.
+//! - **An entity a snapshot dropped, with no snapshot to drop it again.**
+//!   Without [`Prelude::messages`], and with [`Prelude::reopen_only`], it is
+//!   restated by its start alone, and a client holds it again from there,
+//!   with what the run sends next.
 //!
 //! # A client that holds the run up to a point
 //!
@@ -349,6 +362,10 @@ struct Slot {
     /// the run, or a snapshot has restated it since. What that was the fold
     /// does not know. A client adds to it.
     held_before: bool,
+    /// Whether the last `MESSAGES_SNAPSHOT` since the entity opened left it
+    /// out: a client dropped it, and drops what the entity sends next, since
+    /// a snapshot closes nothing and resurrects nothing.
+    dropped: bool,
 }
 
 /// One subagent's lifecycle, as the run sent it.
@@ -398,6 +415,7 @@ impl RunProgress {
     /// already holds something.
     pub fn seed(&mut self, history: &[Message]) {
         self.verifier.seed(history);
+        self.streams.seed(history);
         self.seen.conversation(history);
     }
 
@@ -495,6 +513,8 @@ impl RunProgress {
             Event::TextMessageChunk(_) | Event::ToolCallChunk(_) | Event::ReasoningMessageChunk(_)
         );
         if !is_chunk && self.streams.is_idle() {
+            // The chunk model learns whose each item is from every event.
+            self.streams.note(event);
             return self.record(event, false);
         }
         let mut stood_for = Vec::new();
@@ -695,17 +715,20 @@ impl RunProgress {
         self.open.push(Slot {
             entity,
             held_before,
+            dropped: false,
         });
     }
 
     /// Folds in a `MESSAGES_SNAPSHOT` that arrived with something open.
     ///
     /// A snapshot replaces the messages it carries and drops the ones it
-    /// leaves out, open or not. So what an open entity has produced starts
-    /// again from here: on top of the snapshot's copy when the snapshot
-    /// carries it, and on top of nothing when it does not. A reasoning
-    /// message stays as it was through a snapshot that carries no reasoning
-    /// at all.
+    /// leaves out, open or not, and closes nothing. So what an open entity
+    /// has produced starts again from here, on top of the snapshot's copy,
+    /// when the snapshot carries it. When it does not, a client holds the
+    /// entity no more and drops what it sends next: AG-UI 1.0
+    /// (`basic/patterns/snapshots`), "a snapshot is not a merge". A
+    /// reasoning message stays as it was through a snapshot that carries no
+    /// reasoning at all.
     fn restated_by(&mut self, snapshot: &[Message]) {
         let carries = |id: &MessageId| snapshot.iter().any(|message| message.id() == id);
         let carries_call = |id: &ToolCallId| {
@@ -721,7 +744,7 @@ impl RunProgress {
             .iter()
             .any(|message| matches!(message, Message::Reasoning(_)));
         for slot in &mut self.open {
-            slot.held_before = match &mut slot.entity {
+            let carried = match &mut slot.entity {
                 OpenEntity::Message { start, content, .. } => {
                     content.clear();
                     carries(&start.message_id)
@@ -742,6 +765,8 @@ impl RunProgress {
                 | OpenEntity::Step { .. }
                 | OpenEntity::Subagent { .. } => continue,
             };
+            slot.held_before = carried;
+            slot.dropped = !carried;
         }
     }
 
@@ -770,9 +795,33 @@ impl RunProgress {
 
     /// Takes out of `messages` what a prelude restates: the text of each
     /// open message, the arguments of each open tool call, the content of
-    /// each open reasoning message. Everything else stays where it is.
-    fn take_out(&self, messages: &mut [Message]) {
-        for slot in &self.open {
+    /// each open reasoning message. An open entity a snapshot dropped is
+    /// taken out whole, since a client holds none of it. Everything else
+    /// stays where it is.
+    fn take_out(&self, messages: &mut Vec<Message>) {
+        for slot in self.open.iter().filter(|slot| slot.dropped) {
+            match &slot.entity {
+                OpenEntity::Message {
+                    start: TextMessageStartEvent { message_id, .. },
+                    ..
+                }
+                | OpenEntity::ReasoningMessage {
+                    start: ReasoningMessageStartEvent { message_id, .. },
+                    ..
+                } => messages.retain(|message| message.id() != message_id),
+                OpenEntity::ToolCall { start, .. } => {
+                    for message in messages.iter_mut() {
+                        if let Message::Assistant(assistant) = message {
+                            if let Some(calls) = &mut assistant.tool_calls {
+                                calls.retain(|call| call.id != start.tool_call_id);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for slot in self.open.iter().filter(|slot| !slot.dropped) {
             match &slot.entity {
                 // An id names one message, whatever its role: text and
                 // reasoning alike land on the message that has the id.
@@ -1083,14 +1132,31 @@ impl Prelude<'_> {
                 Box::new(input)
             });
             events.push(started.into());
+            // What a snapshot dropped while it was open is opened ahead of
+            // the snapshot, which drops it again: the client then holds it
+            // open with nothing to write to, as one that read the run does,
+            // and drops what it sends next. Its subagent is announced first.
+            let dropped = progress.open.iter().filter(|slot| slot.dropped);
+            let ahead = messages.is_some() && dropped.clone().next().is_some();
+            if ahead {
+                progress.subagent_lifecycle(&mut events);
+                for slot in dropped {
+                    slot.entity.restate(false, &mut events);
+                }
+            }
             if let Some(mut messages) = messages {
                 progress.take_out(&mut messages);
                 events.push(Event::messages_snapshot(messages));
             }
             events.extend(state.map(Event::state_snapshot));
-            progress.subagent_lifecycle(&mut events);
+            if !ahead {
+                progress.subagent_lifecycle(&mut events);
+            }
             for slot in &progress.open {
-                slot.entity.restate(restate, &mut events);
+                if !(ahead && slot.dropped) {
+                    // A dropped entity has produced nothing a client holds.
+                    slot.entity.restate(restate && !slot.dropped, &mut events);
+                }
             }
         }
         events.extend(progress.ended.iter().cloned());

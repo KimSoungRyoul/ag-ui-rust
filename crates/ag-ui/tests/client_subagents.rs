@@ -23,11 +23,7 @@ fn tagged(event: Event, id: &str) -> Event {
 }
 
 fn change(index: usize, id: &str, kind: SubagentChangeKind) -> Changed {
-    Changed::Subagent(SubagentChange {
-        index,
-        run_id: SubagentRunId::new(id),
-        kind,
-    })
+    Changed::Subagent(SubagentChange::new(index, id, kind))
 }
 
 #[test]

@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use ag_ui::client::transport::{ReplayTransport, Transport, TransportFuture, TransportStream};
-use ag_ui::client::{Error, InterruptExt, RunEnd, SubmissionStatus, Thread, Update};
+use ag_ui::client::{Error, InterruptExt, RunEnd, Thread, Update};
 use ag_ui::{
     Event, Interrupt, Message, ResumeEntry, RunAgentInput, RunErrorEvent, RunFinishedEvent,
     RunOutcome, TextMessageRole, ToolCallId, ToolContent,
@@ -301,8 +301,13 @@ async fn official_remote_cancelled_outcome_is_distinct_from_local_abort() {
     );
 }
 
+/// AG-UI 1.0, `events/lifecycle`, "Cancelled runs": "A cancelled run waits
+/// for nothing. Its outcome carries no interrupts, and the next run on the
+/// thread is an ordinary new run, not a resume." The reference client clears
+/// its pending interrupts on a `RUN_FINISHED` whose outcome is not an
+/// interrupt, cancelled included.
 #[tokio::test]
-async fn remote_cancellation_does_not_confirm_a_submitted_interrupt_response() {
+async fn a_resume_whose_run_is_cancelled_settles_the_submission_and_waits_for_nothing() {
     let question = Interrupt::new("approval", "tool_approval");
     let cancelled =
         Event::RunFinished(RunFinishedEvent::new("t", "r").with_outcome(RunOutcome::Cancelled));
@@ -312,9 +317,13 @@ async fn remote_cancellation_does_not_confirm_a_submitted_interrupt_response() {
             Event::run_finished_interrupt("t", "r", vec![question.clone()]),
         ],
         vec![Event::run_started("t", "r"), cancelled],
+        vec![
+            Event::run_started("t", "r"),
+            Event::run_finished_success("t", "r"),
+        ],
     ])
     .matching_requests();
-    let mut thread = Thread::new(transport, "t");
+    let mut thread = Thread::new(transport.clone(), "t");
     thread.send("go").unwrap().collect_report().await;
     let pending = thread.interrupts()[0].clone();
     let report = thread
@@ -323,15 +332,17 @@ async fn remote_cancellation_does_not_confirm_a_submitted_interrupt_response() {
         .collect_report()
         .await;
     assert_eq!(report.end, RunEnd::Cancelled);
-    assert!(report.diagnostics.is_empty());
-    assert_eq!(thread.interrupts(), &[question]);
-    assert_eq!(
-        thread
-            .submission()
-            .expect("response stays unconfirmed")
-            .status,
-        SubmissionStatus::Unconfirmed
-    );
+    assert!(report.diagnostics.is_empty(), "{report:?}");
+    // The run that took the answers reported how it ended, so nothing is
+    // left to reconcile, and nothing is left to answer.
+    assert_eq!(thread.submission(), None);
+    assert!(thread.interrupts().is_empty());
+    // An interrupt that is no longer pending cannot be answered again ...
+    assert!(thread.decline(&pending).is_err());
+    // ... and the next run is an ordinary new one.
+    let report = thread.send("again").unwrap().collect_report().await;
+    assert_eq!(report.end, RunEnd::Success { result: None });
+    assert_eq!(transport.last_request().unwrap().resume, None);
 }
 
 #[tokio::test]
@@ -618,9 +629,9 @@ impl Transport for GoesQuiet {
 
 #[tokio::test]
 async fn an_expired_interrupt_is_declined_and_the_thread_moves_past_it() {
-    // An unreadable expiry is refused an answer as an elapsed one is, so it
-    // needs the same way out.
-    for (expires_at, refused) in [(PAST, "expired"), ("not-a-timestamp", "invalid expiry")] {
+    // An expiry the thread cannot read is not evidence of expiry, and is
+    // answered (`client_thread.rs`); one that has passed needs a way out.
+    for (expires_at, refused) in [(PAST, "expired")] {
         let transport = ReplayTransport::with_runs([
             vec![
                 Event::run_started("t", "r"),

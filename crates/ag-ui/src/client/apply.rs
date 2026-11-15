@@ -123,7 +123,32 @@ pub enum Changed {
 }
 
 /// Which message changed, and how.
+///
+/// `#[non_exhaustive]`: read the fields, match with `..`, and build one, to
+/// compare with what [`Applier::apply`] returned, with [`MessageChange::new`].
+///
+/// ```
+/// use ag_ui::client::apply::{Applier, Changed, MessageChange, MessageChangeKind};
+/// use ag_ui::{Event, TextMessageRole};
+///
+/// let mut applier = Applier::new();
+/// let started = applier.apply(&Event::text_message_start("m-1", TextMessageRole::Assistant))?;
+/// assert_eq!(
+///     started,
+///     Changed::Message(MessageChange::new(0, "m-1", MessageChangeKind::Started))
+/// );
+/// # Ok::<(), ag_ui::client::Error>(())
+/// ```
+///
+/// A struct literal does not compile outside this crate:
+///
+/// ```compile_fail,E0639
+/// use ag_ui::client::apply::{MessageChange, MessageChangeKind};
+///
+/// let change = MessageChange { index: 0, id: "m-1".into(), kind: MessageChangeKind::Ended };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct MessageChange {
     /// Index into [`Applier::messages`].
     pub index: usize,
@@ -131,6 +156,18 @@ pub struct MessageChange {
     pub id: MessageId,
     /// What happened to it.
     pub kind: MessageChangeKind,
+}
+
+impl MessageChange {
+    /// A change of `kind` to the message `id`, at `index` of
+    /// [`Applier::messages`].
+    pub fn new(index: usize, id: impl Into<MessageId>, kind: MessageChangeKind) -> Self {
+        Self {
+            index,
+            id: id.into(),
+            kind,
+        }
+    }
 }
 
 /// What happened to a message.
@@ -186,7 +223,19 @@ pub enum MessageChangeKind {
 }
 
 /// Which reasoning message changed, and how.
+///
+/// `#[non_exhaustive]`: read the fields, match with `..`, and build one, to
+/// compare with what [`Applier::apply`] returned, with
+/// [`ReasoningChange::new`]. A struct literal does not compile outside this
+/// crate:
+///
+/// ```compile_fail,E0639
+/// use ag_ui::client::apply::{ReasoningChange, ReasoningChangeKind};
+///
+/// let change = ReasoningChange { index: 0, id: "r-1".into(), kind: ReasoningChangeKind::Ended };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ReasoningChange {
     /// Index into [`Applier::messages`].
     pub index: usize,
@@ -194,6 +243,18 @@ pub struct ReasoningChange {
     pub id: MessageId,
     /// What happened to it.
     pub kind: ReasoningChangeKind,
+}
+
+impl ReasoningChange {
+    /// A change of `kind` to the reasoning message `id`, at `index` of
+    /// [`Applier::messages`].
+    pub fn new(index: usize, id: impl Into<MessageId>, kind: ReasoningChangeKind) -> Self {
+        Self {
+            index,
+            id: id.into(),
+            kind,
+        }
+    }
 }
 
 /// What happened to a reasoning message.
@@ -281,7 +342,19 @@ pub enum SubagentStatus {
 }
 
 /// Which subagent changed, and how.
+///
+/// `#[non_exhaustive]`: read the fields, match with `..`, and build one, to
+/// compare with what [`Applier::apply`] returned, with
+/// [`SubagentChange::new`]. A struct literal does not compile outside this
+/// crate:
+///
+/// ```compile_fail,E0639
+/// use ag_ui::client::apply::{SubagentChange, SubagentChangeKind};
+///
+/// let change = SubagentChange { index: 0, run_id: "s-1".into(), kind: SubagentChangeKind::Finished };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SubagentChange {
     /// Index into [`Applier::subagents`].
     pub index: usize,
@@ -289,6 +362,18 @@ pub struct SubagentChange {
     pub run_id: SubagentRunId,
     /// What happened to it.
     pub kind: SubagentChangeKind,
+}
+
+impl SubagentChange {
+    /// A change of `kind` to the invocation `run_id`, at `index` of
+    /// [`Applier::subagents`].
+    pub fn new(index: usize, run_id: impl Into<SubagentRunId>, kind: SubagentChangeKind) -> Self {
+        Self {
+            index,
+            run_id: run_id.into(),
+            kind,
+        }
+    }
 }
 
 /// What happened to a subagent invocation.
@@ -310,6 +395,46 @@ pub enum SubagentChangeKind {
     Failed,
 }
 
+/// The ids one kind of stream has open, in the order they opened.
+///
+/// Kept by id, so that opening and closing one costs the same however many
+/// are open: a producer that opens messages and never closes them does not
+/// make each later event slower. The order is read only when a run stops.
+#[derive(Clone, Debug, Default)]
+struct Open {
+    /// Each open id, with its place in the order of opening.
+    opened: HashMap<MessageId, u64>,
+    /// The place the next one opened takes.
+    next: u64,
+}
+
+impl Open {
+    /// Opens `id`. One that is open already moves behind the others.
+    fn open(&mut self, id: MessageId) {
+        self.opened.insert(id, self.next);
+        self.next += 1;
+    }
+
+    fn close(&mut self, id: &MessageId) {
+        self.opened.remove(id);
+    }
+
+    fn contains(&self, id: &MessageId) -> bool {
+        self.opened.contains_key(id)
+    }
+
+    fn clear(&mut self) {
+        self.opened.clear();
+    }
+
+    /// The open ids, the one opened first first.
+    fn in_order(&self) -> Vec<&MessageId> {
+        let mut ids: Vec<_> = self.opened.iter().collect();
+        ids.sort_unstable_by_key(|(_, place)| **place);
+        ids.into_iter().map(|(id, _)| id).collect()
+    }
+}
+
 /// The materialised view of a run.
 ///
 /// See the [module docs](self) for the shape of the problem this solves.
@@ -321,11 +446,18 @@ pub struct Applier {
     tool_calls: HashMap<ToolCallId, usize>,
     /// Text messages open for content, in the order they opened — several at
     /// once under concurrent subagents. What a run that stops reports as
-    /// aborted.
-    open_text: Vec<MessageId>,
+    /// aborted. An id stays here when a `MESSAGES_SNAPSHOT` removes its
+    /// message: the stream is still open, and has nowhere to write.
+    open_text: Open,
     /// The same for reasoning messages: what `REASONING_MESSAGE_START` opened
     /// and `REASONING_MESSAGE_END` has not closed.
-    open_reasoning: Vec<MessageId>,
+    open_reasoning: Open,
+    /// The owner the first `TEXT_MESSAGE_START` for an id gave it, where the
+    /// conversation held that id as a reasoning or an activity message, so
+    /// the text went into that message or nowhere. The ordering rules keep
+    /// text apart from reasoning and record that owner for the id as a text
+    /// message's, which is whose a tool call naming the id as its parent is.
+    claimed: HashMap<MessageId, Option<SubagentRunId>>,
     state: Value,
     thread_id: Option<ThreadId>,
     run_id: Option<RunId>,
@@ -351,8 +483,9 @@ impl Applier {
             messages: Vec::new(),
             by_id: HashMap::new(),
             tool_calls: HashMap::new(),
-            open_text: Vec::new(),
-            open_reasoning: Vec::new(),
+            open_text: Open::default(),
+            open_reasoning: Open::default(),
+            claimed: HashMap::new(),
             state: Value::Object(JsonObject::new()),
             thread_id: None,
             run_id: None,
@@ -522,11 +655,22 @@ impl Applier {
 
     /// Applies one event and reports what it changed.
     ///
+    /// An event the conversation has no place for changes nothing and is not
+    /// an error: [`Changed::Nothing`] is returned for text, reasoning or
+    /// tool-call arguments whose message or call the conversation does not
+    /// hold, or holds as an activity message, which takes no text. That is
+    /// what follows a `MESSAGES_SNAPSHOT` that removed a message or a call
+    /// the run still had open: the snapshot is the new baseline, and nothing
+    /// is made again from the rest of the item. A
+    /// [`Thread`](crate::client::Thread) reports each such item once per run,
+    /// as a warning.
+    ///
     /// # Errors
     ///
     /// [`Error::Patch`] or [`Error::InvalidPatchDocument`] for a state or
-    /// activity patch that does not apply, [`Error::Protocol`] for an event
-    /// the conversation has no place for, and [`Error::Unsupported`] for a
+    /// activity patch that does not apply, [`Error::Protocol`] for a
+    /// `RUN_FINISHED` whose interrupt outcome carries no interrupt, and
+    /// [`Error::Unsupported`] for a
     /// `*_CHUNK` or a retired `THINKING_*` event, which this applies only in
     /// their explicit form. Run a raw stream through a
     /// [`ChunkNormalizer`](crate::client::ChunkNormalizer) first, and read
@@ -679,12 +823,14 @@ impl Applier {
     }
 
     pub(crate) fn abort_messages(&mut self) -> (Vec<MessageChange>, Vec<ReasoningChange>) {
+        // One a snapshot removed while it was open has no message to report.
         let messages = self
             .open_text
-            .iter()
+            .in_order()
+            .into_iter()
             .filter_map(|id| {
-                self.by_id.get(id).map(|index| MessageChange {
-                    index: *index,
+                self.streamable(id).map(|index| MessageChange {
+                    index,
                     id: id.clone(),
                     kind: MessageChangeKind::Aborted,
                 })
@@ -692,10 +838,11 @@ impl Applier {
             .collect();
         let reasoning = self
             .open_reasoning
-            .iter()
+            .in_order()
+            .into_iter()
             .filter_map(|id| {
-                self.by_id.get(id).map(|index| ReasoningChange {
-                    index: *index,
+                self.streamable(id).map(|index| ReasoningChange {
+                    index,
                     id: id.clone(),
                     kind: ReasoningChangeKind::Aborted,
                 })
@@ -738,10 +885,19 @@ impl Applier {
             }
         }
         self.messages = messages;
-        // A snapshot can drop a message that was being streamed into.
-        let by_id = &self.by_id;
-        self.open_text.retain(|open| by_id.contains_key(open));
-        self.open_reasoning.retain(|open| by_id.contains_key(open));
+        // What is open stays open. AG-UI 1.0 (`basic/patterns/streaming`):
+        // the standalone events, `MESSAGES_SNAPSHOT` among them, "open and
+        // close no items of their own, and MAY appear anywhere within an
+        // open run". The events that follow for an open item apply to what
+        // the conversation now holds under its id, and to nothing when the
+        // snapshot removed it.
+    }
+
+    /// The index of the message with this id, when it can take streamed
+    /// text: any message but an activity, whose content is an object.
+    fn streamable(&self, id: &MessageId) -> Option<usize> {
+        let index = *self.by_id.get(id)?;
+        (!matches!(self.messages.get(index)?, Message::Activity(_))).then_some(index)
     }
 
     /// Folds a `MESSAGES_SNAPSHOT` into the conversation.
@@ -767,17 +923,36 @@ impl Applier {
     ///   from it has been deleted. Without that half a client-side activity
     ///   would be undeletable, and a backend that restates reasoning under
     ///   ids of its own would leave every thought in the list twice.
+    ///
+    /// A snapshot is the new baseline for what a run has open, too. It
+    /// closes nothing, and it is not merged with what was there: a message
+    /// being streamed into is replaced by the snapshot's copy or removed,
+    /// and a tool call the snapshot's copy of its message does not list is
+    /// gone. AG-UI 1.0 (`basic/patterns/snapshots`): "A consumer MUST
+    /// replace its copy with the snapshot's content — a snapshot is not a
+    /// merge"; and of what a snapshot leaves out (`events/reasoning`): "The
+    /// consumer's duty is to return what it holds once all events have
+    /// applied, not to resurrect what a snapshot removed."
+    ///
+    /// An id names one message (1.0, `basic`: "it MUST be unique within its
+    /// thread"), so of a snapshot that carries an id more than once the last
+    /// copy is kept, where the first stood.
     fn merge_snapshot(&mut self, snapshot: Vec<Message>) {
         let owns_activity = snapshot.iter().any(|m| matches!(m, Message::Activity(_)));
         let owns_reasoning = snapshot.iter().any(|m| matches!(m, Message::Reasoning(_)));
 
         // `Option` slots so a message can be moved out when it is placed, and
         // whatever is left over is exactly what the snapshot added.
-        let mut incoming: Vec<Option<Message>> = snapshot.into_iter().map(Some).collect();
-        let mut position: HashMap<MessageId, usize> = HashMap::with_capacity(incoming.len());
-        for (index, message) in incoming.iter().enumerate() {
-            let id = message.as_ref().expect("every slot starts full").id();
-            position.insert(id.clone(), index);
+        let mut incoming: Vec<Option<Message>> = Vec::with_capacity(snapshot.len());
+        let mut position: HashMap<MessageId, usize> = HashMap::with_capacity(snapshot.len());
+        for message in snapshot {
+            match position.get(message.id()) {
+                Some(first) => incoming[*first] = Some(message),
+                None => {
+                    position.insert(message.id().clone(), incoming.len());
+                    incoming.push(Some(message));
+                }
+            }
         }
 
         let previous = std::mem::take(&mut self.messages);
@@ -806,17 +981,6 @@ impl Applier {
         self.replace_messages(merged);
     }
 
-    fn message_change(&self, id: &MessageId, kind: MessageChangeKind) -> Changed {
-        match self.by_id.get(id) {
-            Some(index) => Changed::Message(MessageChange {
-                index: *index,
-                id: id.clone(),
-                kind,
-            }),
-            None => Changed::Nothing,
-        }
-    }
-
     fn text_start(
         &mut self,
         id: MessageId,
@@ -824,18 +988,27 @@ impl Applier {
         name: Option<String>,
         owner: Option<SubagentRunId>,
     ) -> Changed {
-        self.open_text.retain(|open| open != &id);
-        self.open_text.push(id.clone());
-        if let Some(index) = self.by_id.get(&id) {
+        if let Some(held) = self.message(&id) {
+            if matches!(held, Message::Reasoning(_) | Message::Activity(_)) {
+                self.claimed.entry(id.clone()).or_insert(owner);
+            }
+            // An activity message has no text to append to, so the id opens
+            // nothing: its content is left as it is, as in the reference
+            // client.
+            let Some(index) = self.streamable(&id) else {
+                return Changed::Nothing;
+            };
+            self.open_text.open(id.clone());
             // Re-opening a known id keeps the message and appends to it, which
             // is what a producer that restarts a stream means — and keeps its
             // attribution, which the opener transferred once.
             return Changed::Message(MessageChange {
-                index: *index,
+                index,
                 id,
                 kind: MessageChangeKind::Started,
             });
         }
+        self.open_text.open(id.clone());
         // Attribution transfers to the message the event creates, so a
         // renderer can group a conversation by subagent without replaying
         // the stream.
@@ -856,16 +1029,20 @@ impl Applier {
         owner: &Option<SubagentRunId>,
     ) -> Result<Changed> {
         if !self.by_id.contains_key(id) {
+            // The message was open and a `MESSAGES_SNAPSHOT` removed it.
+            // Nothing is made again from the rest of it: the snapshot said
+            // the conversation does not hold it.
+            if self.open_text.contains(id) {
+                return Ok(Changed::Nothing);
+            }
             // Tolerant: an orphan content event opens the message it names.
             self.text_start(id.clone(), TextMessageRole::Assistant, None, owner.clone());
         }
-        let Some(index) = self.by_id.get(id).copied() else {
+        // An activity message under this id takes no text.
+        let Some(index) = self.streamable(id) else {
             return Ok(Changed::Nothing);
         };
-        let Some(message) = self.messages.get_mut(index) else {
-            return Ok(Changed::Nothing);
-        };
-        append_text(message, delta)?;
+        append_text(&mut self.messages[index], delta);
         Ok(Changed::Message(MessageChange {
             index,
             id: id.clone(),
@@ -876,8 +1053,15 @@ impl Applier {
     }
 
     fn text_end(&mut self, id: &MessageId) -> Changed {
-        self.open_text.retain(|open| open != id);
-        self.message_change(id, MessageChangeKind::Ended)
+        self.open_text.close(id);
+        match self.streamable(id) {
+            Some(index) => Changed::Message(MessageChange {
+                index,
+                id: id.clone(),
+                kind: MessageChangeKind::Ended,
+            }),
+            None => Changed::Nothing,
+        }
     }
 
     // ---- tool calls -----------------------------------------------------
@@ -889,21 +1073,55 @@ impl Applier {
         parent_message_id: Option<MessageId>,
         owner: Option<SubagentRunId>,
     ) -> Changed {
-        // A call with no parent belongs to a message of its own; the call id is
-        // the only id available to name it. A message created here takes the
-        // call's attribution; one that already exists keeps its own.
-        let parent =
-            parent_message_id.unwrap_or_else(|| MessageId::new(format!("{tool_call_id}-message")));
-        let index = match self.by_id.get(&parent) {
+        // The message the call names carries it, when that is an assistant
+        // message, or none yet, which the call then opens. A message created
+        // here takes the call's attribution; one that already exists keeps
+        // its own.
+        let named = parent_message_id
+            .as_ref()
+            .and_then(|parent| self.by_id.get(parent).copied());
+        let carries =
+            |index: usize| matches!(self.messages.get(index), Some(Message::Assistant(_)));
+        let (carrier, owner) = match (parent_message_id, named) {
+            (Some(parent), Some(index)) if carries(index) => (parent, owner),
+            (Some(parent), None) => (parent, owner),
+            // A call with no parent belongs to a message of its own; the call
+            // id is the only id available to name it. So does one whose
+            // parent is not an assistant message and cannot carry a call: a
+            // reasoning message a reply shares its id with, say. The
+            // reference client does the same.
+            //
+            // Unattributed, such a call is whoever's the ordering rules make
+            // it: the owner they record for the parent as a text message.
+            // That is the named message's own, or, for an id the
+            // conversation holds as reasoning or activity, the owner the
+            // text start that shared it claimed. None claimed it: the parent
+            // agent's.
+            (parent, named) => {
+                let inherited = || {
+                    let held = self.messages.get(named?)?;
+                    match held {
+                        Message::Reasoning(_) | Message::Activity(_) => {
+                            self.claimed.get(parent.as_ref()?).cloned().flatten()
+                        }
+                        _ => held.subagent_run_id().cloned(),
+                    }
+                };
+                let owner = owner.or_else(inherited);
+                (MessageId::new(format!("{tool_call_id}-message")), owner)
+            }
+        };
+        let index = match self.by_id.get(&carrier) {
             Some(index) => *index,
             None => self.push_message(Message::Assistant(AssistantMessage {
-                id: parent.clone(),
+                id: carrier.clone(),
                 subagent_run_id: owner,
                 ..Default::default()
             })),
         };
-        // The parent may exist and not be an assistant message, in which case
-        // there is nowhere to hang the call and nothing changes.
+        // Even the message named after the call may exist and not be an
+        // assistant message, in which case there is nowhere to hang the call
+        // and nothing changes.
         let Some(Message::Assistant(assistant)) = self.messages.get_mut(index) else {
             return Changed::Nothing;
         };
@@ -914,16 +1132,18 @@ impl Applier {
         self.tool_calls.insert(tool_call_id.clone(), index);
         Changed::Message(MessageChange {
             index,
-            id: parent,
+            id: carrier,
             kind: MessageChangeKind::ToolCallStarted { tool_call_id, name },
         })
     }
 
     fn tool_call_args(&mut self, tool_call_id: &ToolCallId, delta: &str) -> Result<Changed> {
+        // No message holds the call: it was never started, its start had
+        // nowhere to put it, or a `MESSAGES_SNAPSHOT` since restated its
+        // message without it. The fragment is dropped, as in the reference
+        // client, and a `Thread` says so.
         let Some(index) = self.tool_calls.get(tool_call_id).copied() else {
-            return Err(Error::protocol(format!(
-                "TOOL_CALL_ARGS for unknown tool call {tool_call_id:?}"
-            )));
+            return Ok(Changed::Nothing);
         };
         let Some(Message::Assistant(assistant)) = self.messages.get_mut(index) else {
             return Ok(Changed::Nothing);
@@ -1091,18 +1311,22 @@ impl Applier {
     /// `TEXT_MESSAGE_START` for a known id does and as the reference client
     /// does. Nothing is created beside it.
     fn reasoning_start(&mut self, id: MessageId, owner: Option<SubagentRunId>) -> Changed {
-        self.open_reasoning.retain(|open| open != &id);
-        self.open_reasoning.push(id.clone());
-        let index = match self.by_id.get(&id) {
-            Some(index) => *index,
+        let index = if self.by_id.contains_key(&id) {
+            // An activity message has no text, so the id opens nothing.
+            let Some(index) = self.streamable(&id) else {
+                return Changed::Nothing;
+            };
+            index
+        } else {
             // Attribution transfers to the message the event creates, as it
             // does for text.
-            None => self.push_message(Message::Reasoning(ReasoningMessage {
+            self.push_message(Message::Reasoning(ReasoningMessage {
                 id: id.clone(),
                 subagent_run_id: owner,
                 ..Default::default()
-            })),
+            }))
         };
+        self.open_reasoning.open(id.clone());
         Changed::Reasoning(ReasoningChange {
             index,
             id,
@@ -1117,16 +1341,19 @@ impl Applier {
         owner: &Option<SubagentRunId>,
     ) -> Result<Changed> {
         if !self.by_id.contains_key(id) {
+            // Open, and removed by a `MESSAGES_SNAPSHOT`: as for text,
+            // nothing is made again from the rest of it.
+            if self.open_reasoning.contains(id) {
+                return Ok(Changed::Nothing);
+            }
             // Tolerant: an orphan content event opens the message it names.
             self.reasoning_start(id.clone(), owner.clone());
         }
-        let Some(index) = self.by_id.get(id).copied() else {
+        // An activity message under this id takes no text.
+        let Some(index) = self.streamable(id) else {
             return Ok(Changed::Nothing);
         };
-        let Some(message) = self.messages.get_mut(index) else {
-            return Ok(Changed::Nothing);
-        };
-        append_text(message, delta)?;
+        append_text(&mut self.messages[index], delta);
         Ok(Changed::Reasoning(ReasoningChange {
             index,
             id: id.clone(),
@@ -1137,10 +1364,10 @@ impl Applier {
     }
 
     fn reasoning_end(&mut self, id: &MessageId) -> Changed {
-        self.open_reasoning.retain(|open| open != id);
-        match self.by_id.get(id) {
+        self.open_reasoning.close(id);
+        match self.streamable(id) {
             Some(index) => Changed::Reasoning(ReasoningChange {
-                index: *index,
+                index,
                 id: id.clone(),
                 kind: ReasoningChangeKind::Ended,
             }),
@@ -1223,11 +1450,10 @@ impl Applier {
             if event.description.is_some() {
                 subagent.description.clone_from(&event.description);
             }
-            if event.parent_subagent_run_id.is_some() {
-                subagent
-                    .parent_subagent_run_id
-                    .clone_from(&event.parent_subagent_run_id);
+            if let Some(parent) = &event.parent_subagent_run_id {
+                self.adopt(index, parent);
             }
+            let subagent = &mut self.subagents[index];
             if event.parent_tool_call_id.is_some() {
                 subagent
                     .parent_tool_call_id
@@ -1247,7 +1473,11 @@ impl Applier {
             run_id: run_id.clone(),
             name: event.name.clone(),
             description: event.description.clone(),
-            parent_subagent_run_id: event.parent_subagent_run_id.clone(),
+            // No invocation spawned itself.
+            parent_subagent_run_id: event
+                .parent_subagent_run_id
+                .clone()
+                .filter(|parent| parent != &run_id),
             parent_tool_call_id: event.parent_tool_call_id.clone(),
             parent_message_id: event.parent_message_id.clone(),
             status: SubagentStatus::Running,
@@ -1257,6 +1487,46 @@ impl Applier {
             run_id,
             kind: SubagentChangeKind::Started,
         })
+    }
+
+    /// Gives the subagent at `index`, which is announced again, the parent
+    /// its new announcement names.
+    ///
+    /// The newest announcement stands. What the table holds may say the
+    /// opposite: a run that announces two invocations the other way round
+    /// than the run before it finds the named parent recorded *under* this
+    /// subagent, and keeping both links would make each the other's
+    /// ancestor, which no tree has and no snapshot restores. So the older
+    /// link, the one on the way up from the parent that ends at this
+    /// subagent, is dropped, and its holder stands directly under the
+    /// parent agent, where an announcement that names no parent puts it.
+    ///
+    /// Only an announcement that changes the parent of a known invocation
+    /// walks the ancestors, so a first announcement costs the same at any
+    /// depth.
+    fn adopt(&mut self, index: usize, parent: &SubagentRunId) {
+        let id = self.subagents[index].run_id.clone();
+        let unchanged = self.subagents[index].parent_subagent_run_id.as_ref() == Some(parent);
+        // No invocation spawned itself.
+        if unchanged || *parent == id {
+            return;
+        }
+        let mut at = self.subagent_by_id.get(parent).copied();
+        // A walk longer than the table has met a cycle that was there
+        // already, which only a stream nothing verified leaves.
+        for _ in 0..self.subagents.len() {
+            let Some(ancestor) = at else { break };
+            let above = self.subagents[ancestor].parent_subagent_run_id.clone();
+            match above {
+                Some(above) if above == id => {
+                    self.subagents[ancestor].parent_subagent_run_id = None;
+                    break;
+                }
+                Some(above) => at = self.subagent_by_id.get(&above).copied(),
+                None => break,
+            }
+        }
+        self.subagents[index].parent_subagent_run_id = Some(parent.clone());
     }
 
     fn subagent_finished(&mut self, event: &SubagentFinishedEvent) -> Changed {
@@ -1443,8 +1713,9 @@ fn empty_message(id: MessageId, role: TextMessageRole, name: Option<String>) -> 
     }
 }
 
-/// Appends streamed text to whichever field of the message carries it.
-fn append_text(message: &mut Message, delta: &str) -> Result<()> {
+/// Appends streamed text to whichever field of the message carries it. An
+/// activity message has none, and is not handed here.
+fn append_text(message: &mut Message, delta: &str) {
     match message {
         Message::Assistant(m) => m.content.get_or_insert_with(String::new).push_str(delta),
         Message::System(m) => m.content.push_str(delta),
@@ -1467,14 +1738,8 @@ fn append_text(message: &mut Message, delta: &str) -> Result<()> {
                 })),
             },
         },
-        Message::Activity(m) => {
-            return Err(Error::protocol(format!(
-                "text streamed into activity message {:?}, which has no text",
-                m.id
-            )));
-        }
+        Message::Activity(_) => {}
     }
-    Ok(())
 }
 
 /// Attaches a provider's opaque reasoning blob to a message, and says whether
