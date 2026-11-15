@@ -1061,7 +1061,8 @@ impl<'a> Validator<'a> {
         }
 
         let graph = self.build_graph(nodes, &sources, &ids, &mut report);
-        self.check_cycles(nodes, &graph, &mut report);
+        let root = ids.get(self.options.root_id.as_str()).copied();
+        self.check_cycles(nodes, &graph, root, &mut report);
         self.check_index_scope(drawing, nodes, &graph, &mut report);
         // Where a component may sit is asked of a tree that is otherwise
         // sound, and of a caller that holds components to their catalogs.
@@ -1074,7 +1075,7 @@ impl<'a> Validator<'a> {
 
         // A second pass of the same walk, from the root alone and with no
         // depth limit: what the root can reach, not what a renderer will draw.
-        if let Some(&root) = ids.get(self.options.root_id.as_str()) {
+        if let Some(root) = root {
             let reachable = graph.walk([root], None).reached;
             for node in nodes {
                 if let Some(id) = node.id {
@@ -1891,10 +1892,37 @@ impl<'a> Validator<'a> {
     /// Reports each distinct cycle once, and a component graph nested past
     /// [`ValidateOptions::max_depth`].
     ///
-    /// The walk itself is [`Graph::walk`], started from every component so
-    /// that a loop the root cannot reach is found too.
-    fn check_cycles(&self, nodes: &[Node<'_>], graph: &Graph, report: &mut ValidationReport) {
-        let walk = graph.walk(0..graph.len(), Some(self.options.max_depth));
+    /// Depth is how far below the root a renderer draws a component, so the
+    /// walk with the limit starts at the root, wherever the list puts it, as
+    /// upstream's does (`validation_helpers.py`, `analyze_topology`). A list
+    /// with no root is a fragment of an update: the limit is measured from each
+    /// component nothing in it refers to. The walk then goes on from every
+    /// other component, with no limit, so that a loop the root cannot reach is
+    /// found too. It is one [`Graph::walk_from`], which enters each component
+    /// once.
+    fn check_cycles(
+        &self,
+        nodes: &[Node<'_>],
+        graph: &Graph,
+        root: Option<usize>,
+        report: &mut ValidationReport,
+    ) {
+        let limit = Some(self.options.max_depth);
+        let tops: Vec<usize> = match root {
+            Some(root) => vec![root],
+            None => {
+                let mut has_parent = vec![false; graph.len()];
+                for edge in graph.all_edges() {
+                    has_parent[edge.target] = true;
+                }
+                (0..graph.len()).filter(|node| !has_parent[*node]).collect()
+            }
+        };
+        let walk = graph.walk_from(
+            tops.into_iter()
+                .map(|top| (top, limit))
+                .chain((0..graph.len()).map(|node| (node, None))),
+        );
         for finding in walk.findings {
             report.errors.push(match finding {
                 Finding::Cycle(cycle) => cycle_error(

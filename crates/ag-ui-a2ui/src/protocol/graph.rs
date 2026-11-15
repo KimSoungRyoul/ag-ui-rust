@@ -149,6 +149,20 @@ impl Graph {
         starts: impl IntoIterator<Item = usize>,
         max_depth: Option<usize>,
     ) -> Walk {
+        self.walk_from(starts.into_iter().map(|start| (start, max_depth)))
+    }
+
+    /// [`Graph::walk`], with a depth limit of its own for each start.
+    ///
+    /// Depth is measured from the start a node is first entered from, so the
+    /// depth a renderer draws to is measured by putting its root first with
+    /// the limit. The starts after it, with none, then find the loops the
+    /// root does not reach, and a long loop among them is a loop and not a
+    /// depth overrun.
+    pub(crate) fn walk_from(
+        &self,
+        starts: impl IntoIterator<Item = (usize, Option<usize>)>,
+    ) -> Walk {
         const WHITE: u8 = 0;
         const GRAY: u8 = 1;
         const BLACK: u8 = 2;
@@ -158,7 +172,7 @@ impl Graph {
         let mut reported_depth = false;
         let mut walk = Walk::default();
 
-        for start in starts {
+        for (start, max_depth) in starts {
             if color[start] != WHITE {
                 continue;
             }
