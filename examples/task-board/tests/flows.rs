@@ -445,8 +445,9 @@ async fn research_delegates_to_two_subagents_and_the_client_files_their_work_und
         .iter()
         .filter(|message| message.subagent_run_id().is_none())
         .count();
-    // The user's line, the reply, and the surface's call and result.
-    assert_eq!(untagged, 4, "{:?}", thread.messages());
+    // The user's line, the supervisor's thought before it delegated, the
+    // reply, and the surface's call and result.
+    assert_eq!(untagged, 5, "{:?}", thread.messages());
 
     // And the board moved twice, once inside each delegate.
     let board = thread.state().expect("a board");

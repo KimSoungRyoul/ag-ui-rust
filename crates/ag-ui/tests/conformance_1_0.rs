@@ -176,8 +176,6 @@ struct Seen {
     messages: Option<Vec<Value>>,
     state: Option<Value>,
     request: Option<Value>,
-    /// The reasoning this SDK keeps apart from the messages.
-    reasoning: Option<Vec<Value>>,
     /// Thread only: `RunEnd` and every diagnostic as `[kind, message]`.
     end: Option<Value>,
     diagnostics: Option<Vec<(String, String)>>,
@@ -244,7 +242,6 @@ async fn pipeline(stream: &Stream) -> Seen {
         warnings: Some(warnings),
         messages: Some(to_values(applier.messages())),
         state: Some(applier.state().clone()),
-        reasoning: Some(to_values(applier.reasoning())),
         ..Seen::default()
     }
 }
@@ -368,7 +365,6 @@ async fn thread(stream: &Stream) -> Seen {
         messages: Some(to_values(thread.messages())),
         state: Some(thread.raw_state().clone()),
         request: Some(serde_json::to_value(&requests[0]).expect("the request serializes")),
-        reasoning: Some(to_values(thread.reasoning())),
         end: Some(end),
         diagnostics: Some(diagnostics),
         at: None,
@@ -636,14 +632,6 @@ fn mismatches(expect: &Value, seen: &Seen, strict: bool) -> Vec<String> {
             }
 
             // Not corpus vocabulary: what a pin needs to say exactly.
-            "reasoning" => match &seen.reasoning {
-                Some(reasoning) => {
-                    if let Err(why) = subset(expected, &Value::Array(reasoning.clone()), "") {
-                        out.push(format!("reasoning: {why}"));
-                    }
-                }
-                None => unseen(key, &mut out),
-            },
             "end" => match &seen.end {
                 Some(end) if end == expected => {}
                 Some(end) => out.push(format!("end: {end}, expected {expected}")),
@@ -849,7 +837,7 @@ struct Pin {
     issue: u32,
     reason: &'static str,
     /// Exactly what the lane does today, in the corpus's vocabulary plus
-    /// `reasoning`, `end`, `diagnostics` and `at`.
+    /// `end`, `diagnostics` and `at`.
     expect: Value,
 }
 
@@ -873,12 +861,7 @@ fn pins() -> Vec<Pin> {
     ];
     let later_run = "RUN_STARTED arrived after the run had already finished";
     let one_run = "reads one run per stream";
-    let apart = "streamed reasoning is kept in `reasoning()`, not in the message list";
     let no_peer_version = "no peer-version setting, so no version-selected downgrade (1.0: MAY)";
-    let phantom = json!([
-        {"id": "span-reasoning-span-1", "content": ""},
-        {"id": "m-reasoning-span-1", "content": "weighing the options"},
-    ]);
     let delegated = json!({
         "outcome": "completed",
         "eventTypes": [
@@ -978,63 +961,6 @@ fn pins() -> Vec<Pin> {
             44,
             "the server verifier ends at the first terminal event",
             json!({"outcome": "failed", "errorContains": "run-ended", "at": 2}),
-        ),
-        // ---- #67: reasoning messages in the conversation ------------------
-        // `Applier::reasoning` documents the decision. The span's id also
-        // leaves an empty entry of its own there.
-        pin(
-            "reasoning-span-and-message",
-            Pipeline,
-            Divergence,
-            67,
-            apart,
-            json!({
-                "outcome": "completed",
-                "noWarnings": true,
-                "messageCount": 1,
-                "messages": [{"id": "m-reasoning-span-2", "content": "the answer"}],
-                "reasoning": phantom,
-            }),
-        ),
-        pin(
-            "reasoning-span-and-message",
-            Thread,
-            Divergence,
-            67,
-            apart,
-            json!({
-                "outcome": "completed",
-                "noWarnings": true,
-                "messageCount": 1,
-                "messages": [{"id": "m-reasoning-span-2", "content": "the answer"}],
-                "reasoning": phantom,
-            }),
-        ),
-        pin(
-            "era-0-0-45-thinking-translated",
-            Pipeline,
-            Divergence,
-            67,
-            apart,
-            json!({
-                "outcome": "completed",
-                "warnings": ["THINKING_START"],
-                "messages": [{"role": "assistant", "content": "Checked."}],
-                "reasoning": [{"content": "Let me check."}],
-            }),
-        ),
-        pin(
-            "era-0-0-45-thinking-translated",
-            Thread,
-            Divergence,
-            67,
-            apart,
-            json!({
-                "outcome": "completed",
-                "warnings": ["THINKING_START"],
-                "messages": [{"role": "assistant", "content": "Checked."}],
-                "reasoning": [{"content": "Let me check."}],
-            }),
         ),
         // ---- #68: version-selected downgrades ------------------------------
         // `client.maxProtocolVersion` reaches this SDK only as "omit
