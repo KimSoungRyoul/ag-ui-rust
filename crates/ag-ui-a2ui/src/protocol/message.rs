@@ -866,6 +866,55 @@ impl Component {
     pub fn prop(&self, key: &str) -> Option<&Value> {
         self.props.get(key)
     }
+
+    /// The catalog this component names for itself, on a surface of
+    /// `version`: its `@catalogId`, from v1.0. `None` for a component that
+    /// names none, and in a version where a surface has one catalog.
+    ///
+    /// The catalog a component is read from is this one or else its
+    /// surface's: [`SurfaceState::catalog_of`](super::surface::SurfaceState::catalog_of).
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{A2uiVersion, Component};
+    /// use serde_json::json;
+    ///
+    /// let chart = Component::new("chart", "LineChart").with("@catalogId", json!("charts"));
+    /// assert_eq!(chart.catalog_id(A2uiVersion::V1_0), Some("charts"));
+    /// assert_eq!(chart.catalog_id(A2uiVersion::V0_9), None);
+    /// ```
+    pub fn catalog_id(&self, version: A2uiVersion) -> Option<&str> {
+        self.props
+            .get(version.component_keys().catalog_id?)?
+            .as_str()
+    }
+
+    /// The check rules of an input component, under the key `version` gives
+    /// them: `checks`, and `@checks` from v1.0.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{A2uiVersion, Component};
+    /// use serde_json::json;
+    ///
+    /// let rules = json!([{"condition": {"@call": "required", "args": {"value": {"@path": "/email"}}}, "message": "Needed."}]);
+    /// let field = Component::new("email", "TextField").with("@checks", rules.clone());
+    /// assert_eq!(field.checks(A2uiVersion::V1_0), Some(&rules));
+    /// assert_eq!(field.checks(A2uiVersion::V0_9), None);
+    /// ```
+    pub fn checks(&self, version: A2uiVersion) -> Option<&Value> {
+        self.props.get(version.component_keys().checks)
+    }
+
+    /// The accessibility attributes of the component, under the key `version`
+    /// gives them: `accessibility`, and `@accessibility` from v1.0.
+    pub fn accessibility(&self, version: A2uiVersion) -> Option<&Value> {
+        self.props.get(version.component_keys().accessibility)
+    }
+
+    /// The extension metadata of the component, on a surface of `version`:
+    /// its `@metadata`, from v1.0. `None` before, when a component has none.
+    pub fn metadata(&self, version: A2uiVersion) -> Option<&Value> {
+        self.props.get(version.component_keys().metadata?)
+    }
 }
 
 /// How a component declares its children.

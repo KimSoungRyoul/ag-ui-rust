@@ -17,10 +17,12 @@
 //!
 //! Before v1.0 a surface has the one catalog it was created with. From v1.0
 //! it may mix them: a component names its own with `@catalogId`, and falls
-//! back to the surface's default. [`Catalogs`] is what a surface may draw
-//! from, and answers which catalog a component is defined in. All the
-//! catalogs of one surface are written against the surface's protocol
-//! version ([`Catalog::version`]).
+//! back to the surface's default. A
+//! [`Validator`](crate::validate::Validator) made
+//! [`over`](crate::validate::Validator::over) several catalogs, and a
+//! [`MessageProcessor`](crate::processor::MessageProcessor), read each
+//! component from the catalog it names. All the catalogs of one surface are
+//! written against the surface's protocol version ([`Catalog::version`]).
 //!
 //! # Structural properties are what make validation possible
 //!
@@ -761,7 +763,8 @@ impl Catalog {
     /// A document that states `"protocolVersion": "1.0"` is held to the rules
     /// v1.0 gave catalogs, and is refused when it breaks one:
     ///
-    /// - A component name and a function name are identifiers
+    /// - A component name, a function name, and the names of a component's
+    ///   properties and of a function's arguments are identifiers
     ///   (`^[\p{XID_Start}_][\p{XID_Continue}]*$`), so no `-`, and no `@`,
     ///   which belongs to the protocol. `Surface` is the protocol's own
     ///   component and cannot be defined.
@@ -1636,17 +1639,11 @@ mod tests {
         assert_eq!(returns("count"), Some("number"));
         assert_eq!(returns("untyped"), None);
 
-        // So the published basic catalog states what the built-in one does.
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/spec_v0_9/basic_catalog.json");
-        let document: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let published = Catalog::from_schema(&document).unwrap();
-        for (name, function) in &Catalog::basic().functions {
-            assert_eq!(
-                published.functions[name].return_type, function.return_type,
-                "{name}"
-            );
+        // Every function of a published basic catalog states one.
+        for &version in A2uiVersion::ALL {
+            for (name, function) in &Catalog::basic_for(version).functions {
+                assert!(function.return_type.is_some(), "{version} {name}");
+            }
         }
     }
 
@@ -1703,6 +1700,9 @@ mod tests {
         );
 
         // The input components take checks in every version; the others never.
+        // The documents give them the rules through the common `Checkable`
+        // type, so `checks` is not one of a component's own properties.
+        assert!(!has(&v0_9, "TextField", "checks"));
         for catalog in [&v0_9, &v0_9_1, &v1_0] {
             for (component, checkable) in [("Button", true), ("TextField", true), ("Text", false)] {
                 assert_eq!(
@@ -1785,6 +1785,171 @@ mod tests {
         assert_eq!(callers("both"), AllowedCallers::RendererOrAgent);
         assert_eq!(callers("plain"), AllowedCallers::RendererOnly);
         assert_eq!(callers("odd"), AllowedCallers::RendererOnly);
+    }
+
+    #[test]
+    fn a_v1_0_catalog_is_held_to_the_rules_of_v1_0_when_it_is_read() {
+        // Each document breaks one rule, and says which in its refusal.
+        let broken = [
+            (
+                json!({"components": {"My-Card": {"type": "object"}}}),
+                "Invalid UAX #31 component identifier 'My-Card'",
+            ),
+            (
+                json!({"components": {"Surface": {"type": "object"}}}),
+                "defines 'Surface'",
+            ),
+            (
+                json!({"components": {"Card": {"type": "object", "properties": {"sub-title": {}}}}}),
+                "Invalid UAX #31 property identifier 'sub-title' of component 'Card'",
+            ),
+            (
+                json!({"components": {"Card": {"allOf": [{"properties": {"1st": {}}}]}}}),
+                "Invalid UAX #31 property identifier '1st' of component 'Card'",
+            ),
+            (
+                json!({"functions": {"@now": {"returnType": "string"}}}),
+                "Invalid UAX #31 function identifier '@now'",
+            ),
+            (
+                json!({"functions": {"join": {"parameters": {"with-sep": {"type": "string"}}}}}),
+                "Invalid UAX #31 argument identifier 'with-sep' of function 'join'",
+            ),
+            (
+                json!({"functions": {"join": {"properties": {
+                    "args": {"type": "object", "properties": {"a b": {}}}
+                }}}}),
+                "Invalid UAX #31 argument identifier 'a b' of function 'join'",
+            ),
+            (
+                json!({"functions": {"join": {"args": {"$ref": "#/$defs/JoinArgs"}}},
+                       "$defs": {"JoinArgs": {"properties": {"no.dots": {}}}}}),
+                "Invalid UAX #31 argument identifier 'no.dots' of function 'join'",
+            ),
+            (
+                json!({"functions": {"openUrl": {
+                    "requiresUserActivation": true, "allowedCallers": "rendererOrAgent"
+                }}}),
+                "sets requiresUserActivation with allowedCallers 'rendererOrAgent'",
+            ),
+            (
+                json!({"components": {"Card": {"properties": {
+                    "title": {"$ref": "other_catalog.json#/$defs/Title"}
+                }}}}),
+                "Unsupported external $ref 'other_catalog.json#/$defs/Title'",
+            ),
+        ];
+        for (mut document, says) in broken {
+            document["catalogId"] = json!("c");
+            // The same document is a v0.9 catalog, which has none of the rules.
+            assert!(Catalog::from_schema(&document).is_ok(), "{document}");
+            document["protocolVersion"] = json!("1.0");
+            match Catalog::from_schema(&document) {
+                Err(Error::Catalog(reason)) => assert!(reason.contains(says), "{reason}"),
+                other => panic!("{document}: {other:?}"),
+            }
+        }
+        // An extension that is not named by an identifier is a value the
+        // protocol does not allow, in a document that is a catalog.
+        let extension = json!({
+            "catalogId": "c",
+            "protocolVersion": "1.0",
+            "components": {"Card": {"metadata": {"extensions": {"com.example": 1}}}}
+        });
+        assert!(matches!(
+            Catalog::from_schema(&extension),
+            Err(Error::Validation { .. })
+        ));
+
+        // What the rules let through: the envelope's own keys beside the
+        // properties, names outside ASCII, a reference to the common types
+        // by a relative or an absolute name, and a gesture a renderer asks for.
+        let sound = Catalog::from_schema(&json!({
+            "catalogId": "c",
+            "protocolVersion": "1.0",
+            "components": {
+                "Carte_ℓ": {
+                    "metadata": {"extensions": {"com_example": 1}},
+                    "properties": {
+                        "@catalogId": {"type": "string"},
+                        "titre_ℓ": {"$ref": "common_types.json#/$defs/DynamicString"},
+                        "child": {"$ref": "https://a2ui.org/specification/v1_0/common_types.json#/$defs/Child"}
+                    }
+                }
+            },
+            "functions": {
+                "openUrl": {
+                    "requiresUserActivation": true,
+                    "allowedCallers": "rendererOnly",
+                    "parameters": {"url": {"type": "string"}}
+                }
+            }
+        }))
+        .unwrap();
+        let card = sound.component("Carte_ℓ").unwrap();
+        assert_eq!(
+            card.metadata(),
+            Some(&json!({"extensions": {"com_example": 1}}))
+        );
+        // v1.0's `Child` is a reference to a component, like `ComponentId`.
+        assert_eq!(card.props["child"].kind, PropKind::ComponentRef);
+        assert!(sound.functions["openUrl"].requires_user_activation);
+    }
+
+    #[test]
+    fn a_v1_0_catalog_defines_the_entries_its_unions_list() {
+        let document = json!({
+            "catalogId": "c",
+            "protocolVersion": "1.0",
+            "components": {"Text": {"type": "object"}, "Draft": {"type": "object"}},
+            "functions": {"upper": {"returnType": "string"}, "draft": {"returnType": "string"}},
+            "$defs": {
+                "anyComponent": {"oneOf": [{"$ref": "#/components/Text"}]},
+                "anyFunction": {"oneOf": [{"$ref": "#/functions/upper"}]}
+            }
+        });
+        let catalog = Catalog::from_schema(&document).unwrap();
+        assert_eq!(catalog.components.keys().collect::<Vec<_>>(), ["Text"]);
+        assert_eq!(catalog.functions.keys().collect::<Vec<_>>(), ["upper"]);
+        // The document is kept whole all the same.
+        assert_eq!(catalog.document(), Some(&document));
+
+        // A v0.9 document has no such rule: every entry is defined.
+        let mut older = document;
+        older["protocolVersion"] = json!("v0.9");
+        let catalog = Catalog::from_schema(&older).unwrap();
+        assert_eq!(catalog.components.len(), 2);
+        assert_eq!(catalog.functions.len(), 2);
+    }
+
+    #[test]
+    fn a_definition_declares_what_its_alternatives_declare_too() {
+        let catalog = Catalog::from_schema(&json!({
+            "catalogId": "c",
+            "components": {
+                "Pager": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "allOf": [{
+                        "properties": {"page": {"type": "integer"}},
+                        "oneOf": [
+                            {"properties": {"metadata": {"type": "string"}}},
+                            {"properties": {"mode": {"const": "none"}}, "anyOf": [
+                                {"properties": {"catalogId": {"type": "string"}}}
+                            ]}
+                        ]
+                    }]
+                }
+            }
+        }))
+        .unwrap();
+        let pager = catalog.component("Pager").unwrap();
+        // A branch is not the component's shape, so it adds no property.
+        assert_eq!(pager.props.keys().collect::<Vec<_>>(), ["page", "text"]);
+        for name in ["text", "page", "metadata", "mode", "catalogId"] {
+            assert!(pager.declares(name), "{name}");
+        }
+        assert!(!pager.declares("accessibility"));
     }
 
     #[test]
@@ -2010,55 +2175,28 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_basic_catalog_types_match_the_vendored_specification_document() {
-        // `Catalog::basic()` is hand-transcribed so it costs no parsing at
-        // startup. This is what keeps the transcription honest: the vendored
-        // v0.9 `basic_catalog.json` is the source it was copied from, so parsing
-        // that document has to produce the same types.
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/spec_v0_9/basic_catalog.json");
-        let document: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
-            .expect("the vendored basic catalog is JSON");
-        let parsed = Catalog::from_schema(&document).unwrap();
-        let built_in = Catalog::basic();
+    fn the_basic_catalogs_list_the_icon_names_their_documents_do() {
         // `Icon.name` is the one enum that is not the property's own: it sits
         // in the string arm of a `oneOf` beside `{svgPath}` and a binding. The
-        // parser has to lift it from there like any other.
-        assert_eq!(
-            parsed.component("Icon").unwrap().props["name"].enum_values,
-            string_list(document.pointer("/components/Icon/allOf/2/properties/name/oneOf/0/enum"))
-                .expect("the specification lists the icon names")
-        );
-
-        let mut compared = 0;
-        for def in built_in.components_in_order() {
-            let from_spec = parsed
-                .component(&def.name)
-                .unwrap_or_else(|| panic!("the specification catalog has no '{}'", def.name));
-            for prop in def.props_in_order() {
-                // `checks` is declared per input component here but is not in
-                // the specification document; nothing to compare it against.
-                let Some(spec_prop) = from_spec.props.get(&prop.name) else {
-                    continue;
-                };
-                assert_eq!(
-                    prop.value_type, spec_prop.value_type,
-                    "{}.{} is {:?} here and {:?} in the specification",
-                    def.name, prop.name, prop.value_type, spec_prop.value_type
-                );
-                // Enums reject values, so they have to match too. Order is
-                // the prompt's business; membership is the validator's.
-                assert_eq!(
-                    prop.enum_values.iter().collect::<BTreeSet<_>>(),
-                    spec_prop.enum_values.iter().collect::<BTreeSet<_>>(),
-                    "{}.{} permits different values here and in the specification",
-                    def.name,
-                    prop.name
-                );
-                compared += 1;
-            }
+        // parser has to lift it from there like any other. The v0.9 family
+        // composes `Icon` with `allOf`; v1.0 declares it flat.
+        for &version in A2uiVersion::ALL {
+            let catalog = Catalog::basic_for(version);
+            let document = catalog.document().expect("a basic catalog is a document");
+            let listed = [
+                "/components/Icon/allOf/2/properties/name/oneOf/0/enum",
+                "/components/Icon/properties/name/oneOf/0/enum",
+            ]
+            .iter()
+            .find_map(|pointer| string_list(document.pointer(pointer)))
+            .unwrap_or_else(|| panic!("the {version} document lists the icon names"));
+            assert_eq!(
+                catalog.component("Icon").unwrap().props["name"].enum_values,
+                listed,
+                "{version}"
+            );
+            assert_eq!(listed, BASIC_ICON_NAMES, "{version}");
         }
-        assert!(compared > 40, "only {compared} properties were compared");
     }
 
     #[test]

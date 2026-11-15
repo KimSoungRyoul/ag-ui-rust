@@ -30,6 +30,13 @@ impl jsonschema::Retrieve for NoExternalResources {
 /// One validator holds messages to one version's schemas and one catalog:
 /// the bundle it was compiled from ([`SchemaBundle::for_version`]).
 ///
+/// From v1.0 a component or a function call may name another catalog than
+/// its surface's. This validator knows the one it was compiled for, so it
+/// refuses such a message: the component or the call matches nothing in its
+/// schema. A [`MessageProcessor`](crate::processor::MessageProcessor) resolves
+/// what such a message names against the catalogs it holds, and does not put
+/// the message to a schema.
+///
 /// ```
 /// use std::collections::BTreeMap;
 ///
@@ -648,7 +655,8 @@ impl SurfaceValidator {
 /// try, or a value an agent is about to put into a component. A whole message
 /// is [`SchemaValidator::validate_message`]'s to check.
 ///
-/// The document is the one this crate ships, which v0.9 and v0.9.1 share.
+/// The document is the one this crate ships for the v0.9 family;
+/// [`validate_common_type_in`] reads another version's.
 ///
 /// # Function calls
 ///

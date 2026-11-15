@@ -75,10 +75,14 @@ pub const MAX_FUNCTION_CALL_DEPTH: usize = 5;
 
 /// The complete set of semantic failures this validator reports.
 ///
-/// Deliberately closed: these codes are the contract with callers that route on
-/// them (a recovery loop, a renderer's error channel), so adding one is a
-/// breaking change. Composition-constraint failures have their own codes and
-/// live in [`crate::catalog::CompositionCode`].
+/// These codes are the contract with callers that route on them (a recovery
+/// loop, a renderer's error channel). The enum is non-exhaustive, so that a
+/// protocol version can bring a failure of its own: v1.0 brought the last
+/// four. A caller that matches on a code keeps a wildcard arm.
+///
+/// [`crate::catalog::CompositionCode`] has the two composition failures as
+/// [`Catalog::composition_violations`](crate::Catalog::composition_violations)
+/// reports them, to a caller that asks the catalog directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -233,7 +237,8 @@ pub struct ValidateOptions {
     /// a component id however this is set, because a child written any other
     /// way is not in the tree the other checks walk. See [`PropKind`].
     pub check_prop_types: bool,
-    /// Whether message envelopes must satisfy the v0.9 wire contract.
+    /// Whether message envelopes must satisfy the wire contract of the
+    /// version they state.
     ///
     /// Applies only to the raw-message entry points
     /// ([`Validator::validate_json_messages`] and

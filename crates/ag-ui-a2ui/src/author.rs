@@ -92,9 +92,14 @@ enum Request {
 }
 
 impl A2uiAuthor {
-    /// Loads pinned official v0.9.1 schemas, which accept both supported profiles.
+    /// An author on the official schemas and basic catalog of `version`, as
+    /// pinned in this crate ([`SchemaBundle::for_version`]).
     pub fn basic(version: A2uiVersion) -> Result<Self> {
-        Self::new(version, SchemaBundle::basic()?, BTreeMap::new())
+        Self::new(
+            version,
+            SchemaBundle::for_version(version)?,
+            BTreeMap::new(),
+        )
     }
     /// Creates a custom author from complete schemas and explicit local references.
     ///

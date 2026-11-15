@@ -125,10 +125,8 @@ impl SurfaceState {
     /// # Ok::<(), ag_ui_a2ui::Error>(())
     /// ```
     pub fn catalog_of<'a>(&'a self, component: &'a Component) -> Option<&'a str> {
-        self.spoken_version()
-            .component_keys()
-            .catalog_id
-            .and_then(|key| component.props.get(key)?.as_str())
+        component
+            .catalog_id(self.spoken_version())
             .or(self.catalog_id.as_deref())
     }
 

@@ -25,6 +25,7 @@ below from the report the harness prints: the harness fails until the two agree.
 | `features.yaml`, `*.schema.json`, `conformance_schema.json`, `manifest_corpora.json` | Upstream's feature registry and the schemas of the case vocabulary, verbatim. |
 | `UPSTREAM_README.md`, `conformance_harness_implementation_guide.md` | Upstream's description of the suites and of how to write a harness. `UPSTREAM_README.md` is upstream's `README.md`, renamed because this file has the name. |
 | `specification/`, `catalogs/` | The documents the executed suites name by repository path: under `specification/`, the basic catalogs and the common types of v0.9 and v0.9.1, the v0.9 minimal catalog, and the v1.0 schemas (`v1_0/json/`); under `catalogs/`, the v1 basic catalog, and the VegaChart and MCP catalogs of v0.9 and of v1. Copied from the same commit, byte for byte, at the same path relative to the repository root. |
+| `specification/v0_9/catalogs/basic/examples/`, `specification/v0_9_1/catalogs/basic/examples/`, `catalogs/basic/v1/examples/` | The example surfaces upstream publishes beside each basic catalog: 44, 43 and 43 files. No suite names them; `tests/official_examples.rs` runs each against the schemas and the catalog of its version. Same commit, byte for byte. |
 | `retired/` | One suite as it stood at the previous pin, `44a420b67957fafc0b02d55a153fdaf72e32ffb5` (2026-08-14), with its fixture. See "Retired suites". |
 | `LICENSE` | Upstream's licence. |
 
