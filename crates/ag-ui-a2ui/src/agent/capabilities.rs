@@ -1,6 +1,8 @@
 //! What a renderer says it can draw, and which of the agent's catalogs that
 //! makes active.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::{Map, Value};
 
 use super::catalog::{CatalogConfig, CatalogDocument};
@@ -576,25 +578,24 @@ pub fn resolve_catalogs(
         .map(|document| inline_catalog(document, version))
         .collect::<Result<Vec<_>>>()?;
 
-    let mut active: Vec<CatalogDocument> = Vec::new();
-    let holds = |active: &[CatalogDocument], id: &str| {
-        active.iter().any(|catalog| catalog.catalog_id() == id)
+    let registered_ids: Vec<&str> = registered.iter().map(CatalogDocument::catalog_id).collect();
+    let named: Vec<&str> = entry
+        .supported_catalog_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let inline_ids: Vec<&str> = if accepts_inline_catalogs {
+        inline.iter().map(CatalogDocument::catalog_id).collect()
+    } else {
+        Vec::new()
     };
-    for id in &entry.supported_catalog_ids {
-        if holds(&active, id) {
-            continue;
-        }
-        if let Some(catalog) = registered.iter().find(|catalog| catalog.catalog_id() == id) {
-            active.push(catalog.clone());
-        }
-    }
-    if accepts_inline_catalogs {
-        for catalog in inline {
-            if !holds(&active, catalog.catalog_id()) {
-                active.push(catalog);
-            }
-        }
-    }
+    let active: Vec<CatalogDocument> = activation(&registered_ids, &named, &inline_ids)
+        .into_iter()
+        .map(|pick| match pick {
+            Pick::Registered(position) => registered[position].clone(),
+            Pick::Inline(position) => inline[position].clone(),
+        })
+        .collect();
     if active.is_empty() {
         let held: Vec<&str> = registered.iter().map(CatalogDocument::catalog_id).collect();
         return Err(Error::catalog(format!(
@@ -602,6 +603,48 @@ pub fn resolve_catalogs(
         )));
     }
     Ok(active)
+}
+
+/// A catalog that becomes active, by where it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    /// The registered catalog at this position.
+    Registered(usize),
+    /// The inline catalog at this position.
+    Inline(usize),
+}
+
+/// Which catalogs become active, and in what order: every registered catalog
+/// the renderer names, in the order it names them, then every inline catalog
+/// whose id is not active yet. An id that is named or sent twice counts once,
+/// and of two registered catalogs under one id the first is the one named.
+///
+/// The work is one lookup for each id, whatever the renderer sends: the ids
+/// that are active are kept in a set, and a registered catalog is found by
+/// its id in an index. The ids are generic so that a test can count what is
+/// done with them.
+fn activation<I: Ord + Copy>(registered: &[I], named: &[I], inline: &[I]) -> Vec<Pick> {
+    let mut by_id: BTreeMap<I, usize> = BTreeMap::new();
+    for (position, id) in registered.iter().enumerate() {
+        by_id.entry(*id).or_insert(position);
+    }
+    let mut active: BTreeSet<I> = BTreeSet::new();
+    let mut picks = Vec::new();
+    for id in named {
+        if active.contains(id) {
+            continue;
+        }
+        if let Some(position) = by_id.get(id) {
+            active.insert(*id);
+            picks.push(Pick::Registered(*position));
+        }
+    }
+    for (position, id) in inline.iter().enumerate() {
+        if active.insert(*id) {
+            picks.push(Pick::Inline(position));
+        }
+    }
+    picks
 }
 
 /// A capabilities object that is malformed, as opposed to one that leaves the
@@ -728,6 +771,89 @@ mod tests {
                 "{version} takes the entry of {other}"
             );
         }
+    }
+
+    /// An id that counts every comparison made with it.
+    #[derive(Clone, Copy)]
+    struct Counted<'a> {
+        id: usize,
+        comparisons: &'a std::cell::Cell<u64>,
+    }
+
+    impl PartialEq for Counted<'_> {
+        fn eq(&self, other: &Self) -> bool {
+            self.cmp(other).is_eq()
+        }
+    }
+
+    impl Eq for Counted<'_> {}
+
+    impl PartialOrd for Counted<'_> {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for Counted<'_> {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.comparisons.set(self.comparisons.get() + 1);
+            self.id.cmp(&other.id)
+        }
+    }
+
+    /// How many comparisons of ids a negotiation of this size makes: every
+    /// registered catalog named twice, with ids the agent does not hold
+    /// between them, and as many inline catalogs, half of them already
+    /// active.
+    fn comparisons_at(size: usize) -> u64 {
+        let comparisons = std::cell::Cell::new(0);
+        let id = |id: usize| Counted {
+            id,
+            comparisons: &comparisons,
+        };
+        let registered: Vec<Counted<'_>> = (0..size).map(id).collect();
+        let named: Vec<Counted<'_>> = (0..size)
+            .rev()
+            .flat_map(|n| [id(n), id(n + size), id(n)])
+            .collect();
+        let inline: Vec<Counted<'_>> = (0..size).map(|n| id(n + size / 2)).collect();
+        let picks = activation(&registered, &named, &inline);
+        assert_eq!(picks.len(), size + size / 2);
+        assert_eq!(picks[0], Pick::Registered(size - 1));
+        comparisons.get()
+    }
+
+    /// What a renderer sends decides how many ids there are to look at, so the
+    /// work must grow with their number and not with its square. Counted, not
+    /// timed: doubling the input may double the comparisons, and a little
+    /// more for the depth of the index, but not multiply them by four.
+    #[test]
+    fn the_work_of_a_negotiation_grows_with_what_the_renderer_sends() {
+        let (small, large) = (comparisons_at(1_000), comparisons_at(2_000));
+        assert!(
+            large < small * 3,
+            "{small} comparisons for 1,000 catalogs, {large} for 2,000"
+        );
+        // And in all it is a few lookups for each id, not a scan.
+        assert!(large < 2_000 * 200, "{large} comparisons");
+    }
+
+    #[test]
+    fn of_two_registered_catalogs_under_one_id_the_first_is_named() {
+        assert_eq!(
+            activation(
+                &["a", "b", "a"],
+                &["a", "missing", "a", "b"],
+                &["b", "c", "c"]
+            ),
+            [Pick::Registered(0), Pick::Registered(1), Pick::Inline(1)]
+        );
+        // An id the agent does not hold is not active, so an inline catalog
+        // may take it.
+        assert_eq!(
+            activation(&["a"], &["x", "a"], &["x"]),
+            [Pick::Registered(0), Pick::Inline(0)]
+        );
     }
 
     #[test]

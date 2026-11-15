@@ -866,10 +866,36 @@ impl Rejection {
     /// function call named, each located where the message names it. Empty
     /// when the surface named the catalog, and for every other kind.
     ///
-    /// A renderer reports such a refusal as a catalog it does not have. A
-    /// caller that wrote the message reads here which name to change.
-    #[cfg_attr(not(feature = "agent"), allow(dead_code))]
-    pub(crate) fn named_catalogs(&self) -> &[ValidationError] {
+    /// A renderer reports such a refusal as a catalog it does not have, and
+    /// [`Rejection::errors`] is empty for it. A caller that wrote the message
+    /// reads here which name to change: each error is an
+    /// [`ErrorCode::UnknownCatalog`](crate::validate::ErrorCode::UnknownCatalog)
+    /// located where the message wrote the catalog, such as
+    /// `messages[0].updateComponents.components[2].@catalogId`.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{A2uiVersion, Catalog, MessageProcessor};
+    /// use ag_ui_a2ui::processor::RejectionKind;
+    /// use serde_json::json;
+    ///
+    /// let mut processor = MessageProcessor::new();
+    /// processor.register(Catalog::basic_for(A2uiVersion::V1_0))?;
+    /// let refused = processor
+    ///     .process(&json!({"version": "1.0", "createSurface": {
+    ///         "surfaceId": "s",
+    ///         "catalogId": A2uiVersion::V1_0.basic_catalog_id(),
+    ///         "components": [
+    ///             {"id": "root", "component": "Chart", "@catalogId": "example.com:charts"}
+    ///         ]
+    ///     }}))
+    ///     .unwrap_err();
+    /// assert_eq!(refused.kind, RejectionKind::Catalog);
+    /// assert!(refused.errors().is_empty());
+    /// let [named] = refused.named_catalogs() else { panic!("one catalog was named") };
+    /// assert!(named.path.ends_with("components[0].@catalogId"), "{}", named.path);
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    pub fn named_catalogs(&self) -> &[ValidationError] {
         &self.named
     }
 

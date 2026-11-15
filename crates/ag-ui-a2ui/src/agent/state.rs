@@ -300,6 +300,11 @@ impl RendererState {
     {
         let mut checked = BTreeSet::new();
         let mut report = ValidationReport::default();
+        // One validator over the active catalogs, for every surface checked.
+        let validator = Validator::over(
+            self.catalogs.iter().map(CatalogDocument::catalog),
+            ValidateOptions::full_surface(),
+        );
         for surface_id in surface_ids {
             let surface_id = surface_id.as_ref();
             if !checked.insert(surface_id.to_string()) {
@@ -323,10 +328,6 @@ impl RendererState {
                     ));
                 }
             }
-            let validator = Validator::over(
-                self.catalogs.iter().map(CatalogDocument::catalog),
-                ValidateOptions::full_surface(),
-            );
             let found = validator.validate_stored(self.store(), surface);
             // A version that constrains composition has it in the report
             // already, once nothing else is wrong; so is it added here.
