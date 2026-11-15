@@ -574,6 +574,15 @@ These are on `main` and not yet in a published version.
   reasoning block, a step and a subagent, and of several of a kind the one opened first.
   Alpha.3 named an arbitrary one of a kind, and looked at reasoning before tool calls.
   The client verifier already named the first opened, in this order.
+- `Applier::apply` applies the explicit form only. For a `TEXT_MESSAGE_CHUNK`,
+  `TOOL_CALL_CHUNK` or `REASONING_MESSAGE_CHUNK`, and for a retired `THINKING_*` event,
+  it returns `Error::Unsupported` and changes nothing; alpha.3 assembled chunks by rules
+  of its own, which had drifted from the normalizer's, and turned `THINKING_*` into
+  reasoning under ids `thinking-1`, `thinking-2`, …. A `Thread` is unaffected: it expands
+  and translates before it applies. Code that drives an `Applier` itself puts a
+  `ChunkNormalizer` in front, applying what `normalize` appends and calling `finish` when
+  the stream ends, and reads a stream that may carry `THINKING_*` through
+  `TransportStream::into_events` or `transport::enforce_events`, which translate it.
 
 ## Verify the upgrade
 

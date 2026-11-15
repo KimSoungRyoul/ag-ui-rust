@@ -702,18 +702,58 @@ fn the_normalizer_reports_whether_a_stream_is_open() {
 }
 
 #[test]
-fn the_applier_also_assembles_raw_chunks_on_its_own() {
-    // Normalization is the recommended path, but an applier driven straight
-    // from a raw stream must not silently drop the payload.
+#[allow(deprecated)]
+fn the_applier_leaves_a_retired_thinking_event_to_the_compatibility_boundary() {
+    // The boundary translates THINKING_* to REASONING_* on both transport
+    // forms, so the applier has no translation of its own to disagree with.
     let mut applier = Applier::new();
-    for event in [
+    for retired in [
+        Event::thinking_start(None),
+        Event::thinking_text_message_start(),
+        Event::thinking_text_message_content("hmm"),
+        Event::thinking_text_message_end(),
+        Event::thinking_end(),
+    ] {
+        let error = applier.apply(&retired).expect_err("a retired event");
+        assert!(
+            matches!(error, ag_ui::client::Error::Unsupported(_)),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("REASONING_*"), "{error}");
+    }
+    assert!(applier.reasoning().is_empty());
+}
+
+#[test]
+fn the_applier_takes_a_chunk_only_in_its_expanded_form() {
+    // What a chunk continues is decided in one place, the normalizer. An
+    // applier handed a raw chunk says so rather than dropping the payload or
+    // assembling it by rules of its own.
+    let mut applier = Applier::new();
+    for chunk in [
+        text_chunk(Some("msg-1"), Some("Hel")),
+        tool_chunk(Some("call-1"), Some("t"), Some("{}")),
+        Event::reasoning_message_chunk(Some(MessageId::new("r-1")), Some("Think".into())),
+    ] {
+        let error = applier.apply(&chunk).expect_err("not the explicit form");
+        assert!(
+            matches!(error, ag_ui::client::Error::Unsupported(_)),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("ChunkNormalizer"), "{error}");
+    }
+    assert!(applier.messages().is_empty() && applier.reasoning().is_empty());
+
+    // Through the normalizer, the same events assemble.
+    let events = normalize_all([
         text_chunk(Some("msg-1"), Some("Hel")),
         text_chunk(None, Some("lo")),
         tool_chunk(Some("call-1"), Some("t"), Some("{}")),
-    ] {
-        applier.apply(&event).expect("applies");
+    ])
+    .expect("normalizes");
+    for event in &events {
+        applier.apply(event).expect("applies");
     }
-
     assert_eq!(applier.text_of("msg-1"), Some("Hello"));
     let ag_ui::Message::Assistant(assistant) = &applier.messages()[1] else {
         panic!("expected the tool call's message");
