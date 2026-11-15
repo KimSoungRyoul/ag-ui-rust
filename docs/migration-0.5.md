@@ -171,6 +171,14 @@ These are on `main` and not yet in a published version.
   that result by the earlier call, with or without the echo. `StreamTransformer` gains a
   provided `seed(&mut self, history: &[Message])` method that receives the same history;
   existing implementations compile unchanged.
+- The Axum endpoint and the `AgUiInput` extractor refuse a request with no `Content-Type`
+  with `415`, code `UNSUPPORTED_MEDIA_TYPE` (`axum::Error::MissingContentType`). Alpha.3
+  read such a body as JSON. Send `Content-Type: application/json`; for a client that cannot,
+  `AgentEndpoint::allow_missing_content_type()` accepts an unlabelled body on a mounted
+  endpoint, and a hand-written handler can take `Bytes` and call `axum::extract::decode`.
+  The documentation no longer presents the check as a CSRF defence: a required JSON media
+  type means a browser must preflight a cross-origin run request, which leaves the decision
+  to your CORS policy, and it is not authentication.
 
 ## Verify the upgrade
 

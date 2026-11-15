@@ -60,7 +60,7 @@
 //! |---|---|
 //! | A run, however it ends | `200`, `text/event-stream`, terminated by `RUN_FINISHED` or `RUN_ERROR` |
 //! | Body is not AG-UI JSON | `400` and a JSON message naming the field |
-//! | `Content-Type` is not JSON | `415` |
+//! | `Content-Type` is missing or not JSON | `415` — see [`AgUiInput`](extract::AgUiInput#the-content-type-is-required) |
 //! | Body over the body limit | `413` |
 //! | `Accept` excludes everything this build emits | `406` |
 //! | Any method but `POST` | `405`, from axum |
