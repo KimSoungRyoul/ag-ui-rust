@@ -959,6 +959,13 @@ These are on `main` and not yet in a published version.
   root reaches, in drawing order, each as a `Placed` with its depth and the scope its
   bindings resolve in, a list template once for each item. A client that walked the
   component tree by hand calls `outline`. `Placed` is exported at the crate root.
+  The outline is an `Outline`, an iterator that places one component each time it
+  is advanced: a surface whose components share children can outline to far more
+  than its size, so a client drawing a surface it did not write bounds it,
+  `surface.outline(&catalog, &data).take(500)`. The replay writes the data model in
+  as many messages as the values it holds call for, whatever undefined list slots it
+  has, splits a model too deep for one message, and removes a removed v0.9 root
+  again.
 - `adapters::a2a` (feature `a2a`) builds and reads A2UI over A2A as JSON, with no A2A
   library: `data_part(&message, version)` and `is_a2ui_part(&part)` for the data part
   and its `mimeType`, `agent_extension(version, accepts_inline_catalogs, &catalog_ids)`
@@ -1168,6 +1175,22 @@ These are on `main` and not yet in a published version.
   | `CatalogContext { catalog_id, schema }` | `CatalogContext::new(schema)`, which takes the id from the schema's `catalogId` |
   | `match retry.judge(..) { Verdict::Done(..) => .., Verdict::Retry(..) => .., Verdict::GiveUp(error) => return Err(error) }` | The same with `_ => return Err(Error::parse("a verdict this agent does not know"))`: a verdict a later version adds is one the loop cannot act on |
   | `match part { StreamPart::Text(..) => .., StreamPart::A2ui(..) => .., StreamPart::Rejected(..) => .. }` | The same with `_ => {}` |
+- The component depth limit (`ValidateOptions::max_depth`, 50) is measured from the
+  root, wherever the list puts it, and in a list with no root from each component
+  nothing in it refers to. alpha.3 measured it from each component in list order, so
+  a chain deeper than the limit passed when a component below the root came first,
+  and a renderer then refused what the agent had accepted. Such a list is now
+  refused with `max_depth_exceeded` by `Validator`, `MessageProcessor` and the agent
+  layer alike. A loop the root does not reach is reported as `child_cycle` however
+  long it is, where alpha.3 could report a long one as `max_depth_exceeded`.
+- A `DataModel` holds at most `model::DEFAULT_UNDEFINED_SLOT_LIMIT` (65,536)
+  undefined list slots in all: slots before an index a write grew a list to, and
+  removed slots. An update that would take it past that is refused with
+  `Error::Pointer`, and so is the message that carries it. alpha.3 bounded only what
+  one update adds (`DEFAULT_ARRAY_GROWTH_LIMIT`, still applied), so a run of short
+  updates could build a model of any size. `DataModel::undefined_slots()` gives the
+  count, and `apply_with_undefined_slot_limit(path, &value, max)` applies with
+  another bound.
 
 ## Verify the upgrade
 
