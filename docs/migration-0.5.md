@@ -729,7 +729,8 @@ These are on `main` and not yet in a published version.
   | --- | --- | --- |
   | replayed, before the requested run | any way | keeps what it delivered; nothing pending changes, no `Update::Interrupt` |
   | requested | success, interrupt | confirms a resume submission; pending interrupts cleared, or set (as in alpha.3) |
-  | requested | cancelled, `RUN_ERROR`, cut short | submission `Unconfirmed`, interrupts as they were (as in alpha.3) |
+  | requested | cancelled | settles a resume submission; pending interrupts cleared (a later bullet of this section) |
+  | requested | `RUN_ERROR`, cut short | submission `Unconfirmed`, interrupts as they were (as in alpha.3) |
   | after the requested run | success, cancelled | pending interrupts cleared |
   | after the requested run | interrupt | pending interrupts set, with `Update::Interrupt` |
   | after the requested run | `RUN_ERROR`, cut short | pending interrupts left |
@@ -1113,6 +1114,70 @@ These are on `main` and not yet in a published version.
   refers to it by. It returned `Error::Catalog` for one. A `SchemaValidator` is one
   catalog's: a v1.0 message that names another catalog fails it, and a
   `MessageProcessor` does not put such a message to a schema.
+- An event the conversation has nowhere to keep is dropped, and a `Thread` warns once
+  per item per run (`Update::Warning`, kind `warning`): `TOOL_CALL_ARGS` or
+  `TOOL_CALL_END` for a call no message holds, as after a `MESSAGES_SNAPSHOT` that
+  restated the call's message without it, text or reasoning for a message a snapshot
+  removed while it was open, and text for an id an activity message holds.
+  `Applier::apply` returns `Changed::Nothing` for each. Alpha.3 returned
+  `Error::Protocol`, which failed the run, and made a removed message again from the
+  text after the snapshot, as an assistant message. Match `Changed::Nothing` where
+  code matched the error.
+- A `TOOL_CALL_START` whose parent is a message that cannot carry a call, such as the
+  reasoning message a reply shares its id with, puts the call on a message of its own,
+  `<toolCallId>-message`, as a call with no parent has, and the thread warns. Alpha.3
+  recorded the call nowhere, so its arguments failed the run. A text start that lands
+  on another owner's reasoning message under a shared id is said with a warning too.
+- A `MESSAGES_SNAPSHOT` that carries an id twice leaves one message, the last copy in
+  the place of the first, with a warning. Alpha.3 kept both, and `Thread::restore`
+  then refused the thread's own snapshot. `Thread::restore` accepts an empty id, which
+  1.0 allows, and says "is held more than once" for a repeated one, where it said "is
+  empty or duplicated". A subagent announced again under a parent that descends from
+  it takes that parent, and the old link that would close a circle is dropped: two
+  runs that nest two subagents the other way round left a cycle restore refused.
+- A requested run that ends with the `cancelled` outcome settles a resume submission
+  and clears the pending interrupts: `Thread::submission()` is `None`, and the next
+  `send` is an ordinary new run. Alpha.3 left the submission `Unconfirmed` and the
+  interrupts pending, so `send` and `decline` were both refused. Code that reconciled
+  after a cancelled resume can drop that path.
+- A `RUN_ERROR` that opens a stream is the requested run only when no run follows it.
+  Followed by one, its `RunSummary` has `requested: false` and its `Update::RunEnded`
+  comes when the next `RUN_STARTED` arrives, and a resume submission stays in flight
+  until the requested run says how it went. Alpha.3 reported both as requested, and
+  marked the submission unconfirmed before the requested run confirmed it.
+- `expiresAt` is read as an instant in two forms: a date and time with its UTC offset,
+  and a date alone, as the start of that day in UTC. Any other value is not evidence
+  of expiry: the interrupt can be answered, and the request that answers it warns once
+  that the value was not read. Alpha.3 refused to resume such an interrupt ("has an
+  invalid expiry timestamp; it can only be declined").
+- A `RUN_FINISHED` whose interrupt outcome repeats an id fails the run with "RUN_FINISHED
+  carries interrupt id \"i-1\" more than once", where alpha.3 said "invalid thread
+  snapshot: interrupt ID ...". The documentation of `RunDiagnostic::kind` lists
+  `decode`.
+- `MessageChange`, `ReasoningChange`, `SubagentChange`, `SubmissionStatus` and
+  `ThreadSnapshot` are `#[non_exhaustive]`. Build a change with `MessageChange::new`,
+  `ReasoningChange::new` or `SubagentChange::new`, and match one with `..`. Give a
+  `match` on `SubmissionStatus` a wildcard arm. Make a snapshot with
+  `ThreadSnapshot::new(thread_id)` and set its public fields, or take one from
+  `Thread::snapshot` or a deserializer; a struct literal no longer compiles.
+- A thread remembers the tool messages `abandon_tool_call` made, and
+  `ThreadSnapshot::abandoned` carries them. `merge_messages_from` leaves out such a
+  stand-in of the other thread when this thread holds an answer to the call, and names
+  it in the new `MergeReport::superseded`; alpha.3 refused the merge for good ("has a
+  result on each thread"). A stand-in on this thread and a result on the other is
+  refused with text that says to merge the other way. The snapshot version stays 2: a
+  version 1 snapshot, and a version 2 one written before the field, restore with
+  nothing recorded, and count every tool message as a result.
+- An explicit event that carries no `subagentRunId` is in the lane of the owner of its
+  item, so the untagged `TEXT_MESSAGE_CONTENT` of a subagent's message no longer ends
+  the parent agent's chunk stream. This holds in `ChunkNormalizer`, the verifiers,
+  `RunProgress` and the subagent transformers. Alpha.3 read it as the parent's, and the
+  parent's next chunk that names no id was rejected.
+- A `RunProgress` prelude with `Prelude::messages` opens an entity that a
+  `MESSAGES_SNAPSHOT` dropped while it was open right after `RUN_STARTED`, ahead of the
+  snapshot, which drops it again on the joining client, and takes it out of the
+  messages given. Alpha.3 restated it after the snapshot with what followed, so a
+  joiner held a message a reader of the whole run did not.
 
 ## Verify the upgrade
 
