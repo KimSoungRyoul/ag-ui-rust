@@ -3,7 +3,7 @@
 //! Every helper here names a [`Thread`] without bounding its transport. That
 //! is not incidental: an application's view layer only ever *reads* a thread,
 //! and a `T: Transport` bound on the type would force every one of these
-//! signatures to repeat a constraint none of them use. `ag-ui-client` keeps the
+//! signatures to repeat a constraint none of them use. `ag_ui::client` keeps the
 //! bound on the impl blocks that make requests, and this module is what spends
 //! that.
 

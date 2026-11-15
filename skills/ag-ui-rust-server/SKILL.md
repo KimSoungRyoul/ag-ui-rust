@@ -6,7 +6,7 @@ description: "MUST USE when writing Rust against ag-ui-rust to host an agent —
 # Serving an AG-UI agent in Rust
 
 Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.5.0-alpha.1**. If the API here disagrees with the compiler, the compiler is
+workspace version **0.5.0-alpha.3**. If the API here disagrees with the compiler, the compiler is
 right and the skill is stale — see `ag-ui-rust-update`.
 
 ## Adding the crates
@@ -16,14 +16,14 @@ this unified SDK; do not substitute them or an `ag-ui-server` package. Which hal
 feature; `axum` implies `server`:
 
 ```toml
-# Cargo.toml
 [dependencies]
-ag-ui = { path = "/path/to/ag-ui-rust/crates/ag-ui", features = ["axum"] }
+ag-ui = { version = "=0.5.0-alpha.3", features = ["axum"] }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 ```
 
-The path selects this unpublished candidate for pre-merge QA. Rust **1.85+**, edition 2024.
+`ag-ui` is on crates.io; the `=` keeps Cargo from moving to a later prerelease on its own.
+Rust **1.85+**, edition 2024.
 No LLM crate is involved anywhere: bring your own model client
 and call it inside `run`.
 
@@ -346,7 +346,7 @@ events. The event queue is unbounded by default; the configured limit above clos
 
 | Instead of | Write |
 | --- | --- |
-| `ag-ui-server = "0.1"` | the local `ag-ui` dependency above — the package is different |
+| `ag-ui-server = "0.1"` | the `ag-ui` dependency above — the package is different |
 | `#[async_trait]` on `impl Agent` | a plain `async fn run` |
 | `Box<dyn Agent>` | `BoxAgent<S>` (`DynAgent` is the object-safe half) |
 | `msg.delta(..).await` | `msg.delta(..)?` — the emit path is synchronous |
