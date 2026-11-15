@@ -130,6 +130,13 @@ pub enum Rule {
     /// disagrees with the subagent that opened the entity — or a tool call was
     /// tagged with one subagent while its parent message belongs to another.
     OwnerMismatch,
+    /// A `*_CHUNK` event cannot be read as the events it stands for: it names
+    /// no id and has no chunk stream to continue, it opens a tool call without
+    /// naming the tool, or it repeats a field its stream was opened with, with
+    /// another value.
+    MalformedChunk,
+    /// `RUN_FINISHED` carried an `interrupt` outcome with no interrupt in it.
+    InvalidOutcome,
 }
 
 impl Rule {
@@ -144,6 +151,8 @@ impl Rule {
             Self::OpenAtFinish => "open-at-finish",
             Self::OutOfOrder => "out-of-order",
             Self::OwnerMismatch => "owner-mismatch",
+            Self::MalformedChunk => "malformed-chunk",
+            Self::InvalidOutcome => "invalid-outcome",
         }
     }
 
@@ -158,6 +167,10 @@ impl Rule {
             Self::OpenAtFinish => "everything opened must be closed before RUN_FINISHED",
             Self::OutOfOrder => "the event arrived before the event it depends on",
             Self::OwnerMismatch => "an event names the subagent that opened its entity",
+            Self::MalformedChunk => {
+                "a chunk names the item it opens, and repeats only what opened it"
+            }
+            Self::InvalidOutcome => "an interrupt outcome names at least one interrupt",
         }
     }
 }

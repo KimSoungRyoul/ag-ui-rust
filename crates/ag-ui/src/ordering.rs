@@ -50,9 +50,13 @@
 //! makes the state a pure function of the accepted events: replaying them
 //! into a new [`Ordering`] rebuilds it.
 
-// Nothing calls this module yet. The verifiers move onto it next, and this
-// goes with them.
-#![allow(dead_code)]
+// Each end of a stream uses its own half of this API: the producer seeds
+// history and reads the open sets, the consumer asks whether the run ended.
+// With one end compiled out, the other half has no caller.
+#![cfg_attr(
+    not(all(feature = "client", feature = "server", feature = "verify")),
+    allow(dead_code)
+)]
 
 use std::collections::{HashMap, HashSet};
 
@@ -74,17 +78,43 @@ pub(crate) struct Policy {
     /// conversation than the producer does, and cannot tell a mistake from a
     /// call it was never shown.
     pub(crate) results_answer_known_calls: bool,
+
+    // The three below are not decisions an end makes. They are where the two
+    // verifiers answered differently before they shared these rules, kept so
+    // that moving onto this module changes no verdict. The corpus and the
+    // specification settle each, and the fields go.
+    /// Whether one `RUN_ERROR` may follow `RUN_FINISHED`.
+    pub(crate) late_run_error: bool,
+    /// Whether an `interrupt` outcome must carry an interrupt.
+    pub(crate) interrupts_checked: bool,
+    /// What a `*_CHUNK` event is to the rules.
+    pub(crate) chunks: Chunks,
+}
+
+/// What a `*_CHUNK` event is to the rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Chunks {
+    /// The events it stands for.
+    Expanded,
+    /// A self-contained event that registers the id it names and closes it.
+    Registered,
+    /// Nothing: something else expanded it first.
+    Ignored,
 }
 
 impl Policy {
     /// The end that writes the stream.
     pub(crate) const PRODUCER: Self = Self {
         results_answer_known_calls: true,
+        late_run_error: true,
+        interrupts_checked: true,
+        chunks: Chunks::Expanded,
     };
 
     /// The end that reads it.
     pub(crate) const CONSUMER: Self = Self {
         results_answer_known_calls: false,
+        ..Self::PRODUCER
     };
 }
 
@@ -96,6 +126,27 @@ pub(crate) enum Entity {
     ReasoningMessage,
     ReasoningBlock,
     Activity,
+}
+
+impl Entity {
+    /// What an error calls it.
+    pub(crate) const fn noun(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::ToolCall => "tool call",
+            Self::ReasoningMessage => "reasoning message",
+            Self::ReasoningBlock => "reasoning block",
+            Self::Activity => "activity",
+        }
+    }
+}
+
+/// What an error calls an owner.
+pub(crate) fn describe(owner: &Owner) -> String {
+    match owner {
+        None => "the parent agent".to_owned(),
+        Some(id) => format!("subagent {:?}", id.as_str()),
+    }
 }
 
 /// How a tagged event relates to the entity whose owner it contradicts.
@@ -302,6 +353,13 @@ impl Ordering {
             event,
             Event::TextMessageChunk(_) | Event::ToolCallChunk(_) | Event::ReasoningMessageChunk(_)
         );
+        if is_chunk {
+            match self.policy.chunks {
+                Chunks::Expanded => {}
+                Chunks::Registered => return self.register(event).map_err(reject),
+                Chunks::Ignored => return Ok(()),
+            }
+        }
         if !is_chunk && self.streams.is_idle() {
             return self.apply(event, None).map_err(reject);
         }
@@ -357,7 +415,7 @@ impl Ordering {
             Phase::Idle => Err(Broke::NotStarted),
             Phase::Assumed | Phase::Active => Ok(()),
             // A failure that surfaced after the run reported success.
-            Phase::Finished if at == EventType::RunError => Ok(()),
+            Phase::Finished if at == EventType::RunError && self.policy.late_run_error => Ok(()),
             Phase::Finished | Phase::Failed => Err(Broke::RunEnded),
         }
     }
@@ -388,7 +446,7 @@ impl Ordering {
                     return Err(Broke::StillOpen(open));
                 }
                 if let Some(outcome) = &e.outcome {
-                    if outcome.validate().is_err() {
+                    if self.policy.interrupts_checked && outcome.validate().is_err() {
                         return Err(Broke::EmptyInterrupt);
                     }
                 }
@@ -651,6 +709,37 @@ impl Ordering {
             // A chunk never reaches here unexpanded, and the retired
             // THINKING_* family is not tracked: a consumer translates it
             // before this stage and a producer does not send it.
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// A chunk as a self-contained event: it names who its id belongs to,
+    /// and leaves the id closed.
+    fn register(&mut self, event: &Event) -> Result<(), Broke> {
+        match event {
+            Event::TextMessageChunk(e) => {
+                if let Some(id) = &e.message_id {
+                    let owner = self.claim(Entity::Message, id, &e.subagent_run_id)?;
+                    self.message_owners.entry(id.clone()).or_insert(owner);
+                    self.text.retain(|(open, _)| open != id);
+                }
+            }
+            Event::ReasoningMessageChunk(e) => {
+                if let Some(id) = &e.message_id {
+                    let owner = self.claim(Entity::ReasoningMessage, id, &e.subagent_run_id)?;
+                    self.reasoning_owners.entry(id.clone()).or_insert(owner);
+                    self.reasoning.retain(|(open, _)| open != id);
+                }
+            }
+            Event::ToolCallChunk(e) => {
+                if let Some(id) = &e.tool_call_id {
+                    let parent = e.parent_message_id.as_ref();
+                    let owner = self.tool_call_owner(id, parent, &e.subagent_run_id)?;
+                    self.tool_call_owners.insert(id.clone(), owner);
+                    self.tool.retain(|(open, _)| open != id);
+                }
+            }
             _ => {}
         }
         Ok(())
