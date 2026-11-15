@@ -20,6 +20,12 @@
 //! it does today instead. A pin whose declared expectation has started to hold
 //! fails, so closing a gap means deleting the pin.
 //!
+//! A local stream may say more than the corpus vocabulary allows, about the
+//! thread lane alone: which run the request asks for (`input.runId`), and in
+//! `expect` how the request went (`end`), each run on the stream (`runs`),
+//! the interrupts left pending (`pendingInterrupts`) and every diagnostic
+//! (`diagnostics`).
+//!
 //! `cargo test -p ag-ui --all-features --test conformance_1_0 -- --nocapture`
 //! prints the table.
 
@@ -38,7 +44,7 @@ use ag_ui::client::apply::Applier;
 use ag_ui::client::transport::{
     Transport, TransportFuture, TransportStream, decode_raw_events, enforce_events,
 };
-use ag_ui::client::{ChunkNormalizer, Error, Thread, Verifier};
+use ag_ui::client::{ChunkNormalizer, Error, RunEnd, Thread, Verifier};
 use ag_ui::server::EventVerifier;
 use ag_ui::{Event, EventType, Message, RunAgentInput, Tool};
 use futures_util::{StreamExt, stream};
@@ -181,6 +187,11 @@ struct Seen {
     /// Thread only: `RunEnd` and every diagnostic as `[kind, message]`.
     end: Option<Value>,
     diagnostics: Option<Vec<(String, String)>>,
+    /// Thread only: each run on the stream, as `runId`, `requested`, the
+    /// name of its `RunEnd` as `end` and the whole of it as `detail`.
+    runs: Option<Vec<Value>>,
+    /// Thread only: the ids of the interrupts left pending.
+    pending_interrupts: Option<Vec<String>>,
     /// Producer only: the index of the rejected event.
     at: Option<usize>,
 }
@@ -277,14 +288,20 @@ impl Transport for Wire {
 }
 
 /// A `Thread` asked to run once, with the fixture's `input` as its history
-/// and the stream's own ids as the request's.
+/// and the stream's own ids as the request's: the thread id every run
+/// carries, and the run id of the last run. AG-UI 1.0, `basic/run-input`:
+/// "The run it requests is the exchange's last", so a stream of several runs
+/// stands for a replay and then the requested run. A local stream that puts
+/// a run after the requested one names the one asked for in `input.runId`.
 async fn thread(stream: &Stream) -> Seen {
-    let first = stream
-        .events()
-        .iter()
-        .find(|event| event["type"] == "RUN_STARTED");
-    let id = |key: &str| {
-        first
+    let started = || {
+        stream
+            .events()
+            .iter()
+            .filter(|event| event["type"] == "RUN_STARTED")
+    };
+    let id = |event: Option<&Value>, key: &str| {
+        event
             .and_then(|event| event[key].as_str())
             .map(str::to_owned)
     };
@@ -295,9 +312,10 @@ async fn thread(stream: &Stream) -> Seen {
 
     let mut builder = Thread::<_>::builder(
         wire.clone(),
-        id("threadId").unwrap_or_else(|| format!("t-{}", stream.name)),
+        id(started().next(), "threadId").unwrap_or_else(|| format!("t-{}", stream.name)),
     );
     let input = &stream.doc["input"];
+    let requested = id(Some(input), "runId").or_else(|| id(started().next_back(), "runId"));
     if let Some(messages) = input.get("messages") {
         let messages: Vec<Message> =
             serde_json::from_value(messages.clone()).expect("the fixture's input messages");
@@ -314,7 +332,7 @@ async fn thread(stream: &Stream) -> Seen {
         builder = builder.protocol_version(None);
     }
     let mut thread = builder.build().expect("the thread builds");
-    if let Some(run_id) = id("runId") {
+    if let Some(run_id) = requested {
         thread.set_next_run_id(run_id);
     }
     let observed = Arc::new(Mutex::new(Vec::new()));
@@ -350,15 +368,46 @@ async fn thread(stream: &Stream) -> Seen {
         .map(|(_, message)| message.clone())
         .collect();
     let end = serde_json::to_value(&report.end).expect("RunEnd serializes");
+    let failed = |end: &RunEnd| matches!(end, RunEnd::Failed { .. });
     assert_eq!(
         rejected.is_some() || run_error.is_some(),
-        end.get("Failed").is_some(),
-        "{}: a thread run ends as Failed exactly when it was rejected or reported RUN_ERROR: \
-         {end} {diagnostics:?}",
+        failed(&report.end) || report.runs.iter().any(|run| failed(&run.end)),
+        "{}: something on a thread's stream ends as Failed exactly when the stream was \
+         rejected or a run reported RUN_ERROR: {end} {:?} {diagnostics:?}",
+        stream.name,
+        report.runs
+    );
+    let runs = report
+        .runs
+        .iter()
+        .map(|run| {
+            let detail = serde_json::to_value(&run.end).expect("RunEnd serializes");
+            // A variant with fields serializes as `{"Name": {…}}`, one
+            // without as `"Name"`.
+            let name = match &detail {
+                Value::Object(variant) => variant.keys().next().cloned(),
+                other => other.as_str().map(str::to_owned),
+            };
+            json!({
+                "runId": run.run_id,
+                "requested": run.requested,
+                "end": name,
+                "detail": detail,
+            })
+        })
+        .collect();
+    let pending_interrupts = thread
+        .interrupts()
+        .iter()
+        .map(|interrupt| interrupt.id.clone())
+        .collect();
+    let requests = wire.requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "{}: one request, however many runs answer it",
         stream.name
     );
-    let requests = wire.requests.lock().unwrap();
-    assert_eq!(requests.len(), 1, "{}: one run, one request", stream.name);
 
     Seen {
         rejected,
@@ -371,6 +420,8 @@ async fn thread(stream: &Stream) -> Seen {
         reasoning: Some(to_values(thread.reasoning())),
         end: Some(end),
         diagnostics: Some(diagnostics),
+        runs: Some(runs),
+        pending_interrupts: Some(pending_interrupts),
         at: None,
     }
 }
@@ -635,7 +686,8 @@ fn mismatches(expect: &Value, seen: &Seen, strict: bool) -> Vec<String> {
                 }
             }
 
-            // Not corpus vocabulary: what a pin needs to say exactly.
+            // Not corpus vocabulary: what a pin needs to say exactly, and
+            // what a local stream says about a thread.
             "reasoning" => match &seen.reasoning {
                 Some(reasoning) => {
                     if let Err(why) = subset(expected, &Value::Array(reasoning.clone()), "") {
@@ -645,8 +697,29 @@ fn mismatches(expect: &Value, seen: &Seen, strict: bool) -> Vec<String> {
                 None => unseen(key, &mut out),
             },
             "end" => match &seen.end {
-                Some(end) if end == expected => {}
-                Some(end) => out.push(format!("end: {end}, expected {expected}")),
+                Some(end) => {
+                    if let Err(why) = subset(expected, end, "") {
+                        out.push(format!("end: {why}"));
+                    }
+                }
+                None => unseen(key, &mut out),
+            },
+            "runs" => match &seen.runs {
+                Some(runs) => {
+                    if let Err(why) = subset(expected, &Value::Array(runs.clone()), "") {
+                        out.push(format!("runs: {why}"));
+                    }
+                }
+                None => unseen(key, &mut out),
+            },
+            "pendingInterrupts" => match &seen.pending_interrupts {
+                Some(pending) => {
+                    if strings(expected) != *pending {
+                        out.push(format!(
+                            "pendingInterrupts: {pending:?}, expected {expected}"
+                        ));
+                    }
+                }
                 None => unseen(key, &mut out),
             },
             "diagnostics" => match &seen.diagnostics {
@@ -709,8 +782,18 @@ const REJECTIONS: &[(&str, &str, &str)] = &[
         "malformed-chunk",
     ),
     (
+        "event-after-run-error-fatal",
+        "RUN_ERROR arrived after the run had already finished",
+        "run-ended",
+    ),
+    (
         "event-after-run-finished-fatal",
         "TEXT_MESSAGE_START arrived after the run had already finished",
+        "run-ended",
+    ),
+    (
+        "event-between-runs-fatal",
+        "STATE_SNAPSHOT arrived after the run had already finished",
         "run-ended",
     ),
     (
@@ -735,8 +818,13 @@ const REJECTIONS: &[(&str, &str, &str)] = &[
     ),
     ("malformed-known-field-fatal", "/delta must be string", ""),
     (
+        "nested-run-started-after-closed-run-fatal",
+        "RUN_STARTED arrived while a run was still active",
+        "duplicate-run-started",
+    ),
+    (
         "nested-run-started-fatal",
-        "RUN_STARTED arrived twice in one stream",
+        "RUN_STARTED arrived while a run was still active",
         "duplicate-run-started",
     ),
     (
@@ -834,8 +922,6 @@ fn declared(stream: &Stream, lane: Lane) -> Value {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Category {
-    /// Waits for several runs on one stream.
-    Pending44,
     /// Differs on purpose, by a decision this repository already made.
     Divergence,
 }
@@ -854,8 +940,8 @@ struct Pin {
 }
 
 fn pins() -> Vec<Pin> {
-    use Category::{Divergence, Pending44};
-    use Lane::{Pipeline, Producer, Thread};
+    use Category::Divergence;
+    use Lane::{Pipeline, Thread};
     let pin = |stream, lane, category, issue, reason, expect| Pin {
         stream,
         lane,
@@ -864,15 +950,6 @@ fn pins() -> Vec<Pin> {
         reason,
         expect,
     };
-    let first_run = [
-        "RUN_STARTED",
-        "TEXT_MESSAGE_START",
-        "TEXT_MESSAGE_CONTENT",
-        "TEXT_MESSAGE_END",
-        "RUN_FINISHED",
-    ];
-    let later_run = "RUN_STARTED arrived after the run had already finished";
-    let one_run = "reads one run per stream";
     let apart = "streamed reasoning is kept in `reasoning()`, not in the message list";
     let no_peer_version = "no peer-version setting, so no version-selected downgrade (1.0: MAY)";
     let phantom = json!([
@@ -893,92 +970,6 @@ fn pins() -> Vec<Pin> {
     };
 
     vec![
-        // ---- pending #44: several runs on one stream ----------------------
-        // The second run is not read. #44 has to flip each of these.
-        pin(
-            "two-sequential-runs-accumulate",
-            Pipeline,
-            Pending44,
-            44,
-            "the verifier rejects a second RUN_STARTED",
-            json!({
-                "outcome": "failed",
-                "errorContains": later_run,
-                "eventTypes": first_run,
-                "messageCount": 1,
-                "messages": [{"id": "two-sequential-runs-m-a", "content": "first run"}],
-            }),
-        ),
-        pin(
-            "two-sequential-runs-accumulate",
-            Thread,
-            Pending44,
-            44,
-            one_run,
-            json!({
-                "outcome": "completed",
-                "end": {"Success": {"result": null}},
-                "diagnostics": [[
-                    "unsupported",
-                    "RUN_STARTED after RUN_FINISHED: a later run on the same stream was not read",
-                ]],
-                // The later RUN_STARTED is observed, and nothing after it.
-                "eventTypes": [
-                    "RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT",
-                    "TEXT_MESSAGE_END", "RUN_FINISHED", "RUN_STARTED",
-                ],
-                "messageCount": 1,
-                "messages": [{"id": "two-sequential-runs-m-a", "content": "first run"}],
-            }),
-        ),
-        pin(
-            "two-sequential-runs-accumulate",
-            Producer,
-            Pending44,
-            44,
-            "the server verifier ends at the first terminal event",
-            json!({"outcome": "failed", "errorContains": "run-ended", "at": 5}),
-        ),
-        pin(
-            "run-error-then-new-run-continues",
-            Pipeline,
-            Pending44,
-            44,
-            "the verifier rejects a RUN_STARTED after RUN_ERROR",
-            json!({
-                "outcome": "failed",
-                "errorContains": later_run,
-                "runError": "run-error-restart: the first run failed",
-                "eventTypes": ["RUN_STARTED", "RUN_ERROR"],
-                "messageCount": 0,
-            }),
-        ),
-        pin(
-            "run-error-then-new-run-continues",
-            Thread,
-            Pending44,
-            44,
-            "stops reading at RUN_ERROR",
-            json!({
-                "outcome": "completed",
-                "runError": "run-error-restart: the first run failed",
-                "end": {"Failed": {
-                    "message": "run-error-restart: the first run failed",
-                    "code": null,
-                }},
-                "diagnostics": [["run", "run-error-restart: the first run failed"]],
-                "eventTypes": ["RUN_STARTED", "RUN_ERROR"],
-                "messageCount": 0,
-            }),
-        ),
-        pin(
-            "run-error-then-new-run-continues",
-            Producer,
-            Pending44,
-            44,
-            "the server verifier ends at the first terminal event",
-            json!({"outcome": "failed", "errorContains": "run-ended", "at": 2}),
-        ),
         // ---- #67: reasoning messages in the conversation ------------------
         // `Applier::reasoning` documents the decision. The span's id also
         // leaves an empty entry of its own there.
@@ -1156,9 +1147,8 @@ async fn every_stream_produces_the_outcome_it_declares() {
                     }
                 }
                 Some(pin) => {
-                    category = match (pin.category, category) {
-                        (Category::Pending44, _) | (_, "pending #44") => "pending #44",
-                        (Category::Divergence, _) => "expected divergence",
+                    category = match pin.category {
+                        Category::Divergence => "expected divergence",
                     };
                     cells.push(format!("{verdict} [#{}: {}]", pin.issue, pin.reason));
                     if against_declared.is_empty() {

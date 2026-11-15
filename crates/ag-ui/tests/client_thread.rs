@@ -438,14 +438,47 @@ async fn a_terminal_for_another_request_never_confirms_submission_even_without_v
         thread.submission().unwrap().status,
         SubmissionStatus::Unconfirmed
     );
-    let mut wrong = Thread::new(ReplayTransport::new(success()), "t");
+
+    // A stream that carries another run only is a replay with nothing after
+    // it: it is read, and it does not answer the request.
+    let other = vec![
+        Event::run_started("t", "another-request"),
+        Event::run_finished_success("t", "another-request"),
+    ];
+    let mut wrong = Thread::new(ReplayTransport::with_runs([pause(), other]), "t");
+    wrong.set_verify(false);
+    wrong.set_next_run_id("r");
+    wrong.run().unwrap().collect_report().await;
     wrong.set_next_run_id("actual-request");
+    let report = wrong.resume_many(answers()).unwrap().collect_report().await;
+    assert!(matches!(report.end, RunEnd::Failed { .. }), "{report:?}");
+    assert_eq!(report.diagnostics.len(), 1, "{report:?}");
+    assert!(
+        report.diagnostics[0].message.contains(
+            r#"without the requested run: no RUN_STARTED carried run ID "actual-request""#
+        ),
+        "{report:?}"
+    );
+    assert_eq!(report.runs.len(), 1);
+    assert!(!report.runs[0].requested);
+    assert_eq!(report.runs[0].end, RunEnd::Success { result: None });
+    assert_eq!(
+        wrong.submission().unwrap().status,
+        SubmissionStatus::Unconfirmed
+    );
+    assert_eq!(wrong.interrupts().len(), answers().len());
+
+    // Another thread's run is not read at all.
+    let mut wrong = Thread::new(ReplayTransport::new(success()), "another-thread");
+    wrong.set_next_run_id("r");
     let report = wrong.send("wrong response").unwrap().collect_report().await;
     assert!(
         report.diagnostics[0]
             .message
-            .contains("requested thread and run IDs")
+            .contains("does not match the requested thread ID"),
+        "{report:?}"
     );
+    assert!(report.runs.is_empty());
 }
 
 #[tokio::test]
@@ -565,6 +598,10 @@ async fn terminal_application_wins_late_abort_and_old_handle_cannot_cancel_next_
     let abort = run.abort_handle();
     assert!(matches!(
         run.next().await,
+        Some(Update::RunEnded(run)) if run.requested && matches!(run.end, RunEnd::Success { .. })
+    ));
+    assert!(matches!(
+        run.next().await,
         Some(Update::Done(RunEnd::Success { .. }))
     ));
     abort.abort();
@@ -621,9 +658,16 @@ async fn a_reported_success_waits_for_the_stream_and_outlives_a_local_stop() {
             "t",
         );
         let mut run = thread.send("go").unwrap();
-        assert!(run.next().now_or_never().is_none(), "Done before the end");
+        assert!(
+            run.next().now_or_never().is_none(),
+            "the run's end before the stream said what follows it"
+        );
         if !drop_it {
             run.abort();
+            assert!(matches!(
+                run.next().await,
+                Some(Update::RunEnded(run)) if matches!(run.end, RunEnd::Success { .. })
+            ));
             assert!(matches!(
                 run.next().await,
                 Some(Update::Done(RunEnd::Success { .. }))

@@ -1,4 +1,5 @@
-//! One run of a conversation: the stream it is read as, and what that stream yields.
+//! One request of a conversation: the stream that answers it, the runs that
+//! stream carries, and what it yields.
 
 use std::collections::{HashSet, VecDeque};
 use std::pin::Pin;
@@ -14,11 +15,10 @@ use crate::client::{
     enforce::{Checked, CheckedStream},
     error::{Error, Result},
     transport::Transport,
-    verify::Verifier,
+    verify::{Verifier, nested_run_started},
 };
 use crate::{
-    Event, Interrupt, Message, MessageId, ResumeEntry, RunAgentInput, RunId, RunOutcome, ThreadId,
-    ToolCallId,
+    Event, Interrupt, Message, MessageId, ResumeEntry, RunAgentInput, RunId, RunOutcome, ToolCallId,
 };
 use futures_core::Stream;
 use futures_util::{StreamExt, task::AtomicWaker};
@@ -58,26 +58,50 @@ pub enum Update<S = Value> {
     Subagent(SubagentUpdate),
     /// The run paused and needs a human. Answer it with
     /// [`Thread::resume`] — one update per pending interrupt.
+    ///
+    /// Only for interrupts that became pending on the thread: those of the
+    /// requested run, or of a run after it, which replace the requested
+    /// run's. A replayed run's are history, and are in its [`RunSummary`]
+    /// only. [`Thread::interrupts`] holds what is pending once the stream
+    /// has ended.
     Interrupt(Interrupt),
     /// Something went wrong: a malformed stream, a patch that would not apply,
     /// a transport failure, a `RUN_ERROR`.
     ///
-    /// Not necessarily fatal — a run survives a patch it could not apply. When
-    /// it is fatal, the matching [`Update::Done`] follows.
+    /// Not necessarily fatal — a run survives a patch it could not apply, and
+    /// a stream goes on after a `RUN_ERROR`, which fails one run and may be
+    /// followed by the next. When it ends the stream, the matching
+    /// [`Update::Done`] follows.
     Error(Error),
     /// Not an error: the stream was accepted, with a correction or an omission
     /// the application may want to log. An unrecognised field, enum member or
     /// event was dropped, a retired `THINKING_*` event was translated, a
     /// deprecated `null` was read as omitted, or the producer declared a newer
-    /// protocol version. The run is unaffected.
+    /// protocol version. The run is unaffected. So is one more case: a run
+    /// after the requested one finished, and the pending interrupts were not
+    /// replaced because a resume submission is still unconfirmed.
     ///
     /// Each text is delivered once per run and repeats at most 64 characters
     /// of input, with control characters escaped. [`RunReport::diagnostics`]
     /// keeps it with kind `warning`.
     Warning(String),
-    /// The run ended, and how. Always the last update of a run, on every path
-    /// out: the agent finishing, the agent failing, and the transport dying
-    /// mid-sentence.
+    /// One run on the stream ended, and how.
+    ///
+    /// A stream carries the run the request asked for, and AG-UI 1.0 lets
+    /// runs the producer replays precede it. Each run gets one of these, the
+    /// only run of a stream included, once nothing can change how it ended:
+    /// at its `RUN_ERROR`, or for a run that reported `RUN_FINISHED` at
+    /// whatever follows it — the next `RUN_STARTED`, a late `RUN_ERROR`, the
+    /// end of the stream. [`Update::Done`] follows the last one.
+    RunEnded(RunSummary),
+    /// The stream ended, and how the request went: the [`RunEnd`] of the
+    /// requested run — of the last run on the stream, should the producer
+    /// have gone on after it — or how reading stopped before any such run
+    /// ended. Always the last update, on every path out: the agent
+    /// finishing, the agent failing, and the transport dying mid-sentence.
+    ///
+    /// It arrives when the stream ends, not at a terminal event: another run
+    /// may follow `RUN_FINISHED` or `RUN_ERROR`.
     Done(RunEnd),
 }
 
@@ -154,6 +178,32 @@ pub enum RunEnd {
     Aborted,
 }
 
+/// One run a stream carried, and how it ended.
+///
+/// The runs of a stream fall in three places. Those before the requested run
+/// are *replayed*: history the producer restates. They are read into the
+/// conversation and reported here, and change nothing the thread owes. The
+/// *requested* run answers the request: it alone confirms a resume
+/// submission. A run *after* it is one AG-UI 1.0 does not provide for — the
+/// requested run is the last of its exchange — but a producer that keeps the
+/// stream open sends one, and the agent then stands where that run left it.
+/// So what the thread owes next, its pending interrupts and the tool calls a
+/// success outcome names, is what the last run from the requested one on
+/// reported.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct RunSummary {
+    /// The id its `RUN_STARTED` carried. `None` for a failure that opened
+    /// the stream: a `RUN_ERROR` with no run before it.
+    pub run_id: Option<RunId>,
+    /// How it ended, or how reading it stopped.
+    pub end: RunEnd,
+    /// Whether this is the run the request asked for: the one whose
+    /// `RUN_STARTED` carried the request's run id, or a failure that opened
+    /// the stream, which is that run failing before it began.
+    pub requested: bool,
+}
+
 /// One retained diagnostic, independent of the terminal outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -165,13 +215,18 @@ pub struct RunDiagnostic {
     pub message: String,
 }
 
-/// Results from the whole run, including updates consumed before `collect_report`.
+/// Results from the whole stream, including updates consumed before `collect_report`.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct RunReport {
-    /// The observed terminal outcome.
+    /// How the request went: what [`Update::Done`] carried.
     pub end: RunEnd,
-    /// Messages whose IDs were absent when this run was prepared.
+    /// Every run the stream carried, in order. One entry for a stream that
+    /// carried the requested run alone; none when reading stopped before any
+    /// run began.
+    pub runs: Vec<RunSummary>,
+    /// Messages whose IDs were absent when this request was prepared,
+    /// whichever run on the stream produced them.
     pub new_messages: Vec<Message>,
     /// Retained diagnostics, in observation order.
     pub diagnostics: Vec<RunDiagnostic>,
@@ -230,14 +285,38 @@ impl<T: Transport, S> Thread<T, S> {
             dispatched: false,
             abort: AbortHandle::default(),
             end: None,
-            finished: None,
+            run: None,
+            runs: Vec::new(),
+            opened: false,
+            live: false,
+            outcome: None,
             diagnostics: Vec::new(),
             diagnostics_omitted: 0,
             initial_ids,
-            response_ids: None,
-            started_tool_calls: HashSet::new(),
         })
     }
+}
+
+/// Where a run stands relative to the one the request asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    /// Before it: history the producer restates.
+    Replayed,
+    /// The one asked for.
+    Requested,
+    /// After it.
+    Later,
+}
+
+/// The run being read: from its `RUN_STARTED` until its end is settled.
+struct OpenRun {
+    run_id: RunId,
+    place: Place,
+    /// What `RUN_FINISHED` reported, held until the stream says what follows
+    /// it: a `RUN_ERROR` may still fail the run.
+    finished: Option<(RunOutcome, Option<Value>)>,
+    /// The tool calls this run started.
+    started_tool_calls: HashSet<ToolCallId>,
 }
 
 #[derive(Default)]
@@ -245,7 +324,7 @@ struct AbortState {
     aborted: AtomicBool,
     waker: AtomicWaker,
 }
-/// Cloneable cancellation for one local run. Wakes a pending poll and drops its
+/// Cloneable cancellation for one local request. Wakes a pending poll and drops its
 /// connection/response stream. It does not confirm remote cancellation.
 #[derive(Clone, Default)]
 pub struct AbortHandle {
@@ -270,8 +349,10 @@ impl AbortHandle {
     }
 }
 
-/// A lazily dispatched run. It borrows the thread until dropped. Every consumed
-/// run yields one `Done`; dropping an unpolled run leaves the thread unchanged.
+/// A lazily dispatched request, read to the end of the stream that answers
+/// it. It borrows the thread until dropped. Every consumed stream yields one
+/// [`Update::RunEnded`] per run it carried and then one [`Update::Done`];
+/// dropping an unpolled one leaves the thread unchanged.
 pub struct RunStream<'a, T, S = Value> {
     thread: &'a mut Thread<T, S>,
     prepared: Option<(RunAgentInput, Option<Message>)>,
@@ -284,15 +365,22 @@ pub struct RunStream<'a, T, S = Value> {
     dispatched: bool,
     abort: AbortHandle,
     end: Option<RunEnd>,
-    /// What `RUN_FINISHED` reported, held until the stream ends: a
-    /// `RUN_ERROR` may still follow it and fail the run.
-    finished: Option<(RunOutcome, Option<Value>)>,
+    /// The run being read.
+    run: Option<OpenRun>,
+    /// Every run whose end is settled, in stream order.
+    runs: Vec<RunSummary>,
+    /// Whether a `RUN_STARTED` has arrived. A `RUN_ERROR` before any is the
+    /// requested run failing before it began.
+    opened: bool,
+    /// Whether the requested run has started. A run from then on is live:
+    /// its end says where the conversation stands.
+    live: bool,
+    /// How the last live run ended.
+    outcome: Option<RunEnd>,
     diagnostics: Vec<RunDiagnostic>,
     diagnostics_omitted: usize,
     initial_ids: HashSet<MessageId>,
-    response_ids: Option<(ThreadId, RunId)>,
     request_run_id: RunId,
-    started_tool_calls: HashSet<ToolCallId>,
 }
 impl<T, S> std::fmt::Debug for RunStream<'_, T, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -308,7 +396,7 @@ impl<T, S> RunStream<'_, T, S> {
     pub fn thread(&self) -> &Thread<T, S> {
         self.thread
     }
-    /// A handle that cancels this run only.
+    /// A handle that cancels this request only.
     pub fn abort_handle(&self) -> AbortHandle {
         self.abort.clone()
     }
@@ -349,15 +437,25 @@ impl<T, S> RunStream<'_, T, S> {
         }
         self.ready.push_back(Update::Warning(warning));
     }
-    fn terminate(&mut self, end: RunEnd) {
+    /// Ends the stream. The end of the last live run is how the request
+    /// went; `stopped` is how reading stopped, for a stream on which no live
+    /// run ended.
+    fn terminate(&mut self, stopped: RunEnd) {
         if self.done {
             return;
         }
+        debug_assert!(self.run.is_none(), "the run being read is settled first");
         self.done = true;
         self.events = None;
         self.prepared = None;
-        self.finished = None;
+        self.run = None;
         self.thread.applier.reset_streams();
+        // The requested run settles a resume submission one way or the
+        // other. On a stream without it, nothing did.
+        if self.dispatched && self.outcome.is_none() {
+            self.thread.unconfirm();
+        }
+        let end = self.outcome.take().unwrap_or(stopped);
         if self.dispatched {
             self.thread.last_run_end = Some(end.clone());
             self.thread.active_run_id = None;
@@ -365,6 +463,8 @@ impl<T, S> RunStream<'_, T, S> {
         self.end = Some(end.clone());
         self.ready.push_back(Update::Done(end));
     }
+    /// Reports what a run that stopped short left open as aborted: its
+    /// messages, its reasoning, its running subagents.
     fn stop_subagents(&mut self) {
         let (messages, reasoning) = self.thread.applier.abort_messages();
         for change in messages {
@@ -400,74 +500,175 @@ impl<T, S> RunStream<'_, T, S> {
             }));
         }
     }
+    /// Stops reading because of `error`. The run being read fails with it,
+    /// and so does the request, unless a live run already said how it went.
     fn fail(&mut self, error: Error) {
-        let message = error.to_string();
-        self.diagnostic(error);
-        self.thread.unconfirm();
-        self.stop_subagents();
-        self.terminate(RunEnd::Failed {
-            message,
+        let end = RunEnd::Failed {
+            message: error.to_string(),
             code: None,
-        });
-    }
-    /// Ends the run as its `RUN_FINISHED` reported, if one arrived and nothing
-    /// has ended the run since.
-    fn finish_reported(&mut self) -> bool {
-        let Some((outcome, result)) = self.finished.take() else {
-            return false;
         };
-        if !matches!(outcome, RunOutcome::Cancelled) {
-            self.thread
-                .confirm_interrupt_tool_decisions(&self.started_tool_calls);
+        self.diagnostic(error);
+        if !self.settle_stopped(end.clone()) {
+            self.stop_subagents();
         }
-        match outcome {
-            RunOutcome::Success => {
-                self.thread.submission = None;
-                self.thread.interrupts.clear();
-                self.terminate(RunEnd::Success { result });
-            }
+        self.terminate(end);
+    }
+    /// Stops reading at the application's request: an abort, or a drop.
+    fn stop(&mut self) {
+        // A run that reported how it ended keeps that ending.
+        if !self.settle_reported() && !self.settle_stopped(RunEnd::Aborted) && self.dispatched {
+            self.stop_subagents();
+        }
+        self.terminate(RunEnd::Aborted);
+    }
+    /// The stream ended.
+    fn end_of_input(&mut self) {
+        // A run that reported how it ended is over. One still active was cut
+        // short, and so was a stream no run arrived on.
+        if !self.settle_reported() && (self.run.is_some() || self.runs.is_empty()) {
+            let error = self
+                .verifier
+                .as_ref()
+                .and_then(|verifier| verifier.finish().err())
+                .unwrap_or_else(|| {
+                    Error::protocol("the stream ended before RUN_FINISHED or RUN_ERROR")
+                });
+            return self.fail(error);
+        }
+        match self.outcome.clone() {
+            Some(end) => self.terminate(end),
+            // Every run on the stream was a replayed one.
+            None => self.fail(Error::protocol(format!(
+                "the stream ended without the requested run: no RUN_STARTED carried run ID {:?}",
+                self.request_run_id.as_str()
+            ))),
+        }
+    }
+    /// Whether the run being read reported `RUN_FINISHED`, and waits for the
+    /// stream to say what follows.
+    fn reported(&self) -> bool {
+        self.run.as_ref().is_some_and(|run| run.finished.is_some())
+    }
+    /// Ends the run being read as its `RUN_FINISHED` reported, if one
+    /// arrived and nothing has ended the run since.
+    fn settle_reported(&mut self) -> bool {
+        if !self.reported() {
+            return false;
+        }
+        let run = self.run.take().expect("a run is being read");
+        let (outcome, result) = run.finished.expect("the run reported RUN_FINISHED");
+        let end = match outcome {
+            RunOutcome::Success => RunEnd::Success { result },
             RunOutcome::SuccessWithPendingToolCalls {
                 pending_tool_call_ids,
-            } => {
+            } => RunEnd::SuccessWithPendingToolCalls {
+                result,
+                pending_tool_call_ids,
+            },
+            RunOutcome::Interrupt { interrupts } => RunEnd::Interrupted { interrupts },
+            RunOutcome::Cancelled => RunEnd::Cancelled,
+        };
+        self.settle(Some(run.run_id), run.place, &run.started_tool_calls, end);
+        true
+    }
+    /// Ends the run being read, if there is one, short of an ending of its
+    /// own: reading stopped, or the stream was rejected. A `RUN_FINISHED` it
+    /// had reported is withdrawn.
+    fn settle_stopped(&mut self, end: RunEnd) -> bool {
+        let Some(run) = self.run.take() else {
+            return false;
+        };
+        self.settle(Some(run.run_id), run.place, &run.started_tool_calls, end);
+        true
+    }
+    /// Records how one run ended, and applies what that means for the thread.
+    fn settle(
+        &mut self,
+        run_id: Option<RunId>,
+        place: Place,
+        started_tool_calls: &HashSet<ToolCallId>,
+        end: RunEnd,
+    ) {
+        let confirms = matches!(
+            end,
+            RunEnd::Success { .. }
+                | RunEnd::SuccessWithPendingToolCalls { .. }
+                | RunEnd::Interrupted { .. }
+        );
+        // Only the requested run answers the request, so only it settles a
+        // resume submission.
+        if place == Place::Requested {
+            if confirms {
+                self.thread
+                    .confirm_interrupt_tool_decisions(started_tool_calls);
                 self.thread.submission = None;
-                self.thread.interrupts.clear();
-                self.terminate(RunEnd::SuccessWithPendingToolCalls {
-                    result,
-                    pending_tool_call_ids,
-                });
-            }
-            RunOutcome::Interrupt { interrupts } => {
-                self.thread.submission = None;
-                self.thread.interrupts.clone_from(&interrupts);
-                for interrupt in &interrupts {
-                    self.ready.push_back(Update::Interrupt(interrupt.clone()));
-                }
-                self.terminate(RunEnd::Interrupted { interrupts });
-            }
-            RunOutcome::Cancelled => {
+            } else {
                 self.thread.unconfirm();
-                self.stop_subagents();
-                self.terminate(RunEnd::Cancelled);
             }
         }
-        true
+        if confirms {
+            // RUN_FINISHED found everything closed, unless nothing checked.
+            self.thread.applier.reset_streams();
+        } else {
+            self.stop_subagents();
+        }
+        if place != Place::Replayed {
+            self.replace_pending(run_id.as_ref(), place, &end);
+            self.outcome = Some(end.clone());
+        }
+        let summary = RunSummary {
+            run_id,
+            end,
+            requested: place == Place::Requested,
+        };
+        self.runs.push(summary.clone());
+        self.ready.push_back(Update::RunEnded(summary));
+    }
+    /// What a live run's end leaves pending on the thread: an interrupt
+    /// outcome sets the pending interrupts, a success or cancelled one
+    /// clears them, and a run that failed or was cut short leaves them.
+    ///
+    /// Not while a resume submission is held. Its entries answer exactly the
+    /// pending interrupts, and it stays until the application reconciles it,
+    /// so they stay with it.
+    fn replace_pending(&mut self, run_id: Option<&RunId>, place: Place, end: &RunEnd) {
+        let (pending, outcome): (&[Interrupt], _) = match end {
+            RunEnd::Interrupted { interrupts } => (interrupts, "interrupt"),
+            RunEnd::Success { .. } | RunEnd::SuccessWithPendingToolCalls { .. } => (&[], "success"),
+            RunEnd::Cancelled => (&[], "cancelled"),
+            RunEnd::Failed { .. } | RunEnd::Aborted => return,
+        };
+        if self.thread.submission.is_none() {
+            self.thread.interrupts = pending.to_vec();
+            for interrupt in pending {
+                self.ready.push_back(Update::Interrupt(interrupt.clone()));
+            }
+        } else if place == Place::Later && self.thread.interrupts != pending {
+            // That the requested run left the submission unconfirmed is its
+            // own ending. This run came after it, and would have moved the
+            // thread on.
+            let run = run_id.map_or_else(String::new, |id| {
+                format!(" \"{}\"", crate::protocol::excerpt(id.as_str(), false))
+            });
+            self.warning(format!(
+                "run{run} finished with outcome `{outcome}` while a resume submission is \
+                 unconfirmed: the pending interrupts stay the ones that submission answers \
+                 until the application reconciles it"
+            ));
+        }
     }
 }
 impl<T, S> Drop for RunStream<'_, T, S> {
     fn drop(&mut self) {
-        // A run that reported how it ended keeps that ending.
-        self.finish_reported();
         if self.dispatched && !self.done {
-            self.thread.unconfirm();
-            self.thread.applier.abort_subagents();
-            self.thread.last_run_end = Some(RunEnd::Aborted);
-            self.thread.active_run_id = None;
+            self.stop();
         }
     }
 }
 
 impl<T: Transport, S: DeserializeOwned + Clone + Unpin> RunStream<'_, T, S> {
-    /// Consume the remainder and return the entire run's outcome and diagnostics.
+    /// Consume the remainder and return the outcome, the runs and the
+    /// diagnostics of the whole stream.
     pub async fn collect_report(mut self) -> RunReport {
         while self.next().await.is_some() {}
         RunReport {
@@ -475,6 +676,7 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> RunStream<'_, T, S> {
                 .end
                 .clone()
                 .expect("a consumed stream has a terminal outcome"),
+            runs: std::mem::take(&mut self.runs),
             new_messages: self
                 .thread
                 .messages()
@@ -494,6 +696,10 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
             observer(&event);
         }
         if matches!(event, Event::RunError(_)) {
+            // A failed run ends what it had open along with it. Nothing is
+            // closed on its behalf, and nothing of it is left for the next
+            // run to close.
+            self.normalizer = ChunkNormalizer::new();
             self.handle(event);
             return;
         }
@@ -511,37 +717,46 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
         }
     }
     fn handle(&mut self, event: Event) {
-        // Pair the terminal with the stream's announced run even when optional
-        // ordering verification is disabled. Run errors carry no IDs.
+        // Pair each run's boundary events with each other and with the
+        // request, even when optional ordering verification is disabled. Run
+        // errors carry no IDs.
+        let mut opening = None;
         match &event {
-            // 1.0 lets a later run follow a closed one on the same stream. This
-            // stream reads one run: it ends as reported, and the rest is unread.
-            Event::RunStarted(_) if self.finished.is_some() => {
-                self.diagnostic(Error::Unsupported(
-                    "RUN_STARTED after RUN_FINISHED: a later run on the same stream was not read"
-                        .into(),
-                ));
-                self.finish_reported();
-                return;
-            }
-            // A second RUN_STARTED while the run is active is a nested run
-            // whatever ids it carries, and the verifier says so.
-            Event::RunStarted(_) if self.response_ids.is_some() && self.verifier.is_some() => {}
             Event::RunStarted(started) => {
-                if started.thread_id != self.thread.thread_id
-                    || started.run_id != self.request_run_id
-                {
-                    self.fail(Error::protocol(
-                        "RUN_STARTED does not match the requested thread and run IDs",
-                    ));
-                    return;
+                match self.run.as_ref().filter(|run| run.finished.is_none()) {
+                    // Inside a run that has not ended it is a nested run
+                    // whatever ids it carries, and the verifier says so.
+                    // Without one, the same run announced again is let
+                    // through, as it always was.
+                    Some(active) => {
+                        let again = started.thread_id == self.thread.thread_id
+                            && started.run_id == active.run_id;
+                        if self.verifier.is_none() && !again {
+                            self.fail(nested_run_started());
+                            return;
+                        }
+                    }
+                    None => {
+                        // The run before it, if it reported how it ended, is
+                        // over: nothing can fail it now.
+                        self.settle_reported();
+                        if started.thread_id != self.thread.thread_id {
+                            self.fail(Error::protocol(
+                                "RUN_STARTED does not match the requested thread ID",
+                            ));
+                            return;
+                        }
+                        opening = Some(started.run_id.clone());
+                    }
                 }
-                self.response_ids = Some((started.thread_id.clone(), started.run_id.clone()));
             }
             Event::RunFinished(finished) => {
-                if self.response_ids.as_ref()
-                    != Some(&(finished.thread_id.clone(), finished.run_id.clone()))
-                {
+                let closes = finished.thread_id == self.thread.thread_id
+                    && self
+                        .run
+                        .as_ref()
+                        .is_some_and(|run| run.run_id == finished.run_id);
+                if !closes {
                     self.fail(Error::protocol("RUN_FINISHED does not match RUN_STARTED"));
                     return;
                 }
@@ -562,6 +777,9 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
                 return;
             }
         }
+        if let Some(run_id) = opening {
+            self.open(run_id);
+        }
         let started_tool_call = match &event {
             Event::ToolCallStart(started) => Some(started.tool_call_id.clone()),
             _ => None,
@@ -569,14 +787,41 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
         match self.thread.applier.apply(&event) {
             Ok(changed) => {
                 if let Some(id) = started_tool_call {
-                    self.started_tool_calls.insert(id.clone());
                     self.thread.decided_interrupt_tool_call_ids.remove(&id);
+                    if let Some(run) = &mut self.run {
+                        run.started_tool_calls.insert(id);
+                    }
                 }
                 self.emit(changed);
             }
             Err(error @ Error::Patch { .. }) => self.diagnostic(error),
             Err(error) => self.fail(error),
         }
+    }
+    /// Begins reading the run a `RUN_STARTED` opened.
+    ///
+    /// The run that echoes the request's id is the requested one. One before
+    /// it is replayed, one after it is not, and neither is held to the
+    /// request's id: AG-UI 1.0, `basic/run-input`, "the requested run echoes
+    /// this input's `runId`; a replayed run carries its own".
+    fn open(&mut self, run_id: RunId) {
+        let place = if run_id == self.request_run_id {
+            Place::Requested
+        } else if self.live {
+            Place::Later
+        } else {
+            Place::Replayed
+        };
+        self.opened = true;
+        self.live |= place == Place::Requested;
+        // A new run starts with nothing open.
+        self.thread.applier.reset_streams();
+        self.run = Some(OpenRun {
+            run_id,
+            place,
+            finished: None,
+            started_tool_calls: HashSet::new(),
+        });
     }
     fn emit(&mut self, changed: Changed) {
         match changed {
@@ -633,18 +878,32 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
                 }
             }
             // The run is closed, but a RUN_ERROR may still follow and fail
-            // it, so the outcome takes effect when the stream ends.
+            // it, so the outcome takes effect when the stream says what
+            // comes next.
             Changed::RunFinished { outcome, result } => {
-                self.finished = Some((outcome, result));
+                if let Some(run) = &mut self.run {
+                    run.finished = Some((outcome, result));
+                }
             }
+            // The run is over, and the stream is not: the next run may
+            // follow.
             Changed::RunError { message, code } => {
                 self.diagnostic(Error::Run {
                     message: message.clone(),
                     code: code.clone(),
                 });
-                self.thread.unconfirm();
-                self.stop_subagents();
-                self.terminate(RunEnd::Failed { message, code });
+                let end = RunEnd::Failed { message, code };
+                if !self.settle_stopped(end.clone()) {
+                    // No run to fail. Before any RUN_STARTED, it is the
+                    // requested run that failed before it began.
+                    let place = match (self.opened, self.live) {
+                        (false, _) => Place::Requested,
+                        (true, true) => Place::Later,
+                        (true, false) => Place::Replayed,
+                    };
+                    self.live |= place == Place::Requested;
+                    self.settle(None, place, &HashSet::new(), end);
+                }
             }
         }
     }
@@ -657,12 +916,8 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
         this.abort.state.waker.register(cx.waker());
         loop {
             // A terminal already applied wins over a later abort.
-            if !this.done && this.abort.is_aborted() && !this.finish_reported() {
-                if this.dispatched {
-                    this.thread.unconfirm();
-                    this.stop_subagents();
-                }
-                this.terminate(RunEnd::Aborted);
+            if !this.done && this.abort.is_aborted() {
+                this.stop();
             }
             if let Some(update) = this.ready.pop_front() {
                 return Poll::Ready(Some(update));
@@ -706,24 +961,19 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
                 Poll::Ready(Some(Ok(Checked::Event(event)))) => this.ingest(event),
                 Poll::Ready(Some(Ok(Checked::Warning(warning)))) => this.warning(warning),
                 // After RUN_FINISHED a broken connection truncates nothing:
-                // the run already ended, so the break is only reported.
-                Poll::Ready(Some(Err(error @ Error::Transport(_)))) if this.finished.is_some() => {
+                // the run already ended, so the break is only reported. It
+                // still fails a request whose own run was yet to come.
+                Poll::Ready(Some(Err(error @ Error::Transport(_)))) if this.reported() => {
+                    let stopped = RunEnd::Failed {
+                        message: error.to_string(),
+                        code: None,
+                    };
                     this.diagnostic(error);
-                    this.finish_reported();
+                    this.settle_reported();
+                    this.terminate(stopped);
                 }
                 Poll::Ready(Some(Err(error))) => this.fail(error),
-                // Ended cleanly after RUN_FINISHED: the run is over.
-                Poll::Ready(None) if this.finish_reported() => {}
-                Poll::Ready(None) => {
-                    let error = this
-                        .verifier
-                        .as_ref()
-                        .and_then(|verifier| verifier.finish().err())
-                        .unwrap_or_else(|| {
-                            Error::protocol("the stream ended before RUN_FINISHED or RUN_ERROR")
-                        });
-                    this.fail(error);
-                }
+                Poll::Ready(None) => this.end_of_input(),
             }
         }
     }
