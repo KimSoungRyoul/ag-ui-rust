@@ -11,7 +11,9 @@ use crate::protocol::message::AgentMessage;
 use crate::protocol::operation::Operation;
 use crate::protocol::processor::{MessageProcessor, Rejection, RejectionKind};
 use crate::protocol::surface::{SurfaceState, SurfaceStore};
-use crate::protocol::validate::{ErrorCode, ValidationError, ValidationReport, Validator};
+use crate::protocol::validate::{
+    ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator,
+};
 use crate::protocol::version::A2uiVersion;
 
 /// The message processor of a session that holds `catalogs` and speaks
@@ -262,8 +264,15 @@ impl RendererState {
     /// must resolve. A surface with no components yet passes, since they may
     /// arrive later, and so does a surface the renderer no longer holds.
     ///
+    /// Each component is read from the catalog it names, or from its
+    /// surface's own, among the active catalogs: a v1.0 surface may draw from
+    /// several.
+    ///
     /// Composition constraints (`allowedParents`, `allowedChildren`) are
-    /// checked here too, since they are about a component's place in the tree.
+    /// checked here too, since they are about a component's place in the tree,
+    /// and for a surface of any version: a catalog that states them means
+    /// them. A failure is an `unallowed_parent` or an `unallowed_child`, in
+    /// the words a [`Validator`] has for a v1.0 surface.
     ///
     /// A component the root cannot reach is not an error here, as it is not in
     /// [`Validator`]: the protocol has no message that removes one component,
@@ -297,43 +306,31 @@ impl RendererState {
             if surface.components.is_empty() {
                 continue;
             }
-            let catalog_id = surface.catalog_id.as_deref().unwrap_or_default();
-            let Some(summary) = self.processor.catalog(catalog_id) else {
-                return Err(inactive_catalog(
-                    format!("surfaces[{surface_id:?}]"),
-                    catalog_id,
-                    &self.catalogs,
-                ));
-            };
-            let origin = self.store().origin(surface_id);
-            let found = Validator::new(summary).validate_stored(self.store(), surface);
-            report.errors.extend(found.errors);
-            // A version that constrains composition has it in the report
-            // already.
-            let violations = if surface.spoken_version().constrains_composition() {
-                Vec::new()
-            } else {
-                summary.composition_violations(&surface.components)
-            };
-            for violation in violations {
-                // `components[3].children[0]`: the position in the surface,
-                // then where in that component. Name the message instead when
-                // one of this answer's wrote the component.
-                let located = violation
-                    .path
-                    .strip_prefix("components[")
-                    .and_then(|rest| rest.split_once(']'))
-                    .and_then(|(position, rest)| {
-                        let component = surface.components.get(position.parse::<usize>().ok()?)?;
-                        Some(format!("{}{rest}", origin?.component(&component.id)?))
-                    })
-                    .unwrap_or(violation.path);
-                report.errors.push(ValidationError::new(
-                    ErrorCode::InvalidValue,
-                    located,
-                    format!("{}: {}", violation.code, violation.message),
-                ));
+            // The surface's own catalog has to be one of the session's. A
+            // surface that names none draws each component from the catalog
+            // the component names.
+            if let Some(catalog_id) = surface.catalog_id.as_deref() {
+                if self.processor.catalog(catalog_id).is_none() {
+                    return Err(inactive_catalog(
+                        format!("surfaces[{surface_id:?}]"),
+                        catalog_id,
+                        &self.catalogs,
+                    ));
+                }
             }
+            let validator = Validator::over(
+                self.catalogs.iter().map(CatalogDocument::catalog),
+                ValidateOptions::full_surface(),
+            );
+            let found = validator.validate_stored(self.store(), surface);
+            // A version that constrains composition has it in the report
+            // already, once nothing else is wrong; so is it added here.
+            if found.errors.is_empty() && !surface.spoken_version().constrains_composition() {
+                report
+                    .errors
+                    .extend(validator.composition_stored(self.store(), surface));
+            }
+            report.errors.extend(found.errors);
         }
         report.into_result()
     }

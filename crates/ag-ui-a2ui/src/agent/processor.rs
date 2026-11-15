@@ -222,11 +222,21 @@ impl A2uiRequestProcessor {
     /// any other document a catalog refers to, keyed by absolute URI. Nothing
     /// is fetched.
     ///
+    /// The schemas are those of the catalogs' protocol version; the v0.9
+    /// family is held to the v0.9.1 documents, which take either of its
+    /// discriminators.
+    ///
+    /// A schema is one catalog's. A v1.0 message in which a component or a
+    /// function call names another catalog than its surface's own is not put
+    /// to a schema: what it names is resolved against the active catalogs,
+    /// and the properties and arguments drawn from the other catalog are not
+    /// checked against that catalog's schema.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Catalog`] when a catalog document does not compile
-    /// against the protocol's schemas: it has no absolute `$id`, or refers to
-    /// a document that is not among `resources`.
+    /// against the protocol's schemas: it refers to a document that is not
+    /// among `resources`.
     #[cfg(feature = "schema-validation")]
     pub fn checking_schemas(
         &self,
@@ -235,6 +245,12 @@ impl A2uiRequestProcessor {
         use crate::protocol::schema::SchemaBundle;
         use crate::protocol::schema_validation::SchemaValidator;
 
+        let version = self.inner.version;
+        let shown = if A2uiVersion::V0_9_1.accepts(version) {
+            A2uiVersion::V0_9_1
+        } else {
+            version
+        };
         let schemas = self
             .inner
             .documents
@@ -242,7 +258,7 @@ impl A2uiRequestProcessor {
             .map(|document| {
                 let bundle = SchemaBundle {
                     catalog: document.document().clone(),
-                    ..SchemaBundle::basic()?
+                    ..SchemaBundle::for_version(shown)?
                 };
                 Ok((
                     document.catalog_id().to_string(),
@@ -405,12 +421,16 @@ impl A2uiRequestProcessor {
         options: StreamOptions,
     ) -> Result<ResponseStream> {
         self.check_state(state)?;
-        let reader = self.inner.format.reader(options.wrapped).ok_or_else(|| {
-            Error::parse(format!(
-                "the {} format cannot be read chunk by chunk",
-                self.inner.format.name()
-            ))
-        })?;
+        let reader = self
+            .inner
+            .format
+            .reader_for(self.inner.version, options.wrapped)
+            .ok_or_else(|| {
+                Error::parse(format!(
+                    "the {} format cannot be read chunk by chunk",
+                    self.inner.format.name()
+                ))
+            })?;
         let mut opened = state.clone();
         opened.bind(&self.inner.session);
         Ok(ResponseStream::new(

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use super::ordered::Ordered;
 use crate::error::{Error, Result};
 use crate::protocol::catalog::Catalog;
 use crate::protocol::schema::{SchemaBundle, prune_components, prune_functions};
@@ -23,6 +24,15 @@ use crate::protocol::version::A2uiVersion;
 /// The document is held once: the summary keeps the document it was read
 /// from, and this is that one. Cloning is cheap, since both are shared, and a
 /// renderer state that checks against the catalog shares the summary too.
+///
+/// # The order a prompt shows
+///
+/// A prompt writes the catalog the way its author did: `title` and
+/// `description` before `components`, each component's properties in the order
+/// the author gave them. A JSON value does not keep that order, so a document
+/// read from text ([`CatalogDocument::parse`], [`CatalogDocument::read`],
+/// [`CatalogDocument::basic`]) keeps it beside the value. One made from a
+/// value ([`CatalogDocument::load`]) is shown in the order the value has.
 #[derive(Debug, Clone)]
 pub struct CatalogDocument {
     inner: Arc<Inner>,
@@ -32,6 +42,8 @@ pub struct CatalogDocument {
 struct Inner {
     /// The allocation `catalog` holds as the document it was read from.
     document: Arc<Value>,
+    /// The same document, in the order it is to be written in.
+    written: Arc<Ordered>,
     catalog: Arc<Catalog>,
     version: A2uiVersion,
 }
@@ -73,6 +85,50 @@ impl CatalogDocument {
     /// it targets a protocol version this crate does not speak, or when its
     /// `components` or `functions` cannot be read.
     pub fn load(
+        document: Value,
+        catalog_id: Option<&str>,
+        version: Option<A2uiVersion>,
+    ) -> Result<Self> {
+        let written = Ordered::from_value(&document);
+        Self::of_written(written, document, catalog_id, version)
+    }
+
+    /// Reads a catalog document from JSON text. As [`CatalogDocument::load`],
+    /// and a prompt shows the catalog in the order `text` is written in.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::agent::CatalogDocument;
+    ///
+    /// let catalog = CatalogDocument::parse(
+    ///     r#"{"title": "Cards", "catalogId": "example.com:cards", "protocolVersion": "1.0",
+    ///         "components": {"Card": {"type": "object"}}}"#,
+    ///     None,
+    ///     None,
+    /// )?;
+    /// assert_eq!(catalog.catalog_id(), "example.com:cards");
+    /// assert!(catalog.written().starts_with(r#"{"title":"Cards","catalogId":"#));
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Catalog`] when `text` is not JSON, and what
+    /// [`CatalogDocument::load`] returns for its contents.
+    pub fn parse(
+        text: &str,
+        catalog_id: Option<&str>,
+        version: Option<A2uiVersion>,
+    ) -> Result<Self> {
+        let written = Ordered::parse(text).map_err(|error| {
+            Error::catalog(format!("the catalog document is not valid JSON: {error}"))
+        })?;
+        let document = written.to_value();
+        Self::of_written(written, document, catalog_id, version)
+    }
+
+    /// A document, as a value and in the order it is to be written in.
+    fn of_written(
+        mut written: Ordered,
         document: Value,
         catalog_id: Option<&str>,
         version: Option<A2uiVersion>,
@@ -140,17 +196,6 @@ impl CatalogDocument {
             }
         };
 
-        // The agent layer speaks the v0.9 family. A2UI 1.0 is in the protocol
-        // modules; its prompt, its reader and its capabilities are the next
-        // step of #42.
-        if !A2uiVersion::V0_9.accepts(version) {
-            return Err(Error::catalog(format!(
-                "catalog '{id}' targets protocol version '{}', which the agent layer does not \
-                 speak yet",
-                version.number()
-            )));
-        }
-
         if document
             .get("components")
             .is_some_and(|components| !components.is_object())
@@ -171,15 +216,20 @@ impl CatalogDocument {
 
         // A catalog named by its reader is no different from one that named
         // itself: the document a model is shown carries the id either way.
+        if document.get("catalogId").and_then(Value::as_str) != Some(id.as_str()) {
+            written.set_first("catalogId", Ordered::String(id.clone()));
+        }
         document.insert("catalogId".into(), Value::String(id));
         let document = Value::Object(document);
-        let catalog = Catalog::from_schema(&document)?;
-        Ok(Self::of(catalog, document, version))
+        // A document that states no version is one of the version it was
+        // given, and is held to that version's rules.
+        let catalog = Catalog::from_schema_as(&document, version)?;
+        Ok(Self::of(catalog, document, written, version))
     }
 
     /// `catalog` as read from `document`, which it keeps; that copy is the
     /// one held.
-    fn of(catalog: Catalog, document: Value, version: A2uiVersion) -> Self {
+    fn of(catalog: Catalog, document: Value, written: Ordered, version: A2uiVersion) -> Self {
         let document = catalog
             .shared_document()
             .cloned()
@@ -187,6 +237,7 @@ impl CatalogDocument {
         Self {
             inner: Arc::new(Inner {
                 document,
+                written: Arc::new(written),
                 catalog: Arc::new(catalog),
                 version,
             }),
@@ -214,13 +265,14 @@ impl CatalogDocument {
                 path.display()
             ))
         })?;
-        let document = serde_json::from_str(&text).map_err(|error| {
+        let written = Ordered::parse(&text).map_err(|error| {
             Error::catalog(format!(
                 "the catalog document '{}' is not valid JSON: {error}",
                 path.display()
             ))
         })?;
-        Self::load(document, catalog_id, version)
+        let document = written.to_value();
+        Self::of_written(written, document, catalog_id, version)
     }
 
     /// The official basic catalog of `version`, as pinned in this crate. No
@@ -233,11 +285,8 @@ impl CatalogDocument {
     ///
     /// Returns an error only if the embedded document does not parse.
     pub fn basic(version: A2uiVersion) -> Result<Self> {
-        Self::load(
-            SchemaBundle::for_version(version)?.catalog,
-            None,
-            Some(version),
-        )
+        let [_, _, catalog] = SchemaBundle::texts(version);
+        Self::parse(catalog, None, Some(version))
     }
 
     /// The id agent and renderer negotiate on.
@@ -255,9 +304,16 @@ impl CatalogDocument {
         &self.inner.catalog
     }
 
-    /// The catalog as JSON: what a prompt shows the model.
+    /// The catalog as JSON: what a validator compiles, and what
+    /// [`CatalogDocument::written`] writes.
     pub fn document(&self) -> &Value {
         &self.inner.document
+    }
+
+    /// The catalog as the compact JSON text a prompt shows the model: the
+    /// document, in the order it was read in.
+    pub fn written(&self) -> String {
+        self.inner.written.compact()
     }
 
     /// The summary, shared: what a message processor registers.
@@ -265,31 +321,97 @@ impl CatalogDocument {
         self.inner.catalog.clone()
     }
 
-    /// A copy whose document `change` has rewritten.
+    /// A copy whose document `change` has rewritten, by taking entries out of
+    /// `section` (`components` or `functions`).
     ///
     /// The summary is read again from the rewritten document, as it was at
     /// the load, so the two cannot disagree and [`Catalog::document`] is the
     /// document this value shows.
-    fn changed(&self, change: impl FnOnce(&mut Value)) -> Self {
+    ///
+    /// A catalog lists its entries a second time, in the union the envelope
+    /// reaches them through: `$defs/anyComponent`, `$defs/anyFunction`. Once
+    /// an entry is gone the union an author wrote no longer describes the
+    /// catalog, so it is written again from the entries that are left, in
+    /// their order, the way the reference SDK writes one (`_component_union`
+    /// and `_function_union` in `a2ui_core`'s `catalog.py`): the references,
+    /// with the `component` discriminator for components and nothing else
+    /// for functions, or a schema nothing matches when no entry is left. A
+    /// rule that removes nothing leaves the union as it was written.
+    fn changed(&self, section: &str, change: impl FnOnce(&mut Value)) -> Self {
+        let entries = |document: &Value| -> Option<Vec<String>> {
+            Some(
+                document
+                    .get(section)?
+                    .as_object()?
+                    .keys()
+                    .cloned()
+                    .collect(),
+            )
+        };
         let mut document = Value::clone(&self.inner.document);
+        let before = entries(&document);
         change(&mut document);
+        // What is left, in the order it was written in.
+        let mut written = self.inner.written.keeping(&document);
+        let union = match section {
+            "components" => "anyComponent",
+            _ => "anyFunction",
+        };
+        let declared = document
+            .get("$defs")
+            .and_then(|defs| defs.get(union))
+            .is_some();
+        if declared && before.is_some() && entries(&document) != before {
+            let left: Vec<Ordered> = written
+                .field(section)
+                .map(Ordered::keys)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| {
+                    let name = name.replace('~', "~0").replace('/', "~1");
+                    Ordered::Object(vec![(
+                        "$ref".to_string(),
+                        Ordered::String(format!("#/{section}/{name}")),
+                    )])
+                })
+                .collect();
+            let derived = if left.is_empty() {
+                Ordered::Object(vec![("not".to_string(), Ordered::Object(Vec::new()))])
+            } else if section == "components" {
+                Ordered::Object(vec![
+                    ("oneOf".to_string(), Ordered::Array(left)),
+                    (
+                        "discriminator".to_string(),
+                        Ordered::Object(vec![(
+                            "propertyName".to_string(),
+                            Ordered::String("component".to_string()),
+                        )]),
+                    ),
+                ])
+            } else {
+                Ordered::Object(vec![("oneOf".to_string(), Ordered::Array(left))])
+            };
+            document["$defs"][union] = derived.to_value();
+            if let Some(held) = written
+                .field_mut("$defs")
+                .and_then(|defs| defs.field_mut(union))
+            {
+                *held = derived;
+            }
+        }
         // A rule removes entries from an object that carries its id, which is
         // all a catalog needs to be read. Were a rule ever to leave less, the
         // catalog would allow nothing rather than everything.
-        let catalog =
-            Catalog::from_schema(&document).unwrap_or_else(|_| Catalog::empty(self.catalog_id()));
-        Self::of(catalog, document, self.inner.version)
+        let catalog = Catalog::from_schema_as(&document, self.inner.version)
+            .unwrap_or_else(|_| Catalog::empty(self.catalog_id()).with_version(self.inner.version));
+        Self::of(catalog, document, written, self.inner.version)
     }
 }
 
 /// Reads the version a catalog document states: a version this crate speaks,
 /// with or without the wire's leading `v`.
 fn document_version(declared: &str) -> Option<A2uiVersion> {
-    let bare = declared.strip_prefix('v').unwrap_or(declared);
-    A2uiVersion::ALL
-        .iter()
-        .copied()
-        .find(|version| version.as_str().strip_prefix('v') == Some(bare))
+    A2uiVersion::from_number(declared)
 }
 
 /// A rule an agent applies to a catalog before the catalog reaches a prompt
@@ -312,11 +434,11 @@ impl CatalogTransformer {
     /// The catalog this rule leaves. Its id and version are unchanged.
     pub fn apply(&self, catalog: &CatalogDocument) -> CatalogDocument {
         match self {
-            Self::KeepComponents(names) => catalog.changed(|document| {
+            Self::KeepComponents(names) => catalog.changed("components", |document| {
                 let allowed: Vec<String> = names.iter().cloned().collect();
                 prune_components(document, &allowed);
             }),
-            Self::KeepFunctions(names) => catalog.changed(|document| {
+            Self::KeepFunctions(names) => catalog.changed("functions", |document| {
                 let allowed: Vec<String> = names.iter().cloned().collect();
                 prune_functions(document, &allowed);
             }),
@@ -424,17 +546,29 @@ impl From<CatalogDocument> for CatalogConfig {
     }
 }
 
-/// The catalogs a format or a state is built for: at least one, and all of
-/// one protocol family, since their messages state one `version`.
+/// The catalogs a format or a state is built for: at least one, each under an
+/// id of its own, and all of one protocol family, since their messages state
+/// one `version`.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Catalog`] when `catalogs` is empty or mixes versions that
-/// cannot meet on one surface.
+/// Returns [`Error::Catalog`] when `catalogs` is empty, holds two catalogs
+/// under one id, or mixes versions that cannot meet on one surface.
 pub(crate) fn check_catalogs(catalogs: &[CatalogDocument]) -> Result<A2uiVersion> {
     let Some(first) = catalogs.first() else {
         return Err(Error::catalog("at least one active catalog is required"));
     };
+    let mut ids = BTreeSet::new();
+    if let Some(twice) = catalogs
+        .iter()
+        .map(CatalogDocument::catalog_id)
+        .find(|id| !ids.insert(*id))
+    {
+        // A surface, a component and a call name a catalog by its id.
+        return Err(Error::catalog(format!(
+            "two active catalogs share the id '{twice}': an id names one catalog"
+        )));
+    }
     for catalog in &catalogs[1..] {
         if !first.version().accepts(catalog.version()) {
             return Err(Error::catalog(format!(
@@ -523,7 +657,7 @@ mod tests {
 
     #[test]
     fn a_version_this_crate_does_not_speak_is_refused() {
-        for version in [json!("1.0"), json!("0.8"), json!(0.9), json!("")] {
+        for version in [json!("2.0"), json!("0.8"), json!(0.9), json!("")] {
             let mut other = document();
             other["protocolVersion"] = version;
             assert!(matches!(
@@ -631,7 +765,24 @@ mod tests {
     fn catalogs_of_one_family_may_share_a_session() {
         let old = CatalogDocument::new(document()).unwrap();
         let new = CatalogDocument::basic(A2uiVersion::V0_9_1).unwrap();
-        assert_eq!(check_catalogs(&[old, new]).unwrap(), A2uiVersion::V0_9);
+        assert_eq!(
+            check_catalogs(&[old.clone(), new]).unwrap(),
+            A2uiVersion::V0_9
+        );
         assert!(matches!(check_catalogs(&[]), Err(Error::Catalog(_))));
+        // An id names one catalog, and the two families do not mix.
+        assert!(matches!(
+            check_catalogs(&[old.clone(), old.clone()]),
+            Err(Error::Catalog(_))
+        ));
+        let v1_0 = CatalogDocument::basic(A2uiVersion::V1_0).unwrap();
+        assert_eq!(
+            check_catalogs(std::slice::from_ref(&v1_0)).unwrap(),
+            A2uiVersion::V1_0
+        );
+        assert!(matches!(
+            check_catalogs(&[old, v1_0]),
+            Err(Error::Catalog(_))
+        ));
     }
 }

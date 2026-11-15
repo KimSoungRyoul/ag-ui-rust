@@ -5,15 +5,14 @@
 //! the action, and compares. Behaviour does not live here: when a case fails,
 //! the crate is what gets fixed, or the case is listed in `KNOWN_FAILURES`.
 //!
-//! The suites are written against A2UI v1.0. A case whose catalogs declare
-//! v1.0 is lowered to v0.9 on the way in and lifted on the way out, by the
-//! rules in [`lowering`] and nowhere else; a case that declares v0.9 runs as
-//! written. A case v0.9 cannot state is skipped, never bent.
-
-mod lowering;
+//! The suites are written against A2UI v1.0, and a few cases against v0.9.
+//! Every case runs as written, under the version its catalogs declare. A
+//! fixture that states no version is a v1.0 one, as the harness guide says.
+//!
+//! What is still skipped for v1.0 is what the crate does not have yet: the
+//! messages by which an agent and a renderer call each other's functions.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use ag_ui_a2ui::agent::{
@@ -25,10 +24,10 @@ use ag_ui_a2ui::agent::{
 use ag_ui_a2ui::{A2uiVersion, AgentMessage, Error, Operation};
 use serde_json::{Value, json};
 
-use self::lowering::Declared;
-use super::{Outcome, case_name, conformance_dir, truncate};
+use super::{Outcome, conformance_dir, truncate};
 
-/// The label of a case that needs A2UI v1.0.
+/// The label of a case that needs a part of A2UI v1.0 this crate does not
+/// have yet.
 pub(crate) const NEEDS_V1_0: &str = "later: A2UI v1.0 (#42)";
 /// The label of a case written for the v0.8 wire format.
 pub(crate) const NEEDS_V0_8: &str = "out of scope: v0.8";
@@ -38,11 +37,12 @@ pub(crate) const NEEDS_FORMAT: &str = "later: other formats (#74)";
 /// The catalog a case that names none runs against.
 const DEFAULT_CATALOG: &str = "test_data/catalogs/simplified_catalog_v1_0.json";
 
-/// How one case ended, and whether it ran lowered.
+/// How one case ended, and which protocol it ran in.
 pub(crate) struct Ran {
     pub(crate) outcome: Outcome,
-    /// The case was written against v1.0 and executed as v0.9.
-    pub(crate) lowered: bool,
+    /// The case ran in v1.0. A case that ran in the v0.9 family, or handed
+    /// the crate nothing that states a version, does not count.
+    pub(crate) in_v1_0: bool,
 }
 
 /// Why a runner stopped before the case passed.
@@ -64,18 +64,18 @@ fn skip<T>(label: &str, why: impl std::fmt::Display) -> Step<T> {
 /// Runs one case of an agent-tier suite, and returns its checks: one, or for
 /// a transcript one per format it declares, named by the format.
 pub(crate) fn run_case(case: &Value) -> Vec<(Option<String>, Ran)> {
-    let ended = |step: Step, lowered: bool| match step {
+    let ended = |step: Step, in_v1_0: bool| match step {
         Ok(()) => Ran {
             outcome: Outcome::Passed,
-            lowered,
+            in_v1_0,
         },
         Err(Stop::Skip(reason)) => Ran {
             outcome: Outcome::Skipped(reason),
-            lowered: false,
+            in_v1_0: false,
         },
         Err(Stop::Fail(detail)) => Ran {
             outcome: Outcome::Failed(detail),
-            lowered,
+            in_v1_0,
         },
     };
     if case.get("action").and_then(Value::as_str) == Some("e2e_scenario") {
@@ -86,16 +86,17 @@ pub(crate) fn run_case(case: &Value) -> Vec<(Option<String>, Ran)> {
                     "direct_json" => transcript(case),
                     other => skip(NEEDS_FORMAT, format!("the {other} format")),
                 };
-                (Some(format), ended(step, false))
+                let in_v1_0 = case.get("protocolVersion").and_then(Value::as_str) == Some("1.0");
+                (Some(format), ended(step, in_v1_0))
             })
             .collect();
     }
-    let mut lowered = false;
-    let step = dispatch(case, &mut lowered);
-    vec![(None, ended(step, lowered))]
+    let mut in_v1_0 = false;
+    let step = dispatch(case, &mut in_v1_0);
+    vec![(None, ended(step, in_v1_0))]
 }
 
-fn dispatch(case: &Value, lowered: &mut bool) -> Step {
+fn dispatch(case: &Value, in_v1_0: &mut bool) -> Step {
     let action = case.get("action").and_then(Value::as_str).unwrap_or("");
     let args = case.get("args").unwrap_or(&Value::Null);
     // The format a case asks for. This crate has direct JSON.
@@ -106,22 +107,22 @@ fn dispatch(case: &Value, lowered: &mut bool) -> Step {
         }
     }
     match action {
-        "create_format" => create_format(case, args, lowered),
-        "create_processor" => create_processor(case, args, lowered),
-        "resolve_catalogs" => resolve(case, args, lowered),
-        "provide_catalog" => provide_catalog(case, args, lowered),
-        "transform_catalog" => transform_catalog(case, args, lowered),
-        "read_renderer_capabilities" => read_capabilities(case, args),
-        "renderer_state_turns" => renderer_state_turns(case, lowered),
-        "stream_answer" => stream_answer(case, args, lowered),
-        "generate_prompt_snippet" => prompt_snippet(case, args, lowered),
+        "create_format" => create_format(case, args, in_v1_0),
+        "create_processor" => create_processor(case, args, in_v1_0),
+        "resolve_catalogs" => resolve(case, args, in_v1_0),
+        "provide_catalog" => provide_catalog(case, args, in_v1_0),
+        "transform_catalog" => transform_catalog(case, args, in_v1_0),
+        "read_renderer_capabilities" => read_capabilities(case, args, in_v1_0),
+        "renderer_state_turns" => renderer_state_turns(case, in_v1_0),
+        "stream_answer" => stream_answer(case, args, in_v1_0),
+        "generate_prompt_snippet" => prompt_snippet(case, args, in_v1_0),
         "unwrap" => unwrap(case, args),
         "has_format_content" => has_format_content(case, args),
         "wrap" => wrap(case, args),
-        "parse_response" => parse_response(case, args, lowered),
-        "compile" => compile(case, args, lowered),
-        "decompile" => decompile(case, args, lowered),
-        "parse_chunk" => parse_chunk(case, args, lowered),
+        "parse_response" => parse_response(case, args, in_v1_0),
+        "compile" => compile(case, args, in_v1_0),
+        "decompile" => decompile(case, args, in_v1_0),
+        "parse_chunk" => parse_chunk(case, args, in_v1_0),
         other => fail(format!("unknown action '{other}'")),
     }
 }
@@ -159,10 +160,6 @@ fn case_keys(case: &Value, allowed: &[&str]) -> Step {
 /// What a case runs against.
 struct Setup {
     catalogs: Vec<CatalogConfig>,
-    /// The catalogs declare the suite's version, so the case is lowered.
-    lowered: bool,
-    /// The catalog named in each `createSurface` of a case that names none.
-    inject: Option<String>,
 }
 
 impl Setup {
@@ -173,40 +170,19 @@ impl Setup {
             .collect()
     }
 
-    fn text(&self, text: &str) -> String {
-        if self.lowered {
-            lowering::lower_text(text, self.inject.as_deref())
-        } else {
-            text.to_string()
-        }
-    }
-
-    fn chunks(&self, chunks: &[&str]) -> Vec<String> {
-        if self.lowered {
-            lowering::lower_chunks(chunks, self.inject.as_deref())
-        } else {
-            chunks.iter().map(|chunk| (*chunk).to_string()).collect()
-        }
-    }
-
-    /// Decoded messages a case starts from, as this crate reads them.
+    /// Decoded messages a case starts from.
     fn messages(&self, messages: &[Value]) -> Step<Vec<AgentMessage>> {
-        let messages = if self.lowered {
-            lowering::lower_messages(messages, self.inject.as_deref())
-        } else {
-            messages.to_vec()
-        };
         messages
-            .into_iter()
+            .iter()
             .map(|message| {
-                serde_json::from_value(message).or_else(|error| {
+                serde_json::from_value(message.clone()).or_else(|error| {
                     fail(format!("a message of the case does not decode: {error}"))
                 })
             })
             .collect()
     }
 
-    /// Messages the crate emitted, in the vocabulary of the suites.
+    /// Messages the crate emitted, as the suites write them.
     fn emitted(&self, messages: &[AgentMessage]) -> Vec<Value> {
         let raw: Vec<Value> = messages
             .iter()
@@ -215,26 +191,50 @@ impl Setup {
         self.written(&raw)
     }
 
-    /// Raw messages, in the vocabulary of the suites.
+    /// Raw messages, as the suites write them.
     fn written(&self, messages: &[Value]) -> Vec<Value> {
-        if self.lowered {
-            lowering::lift_messages(messages, self.inject.as_deref())
-        } else {
-            let mut messages = messages.to_vec();
-            for message in &mut messages {
-                lowering::unstate_defaults(message, None);
-            }
-            messages
-        }
+        let mut messages = messages.to_vec();
+        messages.iter_mut().for_each(unstate_defaults);
+        messages
     }
+}
 
-    fn capabilities(&self, capabilities: &Value) -> Value {
-        if self.lowered {
-            lowering::lower_capabilities(capabilities)
-        } else {
-            capabilities.clone()
+/// What a typed message states that the suites leave out: `sendDataModel:
+/// false`.
+fn unstate_defaults(message: &mut Value) {
+    if let Some(Value::Object(create)) = message.get_mut("createSurface") {
+        if create.get("sendDataModel") == Some(&Value::Bool(false)) {
+            create.remove("sendDataModel");
         }
     }
+}
+
+/// The version a catalog document is written for, as a fixture states it. One
+/// that states none is a v1.0 one: every fixture of the agent suites that is
+/// not says so.
+fn fixture_version(document: &Value) -> Step<Option<A2uiVersion>> {
+    match document.get("protocolVersion").and_then(Value::as_str) {
+        None => Ok(Some(A2uiVersion::V1_0)),
+        Some(stated) if stated.trim_start_matches('v').starts_with("0.8") => {
+            skip(NEEDS_V0_8, "the case's catalog declares v0.8")
+        }
+        // The document says, and its loader reads it.
+        Some(_) => Ok(None),
+    }
+}
+
+/// Why a case cannot run yet, when it cannot: it carries one of the messages
+/// by which an agent and a renderer call each other's functions.
+fn not_yet(text: &str) -> Option<&'static str> {
+    [
+        "callRendererFunction",
+        "agentFunctionResponse",
+        "callAgentFunction",
+        "rendererFunctionResponse",
+    ]
+    .into_iter()
+    .find(|marker| text.contains(marker))
+    .map(|_| "function calls between an agent and a renderer")
 }
 
 fn read_fixture(relative: &str) -> Step<Value> {
@@ -261,7 +261,7 @@ fn names(value: Option<&Value>) -> Vec<String> {
 /// One catalog a case names: a path under `conformance/`, a document written
 /// in the case, or either under `catalog` with the transformers registered
 /// with it.
-fn catalog_entry(entry: &Value) -> Step<(CatalogConfig, Declared)> {
+fn catalog_entry(entry: &Value) -> Step<CatalogConfig> {
     let (source, transformers) = match entry.get("catalog") {
         Some(source) => (source, entry.get("transformers")),
         None => (entry, None),
@@ -275,27 +275,22 @@ fn catalog_entry(entry: &Value) -> Step<(CatalogConfig, Declared)> {
         &["catalog", "transformers"],
         "a catalog registration",
     )?;
-    let (document, path) = match source {
-        Value::String(path) => (read_fixture(path)?, Some(path.as_str())),
-        Value::Object(_) => (source.clone(), None),
-        other => return fail(format!("not a catalog entry: {other}")),
-    };
-    let declared = lowering::declared(&document);
-    if declared == Declared::V0_8 {
-        return skip(NEEDS_V0_8, "the case's catalog declares v0.8");
-    }
     // A fixture that names no catalog is given its path as its id, and one
-    // that states no version is a v1.0 one, read lowered.
-    let fallback_id = path.filter(|_| document.get("catalogId").is_none());
-    let fallback_version = document
-        .get("protocolVersion")
-        .is_none()
-        .then_some(A2uiVersion::V0_9);
-    let catalog = CatalogDocument::load(
-        lowering::lower_catalog(&document),
-        fallback_id,
-        fallback_version,
-    )
+    // that states no version is a v1.0 one. A file is read as its text, so a
+    // prompt shows it in the order it is written in.
+    let catalog = match source {
+        Value::String(path) => {
+            let document = read_fixture(path)?;
+            let fallback_id = document.get("catalogId").is_none().then_some(path.as_str());
+            CatalogDocument::read(
+                conformance_dir().join(path),
+                fallback_id,
+                fixture_version(&document)?,
+            )
+        }
+        Value::Object(_) => CatalogDocument::load(source.clone(), None, fixture_version(source)?),
+        other => return fail(format!("not a catalog entry: {other}")),
+    }
     .or_else(|error| fail(format!("the case's catalog does not load: {error}")))?;
     let mut config = CatalogConfig::new(catalog);
     for transformer in transformers.and_then(Value::as_array).into_iter().flatten() {
@@ -312,12 +307,12 @@ fn catalog_entry(entry: &Value) -> Step<(CatalogConfig, Declared)> {
             config = config.keeping_functions(names(Some(allowed)));
         }
     }
-    Ok((config, declared))
+    Ok(config)
 }
 
 /// The catalogs a case names in `catalog` and `catalogs`, or the default
 /// fixture when `default` and it names none.
-fn setup(case: &Value, container: &Value, default: bool, lowered: &mut bool) -> Step<Setup> {
+fn setup(case: &Value, container: &Value, default: bool, in_v1_0: &mut bool) -> Step<Setup> {
     let mut entries: Vec<&Value> = Vec::new();
     entries.extend(container.get("catalog"));
     entries.extend(
@@ -332,58 +327,37 @@ fn setup(case: &Value, container: &Value, default: bool, lowered: &mut bool) -> 
         entries.push(&fallback);
     }
     let mut catalogs = Vec::new();
-    // A case that names no catalog at all is still a v1.0 case.
-    let mut suite = entries.is_empty();
     for entry in entries {
-        let (config, declared) = catalog_entry(entry)?;
-        suite |= declared == Declared::Suite;
-        catalogs.push(config);
+        catalogs.push(catalog_entry(entry)?);
     }
-    if suite {
-        // Everything the case hands the crate, with chunked input joined, so
-        // a marker split across chunks is still found.
-        let mut text = case.to_string();
-        for step in case
-            .get("steps")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            text.push_str(
-                step.get("input")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            );
-        }
-        if let Some(why) = lowering::v1_only(case_name(case), &text) {
-            return skip(NEEDS_V1_0, why);
-        }
+    // Everything the case hands the crate, with chunked input joined, so a
+    // marker split across chunks is still found.
+    let mut text = case.to_string();
+    for step in case
+        .get("steps")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        text.push_str(
+            step.get("input")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        );
     }
-    // A case with no catalog and no capabilities hands the crate nothing a
-    // rule would rewrite.
-    *lowered = suite && (!catalogs.is_empty() || container.get("renderer_capabilities").is_some());
-    let inject = (suite && !case.to_string().contains("catalogId"))
-        .then(|| {
-            catalogs
-                .first()
-                .map(|config| config.transformed().catalog_id().to_string())
-        })
-        .flatten();
-    Ok(Setup {
-        catalogs,
-        lowered: suite,
-        inject,
-    })
+    if let Some(why) = not_yet(&text) {
+        return skip(NEEDS_V1_0, why);
+    }
+    *in_v1_0 = catalogs
+        .first()
+        .is_some_and(|config| config.catalog().version() == A2uiVersion::V1_0);
+    Ok(Setup { catalogs })
 }
 
 /// The direct JSON format a case asks for.
 fn direct_json(args: &Value, setup: &Setup) -> DirectJson {
-    let mut format = DirectJson::new()
-        .with_progressive_keys(names(args.get("progressive_keys")))
-        // From v1.0 a component is read only once its object closes. A case
-        // written against v1.0 fixes that timing, so it is kept when the case
-        // runs lowered.
-        .holding_components_until_closed(setup.lowered);
+    let _ = setup;
+    let mut format = DirectJson::new().with_progressive_keys(names(args.get("progressive_keys")));
     if let Some(allowed) = args.get("allowed_messages") {
         format = format.allowing_messages(
             names(Some(allowed))
@@ -579,7 +553,7 @@ fn snippet_checks(snippet: &str, expect: &Value, contains: &str, absent: &str) -
 
 /// Checks a catalog against `{catalog_id, protocol_version, components,
 /// functions}`. The name lists are exhaustive.
-fn expect_catalog(expected: &Value, catalog: &CatalogDocument, lowered: bool) -> Step {
+fn expect_catalog(expected: &Value, catalog: &CatalogDocument) -> Step {
     known_keys(
         expected,
         &["catalog_id", "protocol_version", "components", "functions"],
@@ -594,11 +568,6 @@ fn expect_catalog(expected: &Value, catalog: &CatalogDocument, lowered: bool) ->
         }
     }
     if let Some(version) = expected.get("protocol_version").and_then(Value::as_str) {
-        let version = if lowered {
-            lowering::swap_version(version)
-        } else {
-            version
-        };
         if catalog.version().as_str() != version {
             return fail(format!(
                 "expected protocol version {version}, got {}",
@@ -641,14 +610,14 @@ fn expect_catalog(expected: &Value, catalog: &CatalogDocument, lowered: bool) ->
 
 // --- request_processor.yaml ---------------------------------------------------------------------
 
-fn create_format(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn create_format(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(case, &["args", "expect", "expect_error"])?;
     known_keys(
         args,
         &["format", "catalogs", "examples", "probe_chunks"],
         "args",
     )?;
-    let setup = setup(case, args, false, lowered)?;
+    let setup = setup(case, args, false, in_v1_0)?;
     let examples = examples(args, &setup)?;
     let format: Arc<dyn OutputFormat> = Arc::new(direct_json(args, &setup));
     let built = A2uiRequestProcessor::new(setup.active(), examples, format.clone());
@@ -681,7 +650,6 @@ fn create_format(case: &Value, args: &Value, lowered: &mut bool) -> Step {
     }
     if expect.get("parser_state_isolated") == Some(&Value::Bool(true)) {
         let chunks = names(args.get("probe_chunks"));
-        let chunks = setup.chunks(&chunks.iter().map(String::as_str).collect::<Vec<_>>());
         let read = || -> Step<Value> {
             let mut state = processor.create_state();
             let mut stream = open_stream(&processor, &state, StreamOptions::default())?;
@@ -714,7 +682,7 @@ fn open_stream(
         .or_else(|error| fail(format!("the stream cannot be opened: {error}")))
 }
 
-fn create_processor(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn create_processor(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(
         case,
         &[
@@ -743,7 +711,7 @@ fn create_processor(case: &Value, args: &Value, lowered: &mut bool) -> Step {
             "the generator's default format, which upstream makes Express",
         );
     }
-    let setup = setup(case, args, false, lowered)?;
+    let setup = setup(case, args, false, in_v1_0)?;
     let generator = A2uiGenerator::new(setup.catalogs.clone())
         .with_examples(examples(args, &setup)?)
         .with_format(Arc::new(direct_json(args, &setup)))
@@ -751,14 +719,17 @@ fn create_processor(case: &Value, args: &Value, lowered: &mut bool) -> Step {
     let before = generator.catalogs().to_vec();
     let created = match args.get("renderer_capabilities") {
         None => generator.create_processor(None),
-        Some(capabilities) => RendererCapabilities::from_json(&setup.capabilities(capabilities))
-            .and_then(|capabilities| match args.get("format_override") {
-                Some(_) => generator.create_processor_with(
-                    Some(&capabilities),
-                    Arc::new(direct_json(args, &setup)),
-                ),
-                None => generator.create_processor(Some(&capabilities)),
-            }),
+        Some(capabilities) => {
+            RendererCapabilities::from_json(capabilities).and_then(|capabilities| {
+                match args.get("format_override") {
+                    Some(_) => generator.create_processor_with(
+                        Some(&capabilities),
+                        Arc::new(direct_json(args, &setup)),
+                    ),
+                    None => generator.create_processor(Some(&capabilities)),
+                }
+            })
+        }
     };
     let Some(processor) = settle(case, created, "creating the processor")? else {
         return Ok(());
@@ -795,7 +766,7 @@ fn create_processor(case: &Value, args: &Value, lowered: &mut bool) -> Step {
         let Some(catalog) = processor.active_catalogs().get(position) else {
             return fail(format!("no active catalog at position {position}"));
         };
-        expect_catalog(expected, catalog, setup.lowered)?;
+        expect_catalog(expected, catalog)?;
     }
     snippet_checks(
         processor.prompt_snippet(),
@@ -815,15 +786,14 @@ fn create_processor(case: &Value, args: &Value, lowered: &mut bool) -> Step {
             &["input", "wrapped", "expect", "expect_error"],
             "then_parse",
         )?;
-        let input = setup.text(
-            then.get("input")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        );
+        let input = then
+            .get("input")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let parsed = if then.get("wrapped") == Some(&Value::Bool(false)) {
-            processor.parse_block_in(&input, &mut processor.create_state())
+            processor.parse_block_in(input, &mut processor.create_state())
         } else {
-            processor.parse_response(&input)
+            processor.parse_response(input)
         };
         if let Some(parts) = settle(
             then,
@@ -873,7 +843,7 @@ fn run_stream(
                 .unwrap_or_default()
         })
         .collect();
-    let chunks = setup.chunks(&inputs);
+    let chunks = inputs;
     let mut state = processor.create_state();
     let mut stream = open_stream(processor, &state, options)?;
     let mut yielded: Vec<Value> = Vec::new();
@@ -956,7 +926,7 @@ fn run_stream(
 
 // --- catalog_resolution.yaml, catalog_provider.yaml, catalog_transformer.yaml -------------------
 
-fn resolve(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn resolve(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(case, &["args", "expect", "expect_error"])?;
     known_keys(
         args,
@@ -967,14 +937,15 @@ fn resolve(case: &Value, args: &Value, lowered: &mut bool) -> Step {
         ],
         "args",
     )?;
-    let setup = setup(case, args, false, lowered)?;
+    let setup = setup(case, args, false, in_v1_0)?;
     let accepts = args.get("accepts_inline_catalogs") == Some(&Value::Bool(true));
     let resolved = match args.get("renderer_capabilities") {
         None => resolve_catalogs(&setup.catalogs, None, accepts),
-        Some(capabilities) => RendererCapabilities::from_json(&setup.capabilities(capabilities))
-            .and_then(|capabilities| {
+        Some(capabilities) => {
+            RendererCapabilities::from_json(capabilities).and_then(|capabilities| {
                 resolve_catalogs(&setup.catalogs, Some(&capabilities), accepts)
-            }),
+            })
+        }
     };
     let Some(active) = settle(case, resolved, "resolving the catalogs")? else {
         return Ok(());
@@ -1007,39 +978,26 @@ fn resolve(case: &Value, args: &Value, lowered: &mut bool) -> Step {
         let Some(catalog) = active.iter().find(|catalog| catalog.catalog_id() == id) else {
             return fail(format!("catalog {id} is not active"));
         };
-        expect_catalog(expected, catalog, setup.lowered)?;
+        expect_catalog(expected, catalog)?;
     }
     Ok(())
 }
 
-/// Reads a version a case states, for the agent layer: one of the v0.9
-/// family, until the agent layer speaks 1.0 in the next step of #42.
-fn agent_version(stated: &str) -> Option<A2uiVersion> {
-    A2uiVersion::parse(stated).filter(|version| A2uiVersion::V0_9.accepts(*version))
-}
-
 /// The version a case hands a provider, as this crate names it.
-fn provider_version(args: &Value, lowered: bool) -> Step<Option<A2uiVersion>> {
+fn provider_version(args: &Value) -> Step<Option<A2uiVersion>> {
     let Some(stated) = args.get("protocol_version").and_then(Value::as_str) else {
         return Ok(None);
     };
-    let stated = if lowered {
-        lowering::swap_version(stated)
-    } else {
-        stated
-    };
-    match agent_version(stated) {
+    match A2uiVersion::from_number(stated) {
         Some(version) => Ok(Some(version)),
-        // A case that states a version other than its document's needs a
-        // second protocol family to state it in.
-        None => skip(
-            NEEDS_V1_0,
-            "a provider version of another protocol family than the document's",
-        ),
+        None if stated.trim_start_matches('v').starts_with("0.8") => {
+            skip(NEEDS_V0_8, "a provider that reads a catalog as v0.8")
+        }
+        None => fail(format!("the case hands its provider version {stated:?}")),
     }
 }
 
-fn provide_catalog(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn provide_catalog(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(case, &["args", "expect", "expect_error"])?;
     known_keys(
         args,
@@ -1050,47 +1008,25 @@ fn provide_catalog(case: &Value, args: &Value, lowered: &mut bool) -> Step {
         return fail("unknown provider");
     }
     let relative = args.get("path").and_then(Value::as_str).unwrap_or_default();
-    let mut path = conformance_dir().join(relative);
-    // The file is read by the provider, not by the harness. A document that
-    // declares v1.0 is lowered into a copy the provider reads instead; one
-    // that is missing, malformed or silent about its version is read as it is.
-    let on_disk = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-    let suite = on_disk
-        .as_ref()
-        .is_none_or(|document| lowering::declared(document) == Declared::Suite);
-    let version = provider_version(args, suite)?;
-    // What the lowering rules touched: a version the case hands the provider,
-    // and a document that states v1.0.
-    *lowered = suite && version.is_some();
-    if let Some(document) =
-        on_disk.filter(|document| document.get("protocolVersion").is_some() && suite)
-    {
-        let copy = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-            "lowered-{}-{}",
-            case_name(case),
-            relative.replace('/', "-")
-        ));
-        std::fs::write(&copy, lowering::lower_catalog(&document).to_string())
-            .or_else(|error| fail(format!("cannot write the lowered copy: {error}")))?;
-        path = copy;
-        *lowered = true;
-    }
+    // The file is read by the provider, not by the harness: one that is
+    // missing, malformed or silent about its version is the provider's to
+    // refuse.
+    let version = provider_version(args)?;
     let loaded = CatalogDocument::read(
-        &path,
+        conformance_dir().join(relative),
         args.get("catalog_id").and_then(Value::as_str),
         version,
     );
     match settle(case, loaded, "loading the catalog")? {
         Some(catalog) => {
-            expect_catalog(case.get("expect").unwrap_or(&Value::Null), &catalog, suite)
+            *in_v1_0 = catalog.version() == A2uiVersion::V1_0;
+            expect_catalog(case.get("expect").unwrap_or(&Value::Null), &catalog)
         }
         None => Ok(()),
     }
 }
 
-fn transform_catalog(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn transform_catalog(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(case, &["args", "expect"])?;
     known_keys(
         args,
@@ -1102,22 +1038,20 @@ fn transform_catalog(case: &Value, args: &Value, lowered: &mut bool) -> Step {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let document = read_fixture(relative)?;
-    *lowered = lowering::declared(&document) == Declared::Suite;
     // What the case's provider says, else the fallbacks every fixture gets: a
     // document that names no catalog is given its path as its id, and one
-    // that states no version is a v1.0 one, read lowered.
+    // that states no version is a v1.0 one.
     let catalog_id = args
         .get("catalog_id")
         .and_then(Value::as_str)
         .or_else(|| document.get("catalogId").is_none().then_some(relative));
-    let version = provider_version(args, *lowered)?.or_else(|| {
-        document
-            .get("protocolVersion")
-            .is_none()
-            .then_some(A2uiVersion::V0_9)
-    });
-    let catalog = CatalogDocument::load(lowering::lower_catalog(&document), catalog_id, version)
+    let version = match provider_version(args)? {
+        Some(version) => Some(version),
+        None => fixture_version(&document)?,
+    };
+    let catalog = CatalogDocument::read(conformance_dir().join(relative), catalog_id, version)
         .or_else(|error| fail(format!("the case's catalog does not load: {error}")))?;
+    *in_v1_0 = catalog.version() == A2uiVersion::V1_0;
     let mut config = CatalogConfig::new(catalog);
     for transformer in args
         .get("transformers")
@@ -1140,27 +1074,27 @@ fn transform_catalog(case: &Value, args: &Value, lowered: &mut bool) -> Step {
     expect_catalog(
         case.get("expect").unwrap_or(&Value::Null),
         config.transformed(),
-        *lowered,
     )
 }
 
 // --- renderer_capabilities.yaml -----------------------------------------------------------------
 
-fn read_capabilities(case: &Value, args: &Value) -> Step {
+fn read_capabilities(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(case, &["args", "expect", "expect_error"])?;
     known_keys(args, &["version", "metadata"], "args")?;
     let stated = args
         .get("version")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    // Each case states its own version, so it runs as written or not at all.
-    let Some(version) = agent_version(stated) else {
+    // Each case states its own version.
+    let Some(version) = A2uiVersion::parse(stated) else {
         return if stated.starts_with("v0.8") {
             skip(NEEDS_V0_8, "capabilities of a v0.8 renderer")
         } else {
-            skip(NEEDS_V1_0, format!("capabilities of a {stated} renderer"))
+            fail(format!("the case reads capabilities as {stated:?}"))
         };
     };
+    *in_v1_0 = version == A2uiVersion::V1_0;
     let read = RendererCapabilities::from_metadata(args.get("metadata"), version);
     let Some(capabilities) = settle(case, read, "reading the capabilities")? else {
         return Ok(());
@@ -1175,7 +1109,7 @@ fn read_capabilities(case: &Value, args: &Value) -> Step {
 
 // --- renderer_state.yaml ------------------------------------------------------------------------
 
-fn renderer_state_turns(case: &Value, lowered: &mut bool) -> Step {
+fn renderer_state_turns(case: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(case, &["catalogs", "turns"])?;
     let turns: Vec<&Value> = case
         .get("turns")
@@ -1190,7 +1124,7 @@ fn renderer_state_turns(case: &Value, lowered: &mut bool) -> Step {
     {
         return skip(NEEDS_FORMAT, format!("the {other} format"));
     }
-    let setup = setup(case, case, true, lowered)?;
+    let setup = setup(case, case, true, in_v1_0)?;
     let processor = ready_processor(&Value::Null, &setup)?;
     let mut state = processor.create_state();
     for (index, turn) in turns.iter().enumerate() {
@@ -1223,18 +1157,8 @@ fn renderer_state_turns(case: &Value, lowered: &mut bool) -> Step {
                     .get("response")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                // A turn that names its catalog is not given one.
-                let text = if response.contains("\"catalogId\"") {
-                    if setup.lowered {
-                        lowering::lower_text(response, None)
-                    } else {
-                        response.to_string()
-                    }
-                } else {
-                    setup.text(response)
-                };
                 processor
-                    .parse_response_in(&text, &mut state)
+                    .parse_response_in(response, &mut state)
                     .map(|_| ())
                     .map_err(Error::from)
             }
@@ -1277,9 +1201,6 @@ fn renderer_state_turns(case: &Value, lowered: &mut bool) -> Step {
                 let mut found = serde_json::Map::new();
                 for component in &surface.components {
                     let mut properties = serde_json::to_value(component).unwrap_or(Value::Null);
-                    if setup.lowered {
-                        properties = lowering::lift_component(&properties);
-                    }
                     if let Some(map) = properties.as_object_mut() {
                         map.remove("id");
                     }
@@ -1308,10 +1229,10 @@ fn renderer_state_turns(case: &Value, lowered: &mut bool) -> Step {
 
 // --- streamed_answer.yaml -----------------------------------------------------------------------
 
-fn stream_answer(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn stream_answer(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(case, &["args", "steps", "expect_close", "expect_error"])?;
     known_keys(args, &["format", "catalog", "renderer_catalogs"], "args")?;
-    let setup = setup(case, args, false, lowered)?;
+    let setup = setup(case, args, false, in_v1_0)?;
     let processor = ready_processor(args, &setup)?;
     // The renderer's own catalogs, when the case gives it others.
     let mut state = match args.get("renderer_catalogs") {
@@ -1361,14 +1282,14 @@ fn stream_answer(case: &Value, args: &Value, lowered: &mut bool) -> Step {
                 .unwrap_or_default()
         })
         .collect();
-    for (index, (step, chunk)) in steps.iter().zip(setup.chunks(&inputs)).enumerate() {
+    for (index, (step, chunk)) in steps.iter().zip(inputs).enumerate() {
         known_keys(
             step,
             &["input", "expect_parts", "expect_in_block"],
             "a step",
         )?;
         answer
-            .feed(&chunk, &mut state)
+            .feed(chunk, &mut state)
             .or_else(|error| fail(format!("step {index}: {error}")))?;
         if let Some(expected) = step.get("expect_parts") {
             expect_same(
@@ -1398,7 +1319,7 @@ fn stream_answer(case: &Value, args: &Value, lowered: &mut bool) -> Step {
 
 // --- direct_json/prompt_generator.yaml ----------------------------------------------------------
 
-fn prompt_snippet(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn prompt_snippet(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(
         case,
         &[
@@ -1415,12 +1336,7 @@ fn prompt_snippet(case: &Value, args: &Value, lowered: &mut bool) -> Step {
         &["format", "catalogs", "examples", "allowed_messages"],
         "args",
     )?;
-    let setup = setup(case, args, false, lowered)?;
-    if setup.lowered && case.get("expect_error").is_none() {
-        // The snippet embeds the schemas of the catalogs' version, and the
-        // case states what it holds for v1.0, byte for byte.
-        return skip(NEEDS_V1_0, "the snippet embeds the v1.0 schemas");
-    }
+    let setup = setup(case, args, false, in_v1_0)?;
     let examples = examples(args, &setup)?;
     let generate = || direct_json(args, &setup).prompt_snippet(&setup.active(), &examples);
     let Some(snippet) = settle(case, generate(), "generating the snippet")? else {
@@ -1430,7 +1346,25 @@ fn prompt_snippet(case: &Value, args: &Value, lowered: &mut bool) -> Step {
         let golden = std::fs::read_to_string(conformance_dir().join(golden))
             .or_else(|error| fail(format!("cannot read the golden file: {error}")))?;
         if snippet != golden {
-            return fail("the snippet differs from its golden file");
+            // Where the two part, with what each has there.
+            let at = snippet
+                .bytes()
+                .zip(golden.bytes())
+                .position(|(ours, theirs)| ours != theirs)
+                .unwrap_or_else(|| snippet.len().min(golden.len()));
+            let from = |text: &str| -> String {
+                let start = (0..=at.min(text.len()))
+                    .rev()
+                    .find(|index| text.is_char_boundary(*index))
+                    .unwrap_or(0);
+                text[start..].chars().take(80).collect()
+            };
+            return fail(format!(
+                "the snippet differs from its golden file at byte {at}: the snippet has {:?}, \
+                 the golden file {:?}",
+                from(&snippet),
+                from(&golden)
+            ));
         }
     }
     snippet_checks(&snippet, case, "expect_contains", "expect_absent")?;
@@ -1475,7 +1409,7 @@ fn without_final_flags(parts: &Value) -> Value {
 fn unwrap(case: &Value, args: &Value) -> Step {
     case_keys(case, &["args", "input", "expect"])?;
     known_keys(args, &["format"], "args")?;
-    // Unwrapping keeps the payload as written, so nothing is lowered.
+    // Unwrapping keeps the payload as written, so nothing is in_v1_0.
     let parts = DirectJson::new().unwrap(
         case.get("input")
             .and_then(Value::as_str)
@@ -1548,20 +1482,19 @@ fn wrap(case: &Value, args: &Value) -> Step {
     Ok(())
 }
 
-fn parse_response(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn parse_response(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(case, &["args", "input", "expect", "expect_error"])?;
-    known_keys(args, &["format", "catalog", "wrapped"], "args")?;
-    let setup = setup(case, args, true, lowered)?;
+    known_keys(args, &["format", "catalog", "catalogs", "wrapped"], "args")?;
+    let setup = setup(case, args, true, in_v1_0)?;
     let processor = ready_processor(args, &setup)?;
-    let input = setup.text(
-        case.get("input")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    );
+    let input = case
+        .get("input")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let parsed = if args.get("wrapped") == Some(&Value::Bool(false)) {
-        processor.parse_block_in(&input, &mut processor.create_state())
+        processor.parse_block_in(input, &mut processor.create_state())
     } else {
-        processor.parse_response(&input)
+        processor.parse_response(input)
     };
     match settle(case, parsed.map_err(Error::from), "parsing the response")? {
         Some(parts) => expect_same(
@@ -1584,16 +1517,15 @@ fn compile_checked(setup: &Setup, block: &str) -> Result<Vec<Value>, Error> {
     Ok(messages)
 }
 
-fn compile(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn compile(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(case, &["args", "input", "expect", "expect_error"])?;
-    known_keys(args, &["format", "catalog"], "args")?;
-    let setup = setup(case, args, true, lowered)?;
-    let input = setup.text(
-        case.get("input")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    );
-    match settle(case, compile_checked(&setup, &input), "compiling the block")? {
+    known_keys(args, &["format", "catalog", "catalogs"], "args")?;
+    let setup = setup(case, args, true, in_v1_0)?;
+    let input = case
+        .get("input")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match settle(case, compile_checked(&setup, input), "compiling the block")? {
         Some(messages) => expect_same(
             case.get("expect").unwrap_or(&Value::Null),
             &Value::Array(setup.written(&messages)),
@@ -1603,13 +1535,13 @@ fn compile(case: &Value, args: &Value, lowered: &mut bool) -> Step {
     }
 }
 
-fn decompile(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn decompile(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(
         case,
         &["args", "messages", "expect_contains", "expect_round_trip"],
     )?;
     known_keys(args, &["format", "catalog", "catalogs"], "args")?;
-    let setup = setup(case, args, true, lowered)?;
+    let setup = setup(case, args, true, in_v1_0)?;
     let stated = case.get("messages").cloned().unwrap_or(json!([]));
     let messages = setup.messages(stated.as_array().map(Vec::as_slice).unwrap_or_default())?;
     let written = DirectJson::new()
@@ -1633,7 +1565,7 @@ fn decompile(case: &Value, args: &Value, lowered: &mut bool) -> Step {
 
 // --- direct_json/response_streaming.yaml --------------------------------------------------------
 
-fn parse_chunk(case: &Value, args: &Value, lowered: &mut bool) -> Step {
+fn parse_chunk(case: &Value, args: &Value, in_v1_0: &mut bool) -> Step {
     case_keys(
         case,
         &[
@@ -1655,7 +1587,7 @@ fn parse_chunk(case: &Value, args: &Value, lowered: &mut bool) -> Step {
         ],
         "args",
     )?;
-    let setup = setup(case, args, true, lowered)?;
+    let setup = setup(case, args, true, in_v1_0)?;
     let processor = ready_processor(args, &setup)?;
     let options = StreamOptions::new()
         .with_wrapped(args.get("wrapped") != Some(&Value::Bool(false)))
@@ -1680,7 +1612,7 @@ fn parse_chunk(case: &Value, args: &Value, lowered: &mut bool) -> Step {
                     .unwrap_or_default()
             })
             .collect();
-        let joined = setup.chunks(&inputs).concat();
+        let joined = inputs.concat();
         let whole = if options.wrapped {
             processor.parse_response(&joined)
         } else {
@@ -1723,15 +1655,17 @@ fn transcript(case: &Value) -> Step {
         .get("protocolVersion")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let Some(version) = agent_version(stated) else {
-        return skip(NEEDS_V1_0, format!("a {stated} transcript"));
+    let Some(version) = A2uiVersion::parse(stated) else {
+        return fail(format!("the transcript is written in {stated:?}"));
     };
     let catalogs = names(case.get("catalogPaths"))
         .iter()
         .map(|path| {
             // The published basic catalog is the one this crate pins, as the
             // reference harnesses substitute their own copy of it.
-            if path.ends_with("catalogs/basic/catalog.json") {
+            if path.ends_with("catalogs/basic/catalog.json")
+                || path == "catalogs/basic/v1/catalog.json"
+            {
                 CatalogDocument::basic(version)
                     .or_else(|error| fail(format!("the basic catalog does not load: {error}")))
             } else {
@@ -1743,8 +1677,6 @@ fn transcript(case: &Value) -> Step {
         .collect::<Step<Vec<_>>>()?;
     let as_written = Setup {
         catalogs: Vec::new(),
-        lowered: false,
-        inject: None,
     };
     let processor = A2uiRequestProcessor::new(catalogs, Vec::new(), Arc::new(DirectJson::new()))
         .or_else(|error| fail(format!("the processor cannot be built: {error}")))?;

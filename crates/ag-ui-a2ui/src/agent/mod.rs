@@ -128,6 +128,7 @@ mod capabilities;
 mod catalog;
 mod direct_json;
 mod format;
+mod ordered;
 mod processor;
 mod retry;
 mod state;

@@ -9,20 +9,17 @@ use crate::protocol::validate::{ErrorCode, ValidationError};
 use crate::protocol::version::A2uiVersion;
 
 /// The metadata key a v0.9-family renderer sends its capabilities under.
+/// From v1.0 the key is `a2uiRendererCapabilities`:
+/// [`A2uiVersion::capabilities_key`] gives the key of any version.
 pub const CLIENT_CAPABILITIES_KEY: &str = "a2uiClientCapabilities";
 
 const SUPPORTED_CATALOG_IDS: &str = "supportedCatalogIds";
 const INLINE_CATALOGS: &str = "inlineCatalogs";
 
-/// The key a version's capabilities travel under: the discriminator of the
-/// oldest version it shares a wire format with. v0.9.1 reuses `v0.9`.
+/// The key of a version's entry in a capabilities object: `v0.9` for the
+/// whole v0.9 family, `1.0` for v1.0.
 fn capabilities_key(version: A2uiVersion) -> &'static str {
-    A2uiVersion::ALL
-        .iter()
-        .copied()
-        .find(|candidate| candidate.accepts(version))
-        .unwrap_or(version)
-        .as_str()
+    version.capabilities_entry()
 }
 
 /// A renderer's capabilities, keyed by protocol version, as they travel.
@@ -34,10 +31,13 @@ fn capabilities_key(version: A2uiVersion) -> &'static str {
 /// version.
 ///
 /// A renderer sends its capabilities in the metadata of a transport message,
-/// keyed by protocol version:
+/// keyed by protocol version. The metadata key is the version's own
+/// ([`A2uiVersion::capabilities_key`]), and so is the key of its entry
+/// ([`A2uiVersion::capabilities_entry`]):
 ///
 /// ```json
 /// {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": ["…"], "inlineCatalogs": [ … ]}}}
+/// {"a2uiRendererCapabilities": {"1.0": {"supportedCatalogIds": ["…"], "inlineCatalogs": [ … ]}}}
 /// ```
 ///
 /// [`RendererCapabilities::from_metadata`] reads that, and [`resolve_catalogs`]
@@ -123,12 +123,37 @@ impl RendererCapabilities {
     }
 
     /// Reads the capabilities a renderer of `version` sent in the metadata of
-    /// a transport message, under [`CLIENT_CAPABILITIES_KEY`].
+    /// a transport message, under the key that version sends them under:
+    /// [`CLIENT_CAPABILITIES_KEY`] for the v0.9 family,
+    /// `a2uiRendererCapabilities` from v1.0.
     ///
     /// Returns `None` when there is no metadata, when the key is absent or
     /// null, and when it has no entry for `version`: a request that carries no
     /// capabilities has stated no preference. What is returned holds that one
-    /// entry, and [`resolve_catalogs`] accepts it unchanged.
+    /// entry, and [`resolve_catalogs`] accepts it unchanged. A renderer that
+    /// speaks both families sends both keys, and each is read by the version
+    /// it belongs to.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::A2uiVersion;
+    /// use ag_ui_a2ui::agent::RendererCapabilities;
+    /// use serde_json::json;
+    ///
+    /// let metadata = json!({
+    ///     "a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": ["old"]}},
+    ///     "a2uiRendererCapabilities": {"1.0": {"supportedCatalogIds": ["new"]}},
+    /// });
+    /// let read = |version| RendererCapabilities::from_metadata(Some(&metadata), version);
+    /// assert_eq!(
+    ///     read(A2uiVersion::V1_0)?.unwrap().to_json(),
+    ///     json!({"1.0": {"supportedCatalogIds": ["new"]}})
+    /// );
+    /// assert_eq!(
+    ///     read(A2uiVersion::V0_9_1)?.unwrap().to_json(),
+    ///     json!({"v0.9": {"supportedCatalogIds": ["old"]}})
+    /// );
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
     ///
     /// # Errors
     ///
@@ -144,12 +169,13 @@ impl RendererCapabilities {
         let Some(metadata) = metadata.as_object() else {
             return Err(Error::catalog("transport metadata must be a JSON object"));
         };
-        let raw = match metadata.get(CLIENT_CAPABILITIES_KEY) {
+        let metadata_key = version.capabilities_key();
+        let raw = match metadata.get(metadata_key) {
             None | Some(Value::Null) => return Ok(None),
             Some(Value::Object(raw)) => raw,
             Some(_) => {
                 return Err(Error::catalog(format!(
-                    "the '{CLIENT_CAPABILITIES_KEY}' metadata value must be a JSON object"
+                    "the '{metadata_key}' metadata value must be a JSON object"
                 )));
             }
         };
@@ -160,7 +186,7 @@ impl RendererCapabilities {
         };
         let read = Entry::read(entry).map_err(|fault| {
             Error::catalog(format!(
-                "invalid '{key}' renderer capabilities under '{CLIENT_CAPABILITIES_KEY}': {}",
+                "invalid '{key}' renderer capabilities under '{metadata_key}': {}",
                 fault.reason
             ))
         })?;
@@ -451,6 +477,63 @@ mod tests {
     fn both_versions_of_the_family_read_the_same_entry() {
         assert_eq!(capabilities_key(A2uiVersion::V0_9), "v0.9");
         assert_eq!(capabilities_key(A2uiVersion::V0_9_1), "v0.9");
+        assert_eq!(capabilities_key(A2uiVersion::V1_0), "1.0");
+    }
+
+    fn v1_0(id: &str, component: &str) -> CatalogConfig {
+        CatalogConfig::new(
+            CatalogDocument::new(json!({
+                "catalogId": id,
+                "protocolVersion": "1.0",
+                "components": {component: {"type": "object"}},
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_v1_0_renderer_is_read_under_its_own_keys() {
+        let registered = [v1_0("a", "A"), v1_0("b", "B")];
+        let metadata = json!({
+            "a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": ["a"]}},
+            "a2uiRendererCapabilities": {"1.0": {
+                "supportedCatalogIds": ["b"],
+                "inlineCatalogs": [{"catalogId": "renderer/inline", "components": {"Marquee": {}}}],
+            }},
+        });
+        let capabilities = RendererCapabilities::from_metadata(Some(&metadata), A2uiVersion::V1_0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            capabilities.to_json()["1.0"]["supportedCatalogIds"],
+            json!(["b"])
+        );
+        let active = resolve_catalogs(&registered, Some(&capabilities), true).unwrap();
+        assert_eq!(ids(&active), ["b", "renderer/inline"]);
+        // An inline catalog that states no version is one of the entry's.
+        assert_eq!(active[1].version(), A2uiVersion::V1_0);
+        assert_eq!(active[1].catalog().version(), A2uiVersion::V1_0);
+
+        assert_eq!(
+            RendererCapabilities::supporting(A2uiVersion::V1_0, ["b"]).to_json(),
+            json!({"1.0": {"supportedCatalogIds": ["b"]}})
+        );
+
+        // The entry of one family says nothing to catalogs of the other.
+        let old = RendererCapabilities::supporting(A2uiVersion::V0_9, ["a"]);
+        assert!(matches!(
+            resolve_catalogs(&registered, Some(&old), false),
+            Err(Error::Validation { .. })
+        ));
+        // Nor is a v0.9 catalog one a v1.0 entry can carry inline.
+        let mixed = json!({"a2uiRendererCapabilities": {"1.0": {
+            "supportedCatalogIds": [],
+            "inlineCatalogs": [{"catalogId": "x", "protocolVersion": "0.9"}],
+        }}});
+        assert!(matches!(
+            RendererCapabilities::from_metadata(Some(&mixed), A2uiVersion::V1_0),
+            Err(Error::Catalog(_))
+        ));
     }
 
     #[test]
@@ -524,6 +607,7 @@ mod tests {
             json!([{"components": {}}]),
             json!([{"catalogId": "", "components": {}}]),
             json!([{"catalogId": "x", "protocolVersion": "1.0"}]),
+            json!([{"catalogId": "x", "protocolVersion": "2.0"}]),
         ] {
             let capabilities = RendererCapabilities::from_json(&json!({
                 "v0.9": {"supportedCatalogIds": ["a"], "inlineCatalogs": inline},

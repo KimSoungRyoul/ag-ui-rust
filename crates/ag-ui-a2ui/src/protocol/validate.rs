@@ -424,6 +424,25 @@ impl<'a> Source<'a> {
     }
 }
 
+/// The components of a stored surface, each located in the message that last
+/// wrote it, or by its position in the surface when none of the store's
+/// messages did.
+fn stored_nodes<'s>(store: &SurfaceStore, surface: &'s SurfaceState) -> Vec<Node<'s>> {
+    let origin = store.origin(&surface.surface_id);
+    surface
+        .components
+        .iter()
+        .enumerate()
+        .map(|(i, component)| {
+            let node = Node::from_component(i, component);
+            match origin.and_then(|origin| origin.component(&component.id)) {
+                Some(locator) => node.at(locator),
+                None => node,
+            }
+        })
+        .collect()
+}
+
 /// A component normalized for validation, from either typed or raw JSON input.
 struct Node<'a> {
     index: usize,
@@ -1000,28 +1019,47 @@ impl<'a> Validator<'a> {
         store: &SurfaceStore,
         surface: &SurfaceState,
     ) -> ValidationReport {
-        let origin = store.origin(&surface.surface_id);
-        let list = origin
+        let list = store
+            .origin(&surface.surface_id)
             .and_then(Origin::list)
             .unwrap_or_else(|| "components".to_string());
-        let nodes: Vec<Node<'_>> = surface
-            .components
-            .iter()
-            .enumerate()
-            .map(|(i, component)| {
-                let node = Node::from_component(i, component);
-                match origin.and_then(|origin| origin.component(&component.id)) {
-                    Some(locator) => node.at(locator),
-                    None => node,
-                }
-            })
-            .collect();
         self.run(
             &self.drawing(surface),
-            &nodes,
+            &stored_nodes(store, surface),
             Some(&surface.data_model),
             &list,
         )
+    }
+
+    /// Where the components of a stored surface sit against their catalogs'
+    /// `allowedParents` and `allowedChildren`, whatever version the surface
+    /// speaks.
+    ///
+    /// [`Validator::validate_stored`] reports this itself for a version that
+    /// [constrains composition](A2uiVersion::constrains_composition). This is
+    /// for a caller that holds a surface of an earlier version to the
+    /// constraints its catalog states all the same, as the agent layer does,
+    /// and wants them reported the same way.
+    pub(crate) fn composition_stored(
+        &self,
+        store: &SurfaceStore,
+        surface: &SurfaceState,
+    ) -> Vec<ValidationError> {
+        let nodes = stored_nodes(store, surface);
+        let drawing = self.drawing(surface);
+        let sources: Vec<Source<'a>> = nodes
+            .iter()
+            .map(|node| self.source(&drawing, node))
+            .collect();
+        let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
+        for node in &nodes {
+            if let Some(id) = node.id {
+                ids.entry(id).or_insert(node.index);
+            }
+        }
+        let mut report = ValidationReport::default();
+        self.check_composition(&nodes, &sources, &ids, &mut report);
+        report.errors
     }
 
     /// Every check, over `nodes`. `list` locates the component list itself, for

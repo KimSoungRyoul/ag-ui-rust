@@ -92,16 +92,16 @@ Totals: 753 passed, 34 expected divergence, 1242 skipped, 5 failing.
 | `core/adapter_conformance.yaml` | 22 | 0 | 0 | 22 | 0 | out of scope: renderer: rendered view hierarchies in the UI framework adapters |
 | `agent/request_processor.yaml` | 29 | 20 | 0 | 9 | 0 | executed |
 | `agent/catalog_resolution.yaml` | 23 | 23 | 0 | 0 | 0 | executed |
-| `agent/catalog_provider.yaml` | 10 | 9 | 0 | 1 | 0 | executed |
+| `agent/catalog_provider.yaml` | 10 | 10 | 0 | 0 | 0 | executed |
 | `agent/catalog_transformer.yaml` | 15 | 15 | 0 | 0 | 0 | executed |
-| `agent/renderer_capabilities.yaml` | 24 | 5 | 0 | 19 | 0 | executed |
+| `agent/renderer_capabilities.yaml` | 24 | 22 | 0 | 2 | 0 | executed |
 | `agent/renderer_state.yaml` | 9 | 5 | 0 | 4 | 0 | executed |
 | `agent/streamed_answer.yaml` | 6 | 6 | 0 | 0 | 0 | executed |
-| `agent/direct_json/prompt_generator.yaml` | 15 | 1 | 0 | 14 | 0 | executed |
+| `agent/direct_json/prompt_generator.yaml` | 15 | 15 | 0 | 0 | 0 | executed |
 | `agent/direct_json/response_parser.yaml` | 36 | 35 | 0 | 1 | 0 | executed |
-| `agent/direct_json/response_streaming.yaml` | 139 | 87 | 7 | 45 | 0 | executed |
-| `agent/direct_json/compiler.yaml` | 38 | 18 | 0 | 20 | 0 | executed |
-| `agent/direct_json/decompiler.yaml` | 11 | 9 | 0 | 2 | 0 | executed |
+| `agent/direct_json/response_streaming.yaml` | 139 | 92 | 7 | 40 | 0 | executed |
+| `agent/direct_json/compiler.yaml` | 38 | 19 | 0 | 19 | 0 | executed |
+| `agent/direct_json/decompiler.yaml` | 11 | 10 | 0 | 1 | 0 | executed |
 | `agent/direct_json/scaling.yaml` | 7 | 0 | 0 | 7 | 0 | later: timing (#75): the direct JSON format: parse time against payload size |
 | `agent/skill.yaml` | 12 | 0 | 0 | 12 | 0 | later: other formats (#74): skill documents generated from a format and its catalogs; the goldens are Express |
 | `agent/express/prompt_generator.yaml` | 23 | 0 | 0 | 23 | 0 | later: other formats (#74): the Express format: system prompt snippet |
@@ -117,17 +117,17 @@ Totals: 753 passed, 34 expected divergence, 1242 skipped, 5 failing.
 | `agent/legacy/parser.yaml` | 23 | 0 | 0 | 23 | 0 | superseded: the SDK design before the agent layer: the tag parser; `agent/direct_json/response_parser.yaml` is the suite of the parser that reads the same tags now |
 | `agent/legacy/inference_format.yaml` | 22 | 0 | 0 | 22 | 0 | superseded: the SDK design before the agent layer: catalog selection and prompt assembly; `agent/catalog_resolution.yaml`, `agent/request_processor.yaml` and `agent/direct_json/prompt_generator.yaml` are the suites of what does that now |
 | `agent/legacy/streaming_parser.yaml` | 88 | 0 | 0 | 88 | 0 | superseded: the SDK design before the agent layer: the streaming parser, with placeholders for components still to arrive; `agent/direct_json/response_streaming.yaml` is the suite of the stream that replaced it |
-| `agent/multi_catalog_formats.yaml` | 35 | 0 | 0 | 35 | 0 | later: A2UI v1.0 (#42): components and function calls resolved across several active catalogs |
+| `agent/multi_catalog_formats.yaml` | 35 | 9 | 0 | 26 | 0 | executed |
 | `agent/agent_functions.yaml` | 64 | 0 | 0 | 64 | 0 | later: A2UI v1.0 (#42): agent functions and the agent's side of renderer messages |
 | `agent/renderer_function_calls.yaml` | 30 | 0 | 0 | 30 | 0 | later: A2UI v1.0 (#42): the agent calling renderer functions |
 | `e2e/v0_9_1/login_form_action.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
 | `e2e/v0_9_1/missing_surface_error.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
 | `e2e/v0_9_1/newsletter_signup.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
 | `e2e/v0_9_1/restaurant_list_booking.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
-| `e2e/login_form_action.yaml` | 1 | 0 | 0 | 1 | 0 | later: A2UI v1.0 (#42): a v1.0 transcript |
-| `e2e/missing_surface_error.yaml` | 1 | 0 | 0 | 1 | 0 | later: A2UI v1.0 (#42): a v1.0 transcript |
-| `e2e/newsletter_signup.yaml` | 1 | 0 | 0 | 1 | 0 | later: A2UI v1.0 (#42): a v1.0 transcript |
-| `e2e/restaurant_list_booking.yaml` | 1 | 0 | 0 | 1 | 0 | later: A2UI v1.0 (#42): a v1.0 transcript |
+| `e2e/login_form_action.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
+| `e2e/missing_surface_error.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
+| `e2e/newsletter_signup.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
+| `e2e/restaurant_list_booking.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
 | `adapter/adapter_conformance_v0_9.yaml` | 16 | 0 | 0 | 16 | 0 | out of scope: renderer: rendered view hierarchies in the UI framework adapters |
 | `adapter/markdown_subset.yaml` | 7 | 0 | 0 | 7 | 0 | out of scope: renderer: rendering the Markdown subset |
 | `extensions/a2a/a2a_integration.yaml` | 11 | 9 | 0 | 2 | 0 | executed |
