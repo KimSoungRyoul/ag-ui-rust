@@ -4,7 +4,8 @@
 //! opens, text arrives a fragment at a time, tool arguments accumulate as
 //! unparseable JSON fragments, state moves by RFC 6902 patch. [`Applier`] is the
 //! state machine that folds all of that back into something a UI can draw:
-//! a message list, a JSON state document, reasoning text, activities.
+//! a message list, reasoning and activities included, and a JSON state
+//! document.
 //!
 //! It is a plain synchronous struct. No async, no runtime, no I/O — feed it
 //! events from anywhere.
@@ -53,7 +54,7 @@
 // refuse them. Downstream users still get the warnings.
 #![allow(deprecated)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::{
     ActivityDeltaEvent, ActivityMessage, ActivitySnapshotEvent, AssistantMessage, DeveloperMessage,
@@ -77,8 +78,9 @@ use crate::metadata::merge_metadata_into;
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Changed {
-    /// Nothing a view would redraw: `STEP_*`, `RAW`, `CUSTOM`, or an event
-    /// whose target does not exist.
+    /// Nothing a view would redraw: `STEP_*`, `RAW`, `CUSTOM`, a reasoning
+    /// span (`REASONING_START`, `REASONING_END`), or an event whose target
+    /// does not exist.
     Nothing,
     /// One message was created, appended to, or completed.
     Message(MessageChange),
@@ -87,8 +89,10 @@ pub enum Changed {
     MessagesReplaced,
     /// The application state was replaced or patched.
     State,
-    /// Reasoning content changed. Reasoning is kept out of [`Applier::messages`];
-    /// see [`Applier::reasoning`].
+    /// A `REASONING_MESSAGE_*` event created, appended to or completed a
+    /// message, or a reasoning message took an encrypted value. The message
+    /// is in [`Applier::messages`] like any other. The variant is its own so
+    /// that a view can draw reasoning apart from the reply, or leave it out.
     Reasoning(ReasoningChange),
     /// A subagent was announced, resumed, finished, suspended or failed. What
     /// it *produces* arrives as ordinary message and reasoning changes,
@@ -184,6 +188,8 @@ pub enum MessageChangeKind {
 /// Which reasoning message changed, and how.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReasoningChange {
+    /// Index into [`Applier::messages`].
+    pub index: usize,
     /// The reasoning message's id.
     pub id: MessageId,
     /// What happened to it.
@@ -192,12 +198,11 @@ pub struct ReasoningChange {
 
 /// What happened to a reasoning message.
 ///
-/// [`Started`](Self::Started) and [`Ended`](Self::Ended) arrive **once per id**.
-/// The protocol brackets a thought twice — `REASONING_START` opens the block and
-/// `REASONING_MESSAGE_START` the message inside it, both under the same id, and
-/// the two terminators close it the same way — but that is protocol framing, not
-/// two things happening. A consumer that prints a finished thought prints it
-/// once.
+/// The message is what `REASONING_MESSAGE_START`, `_CONTENT` and `_END`
+/// assemble. The span around it, `REASONING_START` to `REASONING_END`, opens
+/// no message and reports no change, whether or not it carries the message's
+/// id. So [`Started`](Self::Started) and [`Ended`](Self::Ended) arrive once
+/// per message, and a consumer that prints a finished thought prints it once.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ReasoningChangeKind {
@@ -318,13 +323,10 @@ pub struct Applier {
     /// once under concurrent subagents. What a run that stops reports as
     /// aborted.
     open_text: Vec<MessageId>,
+    /// The same for reasoning messages: what `REASONING_MESSAGE_START` opened
+    /// and `REASONING_MESSAGE_END` has not closed.
+    open_reasoning: Vec<MessageId>,
     state: Value,
-    reasoning: Vec<ReasoningMessage>,
-    reasoning_by_id: HashMap<MessageId, usize>,
-    /// Reasoning ids started and not yet ended. What makes a thought report one
-    /// [`ReasoningChangeKind::Started`] and one [`ReasoningChangeKind::Ended`]
-    /// however many events the protocol brackets it with.
-    open_reasoning: HashSet<MessageId>,
     thread_id: Option<ThreadId>,
     run_id: Option<RunId>,
     interrupts: Vec<Interrupt>,
@@ -350,10 +352,8 @@ impl Applier {
             by_id: HashMap::new(),
             tool_calls: HashMap::new(),
             open_text: Vec::new(),
+            open_reasoning: Vec::new(),
             state: Value::Object(JsonObject::new()),
-            reasoning: Vec::new(),
-            reasoning_by_id: HashMap::new(),
-            open_reasoning: HashSet::new(),
             thread_id: None,
             run_id: None,
             interrupts: Vec::new(),
@@ -376,7 +376,8 @@ impl Applier {
         self
     }
 
-    /// The assembled conversation, oldest first.
+    /// The assembled conversation, oldest first: every role, reasoning and
+    /// activity included, each message where it arrived.
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
@@ -448,21 +449,26 @@ impl Applier {
         self.state = state.into();
     }
 
-    /// The reasoning messages, oldest first.
+    /// The reasoning messages of the conversation, oldest first.
     ///
-    /// Reasoning is deliberately not in [`Applier::messages`]: a UI shows it in
-    /// a separate pane, or not at all, and folding it into the transcript would
-    /// make "the assistant's reply" ambiguous.
-    pub fn reasoning(&self) -> &[ReasoningMessage] {
-        &self.reasoning
+    /// A view over [`Applier::messages`], not a second list: a reasoning
+    /// message is held there, where it arrived, and is sent back to the agent
+    /// with the rest. This is for a UI that shows reasoning in a pane of its
+    /// own.
+    pub fn reasoning(&self) -> impl Iterator<Item = &ReasoningMessage> {
+        self.messages.iter().filter_map(|message| match message {
+            Message::Reasoning(reasoning) => Some(reasoning),
+            _ => None,
+        })
     }
 
-    /// The accumulated reasoning text for one reasoning message.
+    /// The accumulated text of one reasoning message. `None` for an id that
+    /// names no message, or a message of another role.
     pub fn reasoning_text(&self, id: &MessageId) -> Option<&str> {
-        self.reasoning_by_id
-            .get(id)
-            .and_then(|index| self.reasoning.get(*index))
-            .map(|message| message.content.as_str())
+        match self.message(id)? {
+            Message::Reasoning(message) => Some(&message.content),
+            _ => None,
+        }
     }
 
     /// The thread of the run last seen on `RUN_STARTED`.
@@ -580,17 +586,18 @@ impl Applier {
             Event::ActivitySnapshot(e) => Ok(self.activity_snapshot(e)),
             Event::ActivityDelta(e) => self.activity_delta(e),
 
-            Event::ReasoningStart(e) => {
-                Ok(self.reasoning_start(e.message_id.clone(), e.subagent_run_id.clone()))
-            }
+            // A span opens no message, so it leaves nothing to draw: a
+            // reasoning message is in the conversation from its own start to
+            // its own end. A caller that wants the span reads these two
+            // events where it reads the stream.
+            Event::ReasoningStart(_) | Event::ReasoningEnd(_) => Ok(Changed::Nothing),
             Event::ReasoningMessageStart(e) => {
                 Ok(self.reasoning_start(e.message_id.clone(), e.subagent_run_id.clone()))
             }
             Event::ReasoningMessageContent(e) => {
-                Ok(self.reasoning_content(&e.message_id, &e.delta, &e.subagent_run_id))
+                self.reasoning_content(&e.message_id, &e.delta, &e.subagent_run_id)
             }
             Event::ReasoningMessageEnd(e) => Ok(self.reasoning_end(&e.message_id)),
-            Event::ReasoningEnd(e) => Ok(self.reasoning_end(&e.message_id)),
             Event::ReasoningEncryptedValue(e) => Ok(self.encrypted_value(e)),
 
             // The two families that stand for other events. What a chunk
@@ -654,16 +661,9 @@ impl Applier {
     /// Restore materialized auxiliary state without reopening streaming parsers.
     pub(crate) fn restore_auxiliary(
         &mut self,
-        reasoning: Vec<ReasoningMessage>,
         subagents: Vec<Subagent>,
         interrupts: Vec<Interrupt>,
     ) {
-        self.reasoning_by_id = reasoning
-            .iter()
-            .enumerate()
-            .map(|(i, message)| (message.id.clone(), i))
-            .collect();
-        self.reasoning = reasoning;
         self.subagent_by_id = subagents
             .iter()
             .enumerate()
@@ -693,9 +693,12 @@ impl Applier {
         let reasoning = self
             .open_reasoning
             .iter()
-            .map(|id| ReasoningChange {
-                id: id.clone(),
-                kind: ReasoningChangeKind::Aborted,
+            .filter_map(|id| {
+                self.by_id.get(id).map(|index| ReasoningChange {
+                    index: *index,
+                    id: id.clone(),
+                    kind: ReasoningChangeKind::Aborted,
+                })
             })
             .collect();
         self.reset_streams();
@@ -738,6 +741,7 @@ impl Applier {
         // A snapshot can drop a message that was being streamed into.
         let by_id = &self.by_id;
         self.open_text.retain(|open| by_id.contains_key(open));
+        self.open_reasoning.retain(|open| by_id.contains_key(open));
     }
 
     /// Folds a `MESSAGES_SNAPSHOT` into the conversation.
@@ -747,24 +751,25 @@ impl Applier {
     /// rebuilds the list by filtering the local one and appending whatever the
     /// snapshot adds. Three consequences, all of them load-bearing:
     ///
-    /// - the order the client already had wins for every id the snapshot also
-    ///   carries, so a backend that reorders its own history does not reshuffle
-    ///   the transcript under the user;
+    /// - a message the snapshot carries replaces the local one with the same
+    ///   id, in the place the local one had, so a backend that reorders its
+    ///   own history does not reshuffle the transcript under the user. One
+    ///   the client has not seen is appended, in snapshot order;
     /// - messages the snapshot leaves out are dropped — that is how a
     ///   summarizing backend deletes turns;
-    /// - except `activity`, which survives a snapshot that carries none.
-    ///   Activity never travels back to the backend, so one that does not track
-    ///   it *cannot* list it, and dropping the local copies would clear a pane
-    ///   of the UI on every snapshot. A snapshot that does carry activity is
-    ///   declaring the whole set, so an activity missing from it has been
-    ///   deleted; without that half, a client-side activity would be
-    ///   undeletable.
-    ///
-    /// Upstream's rule has a fourth clause, for `reasoning`. It needs no
-    /// equivalent here: reasoning lives in [`Applier::reasoning`], not in
-    /// [`Applier::messages`], so a snapshot of the conversation cannot drop it.
+    /// - except `activity` and `reasoning`, each of which survives a snapshot
+    ///   that carries none of its role. Activity never travels back to the
+    ///   backend and most backends do not track reasoning, so a backend that
+    ///   does not track a role *cannot* list it. Dropping the local copies
+    ///   would clear a pane of the UI on every snapshot, and take the
+    ///   reasoning out of the next request. A snapshot that does carry a role
+    ///   is declaring the whole set of it, so a message of that role missing
+    ///   from it has been deleted. Without that half a client-side activity
+    ///   would be undeletable, and a backend that restates reasoning under
+    ///   ids of its own would leave every thought in the list twice.
     fn merge_snapshot(&mut self, snapshot: Vec<Message>) {
-        let snapshot_owns_activity = snapshot.iter().any(|m| matches!(m, Message::Activity(_)));
+        let owns_activity = snapshot.iter().any(|m| matches!(m, Message::Activity(_)));
+        let owns_reasoning = snapshot.iter().any(|m| matches!(m, Message::Reasoning(_)));
 
         // `Option` slots so a message can be moved out when it is placed, and
         // whatever is left over is exactly what the snapshot added.
@@ -778,18 +783,21 @@ impl Applier {
         let previous = std::mem::take(&mut self.messages);
         let mut merged = Vec::with_capacity(previous.len().max(incoming.len()));
         for message in previous {
-            let keep_local = !snapshot_owns_activity && matches!(message, Message::Activity(_));
-            if let Some(index) = position.get(message.id()).copied() {
-                if keep_local {
-                    // Claim the slot so the snapshot's copy is not appended on
-                    // top of the local one further down.
-                    incoming[index] = None;
-                } else if let Some(replacement) = incoming[index].take() {
-                    merged.push(replacement);
-                    continue;
-                }
+            let restated = position
+                .get(message.id())
+                .and_then(|index| incoming[*index].take());
+            if let Some(replacement) = restated {
+                // By id alone: the snapshot's copy takes the place, whatever
+                // role either copy has.
+                merged.push(replacement);
+                continue;
             }
-            if keep_local {
+            let survives = match message {
+                Message::Activity(_) => !owns_activity,
+                Message::Reasoning(_) => !owns_reasoning,
+                _ => false,
+            };
+            if survives {
                 merged.push(message);
             }
         }
@@ -1075,25 +1083,28 @@ impl Applier {
 
     // ---- reasoning ------------------------------------------------------
 
-    /// Opens a reasoning message, or reports nothing when it is already open.
+    /// Opens the reasoning message a `REASONING_MESSAGE_START` names: a
+    /// message of the conversation, appended where it arrives.
     ///
-    /// `REASONING_START` and `REASONING_MESSAGE_START` both land here under the
-    /// same id — the block and the message inside it. Only the first of them
-    /// starts anything.
+    /// A message id is unique within its thread. So an id the conversation
+    /// already holds continues that message, whatever its role, as a
+    /// `TEXT_MESSAGE_START` for a known id does and as the reference client
+    /// does. Nothing is created beside it.
     fn reasoning_start(&mut self, id: MessageId, owner: Option<SubagentRunId>) -> Changed {
-        if !self.reasoning_by_id.contains_key(&id) {
-            self.reasoning_by_id
-                .insert(id.clone(), self.reasoning.len());
-            self.reasoning.push(ReasoningMessage {
+        self.open_reasoning.retain(|open| open != &id);
+        self.open_reasoning.push(id.clone());
+        let index = match self.by_id.get(&id) {
+            Some(index) => *index,
+            // Attribution transfers to the message the event creates, as it
+            // does for text.
+            None => self.push_message(Message::Reasoning(ReasoningMessage {
                 id: id.clone(),
                 subagent_run_id: owner,
                 ..Default::default()
-            });
-        }
-        if !self.open_reasoning.insert(id.clone()) {
-            return Changed::Nothing;
-        }
+            })),
+        };
         Changed::Reasoning(ReasoningChange {
+            index,
             id,
             kind: ReasoningChangeKind::Started,
         })
@@ -1104,38 +1115,37 @@ impl Applier {
         id: &MessageId,
         delta: &str,
         owner: &Option<SubagentRunId>,
-    ) -> Changed {
-        if !self.reasoning_by_id.contains_key(id) {
+    ) -> Result<Changed> {
+        if !self.by_id.contains_key(id) {
+            // Tolerant: an orphan content event opens the message it names.
             self.reasoning_start(id.clone(), owner.clone());
         }
-        if let Some(message) = self
-            .reasoning_by_id
-            .get(id)
-            .and_then(|index| self.reasoning.get_mut(*index))
-        {
-            message.content.push_str(delta);
-        }
-        Changed::Reasoning(ReasoningChange {
+        let Some(index) = self.by_id.get(id).copied() else {
+            return Ok(Changed::Nothing);
+        };
+        let Some(message) = self.messages.get_mut(index) else {
+            return Ok(Changed::Nothing);
+        };
+        append_text(message, delta)?;
+        Ok(Changed::Reasoning(ReasoningChange {
+            index,
             id: id.clone(),
             kind: ReasoningChangeKind::Content {
                 delta: delta.to_owned(),
             },
-        })
+        }))
     }
 
-    /// Closes a reasoning message, or reports nothing when it is already closed.
-    ///
-    /// The mirror of [`Applier::reasoning_start`]: `REASONING_MESSAGE_END` and
-    /// `REASONING_END` are two events closing one thought, and a consumer that
-    /// prints a finished thought has to see it finish once.
     fn reasoning_end(&mut self, id: &MessageId) -> Changed {
-        if !self.open_reasoning.remove(id) {
-            return Changed::Nothing;
+        self.open_reasoning.retain(|open| open != id);
+        match self.by_id.get(id) {
+            Some(index) => Changed::Reasoning(ReasoningChange {
+                index: *index,
+                id: id.clone(),
+                kind: ReasoningChangeKind::Ended,
+            }),
+            None => Changed::Nothing,
         }
-        Changed::Reasoning(ReasoningChange {
-            id: id.clone(),
-            kind: ReasoningChangeKind::Ended,
-        })
     }
 
     fn encrypted_value(&mut self, event: &ReasoningEncryptedValueEvent) -> Changed {
@@ -1162,30 +1172,34 @@ impl Applier {
                     kind: MessageChangeKind::EncryptedValue,
                 })
             }
+            // Stored with the message it names, which is what carries it
+            // back: the next request sends that message as it stands.
             ReasoningEncryptedValueSubtype::Message => {
                 let id = MessageId::new(event.entity_id.clone());
-                if let Some(message) = self
-                    .reasoning_by_id
-                    .get(&id)
-                    .and_then(|index| self.reasoning.get_mut(*index))
-                {
-                    message.encrypted_value = Some(blob);
-                    return Changed::Reasoning(ReasoningChange {
-                        id,
-                        kind: ReasoningChangeKind::EncryptedValue,
-                    });
-                }
                 let Some(index) = self.by_id.get(&id).copied() else {
                     return Changed::Nothing;
                 };
-                if let Some(message) = self.messages.get_mut(index) {
-                    set_encrypted_value(message, blob);
+                let Some(message) = self.messages.get_mut(index) else {
+                    return Changed::Nothing;
+                };
+                // An activity has no field for the value, so the event names
+                // nothing that can hold it.
+                if !set_encrypted_value(message, blob) {
+                    return Changed::Nothing;
                 }
-                Changed::Message(MessageChange {
-                    index,
-                    id,
-                    kind: MessageChangeKind::EncryptedValue,
-                })
+                if matches!(message, Message::Reasoning(_)) {
+                    Changed::Reasoning(ReasoningChange {
+                        index,
+                        id,
+                        kind: ReasoningChangeKind::EncryptedValue,
+                    })
+                } else {
+                    Changed::Message(MessageChange {
+                        index,
+                        id,
+                        kind: MessageChangeKind::EncryptedValue,
+                    })
+                }
             }
         }
     }
@@ -1358,18 +1372,11 @@ impl Applier {
             Event::ReasoningMessageStart(_)
             | Event::ReasoningMessageContent(_)
             | Event::ReasoningMessageEnd(_) => {
-                let id = match event {
-                    Event::ReasoningMessageStart(e) => &e.message_id,
-                    Event::ReasoningMessageContent(e) => &e.message_id,
-                    Event::ReasoningMessageEnd(e) => &e.message_id,
-                    _ => return,
+                let Changed::Reasoning(change) = changed else {
+                    return;
                 };
-                if let Some(message) = self
-                    .reasoning_by_id
-                    .get(id)
-                    .and_then(|index| self.reasoning.get_mut(*index))
-                {
-                    merge_metadata_into(&mut message.metadata, Some(metadata));
+                if let Some(message) = self.messages.get_mut(change.index) {
+                    merge_metadata_into(message.metadata_mut(), Some(metadata));
                 }
             }
             _ => {}
@@ -1470,16 +1477,19 @@ fn append_text(message: &mut Message, delta: &str) -> Result<()> {
     Ok(())
 }
 
-/// Attaches a provider's opaque reasoning blob to a message.
-fn set_encrypted_value(message: &mut Message, blob: String) {
-    match message {
-        Message::Assistant(m) => m.encrypted_value = Some(blob),
-        Message::System(m) => m.encrypted_value = Some(blob),
-        Message::Developer(m) => m.encrypted_value = Some(blob),
-        Message::User(m) => m.encrypted_value = Some(blob),
-        Message::Tool(m) => m.encrypted_value = Some(blob),
-        Message::Reasoning(m) => m.encrypted_value = Some(blob),
+/// Attaches a provider's opaque reasoning blob to a message, and says whether
+/// the message could take it.
+fn set_encrypted_value(message: &mut Message, blob: String) -> bool {
+    let slot = match message {
+        Message::Assistant(m) => &mut m.encrypted_value,
+        Message::System(m) => &mut m.encrypted_value,
+        Message::Developer(m) => &mut m.encrypted_value,
+        Message::User(m) => &mut m.encrypted_value,
+        Message::Tool(m) => &mut m.encrypted_value,
+        Message::Reasoning(m) => &mut m.encrypted_value,
         // An activity has no field for it.
-        Message::Activity(_) => {}
-    }
+        Message::Activity(_) => return false,
+    };
+    *slot = Some(blob);
+    true
 }
