@@ -1701,9 +1701,13 @@ impl<'a> Validator<'a> {
                             ));
                         }
                         // What the declaration says of the arguments' names.
-                        let fault = call
-                            .args
-                            .and_then(Value::as_object)
+                        let none = Map::new();
+                        let written = match (call.args, call.written_in) {
+                            (Some(args), _) => args.as_object(),
+                            (None, None) => Some(&none),
+                            (None, Some(_)) => None,
+                        };
+                        let fault = written
                             .filter(|_| self.options.check_component_types)
                             .and_then(|args| function.argument_fault(args));
                         if let Some(fault) = fault {
@@ -1746,94 +1750,101 @@ impl<'a> Validator<'a> {
     /// data model and outside any list template: a binding is `{"@path": …}`
     /// and nothing else, a nested call is one the renderer may make, in the
     /// catalog it names, or the surface's own, or the catalog of the call
-    /// when no surface is named, and `@index` has nothing to count.
+    /// when no surface is named, and `@index` has nothing to count. A call
+    /// that leaves `args` out passes none, and is held to what its function
+    /// requires as one that passes `{}` is.
     ///
-    /// Gives whether the message is a call at all: its own fields, a name and
-    /// a `catalogId`. A call that reads and is refused is answered; one that
-    /// does not read has no call to answer.
+    /// Gives how the call stands ([`CallCheck`]), which is what decides how a
+    /// renderer answers it. The errors are in the order a renderer finds
+    /// them: what is wrong with the call itself, then what it cannot resolve
+    /// in the arguments, then the arguments against what the function takes.
     pub(crate) fn check_renderer_call(
         &self,
         store: &SurfaceStore,
         locator: &str,
         message: &Value,
         report: &mut ValidationReport,
-    ) -> bool {
+    ) -> CallCheck {
         let key = Operation::CallRendererFunction.as_str();
         let at = format!("{locator}.{key}");
         let version = stated_version(message);
         let Some(payload) = message.get(key).and_then(Value::as_object) else {
-            return true;
+            return CallCheck::Accepted;
         };
-        // Whether the message is a call at all.
-        let mut readable = true;
-        let mut invalid = |path: String, reason: String| {
-            report
-                .errors
-                .push(ValidationError::new(ErrorCode::InvalidValue, path, reason));
+        let invalid = |path: String, reason: String| {
+            ValidationError::new(ErrorCode::InvalidValue, path, reason)
         };
+        // What makes the message no call at all: there is none to answer.
+        let mut malformed: Vec<ValidationError> = Vec::new();
         for field in payload.keys() {
             if !["surfaceId", "functionCallId", "callFunction"].contains(&field.as_str()) {
-                readable = false;
-                invalid(
+                malformed.push(invalid(
                     format!("{at}.{field}"),
                     format!("'{field}' is not a field of '{key}'."),
-                );
+                ));
             }
         }
         if payload.get("functionCallId").and_then(Value::as_str) == Some("") {
-            readable = false;
-            invalid(
+            malformed.push(invalid(
                 format!("{at}.functionCallId"),
                 "'functionCallId' must not be empty: the response copies it.".to_string(),
-            );
+            ));
         }
-        // The surface whose data the arguments are resolved against.
+        let call = payload.get("callFunction").and_then(Value::as_object);
+        let call_at = format!("{at}.callFunction");
+        if let Some(call) = call {
+            call_fields(version, call, &call_at, &mut malformed);
+        }
+        let name = call
+            .and_then(|call| call.get(version.call_key()))
+            .and_then(Value::as_str);
+        let catalog_id = call
+            .and_then(|call| call.get("catalogId"))
+            .and_then(Value::as_str);
+        if malformed.is_empty() {
+            if let Some(name) = name.filter(|name| name.starts_with('@') || !is_identifier(name)) {
+                malformed.push(invalid(
+                    format!("{call_at}.{}", version.call_key()),
+                    format!(
+                        "'{name}' cannot be called with '{key}': the function is one a catalog \
+                         declares, named by an identifier with no '@'."
+                    ),
+                ));
+            } else if let (Some(name), None) = (name, catalog_id) {
+                malformed.push(invalid(
+                    format!("{call_at}.catalogId"),
+                    format!(
+                        "'{key}' requires 'catalogId' on its 'callFunction': the call names the \
+                         catalog that declares '{name}'."
+                    ),
+                ));
+            }
+        }
+        if !malformed.is_empty() {
+            report.errors.extend(malformed);
+            return CallCheck::Malformed;
+        }
+        let (Some(call), Some(name), Some(catalog_id)) = (call, name, catalog_id) else {
+            // The envelope check has said what is missing.
+            return CallCheck::Accepted;
+        };
+
+        // The call itself: a renderer does not run one it refuses here.
         let surface = match payload.get("surfaceId").and_then(Value::as_str) {
             Some(surface_id) => match store.get(surface_id).filter(|surface| !surface.deleted) {
                 Some(surface) => Some(surface),
                 None => {
-                    invalid(
+                    report.errors.push(invalid(
                         format!("{at}.surfaceId"),
                         format!(
                             "surface {surface_id:?} does not exist; a call names a live surface, \
                              or none."
                         ),
-                    );
-                    return readable;
+                    ));
+                    return CallCheck::Refused;
                 }
             },
             None => None,
-        };
-        let Some(call) = payload.get("callFunction").and_then(Value::as_object) else {
-            return readable;
-        };
-        let call_at = format!("{at}.callFunction");
-        if !call_fields(version, call, &call_at, &mut invalid) {
-            return false;
-        }
-        let name = call
-            .get(version.call_key())
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if name.starts_with('@') || !is_identifier(name) {
-            invalid(
-                format!("{call_at}.{}", version.call_key()),
-                format!(
-                    "'{name}' cannot be called with '{key}': the function is one a catalog \
-                     declares, named by an identifier with no '@'."
-                ),
-            );
-            return false;
-        }
-        let Some(catalog_id) = call.get("catalogId").and_then(Value::as_str) else {
-            invalid(
-                format!("{call_at}.catalogId"),
-                format!(
-                    "'{key}' requires 'catalogId' on its 'callFunction': the call names the \
-                     catalog that declares '{name}'."
-                ),
-            );
-            return false;
         };
         let drawing = match surface {
             Some(surface) => self.drawing(surface),
@@ -1855,47 +1866,52 @@ impl<'a> Validator<'a> {
                 ),
                 None => format!("Catalog not found: {catalog_id}"),
             };
-            invalid(format!("{call_at}.catalogId"), reason);
-            return readable;
+            report
+                .errors
+                .push(invalid(format!("{call_at}.catalogId"), reason));
+            return CallCheck::Refused;
         };
         let Some(function) = catalog.functions.get(name) else {
-            invalid(
+            report.errors.push(invalid(
                 call_at.clone(),
                 format!(
                     "Function not found: {name}. Catalog '{catalog_id}' defines no such function."
                 ),
-            );
-            return readable;
+            ));
+            return CallCheck::Refused;
         };
+        let mut refused = false;
         if function.allowed_callers == AllowedCallers::RendererOnly {
-            invalid(
+            refused = true;
+            report.errors.push(invalid(
                 call_at.clone(),
                 format!(
                     "Function '{name}' cannot be called by agent (allowedCallers is rendererOnly)."
                 ),
-            );
+            ));
         }
         if function.requires_user_activation {
-            invalid(
+            refused = true;
+            report.errors.push(invalid(
                 call_at.clone(),
                 format!(
                     "Function '{name}' requires user activation context to execute, and a call \
                      from the agent has no user gesture."
                 ),
-            );
+            ));
         }
-        let Some(args) = call.get("args").and_then(Value::as_object) else {
-            return readable;
-        };
-        if let Some(fault) = function.argument_fault(args) {
-            invalid(format!("{call_at}.args"), fault);
-        }
+
+        // The arguments, as the renderer resolves them. A call that leaves
+        // `args` out passes none.
+        let none = Map::new();
+        let args = call.get("args").and_then(Value::as_object).unwrap_or(&none);
         // A nested call that names no catalog runs in the surface's own, and
         // in the catalog of the call when no surface is named.
         let fallback = match surface {
             Some(_) => drawing.default,
             None => Some(catalog),
         };
+        let mut unresolvable: Vec<ValidationError> = Vec::new();
         // Keys that are the protocol's and no directive, found on the way.
         let mut reserved: Vec<ValidationError> = Vec::new();
         let mut stack: Vec<(&Value, String, usize)> = args
@@ -1920,24 +1936,24 @@ impl<'a> Validator<'a> {
             // A binding is its path and nothing else.
             if let Some(path) = map.get(version.path_key()) {
                 if !path.is_string() {
-                    invalid(
+                    unresolvable.push(invalid(
                         format!("{location}.{}", version.path_key()),
                         format!(
                             "'{}' of a data binding must be a string, not {}.",
                             version.path_key(),
                             type_name(path)
                         ),
-                    );
+                    ));
                 }
                 for field in map.keys().filter(|field| *field != version.path_key()) {
-                    invalid(
+                    unresolvable.push(invalid(
                         format!("{location}.{field}"),
                         format!(
-                            "'{field}' is not a field of a data binding: a binding holds '{}' and \
-                             nothing else.",
+                            "'{field}' is not a field of a data binding: a binding holds '{}' \
+                             and nothing else.",
                             version.path_key()
                         ),
-                    );
+                    ));
                 }
                 continue;
             }
@@ -1954,16 +1970,16 @@ impl<'a> Validator<'a> {
                 }
                 continue;
             };
-            if !call_fields(version, map, &location, &mut invalid) {
+            if !call_fields(version, map, &location, &mut unresolvable) {
                 continue;
             }
-            if let Some(Value::Object(inner)) = map.get("args") {
-                for (field, child) in inner.iter().rev() {
-                    stack.push((child, format!("{location}.args.{field}"), depth + 1));
-                }
+            // A nested call that leaves `args` out passes none, too.
+            let inner = map.get("args").and_then(Value::as_object).unwrap_or(&none);
+            for (field, child) in inner.iter().rev() {
+                stack.push((child, format!("{location}.args.{field}"), depth + 1));
             }
             if nested.starts_with('@') {
-                invalid(
+                unresolvable.push(invalid(
                     location.clone(),
                     if nested == "@index" {
                         "The @index function can only be evaluated inside a collection template \
@@ -1976,7 +1992,7 @@ impl<'a> Validator<'a> {
                              '@index'; a function of a catalog has no '@'."
                         )
                     },
-                );
+                ));
                 continue;
             }
             let resolved = match map.get("catalogId").and_then(Value::as_str) {
@@ -1986,22 +2002,22 @@ impl<'a> Validator<'a> {
                 {
                     Some(catalog) => Some(catalog),
                     None => {
-                        invalid(
+                        unresolvable.push(invalid(
                             format!("{location}.catalogId"),
                             format!("Catalog not found: {named}"),
-                        );
+                        ));
                         None
                     }
                 },
                 None => {
                     if fallback.is_none() {
-                        invalid(
+                        unresolvable.push(invalid(
                             location.clone(),
                             format!(
-                                "Function call '{nested}' names no catalog, and the surface has no \
-                                 default catalog. Give the call a 'catalogId'."
+                                "Function call '{nested}' names no catalog, and the surface has \
+                                 no default catalog. Give the call a 'catalogId'."
                             ),
-                        );
+                        ));
                     }
                     fallback
                 }
@@ -2010,40 +2026,55 @@ impl<'a> Validator<'a> {
             match resolved.functions.get(nested) {
                 Some(function) => {
                     if !function.allowed_callers.includes_renderer() {
-                        invalid(
+                        unresolvable.push(invalid(
                             location.clone(),
                             format!(
                                 "Function '{nested}' is agentOnly: the renderer resolves the \
                                  arguments of a call, and may not call it."
                             ),
-                        );
+                        ));
                     }
                     if function.requires_user_activation {
-                        invalid(
+                        unresolvable.push(invalid(
                             location.clone(),
                             format!(
-                                "Function '{nested}' requires user activation, and a call from the \
-                                 agent has no user gesture."
+                                "Function '{nested}' requires user activation, and a call from \
+                                 the agent has no user gesture."
                             ),
-                        );
+                        ));
                     }
-                    if let Some(Value::Object(inner)) = map.get("args") {
-                        if let Some(fault) = function.argument_fault(inner) {
-                            invalid(format!("{location}.args"), fault);
-                        }
+                    if let Some(fault) = function.argument_fault(inner) {
+                        unresolvable.push(invalid(format!("{location}.args"), fault));
                     }
                 }
-                None => invalid(
+                None => unresolvable.push(invalid(
                     location.clone(),
                     format!(
-                        "Unrecognized function '{nested}': catalog '{}' defines no such function.",
+                        "Unrecognized function '{nested}': catalog '{}' defines no such \
+                         function.",
                         resolved.catalog_id
                     ),
-                ),
+                )),
             }
         }
-        report.errors.extend(reserved);
-        readable
+        unresolvable.extend(reserved);
+        let unresolved = !unresolvable.is_empty();
+        report.errors.extend(unresolvable);
+        // Last, the arguments against what the function takes, which a
+        // renderer checks once it has resolved them.
+        let fault = function.argument_fault(args);
+        let faulty = fault.is_some();
+        if let Some(fault) = fault {
+            report
+                .errors
+                .push(invalid(format!("{call_at}.args"), fault));
+        }
+        match (refused, unresolved, faulty) {
+            (true, _, _) => CallCheck::Refused,
+            (false, true, _) => CallCheck::Unresolvable,
+            (false, false, true) => CallCheck::Refused,
+            (false, false, false) => CallCheck::Accepted,
+        }
     }
 
     /// `@index` where no list template gives it an item to count, from v1.0
@@ -2604,47 +2635,63 @@ fn check_reserved_keys(
     }
 }
 
+/// How a `callRendererFunction` stands with a renderer that has checked it,
+/// which decides how the renderer answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallCheck {
+    /// Nothing is wrong with it: a renderer goes on to run the function.
+    Accepted,
+    /// The message is not a call at all, and there is none to answer: it is
+    /// reported, by its id when it has one.
+    Malformed,
+    /// A call the renderer does not run: the surface, the catalog, the
+    /// function, who may call it, or the arguments it takes. Answered with
+    /// `INVALID_FUNCTION_CALL`.
+    Refused,
+    /// A call the renderer may run, with an argument it cannot resolve: a
+    /// binding that is no binding, a nested call it may not make, `@index`
+    /// with nothing to count. Answered with `EXECUTION_ERROR`, which is what a
+    /// renderer answers for any argument it fails to resolve.
+    Unresolvable,
+}
+
 /// The fields of a function call as a message writes one: the name, a
 /// `catalogId` that is a string, `args` that are an object, and nothing else.
-/// Says what is wrong through `invalid`, and whether the call can be read on.
+/// Adds what is wrong to `errors`, and says whether the call can be read on.
 fn call_fields(
     version: A2uiVersion,
     call: &serde_json::Map<String, Value>,
     location: &str,
-    invalid: &mut impl FnMut(String, String),
+    errors: &mut Vec<ValidationError>,
 ) -> bool {
     let name_key = version.call_key();
-    let mut readable = true;
+    let before = errors.len();
+    let mut invalid = |path: String, reason: String| {
+        errors.push(ValidationError::new(ErrorCode::InvalidValue, path, reason));
+    };
     match call.get(name_key) {
         Some(Value::String(_)) => {}
-        Some(other) => {
-            invalid(
-                format!("{location}.{name_key}"),
-                format!(
-                    "'{name_key}' names the function to call, which is a string, not {}.",
-                    type_name(other)
-                ),
-            );
-            readable = false;
-        }
-        None => {
-            invalid(
-                format!("{location}.{name_key}"),
-                format!("A function call requires '{name_key}', the name of the function."),
-            );
-            readable = false;
-        }
+        Some(other) => invalid(
+            format!("{location}.{name_key}"),
+            format!(
+                "'{name_key}' names the function to call, which is a string, not {}.",
+                type_name(other)
+            ),
+        ),
+        None => invalid(
+            format!("{location}.{name_key}"),
+            format!("A function call requires '{name_key}', the name of the function."),
+        ),
     }
     if let Some(named) = call.get("catalogId").filter(|named| !named.is_string()) {
         invalid(
             format!("{location}.catalogId"),
             format!(
-                "'catalogId' of a function call names a catalog by its id, which is a string, not \
-                 {}.",
+                "'catalogId' of a function call names a catalog by its id, which is a string, \
+                 not {}.",
                 type_name(named)
             ),
         );
-        readable = false;
     }
     if let Some(args) = call.get("args").filter(|args| !args.is_object()) {
         invalid(
@@ -2655,7 +2702,6 @@ fn call_fields(
                 type_name(args)
             ),
         );
-        readable = false;
     }
     for field in call.keys() {
         if field != name_key && field != "catalogId" && field != "args" {
@@ -2666,10 +2712,9 @@ fn call_fields(
                      'catalogId' and 'args'."
                 ),
             );
-            readable = false;
         }
     }
-    readable
+    errors.len() == before
 }
 
 /// One function call found in a component's property.

@@ -333,7 +333,15 @@ impl A2uiRequestProcessor {
 
     /// An empty table for the calls the agent makes to this request's
     /// renderer, which checks each call against the active catalogs
-    /// ([`RendererCalls::with_catalogs`]). Keep it for the conversation.
+    /// ([`RendererCalls::with_catalogs`]).
+    ///
+    /// Keep one table for the whole of the conversation with that renderer.
+    /// A table counts its ids from `call-1`, so a second one made in the same
+    /// conversation, for the next request or after a restart, gives the ids
+    /// of the first again, and a late answer to a call of the first settles a
+    /// call of the second. A host that cannot keep the table gives each one a
+    /// prefix no earlier table of the conversation used
+    /// ([`RendererCalls::with_id_prefix`]): the id of the run, say.
     ///
     /// # Errors
     ///

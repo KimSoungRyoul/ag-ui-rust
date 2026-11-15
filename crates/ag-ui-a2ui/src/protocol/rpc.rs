@@ -249,20 +249,56 @@ struct Waiting {
 ///
 /// # What it keeps
 ///
-/// Only the calls that wait, and no more than its limit of them
-/// ([`DEFAULT_MAX_PENDING`] unless set). A call leaves the table when it
-/// ends, and how it ended is handed to the caller at that moment as a
-/// [`SettledCall`]. A response for an id nothing waits on, whether unknown,
-/// late or sent twice, changes nothing and is not remembered.
+/// The calls that wait, no more than its limit of them
+/// ([`DEFAULT_MAX_PENDING`] unless set), and one number: how far its own ids
+/// have counted. A call leaves the table when it ends, and how it ended is
+/// handed to the caller at that moment as a [`SettledCall`]. A response for
+/// an id nothing waits on, whether unknown, late or sent twice, changes
+/// nothing and is not remembered.
+///
+/// # Ids
+///
+/// A response finds its call by `functionCallId` and by nothing else, so an
+/// id must not come round again while an answer to its first use can still
+/// arrive. The table reads no clock and draws no random number, and keeps
+/// that in two ways.
+///
+/// - **An id the table gives is one it has not had.** Its own ids are a
+///   prefix and a number, `call-1`, `call-2`, … ([`PendingCalls::next_id`]).
+///   The number counts on from the highest the table has registered under
+///   that prefix, whoever gave the id: a caller or a model that gives
+///   `call-7` moves the count past seven. So a late answer to a call that
+///   ended never lands on a call the table numbered later.
+/// - **Across tables the prefix is the host's.** A new table counts from one
+///   again. A host that keeps one table for the life of a conversation with
+///   a renderer needs nothing more. A host that makes a table for each
+///   request, or again after a restart, gives each a prefix no earlier table
+///   of that conversation used ([`PendingCalls::with_id_prefix`]): the id of
+///   the run, say.
+///
+/// An id a caller or a model gives is the giver's to keep unique. The table
+/// refuses one that is waiting now ([`DUPLICATE`](code::DUPLICATE)); it does
+/// not remember the given ids of calls that ended, so a giver that uses one
+/// again takes the answers to both.
 #[derive(Debug, Clone)]
 pub struct PendingCalls {
     default_timeout: Option<Duration>,
     max_pending: usize,
     waiting: BTreeMap<String, Waiting>,
     disposed: bool,
-    /// The number of the next id [`PendingCalls::next_id`] gives.
+    /// What the table's own ids start with.
+    prefix: String,
+    /// The number of the next id the table gives: one more than the highest
+    /// number of any id under its prefix it has registered.
     next: u64,
 }
+
+/// What the ids a table gives start with, unless it is told otherwise.
+pub const DEFAULT_ID_PREFIX: &str = "call-";
+
+/// The highest number a given id of the table's own form may carry. Half of
+/// what the count holds, so that no id that is given can use the count up.
+const MAX_GIVEN_NUMBER: u64 = u64::MAX / 2;
 
 impl Default for PendingCalls {
     fn default() -> Self {
@@ -279,8 +315,27 @@ impl PendingCalls {
             max_pending: DEFAULT_MAX_PENDING,
             waiting: BTreeMap::new(),
             disposed: false,
+            prefix: DEFAULT_ID_PREFIX.to_string(),
             next: 1,
         }
+    }
+
+    /// What the ids this table gives start with, in place of
+    /// [`DEFAULT_ID_PREFIX`]. For a host that makes more than one table in one
+    /// conversation with a renderer: each needs a prefix none before it used,
+    /// or the second gives the ids of the first again and takes the late
+    /// answers to its calls. See [the ids of a table](Self#ids).
+    ///
+    /// ```
+    /// use ag_ui_a2ui::rpc::PendingCalls;
+    ///
+    /// let calls = PendingCalls::new().with_id_prefix("run-7-");
+    /// assert_eq!(calls.next_id(), "run-7-1");
+    /// ```
+    #[must_use]
+    pub fn with_id_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.prefix = prefix.into();
+        self
     }
 
     /// How long a call waits unless it sets a timeout of its own. `None`
@@ -299,17 +354,25 @@ impl PendingCalls {
         self
     }
 
-    /// An id no waiting call has: `call-1`, `call-2`, and so on. The same
-    /// calls made in the same order get the same ids, so a caller that needs
-    /// ids no other conversation could guess gives its own.
-    pub fn next_id(&mut self) -> String {
-        loop {
-            let id = format!("call-{}", self.next);
-            self.next = self.next.checked_add(1).unwrap_or(1);
-            if !self.waiting.contains_key(&id) {
-                return id;
-            }
+    /// The id the table gives next: its prefix and a number, `call-1`,
+    /// `call-2`, and so on. It is one this table has not registered, and it
+    /// is the table's once [`PendingCalls::register`] takes it; until then
+    /// asking again gives the same one, so a call that is refused takes none.
+    ///
+    /// The same calls made in the same order get the same ids. A caller that
+    /// needs ids nobody could guess gives its own.
+    pub fn next_id(&self) -> String {
+        format!("{}{}", self.prefix, self.next)
+    }
+
+    /// The number of an id of the table's own form: its prefix, then digits
+    /// that are a number the count holds.
+    fn own_number(&self, function_call_id: &str) -> Option<u64> {
+        let digits = function_call_id.strip_prefix(self.prefix.as_str())?;
+        if digits.is_empty() || !digits.bytes().all(|digit| digit.is_ascii_digit()) {
+            return None;
         }
+        digits.parse().ok()
     }
 
     /// Why a call cannot be registered now, when it cannot: under this id,
@@ -337,6 +400,18 @@ impl PendingCalls {
                 format!("A call with functionCallId '{function_call_id}' is already pending."),
             ));
         }
+        // An id of the table's own form moves its count. One that would leave
+        // the count nowhere to go is not the giver's to use.
+        let beyond = function_call_id
+            .and_then(|id| self.own_number(id))
+            .is_some_and(|number| number > MAX_GIVEN_NUMBER && number != self.next);
+        if beyond {
+            return Err(RpcError::invalid_call(format!(
+                "functionCallId '{}' has the form of the ids this table gives, with a number \
+                 past the ones it leaves to a caller. Give another id.",
+                function_call_id.unwrap_or_default()
+            )));
+        }
         if self.waiting.len() >= self.max_pending {
             return Err(RpcError::new(
                 code::TOO_MANY_PENDING,
@@ -358,7 +433,9 @@ impl PendingCalls {
     /// ([`INVALID_FUNCTION_CALL`](code::INVALID_FUNCTION_CALL)) or already
     /// waits ([`DUPLICATE`](code::DUPLICATE)), the limit is reached
     /// ([`TOO_MANY_PENDING`](code::TOO_MANY_PENDING)), or the call's timeout is
-    /// zero.
+    /// zero. An id of the table's own form whose number is past the ones the
+    /// table leaves to a caller is refused too, as
+    /// `INVALID_FUNCTION_CALL`: see [the ids of a table](Self#ids).
     pub fn register(&mut self, call: PendingCall, now: Duration) -> Result<(), RpcError> {
         if call.timeout.is_some_and(|timeout| timeout.is_zero()) {
             return Err(RpcError::invalid_call(format!(
@@ -367,6 +444,12 @@ impl PendingCalls {
             )));
         }
         self.admits(Some(&call.function_call_id))?;
+        // The count goes on from the highest number the table has had under
+        // its prefix, whoever gave the id. It stops at the last number it
+        // holds, which it reaches only by counting that far itself.
+        if let Some(number) = self.own_number(&call.function_call_id) {
+            self.next = self.next.max(number.saturating_add(1));
+        }
         let timeout = call.timeout.or(self.default_timeout);
         self.waiting.insert(
             call.function_call_id,
@@ -661,10 +744,16 @@ mod tests {
     #[test]
     fn generated_ids_are_told_in_order_and_pass_over_ones_in_use() {
         let mut calls = PendingCalls::new();
+        assert_eq!(calls.next_id(), "call-1");
+        // Asking takes nothing: the id is the table's once it is registered.
+        assert_eq!(calls.next_id(), "call-1");
+        // An id of the table's form that someone else gave moves the count
+        // past it, whether or not the call still waits.
         calls
             .register(PendingCall::new("call-2", "taken"), START)
             .unwrap();
-        assert_eq!(calls.next_id(), "call-1");
+        assert_eq!(calls.next_id(), "call-3");
+        calls.fail("call-2", RpcError::execution("gone")).unwrap();
         assert_eq!(calls.next_id(), "call-3");
     }
 }

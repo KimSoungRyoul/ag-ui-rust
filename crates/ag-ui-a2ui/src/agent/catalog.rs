@@ -291,9 +291,11 @@ impl CatalogDocument {
     /// ([`AgentFunction::declared`]) of one it does not; when the declaration
     /// taken over is `agentOnly`, which a renderer never calls; when a
     /// definition of its `args` differs from the catalog's, or another
-    /// function's, of the same name; and when the catalog with the functions
-    /// in it does not read, as when a parameter of a v1.0 catalog is not named
-    /// by an identifier.
+    /// function's, of the same name; when the document holds something other
+    /// than an object under `functions` or `$defs`, so that there is nowhere
+    /// to write a function; and when the catalog with the functions in it
+    /// does not read, as when a parameter of a v1.0 catalog is not named by
+    /// an identifier.
     pub fn with_agent_functions(
         &self,
         functions: impl IntoIterator<Item = AgentFunction>,
@@ -333,6 +335,17 @@ impl CatalogDocument {
                      own and never send the call. Take the declaration over with \
                      AgentFunction::declared, or give the agent function another name"
                 )));
+            }
+            // A function is written into the document's `functions`, and what it
+            // defines into its `$defs`. A document that holds something else
+            // under either has nowhere to take one.
+            for section in ["$defs", "functions"] {
+                if document.get(section).is_some_and(|held| !held.is_object()) {
+                    return Err(Error::catalog(format!(
+                        "catalog '{id}' holds something other than an object under '{section}', \
+                         so an agent function cannot be declared on it"
+                    )));
+                }
             }
             let mut args = function.args.clone();
             // The definitions the arguments bring join the catalog's.
@@ -396,18 +409,9 @@ impl CatalogDocument {
                 Ordered::from_value(&json!([call_key])),
             ));
             let entry = Ordered::Object(entry);
-            match document.get("functions") {
-                None => {
-                    document["functions"] = json!({});
-                    written.set_last("functions", Ordered::Object(Vec::new()));
-                }
-                Some(Value::Object(_)) => {}
-                Some(_) => {
-                    return Err(Error::catalog(format!(
-                        "catalog '{id}' lists its functions as an array; an agent function is \
-                         declared on a catalog that keys them by name"
-                    )));
-                }
+            if document.get("functions").is_none() {
+                document["functions"] = json!({});
+                written.set_last("functions", Ordered::Object(Vec::new()));
             }
             document["functions"][&name] = entry.to_value();
             if let Some(held) = written.field_mut("functions") {

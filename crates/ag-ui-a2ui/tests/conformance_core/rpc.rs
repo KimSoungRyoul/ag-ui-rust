@@ -38,7 +38,13 @@ pub(crate) fn skip(case: &Value) -> Option<String> {
          send is a value handed to the caller"
     } else if expected.get("value").is_some() {
         "running a renderer function and answering with its value"
-    } else if expected.pointer("/error/code").and_then(Value::as_str) == Some("EXECUTION_ERROR") {
+    } else if expected.pointer("/error/code").and_then(Value::as_str) == Some("EXECUTION_ERROR")
+        && !resolved_by_the_renderer(
+            args.pointer("/message/callRendererFunction/callFunction/args"),
+        )
+    {
+        // An argument a renderer cannot resolve is an `EXECUTION_ERROR` too,
+        // and that one the crate answers: the call is refused before it runs.
         "running a renderer function, which fails as it runs"
     } else if args
         .pointer("/functionMetadata")
@@ -59,6 +65,25 @@ pub(crate) fn skip(case: &Value) -> Option<String> {
         return None;
     };
     Some(format!("{RENDERER}: {why}"))
+}
+
+/// Whether arguments hold something a renderer resolves before it runs the
+/// function: a binding, or a call.
+fn resolved_by_the_renderer(args: Option<&Value>) -> bool {
+    let mut stack: Vec<&Value> = args.into_iter().collect();
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::Array(items) => stack.extend(items),
+            Value::Object(map) => {
+                if map.contains_key("@call") || map.contains_key("@path") {
+                    return true;
+                }
+                stack.extend(map.values());
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn text<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
@@ -141,6 +166,25 @@ fn inbound(case: &Value, message: &Value) -> Result<(), Miss> {
             "a registered catalog",
         )
     })?;
+    // The surface a case sets up, under the catalog it registers.
+    let args = case.get("args").unwrap_or(&Value::Null);
+    if let Some(surface_id) = text(args, "/surfaceId") {
+        let mut create = serde_json::json!({
+            "surfaceId": surface_id,
+            "catalogId": catalog(case)?.catalog_id,
+        });
+        if let Some(data) = args.get("dataModel").filter(|data| data.is_object()) {
+            create["dataModel"] = data.clone();
+        }
+        processor
+            .process(&serde_json::json!({"version": "1.0", "createSurface": create}))
+            .map_err(|refused| {
+                Miss::new(
+                    format!("the case's surface was refused: {}", refused.error),
+                    "a surface to call on",
+                )
+            })?;
+    }
     let outcome = processor.process(message);
     let wants_response = case.pointer("/expect/response/rendererFunctionResponse");
     let wants_error = case

@@ -216,7 +216,7 @@ constraints, the `@index` function, validation results, and function calls as
 far as carrying and routing one goes), the fifteen of the agent tier that do
 not need another output format than direct JSON, each case as it is written,
 and the A2A extension suite, with the transcripts of v0.9.1 and of v1.0; they
-report **947 passed, 34 expected divergences, 3 failing**,
+report **948 passed, 34 expected divergences, 3 failing**,
 and the per-suite counts are asserted by the test. The divergences
 are executed with pinned expectations: an unreachable component is a warning,
 an empty path segment is the empty key, a binding that cannot resolve is an

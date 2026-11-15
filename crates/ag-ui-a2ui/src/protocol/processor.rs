@@ -115,8 +115,8 @@ use super::surface::{Lifecycle, SurfaceStore};
 #[cfg(feature = "schema-validation")]
 use super::validate::names_another_catalog;
 use super::validate::{
-    ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator, carried_components,
-    check_envelope, check_value_depth, foldable, stated_version,
+    CallCheck, ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator,
+    carried_components, check_envelope, check_value_depth, foldable, stated_version,
 };
 use super::version::A2uiVersion;
 use crate::error::{Error, Result, ValidationErrors};
@@ -489,8 +489,12 @@ impl MessageProcessor {
         if !report.errors.is_empty() {
             let mut rejection = invalid(report.errors);
             // A call that cannot be read is reported by its id, when it has
-            // one: there is no call to answer.
-            rejection.detail = Detail::of_call(message, Refused::Malformed);
+            // one: there is no call to answer. Only in a version that has
+            // function calls: before it the message carries no operation, and
+            // is reported as any such message is.
+            if stated.carries_function_calls() {
+                rejection.detail = Detail::of_call(message, Refused::Malformed);
+            }
             return Err(rejection);
         }
         if let Some(spoken) = self.version {
@@ -528,26 +532,35 @@ impl MessageProcessor {
         // A function call changes no surface: it is checked as a renderer
         // checks one before running anything, and that is all.
         match operation {
-            Some(Operation::CallRendererFunction) => {
+            Some(Operation::CallRendererFunction) if stated.carries_function_calls() => {
                 let mut report = ValidationReport::default();
-                let readable =
+                let standing =
                     self.validator()
                         .check_renderer_call(store, &locator, message, &mut report);
-                if !report.errors.is_empty() {
-                    return Err(match readable {
-                        true => Rejection::refused_call(index, message, report.errors),
-                        // Not a call a renderer can read: there is none to
-                        // answer, and it is reported by its id.
-                        false => {
-                            let mut rejection = invalid(report.errors);
-                            rejection.detail = Detail::of_call(message, Refused::Malformed);
-                            rejection
-                        }
-                    });
-                }
+                let refused = match standing {
+                    CallCheck::Accepted => return decode(message),
+                    // Not a call a renderer can read: there is none to
+                    // answer, and it is reported by its id.
+                    CallCheck::Malformed => {
+                        let mut rejection = invalid(report.errors);
+                        rejection.detail = Detail::of_call(message, Refused::Malformed);
+                        return Err(rejection);
+                    }
+                    CallCheck::Refused => Refused::NotRun,
+                    CallCheck::Unresolvable => Refused::Unresolvable,
+                };
+                return Err(Rejection::refused_call(
+                    index,
+                    message,
+                    report.errors,
+                    refused,
+                ));
+            }
+            // A message of a version without function calls that carries one
+            // does not decode, and decoding says so.
+            Some(Operation::CallRendererFunction | Operation::AgentFunctionResponse) => {
                 return decode(message);
             }
-            Some(Operation::AgentFunctionResponse) => return decode(message),
             _ => {}
         }
         match operation {
@@ -889,6 +902,9 @@ enum Refused {
     Malformed,
     /// The call reads, and is one the renderer does not run.
     NotRun,
+    /// The call is one the renderer may run, and holds an argument it cannot
+    /// resolve.
+    Unresolvable,
 }
 
 /// The `functionCallId` of a raw `callRendererFunction`.
@@ -921,8 +937,14 @@ impl Rejection {
         }
     }
 
-    /// A `callRendererFunction` that reads and that a renderer does not run.
-    fn refused_call(index: usize, message: &Value, errors: Vec<ValidationError>) -> Self {
+    /// A `callRendererFunction` that reads and that a renderer does not run,
+    /// or cannot resolve the arguments of.
+    fn refused_call(
+        index: usize,
+        message: &Value,
+        errors: Vec<ValidationError>,
+        refused: Refused,
+    ) -> Self {
         let mut rejection = Self::new(
             RejectionKind::Validation,
             index,
@@ -931,7 +953,7 @@ impl Rejection {
                 errors: ValidationErrors(errors),
             },
         );
-        rejection.detail = Detail::of_call(message, Refused::NotRun);
+        rejection.detail = Detail::of_call(message, refused);
         rejection
     }
 
@@ -1008,13 +1030,24 @@ impl Rejection {
     }
 
     /// The `error` message a renderer that refused this message would send
-    /// back to the agent.
+    /// back to the agent, written in the version of the refused message and
+    /// valid as an `error` of that version.
     ///
     /// Its `code` is [`RejectionKind::renderer_code`], its `message` the first
     /// error's sentence, and its `surfaceId` the surface the refused message
     /// names, or `""`. A `VALIDATION_FAILED` error also carries `path`, the
     /// JSON Pointer to the failing field within the message's payload, such
     /// as `/components/0/text`.
+    ///
+    /// A refused `callRendererFunction`, which is a message of v1.0, is
+    /// reported by its call and not by a surface: the `code` is
+    /// `INVALID_FUNCTION_CALL`, and `functionCallId` takes the place of
+    /// `surfaceId`, which an `error` carries one or the other of. That is the
+    /// report of a message that is no call a renderer can read. A call it
+    /// reads is answered, with [`Rejection::renderer_response`]. A message of
+    /// an earlier version that carries a function call carries no operation
+    /// of its version, and is reported as any such message is:
+    /// `VALIDATION_FAILED`, with a `path` and a `surfaceId`.
     ///
     /// ```
     /// use ag_ui_a2ui::processor::MessageProcessor;
@@ -1085,10 +1118,19 @@ impl Rejection {
 
 impl Rejection {
     /// The `rendererFunctionResponse` a renderer sends for a
-    /// `callRendererFunction` it reads and does not run: the call's
-    /// `functionCallId`, and an `INVALID_FUNCTION_CALL` error with the first
-    /// failure's sentence. A renderer answers every call it can read, so this
-    /// is what it sends in place of [`Rejection::renderer_error`].
+    /// `callRendererFunction` it reads and does not answer with a value: the
+    /// call's `functionCallId`, and an error with the first failure's
+    /// sentence. A renderer answers every call it can read, so this is what
+    /// it sends in place of [`Rejection::renderer_error`].
+    ///
+    /// The error's `code` says how far the call got. A call the renderer does
+    /// not run is `INVALID_FUNCTION_CALL`: the surface, the catalog or the
+    /// function is not there, the agent may not call it, or the arguments are
+    /// not the ones it takes. A call it may run, with an argument it cannot
+    /// resolve, is `EXECUTION_ERROR`: a binding that is no binding, a nested
+    /// call the renderer may not make, `@index` where there is nothing to
+    /// count. That is the code the reference renderer answers any argument it
+    /// fails to resolve with (`web_core`, `rpc/rpc-handler.ts`).
     ///
     /// `None` for any other refusal, and for a call that could not be read,
     /// which has no call to answer: [`Rejection::renderer_error`] reports it
@@ -1124,12 +1166,14 @@ impl Rejection {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn renderer_response(&self) -> Option<RendererMessage> {
-        let (function_call_id, Refused::NotRun) = self
+        let (function_call_id, refused) = self
             .detail
             .as_deref()
-            .and_then(|detail| detail.call.as_ref())?
-        else {
-            return None;
+            .and_then(|detail| detail.call.as_ref())?;
+        let code = match refused {
+            Refused::Malformed => return None,
+            Refused::NotRun => rpc::code::INVALID_FUNCTION_CALL,
+            Refused::Unresolvable => rpc::code::EXECUTION_ERROR,
         };
         let message = self
             .errors()
@@ -1139,7 +1183,7 @@ impl Rejection {
             version: self.version.as_str().to_string(),
             payload: RendererPayload::RendererFunctionResponse(FunctionResponse::error(
                 function_call_id.clone(),
-                rpc::RpcError::invalid_call(message),
+                rpc::RpcError::new(code, message),
             )),
         })
     }

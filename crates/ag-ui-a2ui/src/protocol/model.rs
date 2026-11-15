@@ -202,17 +202,32 @@ impl DataModel {
     ///
     /// The model is the agent's copy of what a renderer holds, so it refuses
     /// the two kinds of path the reference renderers refuse, with
-    /// [`Error::Pointer`]: one with a segment in [`FORBIDDEN_PATH_SEGMENTS`],
-    /// and one that names a list index above [`MAX_LIST_INDEX`]. Accepting
-    /// either would leave the agent with a state the renderer does not have.
+    /// [`Error::Pointer`]: any path with a segment in
+    /// [`FORBIDDEN_PATH_SEGMENTS`], and a write that names a list index above
+    /// [`MAX_LIST_INDEX`]. Accepting either would leave the agent with a state
+    /// the renderer does not have. A removal that names such an index is not
+    /// a write: nothing is there, and it changes nothing, as below.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::model::MAX_LIST_INDEX;
+    /// use ag_ui_a2ui::{DataModel, DataModelUpdate};
+    /// use serde_json::json;
+    ///
+    /// let mut model = DataModel::from(json!({"items": ["a"]}));
+    /// let past = format!("/items/{}", MAX_LIST_INDEX + 1);
+    /// assert!(model.apply(&past, &DataModelUpdate::Set(json!("x"))).is_err());
+    /// model.apply(&past, &DataModelUpdate::Remove)?;
+    /// assert_eq!(model, json!({"items": ["a"]}));
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
     ///
     /// # How far a list may grow
     ///
-    /// Two bounds, and the stricter one applies. No index of the path may be
-    /// above [`MAX_LIST_INDEX`]; that is the renderers' bound. And the update
-    /// may add no more than [`DEFAULT_ARRAY_GROWTH_LIMIT`] slots in all; that
-    /// is this model's own, and with the default it is reached only by a path
-    /// that grows several lists at once.
+    /// Two bounds, and the stricter one applies. No index a write names may
+    /// be above [`MAX_LIST_INDEX`]; that is the renderers' bound. And the
+    /// update may add no more than [`DEFAULT_ARRAY_GROWTH_LIMIT`] slots in
+    /// all; that is this model's own, and with the default it is reached only
+    /// by a path that grows several lists at once.
     ///
     /// And what the updates add between them is bounded: an update that would
     /// leave the model holding more than [`DEFAULT_UNDEFINED_SLOT_LIMIT`]

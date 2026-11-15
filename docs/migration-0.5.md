@@ -1495,13 +1495,19 @@ These are on `main` and not yet in a published version.
   the catalog declares and an agent may call (`agentOnly` or `rendererOrAgent`, and
   no `requiresUserActivation`), and its arguments hold what a renderer can resolve
   (a binding is `{"@path": …}` and nothing else, a nested call is one the renderer
-  may make, `@index` has nothing to count). A call it refuses is a `Rejection` whose
-  new `renderer_response()` is the `rendererFunctionResponse` a renderer sends, with
-  `INVALID_FUNCTION_CALL`; a message that is not a call at all has none, and
-  `renderer_error()` reports it under its `functionCallId`. Neither message changes
-  a surface: `SurfaceStore::apply` passes over one, where it returned `Error::Parse`.
+  may make, `@index` has nothing to count). A call that leaves `args` out passes
+  none, and is held to what its function requires. A call it refuses is a
+  `Rejection` whose new `renderer_response()` is the `rendererFunctionResponse` a
+  renderer sends: `INVALID_FUNCTION_CALL` for a call it does not run, and
+  `EXECUTION_ERROR` for one it may run whose arguments it cannot resolve, which is
+  what the reference renderer answers. A message that is not a call at all has no
+  response, and `renderer_error()` reports it under its `functionCallId`. A message
+  of an earlier version that carries a function call is reported as it was:
+  `VALIDATION_FAILED`, with a `path` and a `surfaceId`. Neither message changes a
+  surface: `SurfaceStore::apply` passes over one, where it returned `Error::Parse`.
   So `RendererState`, `validate_payload` and `parse_response` accept an answer that
-  carries a call the agent may make, and refuse one it may not.
+  carries a call the agent may make, and refuse one it may not, a call to a
+  function the agent runs itself among them.
 - The new module `rpc` has what a call ends with and the table of the calls one side
   has made: `RpcError { code, message }` with the codes this crate writes in
   `rpc::code`, `FunctionOutcome`, and `PendingCalls` (`register`, `settle`, `fail`,
@@ -1509,7 +1515,12 @@ These are on `main` and not yet in a published version.
   clock of the caller's that does not go backwards; the table reads none. A call
   waits thirty seconds unless told otherwise (`rpc::DEFAULT_CALL_TIMEOUT`), at most
   `rpc::DEFAULT_MAX_PENDING` (64) wait at once, and how a call ended is handed over
-  when it ends and not kept.
+  when it ends and not kept. The ids a table gives are a prefix and a number,
+  `call-1`, `call-2`, …, and never one the table has registered before, whoever
+  gave it. A new table counts from one again, so keep one table for a conversation
+  with a renderer, or give each table of that conversation a prefix of its own
+  with `with_id_prefix`; an id a caller or a model gives is the giver's to keep
+  unique.
 - The agent layer routes the function calls of a v1.0 session and runs none of them.
   `CatalogDocument::with_agent_functions([AgentFunction::new(name, args_schema)])`
   declares a function the agent runs on its copy of a catalog, so a prompt shows it
@@ -1525,13 +1536,15 @@ These are on `main` and not yet in a published version.
   `A2uiRequestProcessor::renderer_calls()` gives a `RendererCalls`: `call(RendererCall,
   now)` checks a call against the active catalogs and gives the
   `callRendererFunction` to send, `track(&message, now)` starts waiting on one a
-  model wrote in its answer, and `resolve`, `expire(now)` and `dispose` hand over
-  how each call ended.
+  model wrote in its answer and holds it to the same checks, and `resolve`,
+  `expire(now)` and `dispose` hand over how each call ended.
+  `RendererCalls::with_id_prefix` is the prefix of the ids it gives.
 - `FunctionDef` has `args`, the JSON Schema of the function's arguments when its
   declaration states one. On a v1.0 surface, a function call in a component that
   passes an argument a closed `args` schema does not declare, or leaves out one it
   requires, is refused as `invalid_value` at the call's `args`; it was accepted, and
-  a renderer refused it. Only the names are checked without a schema engine.
+  a renderer refused it. A call that writes no `args` passes none, as a renderer
+  reads it. Only the names are checked without a schema engine.
 - `adapters::agui::operations_envelope` and `wrap_as_operations_envelope` return
   `Error::Validation` for a batch that holds a function call, and so do
   `SurfacePainter::settle` and `paint`, which then paint nothing of the batch. AG-UI's

@@ -14,6 +14,7 @@ use crate::protocol::message::{
 };
 use crate::protocol::rpc::{PendingCall, PendingCalls, RpcError, SettledCall};
 use crate::protocol::validate::is_identifier;
+use crate::protocol::version::A2uiVersion;
 
 /// One call to make: what [`RendererCalls::call`] is given.
 ///
@@ -89,6 +90,12 @@ impl RendererCall {
     }
 
     /// The `functionCallId` to use, in place of one the table gives.
+    ///
+    /// An id that is given is the giver's to keep unique for as long as an
+    /// answer to it can arrive. The table refuses one that waits now; it does
+    /// not remember the given ids of calls that ended, so an id used again
+    /// takes the late answers to its first use. The ids the table gives
+    /// itself are never ones it has had.
     #[must_use]
     pub fn with_id(mut self, function_call_id: impl Into<String>) -> Self {
         self.function_call_id = Some(function_call_id.into());
@@ -139,8 +146,17 @@ impl RendererCall {
 /// In a v1.0 session the prompt shows `callRendererFunction`, so an answer may
 /// carry one, under an id the model chose. The agent sends it with the rest of
 /// the answer, and [`RendererCalls::track`] starts waiting on it, so that its
-/// response has somewhere to land. The same rules hold: an id that already
-/// waits is refused.
+/// response has somewhere to land. The same rules hold as for a call of the
+/// agent's own: an id that already waits is refused, and so is a call the
+/// agent would not make.
+///
+/// # Ids
+///
+/// A call that gives no id gets the table's next one, `call-1`, `call-2`, …,
+/// which is never one the table has had, whoever gave the earlier one. Keep
+/// one table for a conversation; a host that makes more than one gives each a
+/// prefix of its own ([`RendererCalls::with_id_prefix`]). The rule is
+/// [`PendingCalls`]'s, and is told in full there.
 #[derive(Debug, Clone, Default)]
 pub struct RendererCalls {
     table: PendingCalls,
@@ -226,21 +242,42 @@ impl RendererCalls {
         self
     }
 
+    /// What the ids this table gives start with, in place of `call-`
+    /// ([`PendingCalls::with_id_prefix`]).
+    ///
+    /// A table counts its ids from one. Keep one table for the whole of a
+    /// conversation with a renderer, and nothing more is needed. A host that
+    /// makes a table for each request, or again after a restart, gives each a
+    /// prefix no earlier table of that conversation used, the id of the run,
+    /// say: without it the second table gives `call-1` again, and a late
+    /// answer to the first table's call settles the second's.
+    #[must_use]
+    pub fn with_id_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.table = self.table.with_id_prefix(prefix);
+        self
+    }
+
     /// Makes a call at `now`: checks it, starts waiting on it, and gives the
     /// `callRendererFunction` message to send.
     ///
-    /// The checks run in this order, each before anything is kept: disposal,
-    /// the id, a duplicate id, the limit on waiting calls, the function name,
-    /// the catalog id, the name as an identifier, the arguments, and last
-    /// the catalogs.
+    /// The checks run in this order, each before anything is kept: the
+    /// timeout, disposal, the id, a duplicate id, the limit on waiting calls,
+    /// the function name, the catalog id, the name as an identifier, the
+    /// arguments, and last the catalogs. A call that is refused takes no
+    /// place in the table and no id.
+    ///
+    /// A call that gives no id gets the table's next one, which the table has
+    /// not had before. An id given with [`RendererCall::with_id`] is the
+    /// caller's to keep unique: the table refuses one that waits now, and
+    /// does not remember the given ids of calls that ended.
     ///
     /// # Errors
     ///
     /// Returns an [`RpcError`] and keeps nothing: `DISPOSED`, `DUPLICATE` and
     /// `TOO_MANY_PENDING` as [`PendingCalls::register`] gives them;
-    /// `INVALID_FUNCTION_CALL` for an empty id, name or catalog id, a name
-    /// that is not an identifier or starts with `@`, arguments that are not
-    /// an object keyed by identifiers, and a zero timeout. With catalogs,
+    /// `INVALID_FUNCTION_CALL` for a zero timeout, an empty id, name or
+    /// catalog id, a name that is not an identifier or starts with `@`, and
+    /// arguments that are not an object keyed by identifiers. With catalogs,
     /// `UNKNOWN_FUNCTION` when the catalog is not one of them or declares no
     /// such function for the renderer, and `INVALID_FUNCTION_CALL` when the
     /// function is the renderer's alone to call or needs a user's gesture.
@@ -249,47 +286,32 @@ impl RendererCalls {
         call: RendererCall,
         now: Duration,
     ) -> std::result::Result<AgentMessage, RpcError> {
-        // The table's own checks first, on the id the call will have.
+        if call.timeout.is_some_and(|timeout| timeout.is_zero()) {
+            return Err(RpcError::invalid_call(format!(
+                "The timeout of the call to '{}' must be longer than nothing.",
+                call.name
+            )));
+        }
+        // The table's own checks next, on the id the call will have.
         self.table.admits(call.function_call_id.as_deref())?;
-        if call.name.is_empty() {
-            return Err(RpcError::invalid_call("The call needs a function name."));
-        }
-        if call.catalog_id.is_empty() {
-            return Err(RpcError::invalid_call(format!(
-                "The call to '{}' needs a catalogId.",
-                call.name
-            )));
-        }
-        if call.name.starts_with('@') || !is_identifier(&call.name) {
-            return Err(RpcError::invalid_call(format!(
-                "The function name '{}' must be a UAX #31 identifier that doesn't start with '@'.",
-                call.name
-            )));
-        }
         let args = match call.args {
             None => Map::new(),
-            Some(Value::Object(args)) => {
-                if let Some(key) = args.keys().find(|key| !is_identifier(key)) {
-                    return Err(RpcError::invalid_call(format!(
-                        "Invalid arguments for '{}': the key '{key}' is not a UAX #31 identifier.",
-                        call.name
-                    )));
-                }
-                args
-            }
+            Some(Value::Object(args)) => args,
             Some(_) => {
+                // The name comes first, here as for a call with arguments.
+                Self::check_shape(&call.name, &call.catalog_id, &Map::new())?;
                 return Err(RpcError::invalid_call(format!(
                     "Invalid arguments for '{}': the arguments must be an object, by name.",
                     call.name
                 )));
             }
         };
+        Self::check_shape(&call.name, &call.catalog_id, &args)?;
         self.check_target(&call.catalog_id, &call.name)?;
 
-        let function_call_id = match call.function_call_id {
-            Some(id) => id,
-            None => self.table.next_id(),
-        };
+        let function_call_id = call
+            .function_call_id
+            .unwrap_or_else(|| self.table.next_id());
         let surface_id = call.surface_id.filter(|surface_id| !surface_id.is_empty());
         let mut pending = PendingCall::new(function_call_id.clone(), call.name.clone());
         pending.surface_id.clone_from(&surface_id);
@@ -306,18 +328,62 @@ impl RendererCalls {
         Ok(AgentMessage::call_renderer_function(payload))
     }
 
+    /// What a call has to be before any catalog is asked: a name and a
+    /// catalog, a name that is an identifier, arguments keyed by identifiers.
+    fn check_shape(
+        name: &str,
+        catalog_id: &str,
+        args: &Map<String, Value>,
+    ) -> std::result::Result<(), RpcError> {
+        if name.is_empty() {
+            return Err(RpcError::invalid_call("The call needs a function name."));
+        }
+        if catalog_id.is_empty() {
+            return Err(RpcError::invalid_call(format!(
+                "The call to '{name}' needs a catalogId."
+            )));
+        }
+        if name.starts_with('@') || !is_identifier(name) {
+            return Err(RpcError::invalid_call(format!(
+                "The function name '{name}' must be a UAX #31 identifier that doesn't start with \
+                 '@'."
+            )));
+        }
+        if let Some(key) = args.keys().find(|key| !is_identifier(key)) {
+            return Err(RpcError::invalid_call(format!(
+                "Invalid arguments for '{name}': the key '{key}' is not a UAX #31 identifier."
+            )));
+        }
+        Ok(())
+    }
+
     /// Starts waiting, at `now`, on a `callRendererFunction` that was written
     /// elsewhere and is about to be sent: one in a model's answer, which
     /// [`A2uiRequestProcessor::parse_response`](super::A2uiRequestProcessor::parse_response)
     /// has already checked. Gives whether the message is such a call; any
     /// other message is passed over.
     ///
+    /// The call is held to what [`RendererCalls::call`] holds its own to: it
+    /// is a message of a version that has function calls, so that it can be
+    /// sent at all; it has a name, a catalog and arguments keyed by
+    /// identifiers; and with catalogs, the function is one the renderer runs
+    /// and the agent may call. A function the agent runs itself
+    /// ([`AgentFunction`](super::AgentFunction)) is not one to ask the
+    /// renderer for, whoever wrote the call.
+    ///
+    /// The id is the one the message carries, and is its writer's to keep
+    /// unique: the table refuses one that waits now, and does not remember
+    /// the given ids of calls that ended. An id of the form the table's own
+    /// have moves the table's count past it, so the table never gives it
+    /// again.
+    ///
     /// # Errors
     ///
-    /// As [`PendingCalls::register`]: the id already waits (`DUPLICATE`), the
-    /// limit is reached (`TOO_MANY_PENDING`), or the table was disposed of
-    /// (`DISPOSED`). The call is then one whose response nothing waits on,
-    /// and is better not sent.
+    /// As [`RendererCalls::call`], and as [`PendingCalls::register`]: the id
+    /// already waits (`DUPLICATE`), the limit is reached
+    /// (`TOO_MANY_PENDING`), or the table was disposed of (`DISPOSED`). The
+    /// call is then one whose response nothing waits on, and is not to be
+    /// sent.
     pub fn track(
         &mut self,
         message: &AgentMessage,
@@ -326,10 +392,23 @@ impl RendererCalls {
         let AgentPayload::CallRendererFunction(call) = &message.payload else {
             return Ok(false);
         };
-        let mut pending = PendingCall::new(
-            call.function_call_id.clone(),
-            call.call_function.call.clone(),
-        );
+        let sendable =
+            A2uiVersion::parse(&message.version).is_some_and(A2uiVersion::carries_function_calls);
+        if !sendable {
+            return Err(RpcError::invalid_call(format!(
+                "A message of version '{}' carries no function call, so this one cannot be \
+                 sent.",
+                message.version
+            )));
+        }
+        self.table.admits(Some(&call.function_call_id))?;
+        let name = call.call_function.call.as_str();
+        let catalog_id = call.call_function.catalog_id.as_deref().unwrap_or_default();
+        let none = Map::new();
+        let args = call.call_function.args.as_ref().unwrap_or(&none);
+        Self::check_shape(name, catalog_id, args)?;
+        self.check_target(catalog_id, name)?;
+        let mut pending = PendingCall::new(call.function_call_id.clone(), name);
         pending.surface_id.clone_from(&call.surface_id);
         self.table.register(pending, now)?;
         Ok(true)

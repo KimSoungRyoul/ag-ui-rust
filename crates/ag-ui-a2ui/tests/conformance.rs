@@ -189,7 +189,7 @@ const SUITES: &[Suite] = &[
     run("core/composition_constraints.yaml", [9, 1, 0, 0]),
     run("core/index_function.yaml", [1, 0, 3, 0]),
     run("core/validation_result.yaml", [0, 0, 7, 0]),
-    run("core/rpc_functions.yaml", [18, 0, 15, 0]),
+    run("core/rpc_functions.yaml", [19, 0, 14, 0]),
 
     // --- core tier: not this crate's -------------------------------------------------------------
     skip("core/validator_v0_8.yaml", 27, Why::V0_8, "validation of v0.8 messages"),
