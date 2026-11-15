@@ -62,7 +62,7 @@ enum Why {
     /// It asks something of an SDK that does not apply to this one.
     NotApplicable,
     /// It tests the pre-1.0 core this crate implements, and this harness has
-    /// no runner for its action yet.
+    /// no runner for its action yet. Issue #72 adds the runners.
     Unharnessed,
 }
 
@@ -76,7 +76,7 @@ impl Why {
             Why::V0_8 => "out of scope: v0.8",
             Why::Renderer => "out of scope: renderer",
             Why::NotApplicable => "not applicable",
-            Why::Unharnessed => "no runner yet",
+            Why::Unharnessed => "no runner yet (#72)",
         }
     }
 }
@@ -142,7 +142,7 @@ const SUITES: &[Suite] = &[
     retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
     retired("retired/agent/inference_format.yaml", [13, 0, 6, 0]),
 
-    // --- core tier, pre-1.0: in scope, no runner in this harness yet --------------------------
+    // --- core tier, pre-1.0: in scope, no runner in this harness yet (#72) ---------------------
     skip("core/message_processor_v0_9.yaml", 48, Why::Unharnessed, "the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads"),
     skip("core/data_model.yaml", 52, Why::Unharnessed, "data-model reads, writes and deletion, with a renderer's observer notifications"),
     skip("core/data_context.yaml", 11, Why::Unharnessed, "resolving a relative path against a scope; the crate has no public entry point that returns the absolute path"),

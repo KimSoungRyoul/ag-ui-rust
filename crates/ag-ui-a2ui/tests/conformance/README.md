@@ -63,12 +63,12 @@ Totals: 168 passed, 11 expected divergence, 1865 skipped, 3 failing.
 | `retired/core/validator.yaml` | 45 | 26 | 0 | 25 | 0 | executed; retired upstream |
 | `retired/core/catalog.yaml` | 24 | 23 | 0 | 1 | 0 | executed; retired upstream |
 | `retired/agent/inference_format.yaml` | 19 | 13 | 0 | 6 | 0 | executed; retired upstream |
-| `core/message_processor_v0_9.yaml` | 48 | 0 | 0 | 48 | 0 | no runner yet: the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads |
-| `core/data_model.yaml` | 52 | 0 | 0 | 52 | 0 | no runner yet: data-model reads, writes and deletion, with a renderer's observer notifications |
-| `core/data_context.yaml` | 11 | 0 | 0 | 11 | 0 | no runner yet: resolving a relative path against a scope; the crate has no public entry point that returns the absolute path |
-| `core/expressions.yaml` | 98 | 0 | 0 | 98 | 0 | no runner yet: the formatString template parser; the crate evaluates a template and exposes no parse |
-| `core/catalog.yaml` | 73 | 0 | 0 | 73 | 0 | no runner yet: the reference catalog API: fromJson, toJson, round trip, validationSchema, derive |
-| `core/common_types.yaml` | 22 | 0 | 0 | 22 | 0 | no runner yet: values against the published common types; 3 cases compare a schema generated from an SDK's own types |
+| `core/message_processor_v0_9.yaml` | 48 | 0 | 0 | 48 | 0 | no runner yet (#72): the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads |
+| `core/data_model.yaml` | 52 | 0 | 0 | 52 | 0 | no runner yet (#72): data-model reads, writes and deletion, with a renderer's observer notifications |
+| `core/data_context.yaml` | 11 | 0 | 0 | 11 | 0 | no runner yet (#72): resolving a relative path against a scope; the crate has no public entry point that returns the absolute path |
+| `core/expressions.yaml` | 98 | 0 | 0 | 98 | 0 | no runner yet (#72): the formatString template parser; the crate evaluates a template and exposes no parse |
+| `core/catalog.yaml` | 73 | 0 | 0 | 73 | 0 | no runner yet (#72): the reference catalog API: fromJson, toJson, round trip, validationSchema, derive |
+| `core/common_types.yaml` | 22 | 0 | 0 | 22 | 0 | no runner yet (#72): values against the published common types; 3 cases compare a schema generated from an SDK's own types |
 | `core/validator_v1_0.yaml` | 49 | 0 | 0 | 49 | 0 | later: A2UI v1.0 (#42): envelope, schema and topology validation of v1.0 messages |
 | `core/message_processor_v1_0.yaml` | 84 | 0 | 0 | 84 | 0 | later: A2UI v1.0 (#42): the v1.0 message processor |
 | `core/message_processor_scaling.yaml` | 3 | 0 | 0 | 3 | 0 | later: A2UI v1.0 (#42): timing of the v1.0 message processor |
@@ -146,7 +146,7 @@ name.
 | later: agent layer (#41) | 28 | 772 | The suite tests the agent layer: inference formats, the per-request processor, catalog resolution, renderer capabilities and state. The next pull request of #41 builds it. |
 | later: A2UI v1.0 (#42) | 19 | 397 | The suite tests A2UI v1.0. |
 | later: adapters (#43) | 1 | 11 | The suite tests the A2A transport adapter. |
-| no runner yet | 6 | 304 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Nothing later is planned to add one; see below. |
+| no runner yet (#72) | 6 | 304 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
 | out of scope: renderer | 8 | 241 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. |
 | out of scope: v0.8 | 2 | 36 | The suite tests the v0.8 wire format. This crate speaks v0.9 and v0.9.1. |
 | not applicable | 2 | 12 | The suite asks something of an SDK that does not apply here: a schema generated from the SDK's own types, an integration with Google's ADK. |
@@ -160,7 +160,7 @@ under `extensions/`.
 These are in scope: they test the same core this crate implements, at the
 versions it speaks. They are not run because each needs a runner for an action
 this harness does not have, and in most cases an entry point the crate does not
-expose.
+expose. Issue #72 tracks them, suite by suite.
 
 | Suite | What a runner would need |
 |---|---|
