@@ -10,7 +10,7 @@
 //!
 //! | Rule | Rejected |
 //! | --- | --- |
-//! | [`RunEnded`] | anything after `RUN_FINISHED` / `RUN_ERROR` |
+//! | [`RunEnded`] | anything after `RUN_ERROR`; anything after `RUN_FINISHED` except one `RUN_ERROR` |
 //! | [`DuplicateRunStarted`] | a second `RUN_STARTED` |
 //! | [`DuplicateStart`] | opening a message, reasoning block, tool call, step or subagent whose id is already open — or a subagent id that already finished in this run |
 //! | [`NotOpen`] | content or a terminator for something that was never opened, including `SUBAGENT_FINISHED` / `SUBAGENT_ERROR` for a subagent that is not active |
@@ -18,9 +18,31 @@
 //! | [`OutOfOrder`] | `TOOL_CALL_RESULT` before the call's `TOOL_CALL_END`; a first event that is neither `RUN_STARTED` nor `RUN_ERROR` |
 //! | [`OpenAtFinish`] | `RUN_FINISHED` while a message, reasoning block, tool call, step or subagent is open |
 //! | [`OwnerMismatch`] | a tagged continuation, terminator or re-open whose `subagentRunId` is not the one that opened the entity — a message, reasoning block, tool call, activity, or the entity a `REASONING_ENCRYPTED_VALUE` names; a tool call tagged with one subagent whose parent message belongs to another |
+//! | [`MalformedChunk`] | a `*_CHUNK` event that names no id with no chunk stream to continue, opens a tool call without naming the tool, or repeats `role`, `name`, `toolCallName` or `parentMessageId` with a value other than the one its stream was opened with |
+//! | [`InvalidOutcome`] | `RUN_FINISHED` with an `interrupt` outcome that carries no interrupt |
 //!
 //! `RUN_ERROR` is exempt from [`OpenAtFinish`]: a run that blew up mid-message
 //! could not have closed it.
+//!
+//! # After the run ended
+//!
+//! AG-UI 1.0 lets one `RUN_ERROR` follow `RUN_FINISHED`: a failure that
+//! surfaced after the run reported success. A standalone `EventVerifier`
+//! accepts it, so a recorded stream that carries one verifies. A hosted run
+//! does not send one: its event sink refuses every emit after a terminal
+//! event, with [`RunEnded`], whether or not this verifier is compiled in.
+//! That is the sink's own rule about what it sends, not the protocol's about
+//! what a stream may carry.
+//!
+//! # Chunks
+//!
+//! A `*_CHUNK` event is judged as the events it stands for: the end of the
+//! chunk stream it closes, the start it implies, its content. So a chunk for
+//! an id that is explicitly open is a second start ([`DuplicateStart`]), and
+//! an explicit event for an id a chunk opened finds it closed ([`NotOpen`]),
+//! because the chunk stream ended when that event arrived. A hosted run's
+//! `RUN_FINISHED` closes whatever chunk stream is still open, as a consumer
+//! reading it does.
 //!
 //! # Subagents
 //!
@@ -56,14 +78,15 @@
 //! [`OutOfOrder`]: crate::server::Rule::OutOfOrder
 //! [`OpenAtFinish`]: crate::server::Rule::OpenAtFinish
 //! [`OwnerMismatch`]: crate::server::Rule::OwnerMismatch
+//! [`MalformedChunk`]: crate::server::Rule::MalformedChunk
+//! [`InvalidOutcome`]: crate::server::Rule::InvalidOutcome
 //!
 //! # What it lets through
 //!
-//! The `*_CHUNK` events are self-contained by design, so a chunk carrying a new
-//! id registers that id rather than being rejected for having no start. The
-//! deprecated `THINKING_*` family is not tracked at all. State, activity, raw
-//! and custom events are unordered — though an activity delta, like any
-//! continuation, may not name an owner other than its activity's.
+//! The deprecated `THINKING_*` family is not tracked at all. State, activity,
+//! raw and custom events are unordered — though an activity delta, like any
+//! continuation, may not name an owner other than its activity's, and a
+//! state, custom or step event ends the chunk stream of whoever sent it.
 //!
 //! # Cost
 //!
@@ -95,18 +118,10 @@ pub(crate) use disabled::Verifier;
 mod enabled {
     use std::fmt::Write as _;
 
-    use crate::ordering::{Broke, Chunks, Open, Ordering, Policy, Violation, describe};
+    use crate::ordering::{Broke, Open, Ordering, Policy, Violation, describe};
     use crate::{Event, Message};
 
     use crate::server::error::{Rule, VerificationError};
-
-    /// The rules as the end that writes the stream reads them.
-    const POLICY: Policy = Policy {
-        late_run_error: false,
-        interrupts_checked: false,
-        chunks: Chunks::Registered,
-        ..Policy::PRODUCER
-    };
 
     /// Tracks what is open, and who opened it, so misordered events can be
     /// named precisely.
@@ -125,7 +140,7 @@ mod enabled {
         /// Creates the ordering state for one run.
         pub fn new() -> Self {
             Self {
-                rules: Ordering::new(POLICY),
+                rules: Ordering::new(Policy::PRODUCER),
             }
         }
 

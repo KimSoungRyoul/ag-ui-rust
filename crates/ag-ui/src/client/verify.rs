@@ -71,28 +71,36 @@
 //! doing parallel tool calls actually sends. Nor must an attributing
 //! `subagentRunId` have been announced: attribution without lifecycle events
 //! is a supported mode. Events outside these families (state, activity, raw,
-//! custom) are unordered and never close anything. A `MESSAGES_SNAPSHOT`
+//! custom) are unordered and close nothing that was opened explicitly. A
+//! `MESSAGES_SNAPSHOT`
 //! seeds ownership from the messages it carries and is authoritative; the
 //! `RUN_STARTED` input echo seeds it too, for ids not yet recorded; and a
 //! `TOOL_CALL_RESULT` mints the tool message it names under its own
 //! attribution.
-
+//!
+//! A `*_CHUNK` event is judged as the events it stands for.
+//! [`crate::client::chunks`] expands chunks before this stage, so a
+//! [`Thread`](crate::client::Thread) never shows it one; a verifier handed a
+//! raw stream expands each chunk itself, by the same model, and rejects one
+//! that cannot be expanded.
+//!
+//! # One set of rules
 //!
 //! The rules are not written here. They are the crate's shared ordering
-//! rules, the ones a hosted run checks what it emits by; this module words a
-//! rejection for whoever is reading the stream, and adds [`Verifier::finish`]
-//! for the one thing only a reader can see: a stream that stopped early.
+//! rules, the ones a hosted run checks what it emits by. This module words a
+//! rejection for whoever is reading the stream, and differs from the
+//! producer's reading in two places, both about what only one end knows:
+//!
+//! - [`Verifier::finish`] reports a stream that stopped before a terminal
+//!   event. Only a reader can see that.
+//! - A `TOOL_CALL_RESULT` for a call this stream never introduced is
+//!   accepted. A producer rejects one, since it knows every call it answers;
+//!   a reader may hold less of the conversation than the producer does.
 
 use crate::Event;
-use crate::ordering::{Broke, Chunks, Claim, Entity, Open, Ordering, Policy, Violation, describe};
+use crate::ordering::{Broke, Claim, Entity, Open, Ordering, Policy, Violation, describe};
 
 use crate::client::error::{Error, Result};
-
-/// The rules as the end that reads the stream reads them.
-const POLICY: Policy = Policy {
-    chunks: Chunks::Ignored,
-    ..Policy::CONSUMER
-};
 
 /// An ordering state machine for one run's event stream.
 ///
@@ -112,7 +120,7 @@ impl Verifier {
     /// A verifier for a stream that has not started yet.
     pub fn new() -> Self {
         Self {
-            rules: Ordering::new(POLICY),
+            rules: Ordering::new(Policy::CONSUMER),
         }
     }
 
@@ -168,10 +176,7 @@ fn sentence(violation: &Violation) -> String {
             )
         }
         Broke::NotOpen { entity, id } => {
-            format!(
-                "{event} for {} {id:?}, which was never opened",
-                entity.noun()
-            )
+            format!("{event} for {} {id:?}, which is not open", entity.noun())
         }
         Broke::OwnerMismatch {
             entity,

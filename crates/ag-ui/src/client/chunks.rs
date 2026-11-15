@@ -52,6 +52,35 @@
 //! # Ok::<(), ag_ui::client::Error>(())
 //! ```
 //!
+//! # The two spellings do not mix
+//!
+//! An item opened by a chunk is continued and closed in chunk form, and one
+//! opened by a `*_START` event explicitly. An explicit event that names the id
+//! a chunk stream is assembling is in that stream's lane like any other, so it
+//! ends the stream: the synthesized end comes out first, then the event,
+//! which [`crate::client::verify`] judges by the rules of the explicit form.
+//! The other way round, an explicitly opened item is not a stream a chunk can
+//! continue: a chunk that names no id is rejected unless a *chunk* opened
+//! something for it to continue, and one that names the open item's id opens
+//! it again.
+//!
+//! ```
+//! use ag_ui::client::{normalize_all, verify_all};
+//! use ag_ui::{Event, EventType, MessageId};
+//!
+//! let events = normalize_all([
+//!     Event::run_started("thread-1", "run-1"),
+//!     Event::text_message_chunk(Some(MessageId::new("msg-1")), Some("Hel".into())),
+//!     Event::text_message_end("msg-1"),
+//! ])?;
+//! let types: Vec<EventType> = events.iter().map(Event::event_type).collect();
+//! // The chunk stream ended when the explicit event arrived ...
+//! assert_eq!(types[3..], [EventType::TextMessageEnd, EventType::TextMessageEnd]);
+//! // ... so that event closes a message that is no longer open.
+//! assert!(verify_all(&events).is_err());
+//! # Ok::<(), ag_ui::client::Error>(())
+//! ```
+//!
 //! # Subagents
 //!
 //! "The previous chunk" is only meaningful *per subagent* once several stream
@@ -64,107 +93,20 @@
 //! against, and it is rejected rather than guessed at. When streaming
 //! concurrently, attribute every chunk — or repeat the id.
 
-use crate::{
-    Event, MessageId, ReasoningMessageChunkEvent, SubagentRunId, TextMessageChunkEvent,
-    TextMessageRole, TextMessageStartEvent, ToolCallChunkEvent, ToolCallId, ToolCallStartEvent,
-};
+use crate::Event;
+use crate::streams::Streams;
 
 use crate::client::error::{Error, Result};
-
-/// Which family of stream is open.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Text,
-    Tool,
-    Reasoning,
-}
-
-impl Kind {
-    const fn chunk_name(self) -> &'static str {
-        match self {
-            Self::Text => "TEXT_MESSAGE_CHUNK",
-            Self::Tool => "TOOL_CALL_CHUNK",
-            Self::Reasoning => "REASONING_MESSAGE_CHUNK",
-        }
-    }
-
-    const fn id_name(self) -> &'static str {
-        match self {
-            Self::Text | Self::Reasoning => "messageId",
-            Self::Tool => "toolCallId",
-        }
-    }
-
-    const fn noun(self) -> &'static str {
-        match self {
-            Self::Text => "message",
-            Self::Tool => "call",
-            Self::Reasoning => "reasoning message",
-        }
-    }
-}
-
-/// A stream in flight. At most one per owner: a new stream from the same
-/// owner is what ends the previous one.
-#[derive(Clone, Debug)]
-struct Open {
-    kind: Kind,
-    /// The message id or tool call id, as a plain string.
-    id: String,
-    /// Whether this normalizer emitted the opening event and therefore owes the
-    /// closing one. Streams the producer opened explicitly close themselves.
-    owed: bool,
-    /// The subagent the stream belongs to; `None` for the parent agent.
-    owner: Option<SubagentRunId>,
-    /// What the stream was opened with, when a start said: a continuation
-    /// chunk may repeat these, with the same values only.
-    opener: Option<Opener>,
-}
-
-/// The fields a continuation chunk may repeat.
-#[derive(Clone, Debug)]
-enum Opener {
-    Text {
-        role: TextMessageRole,
-        name: Option<String>,
-    },
-    Tool {
-        name: String,
-        parent_message_id: Option<MessageId>,
-    },
-}
-
-/// Rejects a continuation chunk that repeats an opener's field with another
-/// value. One that leaves the field out agrees with anything.
-fn agree(
-    kind: Kind,
-    id: &str,
-    field: &str,
-    repeated: Option<&str>,
-    established: Option<&str>,
-) -> Result<()> {
-    match repeated {
-        Some(repeated) if Some(repeated) != established => Err(Error::protocol(format!(
-            "{} for {} {id:?} repeats {field} {repeated:?}, which does not match the open \
-             stream's {field} {}",
-            kind.chunk_name(),
-            kind.noun(),
-            established.map_or_else(|| "(absent)".to_owned(), |value| format!("{value:?}")),
-        ))),
-        _ => Ok(()),
-    }
-}
 
 /// Expands chunk events into the explicit events the rest of the protocol is
 /// written in.
 ///
 /// Feed every event of a run through it, in order, and apply what comes out.
-/// Events that are not chunks pass through untouched — but they are still
-/// *observed*, so that an explicitly opened message can absorb a following
-/// bare chunk, and so an explicit end is not duplicated.
+/// Events that are not chunks pass through untouched, after the end of
+/// whatever chunk stream they close.
 #[derive(Clone, Debug, Default)]
 pub struct ChunkNormalizer {
-    open: Vec<Open>,
+    streams: Streams,
 }
 
 impl ChunkNormalizer {
@@ -173,15 +115,17 @@ impl ChunkNormalizer {
         Self::default()
     }
 
-    /// Whether any stream is currently open.
+    /// Whether a chunk stream is currently open: one a chunk opened and
+    /// nothing has ended yet.
     pub fn is_open(&self) -> bool {
-        !self.open.is_empty()
+        !self.streams.is_idle()
     }
 
     /// Expands one event, appending the result to `out`.
     ///
-    /// Appends between zero and three events: the synthesized end of the
-    /// previous stream, the synthesized start of this one, and the content.
+    /// Appends the synthesized end of each stream the event closes, then for
+    /// a chunk the synthesized start of the stream it opens and its content,
+    /// and for any other event the event itself.
     ///
     /// # Errors
     ///
@@ -190,18 +134,12 @@ impl ChunkNormalizer {
     /// chunk that opens a call without naming the tool, is a protocol
     /// violation: there is no id to attach the payload to, and guessing one
     /// would put text in the wrong message. So is a continuation chunk that
-    /// contradicts what its stream was opened with.
+    /// contradicts what its stream was opened with. Nothing is appended and
+    /// nothing changes when a chunk is rejected.
     pub fn normalize(&mut self, event: Event, out: &mut Vec<Event>) -> Result<()> {
-        match event {
-            Event::TextMessageChunk(chunk) => self.text_chunk(chunk, out),
-            Event::ToolCallChunk(chunk) => self.tool_chunk(chunk, out),
-            Event::ReasoningMessageChunk(chunk) => self.reasoning_chunk(chunk, out),
-            other => {
-                self.observe(&other, out);
-                out.push(other);
-                Ok(())
-            }
-        }
+        self.streams
+            .expand(event, out)
+            .map_err(|error| Error::protocol(error.to_string()))
     }
 
     /// Closes whatever the normalizer opened but never got to end.
@@ -210,403 +148,7 @@ impl ChunkNormalizer {
     /// terminates is the normal case, not an error: the last message of a run
     /// has nothing after it to imply its end.
     pub fn finish(&mut self, out: &mut Vec<Event>) {
-        self.close_all(out);
-    }
-
-    // ---- chunk families -------------------------------------------------
-
-    /// The stream a chunk belongs to: the one it names, or the open one of its
-    /// kind that its attribution resolves to.
-    fn stream_id(
-        &self,
-        kind: Kind,
-        named: Option<&str>,
-        tag: &Option<SubagentRunId>,
-    ) -> Result<String> {
-        if let Some(id) = named {
-            return Ok(id.to_owned());
-        }
-        let missing = |why: String| {
-            Error::protocol(format!(
-                "{} carries no {} and {why}",
-                kind.chunk_name(),
-                kind.id_name()
-            ))
-        };
-        if tag.is_some() {
-            return self.current(kind, tag).ok_or_else(|| {
-                missing(format!(
-                    "subagent {:?} has no {} open",
-                    tag.as_ref().map(|id| id.as_str()).unwrap_or_default(),
-                    kind.noun()
-                ))
-            });
-        }
-        if let Some(id) = self.current(kind, &None) {
-            return Ok(id);
-        }
-        let mut of_kind = self.open.iter().filter(|open| open.kind == kind);
-        match (of_kind.next(), of_kind.next()) {
-            (Some(only), None) => Ok(only.id.clone()),
-            (None, _) => Err(missing(format!("no {} is open", kind.noun()))),
-            (Some(_), Some(_)) => Err(missing(format!(
-                "several subagents have a {} open; attribute the chunk",
-                kind.noun()
-            ))),
-        }
-    }
-
-    /// Closes the owner's open stream, emits `start`, and takes on the debt
-    /// for the matching end event.
-    fn begin(
-        &mut self,
-        kind: Kind,
-        id: &str,
-        owner: Option<SubagentRunId>,
-        opener: Option<Opener>,
-        start: Event,
-        out: &mut Vec<Event>,
-    ) {
-        self.close_owner(&owner, out);
-        out.push(start);
-        self.open.push(Open {
-            kind,
-            id: id.to_owned(),
-            owed: true,
-            owner,
-            opener,
-        });
-    }
-
-    /// What the open stream `id` was opened with, if a start said.
-    fn opener(&self, kind: Kind, id: &str) -> Option<&Opener> {
-        self.open
-            .iter()
-            .find(|open| open.kind == kind && open.id == id)
-            .and_then(|open| open.opener.as_ref())
-    }
-
-    fn text_chunk(&mut self, chunk: TextMessageChunkEvent, out: &mut Vec<Event>) -> Result<()> {
-        let id = MessageId::new(self.stream_id(
-            Kind::Text,
-            chunk.message_id.as_ref().map(MessageId::as_str),
-            &chunk.subagent_run_id,
-        )?);
-
-        let owner = self.owner_of(Kind::Text, id.as_str(), &chunk.subagent_run_id);
-        if self.current(Kind::Text, &owner).as_deref() != Some(id.as_str()) {
-            let role = chunk.role.unwrap_or_default();
-            let opener = Opener::Text {
-                role,
-                name: chunk.name.clone(),
-            };
-            let mut start = TextMessageStartEvent::new(id.clone(), role);
-            start.name = chunk.name;
-            start.base = chunk.base.clone();
-            start.subagent_run_id = owner.clone();
-            let (start, opener) = (start.into(), Some(opener));
-            self.begin(Kind::Text, id.as_str(), owner.clone(), opener, start, out);
-        } else if let Some(Opener::Text { role, name }) = self.opener(Kind::Text, id.as_str()) {
-            let repeated = chunk.role.map(|role| role.as_str());
-            agree(Kind::Text, &id, "role", repeated, Some(role.as_str()))?;
-            agree(
-                Kind::Text,
-                &id,
-                "name",
-                chunk.name.as_deref(),
-                name.as_deref(),
-            )?;
-        }
-
-        if let Some(delta) = chunk.delta {
-            let mut content = crate::TextMessageContentEvent::new(id, delta);
-            content.base = chunk.base;
-            content.subagent_run_id = owner;
-            out.push(content.into());
-        }
-        Ok(())
-    }
-
-    fn tool_chunk(&mut self, chunk: ToolCallChunkEvent, out: &mut Vec<Event>) -> Result<()> {
-        let id = ToolCallId::new(self.stream_id(
-            Kind::Tool,
-            chunk.tool_call_id.as_ref().map(ToolCallId::as_str),
-            &chunk.subagent_run_id,
-        )?);
-
-        let owner = self.owner_of(Kind::Tool, id.as_str(), &chunk.subagent_run_id);
-        if self.current(Kind::Tool, &owner).as_deref() != Some(id.as_str()) {
-            // Checked before anything is emitted: a call with no name cannot be
-            // opened, and the previous stream should not be closed on the way
-            // to finding that out.
-            let Some(name) = chunk.tool_call_name else {
-                return Err(Error::protocol(format!(
-                    "TOOL_CALL_CHUNK opens tool call {id:?} without a toolCallName"
-                )));
-            };
-            let opener = Opener::Tool {
-                name: name.clone(),
-                parent_message_id: chunk.parent_message_id.clone(),
-            };
-            let mut start = ToolCallStartEvent::new(id.clone(), name);
-            start.parent_message_id = chunk.parent_message_id;
-            start.base = chunk.base.clone();
-            start.subagent_run_id = owner.clone();
-            let (start, opener) = (start.into(), Some(opener));
-            self.begin(Kind::Tool, id.as_str(), owner.clone(), opener, start, out);
-        } else if let Some(Opener::Tool {
-            name,
-            parent_message_id,
-        }) = self.opener(Kind::Tool, id.as_str())
-        {
-            let repeated = chunk.tool_call_name.as_deref();
-            agree(Kind::Tool, &id, "toolCallName", repeated, Some(name))?;
-            agree(
-                Kind::Tool,
-                &id,
-                "parentMessageId",
-                chunk.parent_message_id.as_deref(),
-                parent_message_id.as_deref(),
-            )?;
-        }
-
-        if let Some(delta) = chunk.delta {
-            let mut args = crate::ToolCallArgsEvent::new(id, delta);
-            args.base = chunk.base;
-            args.subagent_run_id = owner;
-            out.push(args.into());
-        }
-        Ok(())
-    }
-
-    fn reasoning_chunk(
-        &mut self,
-        chunk: ReasoningMessageChunkEvent,
-        out: &mut Vec<Event>,
-    ) -> Result<()> {
-        let id = MessageId::new(self.stream_id(
-            Kind::Reasoning,
-            chunk.message_id.as_ref().map(MessageId::as_str),
-            &chunk.subagent_run_id,
-        )?);
-
-        let owner = self.owner_of(Kind::Reasoning, id.as_str(), &chunk.subagent_run_id);
-        if self.current(Kind::Reasoning, &owner).as_deref() != Some(id.as_str()) {
-            let mut start = crate::ReasoningMessageStartEvent::new(id.clone());
-            start.base = chunk.base.clone();
-            start.subagent_run_id = owner.clone();
-            let start = start.into();
-            self.begin(
-                Kind::Reasoning,
-                id.as_str(),
-                owner.clone(),
-                None,
-                start,
-                out,
-            );
-        }
-
-        if let Some(delta) = chunk.delta {
-            let mut content = crate::ReasoningMessageContentEvent::new(id, delta);
-            content.base = chunk.base;
-            content.subagent_run_id = owner;
-            out.push(content.into());
-        }
-        Ok(())
-    }
-
-    // ---- explicit events ------------------------------------------------
-
-    /// Tracks what an explicit (non-chunk) event does to the open streams:
-    /// the module docs list what ends one.
-    fn observe(&mut self, event: &Event, out: &mut Vec<Event>) {
-        match event {
-            Event::TextMessageStart(e) => {
-                let opener = Opener::Text {
-                    role: e.role,
-                    name: e.name.clone(),
-                };
-                let (id, tag) = (e.message_id.as_str(), &e.subagent_run_id);
-                self.open_explicit(Kind::Text, id, tag, Some(opener), out);
-            }
-            Event::TextMessageContent(e) => {
-                let (id, tag) = (e.message_id.as_str(), &e.subagent_run_id);
-                self.open_explicit(Kind::Text, id, tag, None, out);
-            }
-            Event::TextMessageEnd(e) => self.close_explicit(Kind::Text, e.message_id.as_str()),
-
-            Event::ToolCallStart(e) => {
-                let opener = Opener::Tool {
-                    name: e.tool_call_name.clone(),
-                    parent_message_id: e.parent_message_id.clone(),
-                };
-                let (id, tag) = (e.tool_call_id.as_str(), &e.subagent_run_id);
-                self.open_explicit(Kind::Tool, id, tag, Some(opener), out);
-            }
-            Event::ToolCallArgs(e) => {
-                let (id, tag) = (e.tool_call_id.as_str(), &e.subagent_run_id);
-                self.open_explicit(Kind::Tool, id, tag, None, out);
-            }
-            Event::ToolCallEnd(e) => self.close_explicit(Kind::Tool, e.tool_call_id.as_str()),
-            // A result answers a call, so the call is over — and the protocol
-            // puts `TOOL_CALL_END` before it. A chunk-streamed call has no end
-            // of its own, so without this the result overtakes the terminator
-            // this normalizer still owes. It also ends whatever else its owner
-            // had streaming: a result cannot interleave with an open message
-            // either, and the party answering has clearly moved on.
-            Event::ToolCallResult(e) => {
-                self.close_id(Kind::Tool, e.tool_call_id.as_str(), out);
-                self.close_owner(&e.subagent_run_id, out);
-            }
-
-            Event::ReasoningMessageStart(e) => {
-                let (id, tag) = (e.message_id.as_str(), &e.subagent_run_id);
-                self.open_explicit(Kind::Reasoning, id, tag, None, out);
-            }
-            Event::ReasoningMessageContent(e) => {
-                let (id, tag) = (e.message_id.as_str(), &e.subagent_run_id);
-                self.open_explicit(Kind::Reasoning, id, tag, None, out);
-            }
-            Event::ReasoningMessageEnd(e) => {
-                self.close_explicit(Kind::Reasoning, e.message_id.as_str());
-            }
-            // A reasoning block closing implies its message has closed, and
-            // like opening one it ends whatever its lane was streaming.
-            Event::ReasoningEnd(e) => {
-                self.close_id(Kind::Reasoning, e.message_id.as_str(), out);
-                self.close_owner(&e.subagent_run_id, out);
-            }
-            Event::ReasoningStart(e) => self.close_owner(&e.subagent_run_id, out),
-
-            // The standalone events that end their lane's stream.
-            Event::StateSnapshot(e) => self.close_owner(&e.subagent_run_id, out),
-            Event::StateDelta(e) => self.close_owner(&e.subagent_run_id, out),
-            Event::Custom(e) => self.close_owner(&e.subagent_run_id, out),
-            Event::StepStarted(e) => self.close_owner(&e.subagent_run_id, out),
-            Event::StepFinished(e) => self.close_owner(&e.subagent_run_id, out),
-
-            // A stream does not outlive the subagent it belongs to.
-            Event::SubagentFinished(e) => self.close_owner(&Some(e.subagent_run_id.clone()), out),
-            Event::SubagentError(e) => self.close_owner(&Some(e.subagent_run_id.clone()), out),
-
-            Event::RunStarted(_)
-            | Event::RunFinished(_)
-            | Event::RunError(_)
-            | Event::MessagesSnapshot(_) => self.close_all(out),
-
-            // These stand aside from assembly and end nothing.
-            Event::Raw(_)
-            | Event::ActivitySnapshot(_)
-            | Event::ActivityDelta(_)
-            | Event::ReasoningEncryptedValue(_)
-            | Event::SubagentStarted(_) => {}
-
-            // Chunks never reach here, and the retired THINKING_* family is
-            // translated before this stage.
-            _ => {}
-        }
-    }
-
-    /// An explicit event for a stream: closes the owner's other open stream,
-    /// then takes ownership of this one. Nothing is owed — a stream the
-    /// producer opened, the producer ends.
-    ///
-    /// An explicit event for the stream *this* normalizer opened leaves the
-    /// debt in place: the end is still owed until the producer sends one.
-    fn open_explicit(
-        &mut self,
-        kind: Kind,
-        id: &str,
-        tag: &Option<SubagentRunId>,
-        opener: Option<Opener>,
-        out: &mut Vec<Event>,
-    ) {
-        let owner = self.owner_of(kind, id, tag);
-        if self.current(kind, &owner).as_deref() != Some(id) {
-            self.close_owner(&owner, out);
-            self.open.push(Open {
-                kind,
-                id: id.to_owned(),
-                owed: false,
-                owner,
-                opener,
-            });
-        }
-    }
-
-    /// The producer ended a stream itself: forget it without emitting.
-    fn close_explicit(&mut self, kind: Kind, id: &str) {
-        self.open
-            .retain(|open| !(open.kind == kind && open.id == id));
-    }
-
-    // ---- bookkeeping ----------------------------------------------------
-
-    /// The owner an event's stream belongs to: the event's tag when it has
-    /// one, otherwise the owner of the stream already open under that id,
-    /// otherwise the parent agent. An untagged continuation of a subagent's
-    /// chunk stream is legal on the wire and must not be read as the parent's.
-    fn owner_of(&self, kind: Kind, id: &str, tag: &Option<SubagentRunId>) -> Option<SubagentRunId> {
-        if tag.is_some() {
-            return tag.clone();
-        }
-        self.open
-            .iter()
-            .find(|open| open.kind == kind && open.id == id)
-            .and_then(|open| open.owner.clone())
-    }
-
-    /// The id of `owner`'s open stream, if it is of this kind.
-    fn current(&self, kind: Kind, owner: &Option<SubagentRunId>) -> Option<String> {
-        self.open
-            .iter()
-            .find(|open| &open.owner == owner)
-            .filter(|open| open.kind == kind)
-            .map(|open| open.id.clone())
-    }
-
-    /// Emits the end event for `owner`'s open stream, if this normalizer owes
-    /// one.
-    fn close_owner(&mut self, owner: &Option<SubagentRunId>, out: &mut Vec<Event>) {
-        if let Some(index) = self.open.iter().position(|open| &open.owner == owner) {
-            let open = self.open.remove(index);
-            Self::settle(open, out);
-        }
-    }
-
-    /// Closes the stream with this id, whoever owns it.
-    fn close_id(&mut self, kind: Kind, id: &str, out: &mut Vec<Event>) {
-        if let Some(index) = self
-            .open
-            .iter()
-            .position(|open| open.kind == kind && open.id == id)
-        {
-            let open = self.open.remove(index);
-            Self::settle(open, out);
-        }
-    }
-
-    fn close_all(&mut self, out: &mut Vec<Event>) {
-        for open in std::mem::take(&mut self.open) {
-            Self::settle(open, out);
-        }
-    }
-
-    /// Emits the end this normalizer owes for a stream, carrying the stream's
-    /// attribution.
-    fn settle(open: Open, out: &mut Vec<Event>) {
-        if !open.owed {
-            return;
-        }
-        let mut end = match open.kind {
-            Kind::Text => Event::text_message_end(MessageId::new(open.id)),
-            Kind::Tool => Event::tool_call_end(ToolCallId::new(open.id)),
-            Kind::Reasoning => Event::reasoning_message_end(MessageId::new(open.id)),
-        };
-        if let Some(owner) = open.owner {
-            end.set_subagent_run_id(owner);
-        }
-        out.push(end);
+        self.streams.finish(out);
     }
 }
 

@@ -36,7 +36,7 @@ async fn official_fatal_streams_end_the_thread_run_at_the_first_violation() {
         ),
         (
             include_str!("fixtures/ag-ui-1.0/streams/content-without-start-fatal.json"),
-            "never opened",
+            "is not open",
         ),
     ] {
         let (thread_id, events) = official_stream(fixture);

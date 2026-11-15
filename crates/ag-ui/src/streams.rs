@@ -40,9 +40,13 @@
 //! ordering rules to reject; this module only reports what the chunk stood
 //! for.
 
-// Nothing calls this module yet. The chunk normalizer, the transformers and
-// the ordering rules move onto it next, and this goes with them.
-#![allow(dead_code)]
+// Each caller uses its own part of this API: a consumer and the ordering
+// rules expand, a transformer tracks. With one of them compiled out, its part
+// has no caller.
+#![cfg_attr(
+    not(all(feature = "client", feature = "server", feature = "verify")),
+    allow(dead_code)
+)]
 
 use std::fmt;
 
