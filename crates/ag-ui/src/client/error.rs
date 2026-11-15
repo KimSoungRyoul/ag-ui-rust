@@ -37,6 +37,13 @@ pub enum Error {
     #[error("invalid thread snapshot: {0}")]
     Snapshot(String),
 
+    /// [`Thread::merge_messages_from`](crate::client::Thread::merge_messages_from)
+    /// refused to merge two threads, and changed neither: they are different
+    /// conversations, one of them still owes an answer or has a request in
+    /// flight, or a tool call has a result on each.
+    #[error("threads not merged: {0}")]
+    Merge(String),
+
     /// A frame's payload was not valid JSON, or not a valid [`Event`].
     ///
     /// [`Event`]: crate::event::Event
