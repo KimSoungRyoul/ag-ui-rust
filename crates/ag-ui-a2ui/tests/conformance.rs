@@ -143,7 +143,7 @@ const SUITES: &[Suite] = &[
     run("agent/legacy/inference_format.yaml", [12, 0, 10, 0]),
     run("agent/legacy/streaming_parser.yaml", [33, 8, 45, 2]),
     run("core/data_context.yaml", [9, 2, 0, 0]),
-    run("core/data_model.yaml", [43, 4, 1, 4]),
+    run("core/data_model.yaml", [45, 4, 1, 2]),
     run("core/expressions.yaml", [92, 0, 6, 0]),
     run("core/message_processor_v0_9.yaml", [40, 2, 4, 2]),
     run("core/catalog.yaml", [14, 2, 54, 3]),
@@ -421,25 +421,19 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
         "a second `<a2ui-json>` inside a block that is still open is read as JSON, and the \
          messages after it are not dispatched",
     ),
-    // Four rules of the reference data model this crate does not have. The
-    // official renderer core that `examples/review-desk/interop` runs against
-    // pads on the first of them, as this crate does.
+    // Removing a path that is not there. Upstream's newer cases want nothing
+    // to happen. `tests/protocol_091.rs` and `examples/review-desk/interop`,
+    // which runs the official renderer core 0.11.0, assert what this crate
+    // does today. Issue #42 is where the rule is read again, when that
+    // harness moves to a newer renderer.
     (
         "core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]",
-        "removing an index past the end of a list pads the list out to it with undefined slots",
+        "removing an index past the end of a list pads the list out to it with undefined \
+         slots, as the pinned renderer does (#42)",
     ),
     (
         "core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]",
-        "removing a path that does not exist creates the containers on the way to it",
-    ),
-    (
-        "core/data_model.yaml::test_data_model_rejects_forbidden_path_segments[step 0]",
-        "`__proto__`, `constructor` and `prototype` are ordinary keys",
-    ),
-    (
-        "core/data_model.yaml::test_data_model_rejects_excessive_list_index[step 2]",
-        "a write may grow a list by 65,536 slots (DEFAULT_ARRAY_GROWTH_LIMIT), whatever the \
-         index; the reference refuses an index above 10,000",
+        "removing a path that does not exist creates the containers on the way to it (#42)",
     ),
     // Two refusals only a JSON Schema engine makes. The processor checks what
     // the semantic validator checks; `SchemaValidator` is the engine, and it
@@ -584,6 +578,19 @@ impl Miss {
 fn settle(check: &str, result: Result<(), Miss>, tally: &mut Tally) {
     match result {
         Ok(()) => {
+            // A failure listed at a step is listed under another name than
+            // the case's, so the case passing would not find it.
+            let listed_at_a_step = KNOWN_FAILURES.iter().any(|(listed, _)| {
+                listed
+                    .strip_prefix(check)
+                    .is_some_and(|rest| rest.starts_with("[step "))
+            });
+            if listed_at_a_step {
+                tally.unexpected.push(format!(
+                    "{check}: listed in KNOWN_FAILURES at a step, and the case now passes; \
+                     remove it from the list"
+                ));
+            }
             let pinned = DIVERGENCES.iter().any(|(listed, ..)| {
                 listed
                     .strip_prefix(check)
@@ -1423,12 +1430,13 @@ fn read_outcome(found: Option<&ModelValue>) -> String {
     }
 }
 
-/// The reason this crate gives for the failure a phrase of the reference's
+/// How this crate's reason starts for the failure a phrase of the reference's
 /// `DataError` names. `None` for a phrase with no counterpart here.
 fn data_error_reason(phrase: &str) -> Option<&'static str> {
     match phrase {
         "Cannot set path" => Some("path walks through a scalar value"),
         "non-numeric segment" => Some("expected a canonical array index"),
+        "Forbidden path segment" => Some("forbidden path segment"),
         _ => None,
     }
 }
@@ -1446,7 +1454,7 @@ fn is_expected_data_error(error: &Error, expect_error: &Value) -> Result<(), Str
     match expect_error.get("message").and_then(Value::as_str) {
         None => Ok(()),
         Some(phrase) => match data_error_reason(phrase) {
-            Some(wanted) if wanted == reason => Ok(()),
+            Some(wanted) if reason.starts_with(wanted) => Ok(()),
             Some(wanted) => Err(format!("a pointer error saying {wanted:?}")),
             None => Err(format!(
                 "a pointer error for {phrase:?}, which this crate has no reason for"

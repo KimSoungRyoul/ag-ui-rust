@@ -54,7 +54,7 @@ other suite counts one check per case and verifies its steps in order; a case
 that stops at a step is reported under that step, `suite::case[step 2]`, and
 that is the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 374 passed, 21 expected divergence, 1640 skipped, 12 failing.
+Totals: 376 passed, 21 expected divergence, 1640 skipped, 10 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -63,7 +63,7 @@ Totals: 374 passed, 21 expected divergence, 1640 skipped, 12 failing.
 | `agent/legacy/inference_format.yaml` | 22 | 12 | 0 | 10 | 0 | executed |
 | `agent/legacy/streaming_parser.yaml` | 88 | 33 | 8 | 45 | 2 | executed |
 | `core/data_context.yaml` | 11 | 9 | 2 | 0 | 0 | executed |
-| `core/data_model.yaml` | 52 | 43 | 4 | 1 | 4 | executed |
+| `core/data_model.yaml` | 52 | 45 | 4 | 1 | 2 | executed |
 | `core/expressions.yaml` | 98 | 92 | 0 | 6 | 0 | executed |
 | `core/message_processor_v0_9.yaml` | 48 | 40 | 2 | 4 | 2 | executed |
 | `core/catalog.yaml` | 73 | 14 | 2 | 54 | 3 | executed |
@@ -189,11 +189,12 @@ to declare `children` as a `ChildList`, and both now pass as written.
 
 ## Failing
 
-Twelve checks. Three are in cases upstream added after the previous pin, all
+Ten checks. Three are in cases upstream added after the previous pin, all
 about the toolkit's parsers; the agent layer replaces those parsers, and these
-cases are for it to pass. Four are rules of the reference data model that
-`DataModel` does not have. Two are refusals only a JSON Schema engine makes,
-which `MessageProcessor` does not run. Three are about catalogs: two ask the
+cases are for it to pass. Two are about removing a path that is not there,
+where upstream's rule and the renderer this workspace tests against disagree
+(#42). Two are refusals only a JSON Schema engine makes, which
+`MessageProcessor` does not run. Three are about catalogs: two ask the
 catalog this crate builds in to be the published document, and one found a
 published catalog no schema validator can be built for.
 
@@ -202,10 +203,8 @@ published catalog no schema validator can be built for.
 | `agent/legacy/parser.yaml::test_fix_payload_unescaped_latex_backslashes_diagnostic_hint` | The payload is rejected, with the JSON parser's message. The case wants the hint "Unescaped backslash found". |
 | `agent/legacy/streaming_parser.yaml::test_no_placeholders_without_placeholder_component_v09` | With validation off, a `Row` placeholder is emitted for a catalog that defines no `Row`. The case wants nothing emitted until the children arrive. |
 | `agent/legacy/streaming_parser.yaml::test_cut_escape_sequences_v09` | The fixture writes a second `<a2ui-json>` inside a block that is still open. It is read as JSON, and the messages after it are not dispatched. |
-| `core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]` | Removing `/items/10` from a list of three pads the list to eleven slots, eight of them undefined. The case wants the list left as it was. Upstream added the case on 2026-09-15. The official renderer core that `examples/review-desk/interop` runs against, `@a2ui/web_core` 0.11.0, pads as this crate does, and that test asserts it. |
-| `core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]` | Removing `/nonexistent/child/path` from an empty model leaves `{"nonexistent": {"child": {}}}`. The case wants nothing created, and no watched path changed. |
-| `core/data_model.yaml::test_data_model_rejects_forbidden_path_segments[step 0]` | A write to `/__proto__/polluted` is accepted. The reference refuses the segments `__proto__`, `constructor` and `prototype` in every language, so that a payload behaves the same in all of them. |
-| `core/data_model.yaml::test_data_model_rejects_excessive_list_index[step 2]` | A write to `/items/10001` is accepted. The reference refuses an index above 10,000; this crate bounds how far one write may grow a list instead, at 65,536 slots (`DEFAULT_ARRAY_GROWTH_LIMIT`). |
+| `core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]` | Removing `/items/10` from a list of three pads the list to eleven slots, eight of them undefined. The case wants the list left as it was. Upstream added the case on 2026-09-15. The official renderer core that `examples/review-desk/interop` runs against, `@a2ui/web_core` 0.11.0, pads as this crate does, and that test and `tests/protocol_091.rs` assert it. The rule is to be read again in #42, when that harness moves to a newer renderer. |
+| `core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]` | Removing `/nonexistent/child/path` from an empty model leaves `{"nonexistent": {"child": {}}}`. The case wants nothing created, and no watched path changed. The same rule, and the same issue (#42). |
 | `core/message_processor_v0_9.yaml::test_create_surface_strict_theme_validation_failure` | A `createSurface` whose theme breaks the `pattern` in the catalog's theme schema is accepted. The processor checks what the semantic validator checks. `SchemaValidator`, behind `schema-validation`, is the JSON Schema engine, and it takes whole schema documents, not the fragment this case declares. |
 | `core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys` | A `Text` carrying `@metadata`, which the basic catalog does not declare, is accepted. A property a component does not declare is `unevaluatedProperties` in the catalog's schema, and the same engine's to refuse. |
 | `core/catalog.yaml::test_v09_basic_catalog_from_json` | The published v0.9 basic catalog, read with `Catalog::from_schema`, is not `Catalog::basic()`. The built-in one has its own id (`BASIC_CATALOG_ID`), declares `checks` on the six input components where the document takes it from the `Checkable` mixin, and has no `List.listStyle`, which the v0.9 document has and the v0.9.1 one does not. Component names, function names, return types and every other property agree. |

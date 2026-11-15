@@ -478,8 +478,18 @@ These are on `main` and not yet in a published version.
   for the whole model from inside a template. Outside a template nothing changes for
   the empty path, and `.` is no longer reported as a relative path with no template.
 - `DataModel::apply_reporting` and `ModelChange` are new: a write that reports, for any
-  path, whether the value there is different afterwards. `DataModel::apply` is
-  unchanged.
+  path, whether the value there is different afterwards.
+- `DataModel` refuses a path with a segment `__proto__`, `constructor` or `prototype`
+  (`model::FORBIDDEN_PATH_SEGMENTS`), in `apply`, `apply_reporting` and `lookup`, with
+  `Error::Pointer`. alpha.3 stored and read such a key. A JavaScript renderer refuses
+  these paths, so a model that took them held a state the renderer did not. Name the
+  key something else. A value written at another path may still have such a key; only
+  the path is checked.
+- `DataModel::apply` refuses a list index above `model::MAX_LIST_INDEX` (10,000), which
+  is the bound the reference renderers put on a write, for the same reason. alpha.3
+  took any index the growth budget allowed, up to 65,536 new slots. The budget
+  (`DEFAULT_ARRAY_GROWTH_LIMIT`) still counts every slot one update adds, so it is the
+  bound for a path that grows several lists at once, and for a caller that lowers it.
 - `binding::parse_template` and `TemplatePart` are new: a `formatString` template
   parsed into its parts without evaluating it. `Scope::format_string` and
   `format_string_with` now parse with it, so they accept the grammar the reference
