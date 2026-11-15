@@ -337,16 +337,28 @@ impl<A: Agent> Runner<A> {
     ///   it;
     /// - a subagent left active is closed by the agent, or by the driver when
     ///   the run is cancelled;
-    /// - the ids the context hands out count on from the ones `sent` used.
+    /// - the ids the context hands out count on from the ones `sent` used,
+    ///   and are never one of them.
     ///
-    /// The transformers start fresh, seeded with `input.messages`. `sent` is
-    /// their output, and they are fed what the agent emits: a transformer
-    /// that remembers something across events, such as
-    /// [`FilterToolCalls`](crate::server::FilterToolCalls) and the calls it
-    /// dropped, has not seen the earlier part of the run.
+    /// The transformers start fresh. They are seeded with `input.messages`
+    /// and then shown `sent` ([`StreamTransformer::replay`]), and from there
+    /// they are fed what the agent emits. `sent` is the output of the earlier
+    /// driver's chain, so a transformer learns from it what a consumer was
+    /// sent, and not what that chain kept back:
+    /// [`FilterToolCalls`](crate::server::FilterToolCalls) lets this driver
+    /// finish and answer a call that was sent, and refuses an event of a call
+    /// it has no record of, which is what a call the earlier filter dropped
+    /// looks like from here.
     ///
     /// An entity the earlier driver opened has no handle here. Continue and
-    /// close it with [`RunContext::emit`], naming its id.
+    /// close it with [`RunContext::emit`], naming its id. A run that is
+    /// cancelled cannot: every emit fails once the token is tripped. So the
+    /// driver closes what `sent` left open before the `RUN_FINISHED` that
+    /// cancels the run, innermost first and each under the subagent that
+    /// opened it: a message, a tool call, a reasoning message, a reasoning
+    /// block, a step. A run that is not cancelled has to close them itself,
+    /// and its `RUN_FINISHED` is refused while one is open, with the
+    /// `verify` feature or without.
     /// [`echo_input`](Self::echo_input) has nothing to echo on, since no
     /// `RUN_STARTED` is sent.
     ///
@@ -402,6 +414,8 @@ impl<A: Agent> Runner<A> {
     ///   the last run it starts already ended, or, with the `verify`
     ///   feature, when an event in it breaks the ordering rules: the error
     ///   is that event's;
+    /// - [`Error::Json`] when a `STATE_DELTA` in `sent` carries a patch that
+    ///   is not well formed;
     /// - [`Error::Protocol`] when `input` names another thread or run than
     ///   the last `RUN_STARTED` in `sent`.
     pub fn continue_run(
@@ -413,6 +427,9 @@ impl<A: Agent> Runner<A> {
         // As the first driver did before its first event: a result in `sent`
         // may answer a call the request's history introduced.
         sink.seed(&input.messages);
+        // Then what the first driver sent: this one finishes and answers
+        // calls that one opened.
+        sink.show_sent(sent);
         let mut minted = Minted::default();
         let mut started = None;
         let mut ended = None;
@@ -549,10 +566,13 @@ fn terminate(
 ) {
     // AG-UI 1.0, "Cancelled runs": a cancelled run closes what it opened
     // before the RUN_FINISHED that cancels it. The handles closed theirs on
-    // the way out; a subagent the agent left active has no ending to infer,
-    // so the driver reports it as stopped by the cancellation.
+    // the way out. Two things have no handle to close them. A subagent the
+    // agent left active has no ending to infer, so the driver reports it as
+    // stopped by the cancellation. And what an earlier driver of the run
+    // left open is this run's to close, which its agent no longer can: an
+    // emit after cancellation fails.
     if matches!(outcome, Ok(RunOutcome::Cancelled) | Err(Error::Cancelled)) {
-        sink.close_active_subagents(&Error::Cancelled);
+        sink.close_unclosed(&Error::Cancelled);
     }
     let usage = terminal.usage();
     let finished = |outcome| {

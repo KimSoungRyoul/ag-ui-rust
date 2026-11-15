@@ -426,6 +426,59 @@ async fn a_custom_transformer_can_stamp_every_event() {
     );
 }
 
+/// Dropping an event is silent. A transformer that has to say it did not send
+/// one refuses it, and the emit that produced the event fails.
+#[tokio::test]
+async fn a_transformer_can_refuse_an_event_and_the_emit_says_so() {
+    use ag_ui::server::Error;
+
+    struct NoCustomEvents;
+
+    impl StreamTransformer for NoCustomEvents {
+        fn transform(&mut self, event: Event) -> Vec<Event> {
+            self.try_transform(event).unwrap_or_default()
+        }
+
+        fn try_transform(&mut self, event: Event) -> Result<Vec<Event>> {
+            if matches!(event, Event::Custom(_)) {
+                return Err(Error::agent("custom events are not sent from here"));
+            }
+            Ok(vec![event])
+        }
+    }
+
+    struct Notes;
+
+    impl Agent for Notes {
+        type State = serde_json::Value;
+
+        async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+            let refused = ctx
+                .emit(Event::custom("note", json!(1)))
+                .expect_err("the transformer refuses it");
+            assert_eq!(
+                refused.to_string(),
+                "agent error: custom events are not sent from here"
+            );
+            ctx.say("carried on")?;
+            Ok(RunOutcome::Success)
+        }
+    }
+
+    let events = collect(Runner::new(Notes).transformer(NoCustomEvents)).await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::TextMessageStart,
+            EventType::TextMessageContent,
+            EventType::TextMessageEnd,
+            EventType::RunFinished,
+        ]
+    );
+}
+
 // ---- a resumed run ----------------------------------------------------------
 
 /// The request a resumed run answers. The interrupted run left three calls
@@ -1580,4 +1633,500 @@ fn a_promoted_state_carries_the_results_attribution() {
     assert_eq!(out.len(), 2);
     assert_eq!(out[1].event_type(), EventType::StateSnapshot);
     assert_eq!(out[1].subagent_run_id().map(|id| id.as_str()), Some("s1"));
+}
+
+// ---- a conversation that is restated ----------------------------------------
+
+/// The turn as the agent holds it: a public call and two calls to the tool
+/// the filter is about, one of them the only thing its message carries.
+fn restated_turn() -> Vec<ag_ui::Message> {
+    use ag_ui::{AssistantMessage, Message, ToolCall};
+
+    let mut sealed = ToolCall::new("c-private-2", "secret_tool", r#"{"dump":"again"}"#);
+    sealed.encrypted_value = Some("opaque-signature".into());
+    vec![
+        Message::user("u1", "Look it up."),
+        Message::Assistant(AssistantMessage {
+            id: "a1".into(),
+            content: Some("Looking.".into()),
+            tool_calls: Some(vec![
+                ToolCall::new("c-public", "search", r#"{"q":"rust"}"#),
+                ToolCall::new("c-private", "secret_tool", r#"{"dump":true}"#),
+            ]),
+            ..Default::default()
+        }),
+        Message::tool("t1", "c-public", "1 hit"),
+        Message::tool("t2", "c-private", "everything"),
+        Message::Assistant(AssistantMessage {
+            id: "a2".into(),
+            tool_calls: Some(vec![sealed]),
+            ..Default::default()
+        }),
+        Message::tool("t3", "c-private-2", "everything, again"),
+        Message::assistant("a3", "Done."),
+    ]
+}
+
+/// What a restated conversation may hold once the filter has been through
+/// it: the public call and its answer, and nothing of the other tool.
+fn assert_only_the_public_call(messages: &[ag_ui::Message], what: &str) {
+    let ids: Vec<&str> = messages.iter().map(|m| m.id().as_str()).collect();
+    assert_eq!(ids, ["u1", "a1", "t1", "a3"], "{what}");
+    let ag_ui::Message::Assistant(assistant) = &messages[1] else {
+        panic!("{what}: a1 is an assistant message");
+    };
+    assert_eq!(assistant.content.as_deref(), Some("Looking."), "{what}");
+    let calls: Vec<&str> = assistant
+        .tool_calls
+        .iter()
+        .flatten()
+        .map(|call| call.id.as_str())
+        .collect();
+    assert_eq!(calls, ["c-public"], "{what}");
+}
+
+/// Nothing the filtered tool's calls carried is on the wire: not its name,
+/// its arguments, its results or the opaque value attached to a call.
+fn assert_never_mentioned(events: &[Event], what: &str) {
+    let wire = serde_json::to_string(events).expect("serializes");
+    for secret in [
+        "secret_tool",
+        "dump",
+        "everything",
+        "c-private",
+        "opaque-signature",
+    ] {
+        assert!(!wire.contains(secret), "{what}: {secret} is in {wire}");
+    }
+}
+
+/// Makes the calls, then restates the turn.
+struct Restates;
+
+impl Agent for Restates {
+    type State = serde_json::Value;
+
+    async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+        let mut public = ctx.tool_call_with_id("c-public", "search")?;
+        public.args(r#"{"q":"rust"}"#)?;
+        public.result("1 hit")?;
+        let mut private = ctx.tool_call_with_id("c-private", "secret_tool")?;
+        private.args(r#"{"dump":true}"#)?;
+        private.result("everything")?;
+        ctx.emit(Event::messages_snapshot(restated_turn()))?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// The filter's promise is a stream that never mentions the tool, and a
+/// `MESSAGES_SNAPSHOT` is part of the stream.
+#[tokio::test]
+async fn a_filtered_call_is_not_in_a_restated_conversation_either() {
+    for (list, filter) in [
+        ("deny", FilterToolCalls::deny(["secret_tool"])),
+        ("allow", FilterToolCalls::allow(["search"])),
+    ] {
+        let events = collect(Runner::new(Restates).transformer(filter)).await;
+        assert_eq!(
+            events.last().map(Event::event_type),
+            Some(EventType::RunFinished),
+            "{list}: {events:?}"
+        );
+        assert_never_mentioned(&events, list);
+        let snapshot = events
+            .iter()
+            .find_map(|event| match event {
+                Event::MessagesSnapshot(snapshot) => Some(snapshot),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{list}: the snapshot is kept: {events:?}"));
+        assert_only_the_public_call(&snapshot.messages, list);
+    }
+}
+
+/// The same for the request echoed on `RUN_STARTED`.
+#[tokio::test]
+async fn a_filtered_call_is_not_in_the_echoed_input_either() {
+    struct Idle;
+    impl Agent for Idle {
+        type State = serde_json::Value;
+        async fn run(&self, _ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+            Ok(RunOutcome::Success)
+        }
+    }
+
+    for (list, filter) in [
+        ("deny", FilterToolCalls::deny(["secret_tool"])),
+        ("allow", FilterToolCalls::allow(["search"])),
+    ] {
+        let mut input = RunAgentInput::new("t", "r");
+        input.messages = restated_turn();
+        let events: Vec<Event> = Runner::new(Idle)
+            .echo_input(true)
+            .transformer(filter)
+            .run(input)
+            .collect()
+            .await;
+        assert_never_mentioned(&events, list);
+        let Some(Event::RunStarted(started)) = events.first() else {
+            panic!("{list}: {events:?}");
+        };
+        let echoed = started.input.as_ref().expect("the input is echoed");
+        assert_only_the_public_call(&echoed.messages, list);
+    }
+}
+
+/// A call the run learns of from a snapshot is judged by its name like any
+/// other, so its result goes where the call went.
+#[tokio::test]
+async fn a_call_a_snapshot_introduced_is_answered_or_filtered_by_its_name() {
+    use ag_ui::{AssistantMessage, Message, ToolCall};
+
+    let script = vec![
+        Event::messages_snapshot(vec![Message::Assistant(AssistantMessage {
+            id: "a1".into(),
+            tool_calls: Some(vec![
+                ToolCall::new("c-public", "search", "{}"),
+                ToolCall::new("c-private", "secret_tool", "{}"),
+            ]),
+            ..Default::default()
+        })]),
+        Event::tool_call_result("t1", "c-public", "1 hit"),
+        Event::tool_call_result("t2", "c-private", "everything"),
+    ];
+    let events =
+        collect(Runner::new(Replay(script)).transformer(FilterToolCalls::deny(["secret_tool"])))
+            .await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::MessagesSnapshot,
+            EventType::ToolCallResult,
+            EventType::RunFinished,
+        ],
+        "{events:?}"
+    );
+    let Event::ToolCallResult(result) = &events[2] else {
+        unreachable!("asserted above");
+    };
+    assert_eq!(result.tool_call_id.as_str(), "c-public");
+    assert_never_mentioned(&events, "a call from a snapshot");
+}
+
+// ---- a tool result that is promoted to state --------------------------------
+
+/// Reports a tool result whose patch has a path that is no JSON Pointer,
+/// with state published before it or not.
+struct MalformedPatch {
+    published: bool,
+}
+
+impl Agent for MalformedPatch {
+    type State = serde_json::Value;
+
+    async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+        if self.published {
+            ctx.set_state(&json!({"step": 1}))?;
+        }
+        ctx.tool_call("patch_state")?
+            .result(r#"[{"op":"add","path":"oops","value":1}]"#)?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// A result that is not a JSON Patch is left alone, as one that is not JSON
+/// is: the run goes on, and no state event a consumer has to refuse is sent.
+#[tokio::test]
+async fn a_result_whose_patch_is_malformed_is_not_promoted() {
+    for published in [true, false] {
+        let events = collect(
+            Runner::new(MalformedPatch { published })
+                .transformer(ToolResultToState::delta("patch_state")),
+        )
+        .await;
+        let types: Vec<_> = events.iter().map(Event::event_type).collect();
+        let mut expected = vec![EventType::RunStarted];
+        if published {
+            expected.push(EventType::StateSnapshot);
+        }
+        expected.extend([
+            EventType::ToolCallStart,
+            EventType::ToolCallEnd,
+            EventType::ToolCallResult,
+            EventType::RunFinished,
+        ]);
+        assert_eq!(types, expected, "state published: {published}: {events:?}");
+
+        #[cfg(feature = "client")]
+        {
+            let mut applier = Applier::new();
+            for event in &events {
+                applier
+                    .apply(event)
+                    .unwrap_or_else(|error| panic!("{event:?} should apply: {error}"));
+            }
+        }
+    }
+}
+
+/// The sink does not send a `STATE_DELTA` a consumer has to treat as
+/// malformed, whether or not it knows the state the delta patches.
+#[tokio::test]
+async fn a_state_delta_with_a_malformed_pointer_is_refused_with_or_without_a_baseline() {
+    struct EmitsMalformed {
+        published: bool,
+    }
+    impl Agent for EmitsMalformed {
+        type State = serde_json::Value;
+        async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+            if self.published {
+                ctx.set_state(&json!({"step": 1}))?;
+            }
+            let malformed = Event::state_delta(vec![ag_ui::PatchOperation::add("oops", 1)]);
+            assert!(ctx.emit(malformed).is_err(), "the emit is refused");
+            // A patch that is well formed and does not apply is another
+            // matter: a consumer reports it and keeps the state it has.
+            ctx.emit(Event::state_delta(vec![ag_ui::PatchOperation::replace(
+                "/missing/deep",
+                1,
+            )]))?;
+            Ok(RunOutcome::Success)
+        }
+    }
+
+    for published in [true, false] {
+        let events = collect(Runner::new(EmitsMalformed { published })).await;
+        let deltas: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::StateDelta(delta) => Some(delta.delta[0].path()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, ["/missing/deep"], "state published: {published}");
+        assert_eq!(
+            events.last().map(Event::event_type),
+            Some(EventType::RunFinished),
+            "state published: {published}: {events:?}"
+        );
+    }
+}
+
+/// The request's history, with a call to the tool whose result is the state
+/// left unanswered, and one already answered.
+fn resumed_with_a_load() -> RunAgentInput {
+    use ag_ui::{AssistantMessage, Message, ToolCall};
+
+    let mut input = RunAgentInput::new("t", "r-2");
+    input.messages = vec![
+        Message::Assistant(AssistantMessage {
+            id: "a0".into(),
+            tool_calls: Some(vec![
+                ToolCall::new("c-answered", "load_document", "{}"),
+                ToolCall::new("c0", "load_document", "{}"),
+            ]),
+            ..Default::default()
+        }),
+        Message::tool("t0", "c-answered", r#"{"title":"Old"}"#),
+    ];
+    input
+}
+
+/// A resumed run answers a call the interrupted run made. Its result is
+/// promoted as the result of a call made in the same run is.
+#[tokio::test]
+async fn a_result_for_a_call_an_earlier_run_made_is_promoted_too() {
+    let script = vec![Event::tool_call_result("m1", "c0", r#"{"title":"Notes"}"#)];
+    let events: Vec<Event> = Runner::new(Replay(script))
+        .transformer(ToolResultToState::snapshot("load_document"))
+        .run(resumed_with_a_load())
+        .collect()
+        .await;
+    let types: Vec<_> = events.iter().map(Event::event_type).collect();
+    assert_eq!(
+        types,
+        [
+            EventType::RunStarted,
+            EventType::ToolCallResult,
+            EventType::StateSnapshot,
+            EventType::RunFinished,
+        ],
+        "{events:?}"
+    );
+    assert_eq!(events[2], Event::state_snapshot(json!({"title": "Notes"})));
+}
+
+// ---- chunks whose lane a filter moves ---------------------------------------
+
+/// One `TOOL_CALL_CHUNK` that names its call. `opener` is what only the
+/// first chunk of a call carries: the tool, and the message the call sits in.
+#[cfg(feature = "client")]
+fn named_tool_chunk(id: &str, opener: Option<(&str, Option<&str>)>, delta: &str) -> Event {
+    let mut chunk = ag_ui::ToolCallChunkEvent::new(
+        Some(ToolCallId::new(id)),
+        opener.map(|(name, _)| name.to_owned()),
+        Some(delta.to_owned()),
+    );
+    chunk.parent_message_id = opener.and_then(|(_, parent)| parent.map(Into::into));
+    chunk.into()
+}
+
+/// What a client holds of a run, having read it by its own rules: the
+/// normalizer, the verifier, then the fold.
+#[cfg(feature = "client")]
+fn read_by_a_client(events: Vec<Event>) -> Applier {
+    use ag_ui::client::verify_all;
+    assert_eq!(
+        events.last().map(Event::event_type),
+        Some(EventType::RunFinished),
+        "{events:?}"
+    );
+    let events = normalize_all(events).expect("normalizes");
+    verify_all(&events).unwrap_or_else(|error| panic!("{error}\n{events:?}"));
+    let mut applier = Applier::new();
+    for event in &events {
+        applier.apply(event).expect("applies");
+    }
+    applier
+}
+
+/// Every tool call a client holds: the message it sits in, its id, its
+/// name and its arguments.
+#[cfg(feature = "client")]
+fn calls_held(applier: &Applier) -> Vec<(String, String, String, String)> {
+    applier
+        .messages()
+        .iter()
+        .filter_map(|message| match message {
+            ag_ui::Message::Assistant(assistant) => Some(assistant),
+            _ => None,
+        })
+        .flat_map(|assistant| {
+            assistant.tool_calls.iter().flatten().map(|call| {
+                (
+                    assistant.id.as_str().to_owned(),
+                    call.id.as_str().to_owned(),
+                    call.function.name.clone(),
+                    call.function.arguments.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Two subagents stream a tool call each, at once. Every chunk is tagged and
+/// names its call; the tool and the message that carries the call are named
+/// on the first chunk only, as the chunked form has it.
+#[cfg(feature = "client")]
+fn two_subagents_streaming_calls() -> Vec<Event> {
+    let tagged = |chunk: Event, id: &str| chunk.with_subagent_run_id(id);
+    vec![
+        Event::subagent_started("s1", "researcher"),
+        Event::subagent_started("s2", "writer"),
+        tagged(
+            named_tool_chunk("c1", Some(("search", Some("a-s1"))), r#"{"q":"#),
+            "s1",
+        ),
+        tagged(
+            named_tool_chunk("c2", Some(("draft", None)), r#"{"title":"#),
+            "s2",
+        ),
+        tagged(named_tool_chunk("c1", None, r#""rust"}"#), "s1"),
+        tagged(named_tool_chunk("c2", None, r#""Notes"}"#), "s2"),
+        Event::subagent_finished_success("s1"),
+        Event::subagent_finished_success("s2"),
+    ]
+}
+
+/// With the tags gone the two calls share the parent's lane, where each
+/// chunk ends the other call's stream: the continuation opens its call again
+/// on the consuming side, and has to carry what opens it.
+#[cfg(feature = "client")]
+#[tokio::test]
+async fn inline_reopens_a_call_whose_stream_another_subagents_chunk_ended() {
+    let expected = [
+        (
+            "a-s1".to_owned(),
+            "c1".to_owned(),
+            "search".to_owned(),
+            r#"{"q":"rust"}"#.to_owned(),
+        ),
+        (
+            "c2-message".to_owned(),
+            "c2".to_owned(),
+            "draft".to_owned(),
+            r#"{"title":"Notes"}"#.to_owned(),
+        ),
+    ];
+    let attributed = collect(Runner::new(Replay(two_subagents_streaming_calls()))).await;
+    assert_eq!(calls_held(&read_by_a_client(attributed)), expected);
+
+    let inline = collect(
+        Runner::new(Replay(two_subagents_streaming_calls()))
+            .transformer(SubagentVisibility::inline()),
+    )
+    .await;
+    assert_eq!(calls_held(&read_by_a_client(inline)), expected);
+}
+
+/// The state a subagent publishes is kept, as the parent's, and ends the
+/// parent's chunk stream on the consuming side. The parent's next chunk opens
+/// its call, or its message, again there.
+#[cfg(feature = "client")]
+#[tokio::test]
+async fn hidden_reopens_what_a_subagents_state_ended_on_the_consuming_side() {
+    let published = || Event::state_snapshot(json!({"done": 1})).with_subagent_run_id("s1");
+    let script = vec![
+        Event::subagent_started("s1", "worker"),
+        named_tool_chunk("c1", Some(("search", Some("a1"))), r#"{"q":"#),
+        published(),
+        named_tool_chunk("c1", None, r#""rust"}"#),
+        Event::tool_call_result("t1", "c1", "1 hit"),
+        Event::subagent_finished_success("s1"),
+    ];
+    let expected = [(
+        "a1".to_owned(),
+        "c1".to_owned(),
+        "search".to_owned(),
+        r#"{"q":"rust"}"#.to_owned(),
+    )];
+    let attributed = collect(Runner::new(Replay(script.clone()))).await;
+    assert_eq!(calls_held(&read_by_a_client(attributed)), expected);
+    let hidden =
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::hidden())).await;
+    assert_eq!(calls_held(&read_by_a_client(hidden)), expected);
+
+    // A message keeps the role and the name it was opened with.
+    let mut opening =
+        ag_ui::TextMessageChunkEvent::new(Some("m1".into()), Some("Remember ".to_owned()));
+    opening.role = Some(ag_ui::TextMessageRole::Developer);
+    opening.name = Some("policy".to_owned());
+    let script = vec![
+        Event::subagent_started("s1", "worker"),
+        Event::from(opening),
+        published(),
+        Event::text_message_chunk(Some("m1".into()), Some("this.".to_owned())),
+        Event::subagent_finished_success("s1"),
+    ];
+    let hidden =
+        collect(Runner::new(Replay(script)).transformer(SubagentVisibility::hidden())).await;
+    let reopening = hidden
+        .iter()
+        .filter_map(|event| match event {
+            Event::TextMessageChunk(chunk) => Some(chunk),
+            _ => None,
+        })
+        .nth(1)
+        .expect("the continuation is kept");
+    assert_eq!(reopening.role, Some(ag_ui::TextMessageRole::Developer));
+    assert_eq!(reopening.name.as_deref(), Some("policy"));
+    let applier = read_by_a_client(hidden);
+    assert_eq!(applier.text_of("m1"), Some("Remember this."));
+    assert!(
+        matches!(applier.messages(), [ag_ui::Message::Developer(_)]),
+        "{:?}",
+        applier.messages()
+    );
 }

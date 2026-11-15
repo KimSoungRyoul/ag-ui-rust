@@ -156,7 +156,10 @@ mod tool;
 
 use std::num::NonZeroUsize;
 
-use crate::{Event, Message, RunErrorEvent, SubagentErrorEvent, SubagentRunId};
+use crate::{
+    Event, Message, MessageId, RunErrorEvent, StepName, SubagentErrorEvent, SubagentRunId,
+    ToolCallId,
+};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_core::Stream;
 use futures_util::StreamExt as _;
@@ -194,10 +197,12 @@ pub(crate) struct EventSink {
     /// The subagent scope in force: every attributable event emitted untagged
     /// while it is set goes out carrying it. See [`SubagentHandle`].
     attribution: Option<SubagentRunId>,
-    /// Producer lifecycles survive output filtering and the optional verifier.
-    /// In the order they started, so a cancelled run closes the innermost
-    /// first.
-    active_subagents: Vec<SubagentRunId>,
+    /// What is open with no handle of this driver to close it, in the order
+    /// it was opened, so a cancelled run closes the innermost first. Kept
+    /// here and not read off the verifier: it has to hold with the `verify`
+    /// feature off, and a subagent's lifecycle has to survive a transformer
+    /// that drops it from the output.
+    unclosed: Vec<Unclosed>,
     event_buffer_capacity: Option<NonZeroUsize>,
     overflowed: bool,
 }
@@ -226,7 +231,7 @@ impl EventSink {
             cancel,
             terminated: false,
             attribution: None,
-            active_subagents: Vec::new(),
+            unclosed: Vec::new(),
             event_buffer_capacity: None,
             overflowed: false,
         }
@@ -255,17 +260,28 @@ impl EventSink {
         self.verifier.assume_opened();
     }
 
+    /// Shows the transformers the events a run has already sent, for a sink
+    /// that continues the run. They are the output of an earlier chain, not
+    /// events to transform: see [`StreamTransformer::replay`].
+    pub(crate) fn show_sent(&mut self, sent: &[Event]) {
+        StreamTransformer::replay(&mut self.chain, sent);
+    }
+
     /// Records an event that was already sent, without sending it again:
     /// for a sink that continues a run. The event is one an earlier driver
     /// of the run sent, or one of a run before it on the same stream.
     ///
     /// Everything [`send`](Self::send) remembers about an event it queues is
     /// remembered here: the verifier's ordering state, the state the client
-    /// holds, whether the run ended. The subagents left active are read off
-    /// the same events, which is what a consumer saw of them.
+    /// holds, whether the run ended. What the earlier driver left open is
+    /// read off the same events, which is what a consumer saw: the subagents
+    /// that are active, and every message, tool call, reasoning block,
+    /// reasoning message and step that has a start and no end. An entity a
+    /// `*_CHUNK` event opened is not among them. It has no end event, and
+    /// the run's terminal event ends its chunk stream.
     ///
-    /// The transformers are not shown the event. What was sent is their
-    /// output, and they are fed the agent's events, not their own.
+    /// The transformers are not fed the event. What was sent is their
+    /// output, which [`show_sent`](Self::show_sent) lets them learn from.
     pub(crate) fn replay(&mut self, event: &Event) -> Result<()> {
         let next_state = self.state_after(event)?;
         self.verifier.observe(event)?;
@@ -275,26 +291,33 @@ impl EventSink {
         }
         match event {
             // What was sent may hold the runs that came before the one being
-            // continued. Each starts with nothing active; the state a client
+            // continued. Each starts with nothing open; the state a client
             // holds carries over.
             Event::RunStarted(_) => {
                 self.terminated = false;
-                self.active_subagents.clear();
+                self.unclosed.clear();
             }
-            Event::SubagentStarted(started) => {
-                if !self.active_subagents.contains(&started.subagent_run_id) {
-                    self.active_subagents.push(started.subagent_run_id.clone());
-                }
-            }
+            Event::SubagentStarted(started) => self.open_subagent(&started.subagent_run_id),
             Event::SubagentFinished(finished) => self.close_subagent(&finished.subagent_run_id),
             Event::SubagentError(error) => self.close_subagent(&error.subagent_run_id),
-            _ => {}
+            _ => match Unclosed::opened_by(event) {
+                Some(opened) => self.unclosed.push(opened),
+                None => self.unclosed.retain(|open| !open.closed_by(event)),
+            },
         }
         Ok(())
     }
 
+    fn open_subagent(&mut self, id: &SubagentRunId) {
+        let active = Unclosed::Subagent(id.clone());
+        if !self.unclosed.contains(&active) {
+            self.unclosed.push(active);
+        }
+    }
+
     fn close_subagent(&mut self, id: &SubagentRunId) {
-        self.active_subagents.retain(|active| active != id);
+        self.unclosed
+            .retain(|open| !matches!(open, Unclosed::Subagent(active) if active == id));
     }
 
     /// The state a consumer holds once it has applied `event`: `None` for an
@@ -346,13 +369,11 @@ impl EventSink {
             });
         }
         if matches!(event, Event::RunFinished(_)) {
-            if let Some(id) = self.active_subagents.first() {
-                return Err(VerificationError::new(
-                    event.event_type(),
-                    Rule::OpenAtFinish,
-                    format!("subagent '{id}' requires an explicit finish, fail or suspend"),
-                )
-                .into());
+            if let Some(open) = self.unclosed.first() {
+                let detail = open.still_open();
+                return Err(
+                    VerificationError::new(event.event_type(), Rule::OpenAtFinish, detail).into(),
+                );
             }
         }
         let lifecycle = match &event {
@@ -373,15 +394,15 @@ impl EventSink {
         if self.chain.is_empty() {
             self.send(event)?;
         } else {
-            for event in self.chain.transform(event) {
+            // A transformer may refuse the event, which fails the emit with
+            // nothing of the event sent.
+            for event in self.chain.try_transform(event)? {
                 self.send(event)?;
             }
         }
         if let Some((id, opened)) = lifecycle {
             if opened {
-                if !self.active_subagents.contains(&id) {
-                    self.active_subagents.push(id);
-                }
+                self.open_subagent(&id);
             } else {
                 self.close_subagent(&id);
             }
@@ -389,20 +410,24 @@ impl EventSink {
         Ok(())
     }
 
-    /// Closes every announced subagent still active, innermost first, with
-    /// `SUBAGENT_ERROR` naming `error`.
+    /// Closes what is open with no handle to close it, innermost first: a
+    /// subagent with `SUBAGENT_ERROR` naming `error`, and what an earlier
+    /// driver of the run left open with its end event, under the subagent
+    /// that opened it.
     ///
     /// For the run driver when a run is cancelled. A dropped
     /// [`SubagentHandle`] does not invent an ending, and the schema has no
     /// cancelled outcome for a subagent; an error carrying the cancellation's
     /// code is the one ending that neither claims success nor claims the
-    /// invocation is waiting. Stops at the first event that cannot be sent:
-    /// whatever is left open then makes `RUN_FINISHED` fail, and the driver
-    /// reports that instead.
-    pub(crate) fn close_active_subagents(&mut self, error: &Error) {
-        for id in self.active_subagents.clone().into_iter().rev() {
-            let closing = SubagentErrorEvent::new(id, error.to_string()).with_code(error.code());
-            if self.emit_forced(closing.into()).is_err() {
+    /// invocation is waiting. An entity inherited from an earlier driver has
+    /// no handle here at all, and the agent's own end event for it fails
+    /// once the run is cancelled, like any other emit.
+    ///
+    /// Stops at the first event that cannot be sent: whatever is left open
+    /// then makes `RUN_FINISHED` fail, and the driver reports that instead.
+    pub(crate) fn close_unclosed(&mut self, error: &Error) {
+        for open in self.unclosed.clone().into_iter().rev() {
+            if self.emit_forced(open.closing(error)).is_err() {
                 return;
             }
         }
@@ -463,6 +488,11 @@ impl EventSink {
         let next_state = self.state_after(&event)?;
         self.verifier.observe(&event)?;
         self.terminated |= matches!(event, Event::RunFinished(_) | Event::RunError(_));
+        // What an earlier driver left open is closed by whoever sends its
+        // end: the agent, naming its id, or the driver for a cancelled run.
+        if !self.unclosed.is_empty() {
+            self.unclosed.retain(|open| !open.closed_by(&event));
+        }
         self.tx
             .unbounded_send(event)
             .map_err(|_| Error::Disconnected)?;
@@ -479,6 +509,103 @@ impl EventSink {
 
     pub(crate) fn cancel_token(&self) -> &CancellationToken {
         &self.cancel
+    }
+}
+
+/// Something a run has open that no handle of its driver will close.
+///
+/// A subagent that is active: a dropped [`SubagentHandle`] invents no ending
+/// for it. And, in a sink that continues a run, what the earlier driver left
+/// open, each with the subagent that opened it: the handle that would have
+/// closed it went with that driver.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Unclosed {
+    Subagent(SubagentRunId),
+    Message(MessageId, Option<SubagentRunId>),
+    ToolCall(ToolCallId, Option<SubagentRunId>),
+    ReasoningMessage(MessageId, Option<SubagentRunId>),
+    ReasoningBlock(MessageId, Option<SubagentRunId>),
+    Step(StepName, Option<SubagentRunId>),
+}
+
+impl Unclosed {
+    /// What an event that was already sent opened, when it is something an
+    /// end event closes. A subagent is not: its lifecycle is followed apart.
+    fn opened_by(event: &Event) -> Option<Self> {
+        Some(match event {
+            Event::TextMessageStart(e) => {
+                Self::Message(e.message_id.clone(), e.subagent_run_id.clone())
+            }
+            Event::ToolCallStart(e) => {
+                Self::ToolCall(e.tool_call_id.clone(), e.subagent_run_id.clone())
+            }
+            Event::ReasoningMessageStart(e) => {
+                Self::ReasoningMessage(e.message_id.clone(), e.subagent_run_id.clone())
+            }
+            Event::ReasoningStart(e) => {
+                Self::ReasoningBlock(e.message_id.clone(), e.subagent_run_id.clone())
+            }
+            Event::StepStarted(e) => Self::Step(e.step_name.clone(), e.subagent_run_id.clone()),
+            _ => return None,
+        })
+    }
+
+    /// Whether `event` is the end event of this.
+    fn closed_by(&self, event: &Event) -> bool {
+        match (self, event) {
+            (Self::Message(id, _), Event::TextMessageEnd(e)) => id == &e.message_id,
+            (Self::ToolCall(id, _), Event::ToolCallEnd(e)) => id == &e.tool_call_id,
+            (Self::ReasoningMessage(id, _), Event::ReasoningMessageEnd(e)) => id == &e.message_id,
+            (Self::ReasoningBlock(id, _), Event::ReasoningEnd(e)) => id == &e.message_id,
+            // A step is its owner's: a subagent and its parent may each run
+            // one of the same name.
+            (Self::Step(name, owner), Event::StepFinished(e)) => {
+                name == &e.step_name && owner == &e.subagent_run_id
+            }
+            _ => false,
+        }
+    }
+
+    /// The event that closes it in a run that stops because of `error`.
+    fn closing(&self, error: &Error) -> Event {
+        let (mut end, owner) = match self {
+            Self::Subagent(id) => {
+                let stopped = SubagentErrorEvent::new(id.clone(), error.to_string());
+                return stopped.with_code(error.code()).into();
+            }
+            Self::Message(id, owner) => (Event::text_message_end(id.clone()), owner),
+            Self::ToolCall(id, owner) => (Event::tool_call_end(id.clone()), owner),
+            Self::ReasoningMessage(id, owner) => (Event::reasoning_message_end(id.clone()), owner),
+            Self::ReasoningBlock(id, owner) => (Event::reasoning_end(id.clone()), owner),
+            Self::Step(name, owner) => (Event::step_finished(name.clone()), owner),
+        };
+        if let Some(owner) = owner {
+            end.set_subagent_run_id(owner.clone());
+        }
+        end
+    }
+
+    /// What a `RUN_FINISHED` that is refused because of it says.
+    fn still_open(&self) -> String {
+        match self {
+            Self::Subagent(id) => {
+                format!("subagent '{id}' requires an explicit finish, fail or suspend")
+            }
+            Self::Message(id, _) => format!("message {:?} is still open", id.as_str()),
+            Self::ToolCall(id, _) => format!("tool call {:?} is still open", id.as_str()),
+            Self::ReasoningMessage(id, _) => {
+                format!("reasoning message {:?} is still open", id.as_str())
+            }
+            Self::ReasoningBlock(id, _) => {
+                format!("reasoning block {:?} is still open", id.as_str())
+            }
+            Self::Step(name, None) => format!("step {:?} is still open", name.as_str()),
+            Self::Step(name, Some(owner)) => format!(
+                "step {:?} is still open under subagent {:?}",
+                name.as_str(),
+                owner.as_str()
+            ),
+        }
     }
 }
 

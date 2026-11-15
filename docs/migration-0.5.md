@@ -989,6 +989,87 @@ These are on `main` and not yet in a published version.
   `RunReport::diagnostics` keeps it with kind `warning`. Alpha.3 dropped the value
   without a word. The run is unaffected, and `Applier::apply` still returns
   `Changed::Nothing` for such an event.
+- `FilterToolCalls` filters a conversation the stream restates by the same names as the
+  tool-call events. A `MESSAGES_SNAPSHOT`, and the request echoed on `RUN_STARTED`, go out
+  without a filtered call, without the encrypted value that call carries and without the
+  tool message that answers it. Alpha.3 dropped the four tool-call events and sent a
+  restated conversation as it was. Two more things are taken out: an assistant message
+  left with neither content nor tool calls, and a tool message that answers a call
+  nothing named. There is nothing to write; a call a client has to see does not belong on
+  the filter's list.
+- `FilterToolCalls` refuses an event of a tool call it never saw start, where alpha.3
+  dropped it and the emit returned `Ok`. `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
+  `TOOL_CALL_RESULT` and a tool call's `REASONING_ENCRYPTED_VALUE` fail the emit with
+  `Rule::UnknownId`; a `TOOL_CALL_CHUNK` that names no tool for such a call, or names no
+  id with no chunk stream to continue, fails it with `Rule::MalformedChunk`. Nothing of
+  the event is sent. The filter now also learns calls from a `MESSAGES_SNAPSHOT`, so the
+  result of a call a snapshot introduced goes where the call went; alpha.3 dropped it.
+  The case to look for is an agent that reports the result of a call the filter of an
+  earlier run removed: the client's history does not hold that call, so the emit now
+  fails. Do not emit the result, or handle the error. Calling
+  `FilterToolCalls::transform` yourself still drops such an event.
+- `StreamTransformer` gains two provided methods, and existing implementations compile
+  unchanged. `try_transform(event)` is what a hosted run now calls: an `Err` fails the
+  emit that produced the event and sends nothing of it, where an empty `Vec` from
+  `transform` drops the event without a word. Its default is `transform`.
+  `replay(&mut self, sent: &[Event])` is called once by `Runner::continue_run`, after
+  `seed`, with the events the run already sent. `TransformerChain::try_transform` is
+  new; `TransformerChain::transform` drops what a transformer would refuse.
+- In a run continued with `Runner::continue_run`, `FilterToolCalls` and
+  `ToolResultToState` know the calls that `sent` opened. A continuation can finish and
+  answer a call the earlier driver left open under `FilterToolCalls`, and a
+  `ToolResultToState` promotes its result; before, the filter dropped those events and
+  the run ended in `RUN_ERROR` (`open-at-finish`). The filter does not take over the
+  chunk streams `sent` left open, so name the call on every `TOOL_CALL_CHUNK` of a
+  continuation.
+- `ToolResultToState` promotes the result of a call the run did not open itself: one the
+  request's history holds unanswered, and one a `MESSAGES_SNAPSHOT` introduced. Alpha.3
+  promoted only the result of a call started in the same run, so a resumed run's result
+  went out with no state event after it.
+- `ToolResultToState::delta` leaves a result alone unless its content is a JSON Patch a
+  consumer can read: the `path` and `from` of every operation must be JSON Pointers.
+  Alpha.3 promoted `[{"op":"add","path":"oops","value":1}]`, and the run then ended in
+  `RUN_ERROR` (`SERIALIZATION`) after the result was sent, or sent a `STATE_DELTA` that
+  the client rejects. A hosted run now refuses to send a `STATE_DELTA` with such a patch
+  whether or not state was published before it: the emit fails with `Error::Json`, where
+  alpha.3 sent it when nothing had been published. A well-formed patch that does not
+  apply to the state is still sent.
+- `SubagentVisibility::inline()` and `hidden()` give a `*_CHUNK` event the fields that
+  open its item when the event has to open it again for the consumer: `toolCallName` and
+  `parentMessageId` on a `TOOL_CALL_CHUNK`, `role` and `name` on a `TEXT_MESSAGE_CHUNK`.
+  That happens when a chunk stream is still open for the agent and has ended for the
+  consumer, because an event that left its subagent's lane ended it: under `inline()`
+  another subagent's chunk, under `hidden()` the state a subagent published. Alpha.3
+  sent the continuation as it was, and the run ended in `RUN_ERROR` ("opens tool call
+  … without a toolCallName"). A `TOOL_CALL_CHUNK` that named no id used to be given the
+  tool's name every time; it now gets it only when it opens the call again.
+- A run continued with `Runner::continue_run` and then cancelled closes what `sent` left
+  open, and ends with `RUN_FINISHED` and the cancelled outcome. The driver sends the end
+  event of each message, tool call, reasoning message, reasoning block and step that
+  `sent` opened and nothing closed, innermost first and under the subagent that opened
+  it, as it already sent `SUBAGENT_ERROR` for a subagent left active. Before, such a run
+  ended in `RUN_ERROR` (`open-at-finish`), or without the `verify` feature in a
+  `RUN_FINISHED` with the entity still open. An end event the agent emits itself after
+  cancellation still fails with `Error::Cancelled`. Without the `verify` feature, a
+  continued run that is not cancelled and leaves such an entity open now ends in
+  `RUN_ERROR` as it does with `verify` on, not in `RUN_FINISHED`.
+- The ids a context hands out in a continued run are never ones `sent` already used, and
+  the counter behind them cannot overflow. An id in `sent` of the shape the context
+  hands out with the largest number a counter holds, such as
+  `<runId>-msg-18446744073709551615`, used to panic the driver in a build with overflow
+  checks and to repeat ids otherwise. The count now starts again from 1 and passes over
+  every number in use.
+- `server::SubagentVisibility`, `server::StatePublish`, `encode::sse::SseFrame` (also
+  `axum::SseFrame`) and `server::VerificationError` are `#[non_exhaustive]`. A `match` on
+  one of the three enums needs a wildcard arm; for `StatePublish`, `other.into_event()`
+  covers every variant. `VerificationError` can no longer be built with a struct literal
+  outside the crate, and a struct pattern needs `..`: write
+  `VerificationError::new(event, rule, detail)`. Variants are built as before.
+- `ExecutionCapabilities` reads `maxIterations` and `maxExecutionTime` written as a
+  float with no fractional part, such as `10.0` or `3e4`, as the integer it is, which is
+  what the schema's `integer` means. Alpha.3 failed the whole document over such a
+  number. They are written back as `10` and `30000`. A number with a fractional part is
+  still an error, and `-1.0` reads as `None` like `-1`.
 
 ## Verify the upgrade
 
