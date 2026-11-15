@@ -13,8 +13,8 @@ use ag_ui::client::{ChunkNormalizer, RunEnd, Thread, Verifier};
 use ag_ui::server::{OpenEntity, RunProgress};
 use ag_ui::{
     AssistantMessage, Event, EventType, Interrupt, JsonObject, Message, PatchOperation,
-    RunAgentInput, RunStartedEvent, SubagentStartedEvent, TextMessageRole, ToolCall,
-    ToolCallStartEvent,
+    ReasoningMessage, RunAgentInput, RunStartedEvent, SubagentStartedEvent, TextMessageRole,
+    ToolCall, ToolCallStartEvent,
 };
 use serde_json::json;
 
@@ -251,12 +251,9 @@ async fn join_at_every_event(run: &[Event]) {
         let progress = progress_after(&history, before);
         // The fold a server that stores events does: the applier's.
         let folded = read(&history, before, false);
-        // A reasoning message and a subagent that closed before the join are
-        // not restated, and no message carries them to this client.
-        let reasoning_closed = folded.reasoning().iter().any(|m| !m.content.is_empty())
-            && !progress
-                .open()
-                .any(|entity| matches!(entity, OpenEntity::ReasoningMessage { .. }));
+        let reasoning_is_open = progress
+            .open()
+            .any(|entity| matches!(entity, OpenEntity::ReasoningMessage { .. }));
         let as_they_stand = folded.messages().to_vec();
         let left_out = read(&history, &without_open(&progress, before), false);
         let supplied = [
@@ -269,6 +266,9 @@ async fn join_at_every_event(run: &[Event]) {
         ];
         for (open_entities, messages) in supplied {
             let at = format!("joined after {sent} events, the open entities {open_entities}");
+            let carries_reasoning = messages
+                .iter()
+                .any(|message| matches!(message, Message::Reasoning(_)));
             let prelude = progress
                 .prelude()
                 .messages(messages)
@@ -281,9 +281,8 @@ async fn join_at_every_event(run: &[Event]) {
             let joined = read(&[], &stream, true);
             assert_eq!(joined.messages(), whole.messages(), "{at}");
             assert_eq!(joined.state(), whole.state(), "{at}");
-            if !reasoning_closed {
-                assert_eq!(joined.reasoning(), whole.reasoning(), "{at}");
-            }
+            // A subagent that finished before the join is not restated, and
+            // no message carries its lifecycle.
             if sent <= subagent_closes {
                 assert_eq!(joined.subagents(), whole.subagents(), "{at}");
             }
@@ -292,7 +291,11 @@ async fn join_at_every_event(run: &[Event]) {
             assert_eq!(end, whole_end, "{at}");
 
             // A client that comes back holding a copy of its own, behind the
-            // run: the snapshot replaces it.
+            // run: the snapshot replaces it. Reasoning is the exception when
+            // the snapshot carries none, which has a test of its own.
+            if reasoning_is_open && !carries_reasoning {
+                continue;
+            }
             let behind = an_earlier_copy(&progress, as_they_stand.clone());
             let rejoined = read(&behind, &stream, true);
             assert_eq!(rejoined.messages(), whole.messages(), "{at}, rejoining");
@@ -364,16 +367,22 @@ fn an_open_tool_call_is_restated_beside_the_text_and_the_call_that_finished() {
 
     let prelude = progress.prelude().messages(folded.messages()).into_events();
 
+    let thought = Message::Reasoning(ReasoningMessage {
+        id: "r1".into(),
+        content: "The user wants a flight.".into(),
+        ..Default::default()
+    });
     let finished = ToolCall::new("c1", "search", r#"{"to":"LIS"}"#);
     let open = ToolCall::new("c2", "price", "");
     assert_eq!(
         prelude[1],
         Event::messages_snapshot(vec![
             history[0].clone(),
+            thought,
             assistant("a1", "Let me look.", vec![finished, open]),
             Message::tool("t1", "c1", "2 flights"),
         ]),
-        "the text and the finished call are untouched; the open call has no arguments"
+        "what is closed is untouched; the open call has no arguments"
     );
     assert_eq!(
         prelude[2..],
@@ -433,26 +442,94 @@ fn an_open_reasoning_block_its_message_and_a_step_are_reopened() {
     );
     let history = history();
     let progress = progress_after(&history, sent);
+    let whole = read(&history, &run, true);
+    let reopening = [
+        Event::step_started("plan"),
+        Event::reasoning_start("r1"),
+        Event::reasoning_message_start("r1"),
+        Event::reasoning_message_content("r1", "The user "),
+    ];
+    let joined = |prelude: &[Event]| read(&[], &[prelude, &run[sent.len()..]].concat(), true);
 
+    // The list a server folds from its events holds the reasoning message,
+    // partly written, and the snapshot holds it without its content: the
+    // rule for an open text message.
+    let folded = read(&history, sent, false);
+    assert_eq!(folded.reasoning_text(&"r1".into()), Some("The user "));
+    let prelude = progress
+        .prelude()
+        .messages(folded.messages())
+        .state(json!({ "step": 0 }))
+        .into_events();
+    let emptied = Message::Reasoning(ReasoningMessage {
+        id: "r1".into(),
+        ..Default::default()
+    });
+    assert_eq!(
+        prelude[1],
+        Event::messages_snapshot([history.clone(), vec![emptied]].concat())
+    );
+    assert_eq!(prelude[3..], reopening);
+    assert_eq!(joined(&prelude).messages(), whole.messages());
+
+    // A list that leaves it out gives the same events after the snapshot.
     let prelude = progress
         .prelude()
         .messages(history.clone())
         .state(json!({ "step": 0 }))
         .into_events();
-    assert_eq!(
-        prelude[3..],
-        [
-            Event::step_started("plan"),
-            Event::reasoning_start("r1"),
-            Event::reasoning_message_start("r1"),
-            Event::reasoning_message_content("r1", "The user "),
-        ]
-    );
+    assert_eq!(prelude[1], Event::messages_snapshot(history.clone()));
+    assert_eq!(prelude[3..], reopening);
+    assert_eq!(joined(&prelude).messages(), whole.messages());
+}
 
-    let stream = [prelude.as_slice(), &run[sent.len()..]].concat();
-    let (whole, joined) = (read(&history, &run, true), read(&[], &stream, true));
-    assert_eq!(joined.messages(), whole.messages());
-    assert_eq!(joined.reasoning(), whole.reasoning());
+#[test]
+fn a_client_that_holds_part_of_a_reasoning_message_needs_a_snapshot_that_carries_reasoning() {
+    let run = run();
+    let sent = sent_until(
+        &run,
+        |event| matches!(event, Event::ReasoningMessageContent(e) if e.delta == "The user "),
+    );
+    let history = history();
+    let progress = progress_after(&history, sent);
+    let whole = read(&history, &run, true);
+    // The client was reading, and holds less of the thought than the run
+    // has produced.
+    let behind = [
+        history.clone(),
+        vec![Message::Reasoning(ReasoningMessage {
+            id: "r1".into(),
+            content: "The ".into(),
+            ..Default::default()
+        })],
+    ]
+    .concat();
+    let rejoined = |messages: Vec<Message>| {
+        let prelude = progress
+            .prelude()
+            .messages(messages)
+            .state(json!({ "step": 0 }))
+            .into_events();
+        read(
+            &behind,
+            &[prelude.as_slice(), &run[sent.len()..]].concat(),
+            true,
+        )
+    };
+
+    // A list that carries the reasoning message replaces the client's copy.
+    let folded = read(&history, sent, false);
+    let carried = rejoined(folded.messages().to_vec());
+    assert_eq!(carried.messages(), whole.messages());
+
+    // A list that carries no reasoning message says nothing about the
+    // client's, which 1.0 has it keep. The restated content lands on the
+    // copy it kept: the one case the messages have to cover themselves.
+    let silent = rejoined(history.clone());
+    assert_eq!(
+        silent.reasoning_text(&"r1".into()),
+        Some("The The user wants a flight.")
+    );
 }
 
 #[test]
@@ -518,6 +595,50 @@ fn a_message_opened_again_keeps_what_it_held_before() {
     let stream = [prelude.as_slice(), rest.as_slice()].concat();
     let joined = read(&[], &stream, true);
     assert_eq!(joined.text_of("a1"), Some("Lisbon it is. Booking now."));
+}
+
+#[test]
+fn a_snapshot_sent_with_a_message_open_is_where_its_content_starts_again() {
+    let cases = [
+        // The snapshot carries the open message, rewritten: a client takes
+        // the snapshot's copy and adds what follows to it.
+        (
+            vec![Message::assistant("a1", "Rewritten.")],
+            "Rewritten. More.",
+        ),
+        // The snapshot leaves it out: a client drops the message, and what
+        // follows starts it afresh.
+        (Vec::new(), " More."),
+    ];
+    for (snapshot, in_the_end) in cases {
+        let run = [
+            Event::run_started(THREAD, RUN),
+            Event::text_message_start("a1", TextMessageRole::Assistant),
+            Event::text_message_content("a1", "Hello"),
+            Event::messages_snapshot(snapshot),
+            Event::text_message_content("a1", " More"),
+            Event::text_message_content("a1", "."),
+            Event::text_message_end("a1"),
+            Event::run_finished_success(THREAD, RUN),
+        ];
+        let whole = read(&[], &run, true);
+        assert_eq!(whole.text_of("a1"), Some(in_the_end));
+
+        let (sent, rest) = run.split_at(5);
+        let progress = progress_after(&[], sent);
+        let folded = read(&[], sent, false);
+        let prelude = progress.prelude().messages(folded.messages()).into_events();
+        assert_eq!(
+            prelude[2..],
+            [
+                Event::text_message_start("a1", TextMessageRole::Assistant),
+                Event::text_message_content("a1", " More"),
+            ],
+            "only what followed the snapshot is restated"
+        );
+        let joined = read(&[], &[prelude.as_slice(), rest].concat(), true);
+        assert_eq!(joined.messages(), whole.messages());
+    }
 }
 
 #[test]
@@ -647,7 +768,6 @@ fn a_client_that_holds_the_run_up_to_a_point_is_sent_each_start_alone() {
             read_into(&mut client, &[prelude.as_slice(), missed].concat(), true);
             let at = format!("reconnected after {held} events");
             assert_eq!(client.messages(), whole.messages(), "{at}");
-            assert_eq!(client.reasoning(), whole.reasoning(), "{at}");
             assert_eq!(client.subagents(), whole.subagents(), "{at}");
             assert_eq!(client.state(), whole.state(), "{at}");
         }

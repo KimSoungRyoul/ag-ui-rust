@@ -6,8 +6,9 @@
 //! that lost its connection and came back. Such a client cannot be handed the
 //! run's stream from where it now stands. A stream begins with `RUN_STARTED`,
 //! or with `RUN_ERROR` for a run that failed before it began, and a client
-//! rejects any other first event. It rejects content for a message it never
-//! saw open in the same way.
+//! rejects any other first event. It rejects what continues or closes
+//! something it never saw open in the same way: the arguments or the end of
+//! a tool call, the end of a step, reasoning content.
 //!
 //! [`RunProgress`] folds the events of a run, as they are sent, into what the
 //! run has open and what each open thing holds so far. From that it builds
@@ -95,9 +96,9 @@
 //! # The conversation is yours to supply
 //!
 //! A prelude restates what is open. What is closed — the earlier turns, the
-//! messages this run has finished, the tool calls that ended and their
-//! results — is the conversation, and the server holds it: this module does
-//! not rebuild a message list from events. Give it to
+//! messages and reasoning messages this run has finished, the tool calls
+//! that ended and their results — is the conversation, and the server holds
+//! it: this module does not rebuild a message list from events. Give it to
 //! [`Prelude::messages`].
 //!
 //! A server that stores events and not messages folds them with the
@@ -153,19 +154,20 @@
 //!
 //! # What is open is taken out of the messages
 //!
-//! A message list folded from the events holds the open message, partly
-//! written, and the open tool call, with part of its arguments. Sent as it
-//! is and followed by the start and everything so far, it would give the
-//! client that text twice.
+//! A message list folded from the events holds what is open as well: the
+//! message being written, the reasoning message being thought, the tool call
+//! with part of its arguments. Sent as it is and followed by each start and
+//! everything so far, it would give the client that text twice.
 //!
 //! So a prelude does one thing with the messages it is given, whatever they
-//! hold: it takes out what it restates. An open text message keeps its place
-//! in the list and whatever else it carries — the tool calls it made that
-//! have ended — and loses its text. An open tool call stays in its assistant
-//! message, without its arguments. An open reasoning message loses its
-//! content. The start and the content event that follow then fill them in,
-//! on every client and from any list: one that holds the open entities as
-//! they stand, one that holds an earlier copy, one that leaves them out.
+//! hold: it takes out what it restates. An open text message or reasoning
+//! message keeps its place in the list and whatever else it carries — the
+//! tool calls it made that have ended — and loses its text. An open tool
+//! call stays in its assistant message, without its arguments. The start and
+//! the content event that follow then fill them in, on every client and from
+//! any list: one that holds the open entities as they stand, one that holds
+//! an earlier copy, one that leaves them out. A message the list leaves out
+//! is created by its start, after the messages of the snapshot.
 //!
 //! The other way round was possible: keep the open entities in the
 //! snapshot, set to what the run has produced, and send each start alone.
@@ -181,17 +183,19 @@
 //! carries and drops one it leaves out, and the restated content then lands
 //! on an empty entity. Two cases are beyond what a prelude can do:
 //!
-//! - **An entity opened again.** A start for an id that was open before —
-//!   earlier in the run, or in the history — adds to what the entity held.
-//!   The fold knows what was produced since that start and not what was
-//!   there before it, so it takes out the supplied text only where that text
-//!   ends with what was produced since. A list folded from the same events
-//!   does.
+//! - **An entity that held something before.** A start for an id that was
+//!   in use before, in the history or earlier in the run, adds to what the
+//!   entity held. So does content that follows a `MESSAGES_SNAPSHOT` which
+//!   carried the entity while it was open. The fold knows what was produced
+//!   since and not what was there before, so it takes that ending out of
+//!   the supplied text, where the text ends with it. A list folded from the
+//!   same events does; an earlier copy keeps what it has.
 //! - **Reasoning the snapshot is silent about.** A client keeps its
 //!   reasoning messages through a snapshot that carries none, so a client
 //!   that holds part of an open reasoning message keeps that part, and the
 //!   restated content is added to it. Supply the reasoning messages in the
-//!   list when clients come back holding some.
+//!   list when clients come back holding some. A list folded with the
+//!   `Applier` has them.
 //!
 //! # A client that holds the run up to a point
 //!
@@ -206,7 +210,10 @@
 //! State, unless [`Prelude::state`] is given it: a `STATE_DELTA` that
 //! follows needs the state it patches. Activities, which are messages and
 //! belong in the list. A reasoning message that has ended inside a block
-//! that has not: it is closed, and so part of the conversation.
+//! that has not: it is closed, and so part of the conversation. A subagent
+//! that has finished, unless an active one descends from it: what it said
+//! is in the conversation under its id, and its announcement and outcome
+//! are not sent again.
 
 use std::collections::HashSet;
 
@@ -331,10 +338,11 @@ pub enum OpenEntity {
 #[derive(Clone, Debug)]
 struct Slot {
     entity: OpenEntity,
-    /// Whether the id was in use before this opening, in the history or
-    /// earlier in the run. A start for such an id adds to what the entity
-    /// held, and what that was the fold does not know.
-    reopened: bool,
+    /// Whether the entity held something before the content recorded here:
+    /// its id was in use before this opening, in the history or earlier in
+    /// the run, or a snapshot has restated it since. What that was the fold
+    /// does not know. A client adds to it.
+    held_before: bool,
 }
 
 /// One subagent's lifecycle, as the run sent it.
@@ -345,23 +353,21 @@ struct Announced {
     end: Option<Event>,
 }
 
-/// The ids that have named an entity able to hold streamed content.
+/// The ids that have named something able to hold streamed content.
+///
+/// An id names one message, whatever its role: a start for the id of a
+/// message a client holds continues that message, text or reasoning.
 #[derive(Clone, Debug, Default)]
 struct Seen {
     messages: HashSet<MessageId>,
     tool_calls: HashSet<ToolCallId>,
-    reasoning: HashSet<MessageId>,
 }
 
 impl Seen {
     /// Records the ids a restated conversation carries.
     fn conversation(&mut self, messages: &[Message]) {
         for message in messages {
-            let ids = match message {
-                Message::Reasoning(_) => &mut self.reasoning,
-                _ => &mut self.messages,
-            };
-            ids.insert(message.id().clone());
+            self.messages.insert(message.id().clone());
             if let Message::Assistant(assistant) = message {
                 for call in assistant.tool_calls.iter().flatten() {
                     self.tool_calls.insert(call.id.clone());
@@ -380,10 +386,10 @@ impl RunProgress {
     /// Learns the conversation the run continues — the request's `messages`
     /// — before its first event.
     ///
-    /// For the reason [`EventVerifier::seed`](crate::server::verify) gives:
-    /// a result in the run may answer a call the history made. It also tells
-    /// the fold which ids were in use before the run, which is what lets it
-    /// recognise a message that is opened again.
+    /// A result in the run may answer a call the history made, which the
+    /// ordering check has to know of. The fold has to know which ids were in
+    /// use before the run: a start for one of them adds to a message that
+    /// already holds something.
     pub fn seed(&mut self, history: &[Message]) {
         self.verifier.seed(history);
         self.seen.conversation(history);
@@ -529,10 +535,13 @@ impl RunProgress {
                 terminal.base_mut().raw_event = None;
                 self.ended.push(terminal);
             }
-            Event::MessagesSnapshot(e) => self.seen.conversation(&e.messages),
+            Event::MessagesSnapshot(e) => {
+                self.seen.conversation(&e.messages);
+                self.restated_by(&e.messages);
+            }
 
             Event::TextMessageStart(e) => {
-                let reopened = !self.seen.messages.insert(e.message_id.clone());
+                let held_before = !self.seen.messages.insert(e.message_id.clone());
                 let mut start = e.clone();
                 start.base = restated(&e.base);
                 self.push(
@@ -541,7 +550,7 @@ impl RunProgress {
                         content: String::new(),
                         chunked,
                     },
-                    reopened,
+                    held_before,
                 );
             }
             Event::TextMessageContent(e) => {
@@ -563,7 +572,7 @@ impl RunProgress {
             }),
 
             Event::ToolCallStart(e) => {
-                let reopened = !self.seen.tool_calls.insert(e.tool_call_id.clone());
+                let held_before = !self.seen.tool_calls.insert(e.tool_call_id.clone());
                 let mut start = e.clone();
                 start.base = restated(&e.base);
                 self.push(
@@ -572,7 +581,7 @@ impl RunProgress {
                         args: String::new(),
                         chunked,
                     },
-                    reopened,
+                    held_before,
                 );
             }
             Event::ToolCallArgs(e) => {
@@ -607,7 +616,7 @@ impl RunProgress {
                 matches!(entity, OpenEntity::ReasoningBlock { start } if start.message_id == e.message_id)
             }),
             Event::ReasoningMessageStart(e) => {
-                let reopened = !self.seen.reasoning.insert(e.message_id.clone());
+                let held_before = !self.seen.messages.insert(e.message_id.clone());
                 let mut start = e.clone();
                 start.base = restated(&e.base);
                 self.push(
@@ -616,7 +625,7 @@ impl RunProgress {
                         content: String::new(),
                         chunked,
                     },
-                    reopened,
+                    held_before,
                 );
             }
             Event::ReasoningMessageContent(e) => {
@@ -667,8 +676,58 @@ impl RunProgress {
         }
     }
 
-    fn push(&mut self, entity: OpenEntity, reopened: bool) {
-        self.open.push(Slot { entity, reopened });
+    fn push(&mut self, entity: OpenEntity, held_before: bool) {
+        self.open.push(Slot {
+            entity,
+            held_before,
+        });
+    }
+
+    /// Folds in a `MESSAGES_SNAPSHOT` that arrived with something open.
+    ///
+    /// A snapshot replaces the messages it carries and drops the ones it
+    /// leaves out, open or not. So what an open entity has produced starts
+    /// again from here: on top of the snapshot's copy when the snapshot
+    /// carries it, and on top of nothing when it does not. A reasoning
+    /// message stays as it was through a snapshot that carries no reasoning
+    /// at all.
+    fn restated_by(&mut self, snapshot: &[Message]) {
+        let carries = |id: &MessageId| snapshot.iter().any(|message| message.id() == id);
+        let carries_call = |id: &ToolCallId| {
+            snapshot.iter().any(|message| match message {
+                Message::Assistant(assistant) => {
+                    let mut calls = assistant.tool_calls.iter().flatten();
+                    calls.any(|call| &call.id == id)
+                }
+                _ => false,
+            })
+        };
+        let declares_reasoning = snapshot
+            .iter()
+            .any(|message| matches!(message, Message::Reasoning(_)));
+        for slot in &mut self.open {
+            slot.held_before = match &mut slot.entity {
+                OpenEntity::Message { start, content, .. } => {
+                    content.clear();
+                    carries(&start.message_id)
+                }
+                OpenEntity::ToolCall { start, args, .. } => {
+                    args.clear();
+                    carries_call(&start.tool_call_id)
+                }
+                OpenEntity::ReasoningMessage { start, content, .. } => {
+                    let carried = carries(&start.message_id);
+                    if !carried && !declares_reasoning {
+                        continue;
+                    }
+                    content.clear();
+                    carried
+                }
+                OpenEntity::ReasoningBlock { .. }
+                | OpenEntity::Step { .. }
+                | OpenEntity::Subagent { .. } => continue,
+            };
+        }
     }
 
     fn close(&mut self, is: impl Fn(&OpenEntity) -> bool) {
@@ -700,13 +759,24 @@ impl RunProgress {
     fn take_out(&self, messages: &mut [Message]) {
         for slot in &self.open {
             match &slot.entity {
-                OpenEntity::Message { start, content, .. } => {
+                // An id names one message, whatever its role: text and
+                // reasoning alike land on the message that has the id.
+                OpenEntity::Message {
+                    start: TextMessageStartEvent { message_id, .. },
+                    content,
+                    ..
+                }
+                | OpenEntity::ReasoningMessage {
+                    start: ReasoningMessageStartEvent { message_id, .. },
+                    content,
+                    ..
+                } => {
                     let held = messages
                         .iter_mut()
-                        .filter(|message| message.id() == &start.message_id)
+                        .filter(|message| message.id() == message_id)
                         .filter_map(streamed_text);
                     for text in held {
-                        retract(text, content, slot.reopened);
+                        retract(text, content, slot.held_before);
                     }
                 }
                 OpenEntity::ToolCall { start, args, .. } => {
@@ -716,16 +786,7 @@ impl RunProgress {
                     });
                     for call in calls.flatten() {
                         if call.id == start.tool_call_id {
-                            retract(&mut call.function.arguments, args, slot.reopened);
-                        }
-                    }
-                }
-                OpenEntity::ReasoningMessage { start, content, .. } => {
-                    for message in messages.iter_mut() {
-                        if let Message::Reasoning(reasoning) = message {
-                            if reasoning.id == start.message_id {
-                                retract(&mut reasoning.content, content, slot.reopened);
-                            }
+                            retract(&mut call.function.arguments, args, slot.held_before);
                         }
                     }
                 }
@@ -771,8 +832,8 @@ fn restated(base: &BaseEvent) -> BaseEvent {
     }
 }
 
-/// The text of a message that `TEXT_MESSAGE_CONTENT` adds to, where it has
-/// one: what a client appends a delta to.
+/// The text of a message that a content event adds to, where it has one:
+/// what a client appends a delta to.
 fn streamed_text(message: &mut Message) -> Option<&mut String> {
     fn last_text(parts: &mut [InputContent]) -> Option<&mut String> {
         match parts.last_mut() {
@@ -792,17 +853,17 @@ fn streamed_text(message: &mut Message) -> Option<&mut String> {
             ToolContent::Text(text) => Some(text),
             ToolContent::Parts(parts) => last_text(parts),
         },
-        // Reasoning is its own entity, and an activity holds no text.
-        Message::Reasoning(_) | Message::Activity(_) => None,
+        Message::Reasoning(reasoning) => Some(&mut reasoning.content),
+        Message::Activity(_) => None,
     }
 }
 
-/// Leaves in `held` what an entity held before it was opened, given what it
-/// has produced since.
-fn retract(held: &mut String, since: &str, reopened: bool) {
-    if !reopened {
-        // Opened for the first time, so it held nothing: whatever the list
-        // has under this id was produced since, however much of it.
+/// Leaves in `held` what an entity held before the content recorded for it,
+/// given that content.
+fn retract(held: &mut String, since: &str, held_before: bool) {
+    if !held_before {
+        // It held nothing, so whatever the list has under this id was
+        // produced since, however much of it.
         held.clear();
     } else if held.ends_with(since) {
         held.truncate(held.len() - since.len());
@@ -1180,9 +1241,9 @@ mod tests {
 
     #[test]
     fn only_what_was_produced_since_the_start_is_taken_out() {
-        let taken_out = |held: &str, since: &str, reopened: bool| {
+        let taken_out = |held: &str, since: &str, held_before: bool| {
             let mut held = held.to_owned();
-            retract(&mut held, since, reopened);
+            retract(&mut held, since, held_before);
             held
         };
         // Opened for the first time: nothing was there before, so nothing
