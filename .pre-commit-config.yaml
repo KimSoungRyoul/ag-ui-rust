@@ -64,9 +64,10 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         # Nothing in the tree comes close. The vendored A2UI conformance
-        # fixtures are the biggest files in the repo — 107 KiB at the top — and
-        # they are excluded above, so this never sees them; the largest file it
-        # does see is crates/ag-ui-a2ui/src/validate.rs at 82 KiB. Pinned to the
+        # fixtures are the biggest files in the repo — 166 KiB at the top — and
+        # they are excluded above, so this never sees them; the largest source
+        # file it does see is crates/ag-ui-a2ui/src/core/validate.rs at 104 KiB,
+        # and the largest of any kind is a 166 KiB lockfile. Pinned to the
         # upstream default rather than left implicit, so a change to that
         # default cannot start rejecting a file that has always been fine.
         args: [--maxkb=500]
