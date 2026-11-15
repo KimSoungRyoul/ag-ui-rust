@@ -51,6 +51,17 @@ ag-ui-a2ui = { version = "=0.5.0-alpha.3", features = ["ag-ui"] }
   to `true` to require populated bindings. Invalid pointers and defined
   non-array template collections still fail; defined nested collection items
   are checked individually.
+- `Validator` rejects a child written inline. A catalog's `ComponentId`,
+  `ChildList` and `Tabs` child references must be component id strings, never
+  objects or bindings, and a `ChildList` template needs both `componentId` and
+  `path`. These checks run even with `ValidateOptions.check_prop_types` set to
+  `false`. With it `true`, a literal string must also be one of the values the
+  catalog's `enum` lists. All of these values were accepted before.
+- `validate_json_messages`, `validate_messages` and the recovery loop report
+  each defect once, where the same mistake was often reported twice. Locators
+  name the message that last wrote the component, for example
+  `messages[1].updateComponents.components[0].child` rather than
+  `components[0].child`. Update code that matches on the old paths.
 - Use `RendererMessage::from_json` or a reusable
   `client_schema::ClientSchemaValidator` with `schema-validation` to validate
   raw renderer messages before serde applies compatibility defaults.
