@@ -8,8 +8,8 @@
 //! domain free of the protocol is what makes [`crate::agent`] short.
 
 use ag_ui::Tool;
+use ag_ui_a2ui::adapters::agui::SurfaceSpec;
 use ag_ui_a2ui::message::Component;
-use ag_ui_a2ui::toolkit::ops::SurfaceSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 

@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 ag-ui = { workspace = true, features = ["server", "client", "http", "axum"] }
-ag-ui-a2ui = { workspace = true, features = ["ag-ui"] }
+ag-ui-a2ui = { workspace = true, features = ["ag-ui-server"] }
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true

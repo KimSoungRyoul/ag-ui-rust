@@ -109,15 +109,17 @@ Root update는 모델 전체를 교체하므로, 오래된 요청이나 동시 �
 ## AG-UI로 전송하기
 
 ```rust
-use ag_ui::server::{AgentState, Result, RunContext};
-use ag_ui_a2ui::{ValidatedSurface, agui::A2uiRunContextExt};
+use ag_ui::server::{AgentState, Error, Result, RunContext};
+use ag_ui_a2ui::{ValidatedSurface, adapters::agui::SurfacePainter};
 
 fn send<S: AgentState>(ctx: &mut RunContext<S>, surface: &ValidatedSurface) -> Result<()> {
-    ctx.send_a2ui(surface)
+    let mut painter = SurfacePainter::from_history(ctx.messages()).map_err(Error::agent)?;
+    painter.paint(ctx, surface.operations())?;
+    Ok(())
 }
 ```
 
-`render_a2ui` 도구 호출과 `a2ui_operations` 결과를 발행합니다. 성공 반환은 로컬 이벤트 enqueue를 확인하며,
+`render_a2ui` 도구 호출과 `a2ui_operations` 결과, 그리고 프런트엔드가 화면을 그리는 `a2ui-surface` activity를 발행합니다. 성공 반환은 로컬 이벤트 enqueue를 확인하며,
 renderer의 수신·반영을 확인한 것은 아닙니다. 전송 오류가 나도 앞선 이벤트가 나갔을 수 있으므로 전체 batch를 자동 재전송하지 마세요.
 이 경로는 전체 생성·검증 후 전송하며, 부분 화면 전송과 생성 재시도를 한 API에 섞지 않습니다.
 

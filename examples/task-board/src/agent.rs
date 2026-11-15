@@ -26,11 +26,8 @@
 //! `SUBAGENT_FINISHED`. The supervisor's own reply follows, untagged.
 
 use ag_ui::server::{Agent, Error, Result, RunContext};
-use ag_ui::{Interrupt, JsonObject, Message, ResumeStatus, RunOutcome};
-use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
-use ag_ui_a2ui::find_prior_surface_in;
-use ag_ui_a2ui::toolkit::envelope::wrap_as_operations_envelope;
-use ag_ui_a2ui::toolkit::ops::{Intent, assemble_ops};
+use ag_ui::{Interrupt, JsonObject, ResumeStatus, RunOutcome};
+use ag_ui_a2ui::adapters::agui::{Intent, SurfacePainter, assemble_ops};
 use serde_json::json;
 
 use crate::board::{self, Board};
@@ -64,7 +61,11 @@ impl Agent for TaskBoard {
     async fn run(&self, ctx: &mut RunContext<Board>) -> Result<RunOutcome> {
         let said = ctx.last_user_text().unwrap_or_default();
         let command = Command::parse(&said);
-        let intent = surface_intent(ctx.messages());
+        // What the frontend holds. The agent stores nothing between runs, so
+        // the answer is in the conversation the client sent: the adapter
+        // replays the operations its tool results carry. A conversation that
+        // does not replay is one with nothing on screen.
+        let painter = SurfacePainter::from_history(ctx.messages()).unwrap_or_default();
 
         // Only this request's answer counts, so the pending decision is read
         // before anything is emitted. `Copy`ing the status out ends the borrow
@@ -84,7 +85,7 @@ impl Agent for TaskBoard {
         stream(&mut step, &reply)?;
 
         if report.render {
-            render(&mut step, intent)?;
+            render(&mut step, painter)?;
         }
         Ok(RunOutcome::Success)
     }
@@ -385,33 +386,30 @@ fn stream(ctx: &mut RunContext<Board>, text: &str) -> Result<()> {
     message.end()
 }
 
-/// Ships the board as an A2UI surface, in a tool result envelope.
+/// Paints the board as an A2UI surface: a `render_a2ui` tool call whose
+/// result is the operations, then the `a2ui-surface` activity a frontend
+/// draws from.
 ///
 /// The one call that does not go through [`offered`]: `render_a2ui` is the
 /// carrier the A2UI toolkits agreed on, not a tool a frontend offers, and
 /// neither AG-UI nor this SDK says whether an agent may call a tool that was
 /// never offered. It does here, as `e2e/tests/a2ui_surface.rs` does.
-fn render(ctx: &mut RunContext<Board>, intent: Intent) -> Result<()> {
-    let spec = board::surface(ctx.state());
-    let envelope =
-        wrap_as_operations_envelope(&assemble_ops(intent, &spec)).map_err(Error::agent)?;
-
-    let mut call = ctx.tool_call(RENDER_A2UI_TOOL_NAME)?;
-    call.args_json(&json!({"surfaceId": board::SURFACE_ID}))?;
-    call.result(envelope)?;
-    Ok(())
-}
-
-/// `Create` the first time the thread renders a surface, `Update` afterwards.
 ///
-/// The agent stores nothing between runs, so the answer comes from the
-/// conversation the client sent: the toolkit replays the operations already in
-/// history and reports what the user is looking at.
-fn surface_intent(messages: &[Message]) -> Intent {
-    match find_prior_surface_in(messages) {
-        Some(prior) if !prior.deleted => Intent::Update,
-        _ => Intent::Create,
-    }
+/// `Create` the first time the thread renders the surface, `Update`
+/// afterwards: re-creating a surface that is on screen is an error.
+fn render(ctx: &mut RunContext<Board>, mut painter: SurfacePainter) -> Result<()> {
+    let spec = board::surface(ctx.state());
+    let on_screen = painter
+        .surfaces()
+        .get(board::SURFACE_ID)
+        .is_some_and(|surface| !surface.deleted);
+    let intent = if on_screen {
+        Intent::Update
+    } else {
+        Intent::Create
+    };
+    painter.paint(ctx, &assemble_ops(intent, &spec))?;
+    Ok(())
 }
 
 /// What the user asked for.

@@ -150,7 +150,7 @@ jobs:
       - run: cargo check --all-targets -p ag-ui --all-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features agent
-      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features toolkit
+      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features a2a
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features schema-validation
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features author
@@ -200,6 +200,8 @@ jobs:
           done
           exit $status
 
+  # The official web core is fed what the AG-UI adapter sends: every batch in
+  # order, and every `a2ui-surface` activity on its own.
   renderer-interop:
     name: official A2UI renderer core
     runs-on: ubuntu-latest
@@ -211,13 +213,9 @@ jobs:
         with:
           node-version: 26
           cache: npm
-          cache-dependency-path: |
-            examples/review-desk/interop/package-lock.json
-            e2e/a2ui-interop/package-lock.json
+          cache-dependency-path: examples/review-desk/interop/package-lock.json
       - run: npm ci --ignore-scripts --prefix examples/review-desk/interop
       - run: npm test --prefix examples/review-desk/interop
-      - run: npm ci --ignore-scripts --prefix e2e/a2ui-interop
-      - run: npm test --prefix e2e/a2ui-interop
 
   # Edition 2024 stabilised in exactly 1.85, so `rust-version` has no slack.
   msrv:
@@ -312,7 +310,7 @@ jobs:
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features axum
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features agent
-      - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features toolkit
+      - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features a2a
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features ag-ui
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features schema-validation
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features author

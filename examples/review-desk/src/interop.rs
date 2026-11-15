@@ -2,23 +2,39 @@
 
 use ag_ui::server::RunContext;
 use ag_ui::{Event, RunAgentInput};
-use ag_ui_a2ui::agui::A2uiRunContextExt;
+use ag_ui_a2ui::adapters::agui::{Painted, SurfacePainter, unwrap_operations_envelope};
 use ag_ui_a2ui::constants::OFFICIAL_BASIC_CATALOG_ID;
-use ag_ui_a2ui::surface::SurfaceStore;
 use ag_ui_a2ui::{A2uiAuthor, A2uiVersion, AgentMessage, Component};
-use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::client::AppResult;
 
-#[derive(Serialize)]
 struct Step {
     name: &'static str,
     messages: Vec<AgentMessage>,
 }
 
-/// Serializes authored AG-UI tool results and typed low-level A2UI updates.
-/// No field is changed by the JavaScript consumer before processing.
+/// What a run sent for one paint: the tool result and the activities after it.
+fn sent(events: Vec<Event>) -> AppResult<Painted> {
+    let mut envelope = None;
+    let mut activities = Vec::new();
+    for event in events {
+        match event {
+            Event::ToolCallResult(result) => envelope = Some(result.content.to_text()),
+            Event::ActivitySnapshot(_) => activities.push(event),
+            _ => {}
+        }
+    }
+    Ok(Painted {
+        envelope: envelope.ok_or("a paint without a tool result")?,
+        activities,
+    })
+}
+
+/// Serializes what the AG-UI adapter sends for authored and typed low-level
+/// A2UI updates: each batch as its tool result carries it, and the surface
+/// activity as it stands after the batch. No field is changed by the
+/// JavaScript consumer before processing.
 pub async fn fixture() -> AppResult<Value> {
     let version = A2uiVersion::V0_9_1;
     let id = "official-interop";
@@ -55,31 +71,14 @@ pub async fn fixture() -> AppResult<Value> {
         })
         .await?;
 
-    // Extract the exact payloads send_a2ui put in TOOL_CALL_RESULT; this also
-    // exercises the optional AG-UI integration, not only a hand-written fixture.
-    let (mut ctx, mut receiver) = RunContext::<()>::new(RunAgentInput::new("interop", "export"))?;
-    ctx.send_a2ui(&created)?;
-    ctx.send_a2ui(&edited)?;
-    let mut batches = receiver.drain().into_iter().filter_map(|event| {
-        let Event::ToolCallResult(result) = event else {
-            return None;
-        };
-        Some(serde_json::from_str::<Value>(&result.content.to_text()))
-    });
-    let create = ag_ui_a2ui::toolkit::envelope::unwrap_operations_envelope(
-        &batches.next().ok_or("missing create batch")??,
-    )?;
-    let edit = ag_ui_a2ui::toolkit::envelope::unwrap_operations_envelope(
-        &batches.next().ok_or("missing edit batch")??,
-    )?;
     let mut steps = vec![
         Step {
             name: "create",
-            messages: create,
+            messages: created.operations().to_vec(),
         },
         Step {
             name: "edit",
-            messages: edit,
+            messages: edited.operations().to_vec(),
         },
     ];
     steps.push(Step {
@@ -169,24 +168,45 @@ pub async fn fixture() -> AppResult<Value> {
         ],
     });
 
-    // Every exported operation also traverses the SDK's public state machine.
-    // Undefined is preserved locally; no snapshot value is sent as wire data.
-    let mut store = SurfaceStore::new();
+    // Every step is painted by the adapter, in one run. The authored two go
+    // through a `RunContext`, so what is exported is what `SurfacePainter::paint`
+    // put in TOOL_CALL_RESULT and ACTIVITY_SNAPSHOT; the rest are settled
+    // without one, which is the same code less the send. The painter's store is
+    // the SDK's public state machine. Undefined is preserved locally; no
+    // snapshot value is sent as wire data.
+    let (mut ctx, mut receiver) = RunContext::<()>::new(RunAgentInput::new("interop", "export"))?;
+    let mut painter = SurfacePainter::new();
     let mut exported_steps = Vec::new();
-    for step in &steps {
-        for message in &step.messages {
-            store.apply(message)?;
-        }
-        let mut exported = serde_json::to_value(step)?;
-        exported["sdkData"] = serde_json::to_value(
-            store
-                .get(id)
-                .filter(|surface| !surface.deleted)
-                .map(|surface| &surface.data_model),
-        )?;
-        exported_steps.push(exported);
+    for (index, step) in steps.iter().enumerate() {
+        let painted = if index < 2 {
+            painter.paint(&mut ctx, &step.messages)?;
+            sent(receiver.drain())?
+        } else {
+            painter.settle(&format!("call-{index}"), &step.messages)?
+        };
+        let batch = unwrap_operations_envelope(&serde_json::from_str(&painted.envelope)?)?;
+        let [Event::ActivitySnapshot(activity)] = painted.activities.as_slice() else {
+            return Err("one surface is painted as one activity".into());
+        };
+        let data = painter
+            .surfaces()
+            .get(id)
+            .filter(|surface| !surface.deleted)
+            .map(|surface| &surface.data_model);
+        exported_steps.push(json!({
+            "name": step.name,
+            "messages": batch,
+            "activity": {
+                "messageId": activity.message_id,
+                "activityType": activity.activity_type,
+                "replace": activity.replace,
+                "content": activity.content,
+            },
+            "sdkData": data,
+        }));
     }
-    let final_data = store
+    let final_data = painter
+        .surfaces()
         .get(id)
         .ok_or("recreated surface missing")?
         .data_model
