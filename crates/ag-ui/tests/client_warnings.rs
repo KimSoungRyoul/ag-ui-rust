@@ -136,6 +136,70 @@ async fn a_newer_protocol_version_is_reported() {
     assert!(warnings[0].contains("1.1"), "{warnings:?}");
 }
 
+/// AG-UI 1.1 is still a draft (`spec/draft/schema.json`; `xtask drift-check
+/// --draft` lists it). It adds `encryptedValueType` beside every
+/// `encryptedValue` and `error` on `TOOL_CALL_RESULT`. A 1.0 consumer removes
+/// both and says so, and keeps the encrypted value itself.
+#[tokio::test]
+async fn the_1_1_draft_fields_are_stripped_with_a_warning() {
+    let opaque = |mut message: Value| {
+        message["encryptedValue"] = json!("blob");
+        message["encryptedValueType"] = json!("vendor/kind");
+        message
+    };
+    let mut thread = thread(
+        vec![
+            started(),
+            json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+                opaque(json!({"id": "u", "role": "user", "content": "hi"})),
+                opaque(json!({"id": "s", "role": "system", "content": "be brief"})),
+                opaque(json!({"id": "d", "role": "developer", "content": "be kind"})),
+                opaque(json!({"id": "a", "role": "assistant", "toolCalls": [opaque(json!({
+                    "id": "c1", "type": "function",
+                    "function": {"name": "look", "arguments": "{}"}
+                }))]})),
+                opaque(json!({"id": "t", "role": "tool", "toolCallId": "c1", "content": "ok"})),
+                opaque(json!({"id": "r", "role": "reasoning", "content": "hmm"})),
+            ]}),
+            json!({"type": "REASONING_ENCRYPTED_VALUE", "subtype": "message", "entityId": "r",
+                   "encryptedValue": "blob", "encryptedValueType": "vendor/kind"}),
+            json!({"type": "TOOL_CALL_START", "toolCallId": "c2", "toolCallName": "look"}),
+            json!({"type": "TOOL_CALL_END", "toolCallId": "c2"}),
+            json!({"type": "TOOL_CALL_RESULT", "messageId": "t2", "toolCallId": "c2",
+                   "content": "partial", "error": "timed out"}),
+            finished(),
+        ],
+        100,
+    );
+    let mut run = thread.send("go").unwrap();
+    assert_eq!(
+        warning_updates(&mut run).await,
+        [
+            "unrecognised property at /messages/0/encryptedValueType",
+            "unrecognised property at /messages/1/encryptedValueType",
+            "unrecognised property at /messages/2/encryptedValueType",
+            "unrecognised property at /messages/3/toolCalls/0/encryptedValueType",
+            "unrecognised property at /messages/3/encryptedValueType",
+            "unrecognised property at /messages/4/encryptedValueType",
+            "unrecognised property at /messages/5/encryptedValueType",
+            "unrecognised property at /encryptedValueType",
+            "unrecognised property at /error",
+        ]
+    );
+    drop(run);
+
+    let messages = serde_json::to_value(thread.messages()).unwrap();
+    let text = messages.to_string();
+    assert!(!text.contains("encryptedValueType"), "{messages:#}");
+    for message in messages.as_array().unwrap().iter().take(6) {
+        assert_eq!(message["encryptedValue"], "blob", "{message:#}");
+    }
+    assert_eq!(messages[3]["toolCalls"][0]["encryptedValue"], "blob");
+    let result = messages.as_array().unwrap().last().unwrap();
+    assert_eq!(result["id"], "t2", "{messages:#}");
+    assert_eq!(result.get("error"), None, "{result:#}");
+}
+
 #[tokio::test]
 async fn a_registered_null_is_reported_once_per_run() {
     let report = report(vec![

@@ -46,8 +46,10 @@ Not the protobuf definitions. When the port was written,
 `sdks/typescript/packages/proto/src/proto/events.proto` had an `Event` oneof with 21 arms — no
 reasoning, no activity, no thinking, no `tool_call_result` — and there was no JSON Schema export
 upstream. Both have changed: AG-UI 1.0 is published as a JSON Schema, and `events.proto` is now
-generated from it with all 31 1.0 event types. Whether this crate gains a protobuf encoder is
-tracked in [#46](https://github.com/KimSoungRyoul/ag-ui-rust/issues/46).
+generated from it with all 31 1.0 event types. The `protobuf` feature still has no encoder,
+for a different reason: the stock TypeScript client asks for `text/event-stream`, so nothing
+would ask for the binary encoding, and it would have to be kept in step with a generated schema.
+`encode::protobuf` has the detail ([#46](https://github.com/KimSoungRyoul/ag-ui-rust/issues/46)).
 
 So the port is hand-written against `core/src/events.ts`, and `xtask drift-check` in CI is what
 keeps it honest. Detection, not generation: it parses the upstream `EventType` enum and Zod

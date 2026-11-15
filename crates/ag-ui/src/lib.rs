@@ -97,7 +97,8 @@
     not(feature = "sse"),
     doc = "- `sse` *(default, off in this build)* — `SseFormatter` and `text/event-stream` framing."
 )]
-//! - `protobuf` — the binary transport's media type and a documented stub; the
+//! - `protobuf` — a documented stub that names the binary media type and
+//!   encodes nothing. The stock TypeScript client asks for SSE; the
 //!   `encode::protobuf` module explains why there is no encoder.
 //! - `schemars` — derives `schemars::JsonSchema` on the public types.
 //! - `utoipa` — derives `utoipa::ToSchema` on the public types.
