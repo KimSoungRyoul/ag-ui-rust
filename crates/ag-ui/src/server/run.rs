@@ -342,6 +342,8 @@ impl<A: Agent> Runner<A> {
     ///
     /// An entity the earlier driver opened has no handle here. Continue and
     /// close it with [`RunContext::emit`], naming its id.
+    /// [`echo_input`](Self::echo_input) has nothing to echo on, since no
+    /// `RUN_STARTED` is sent.
     ///
     /// ```
     /// # use ag_ui::{Event, EventType, RunAgentInput, RunOutcome, TextMessageRole};

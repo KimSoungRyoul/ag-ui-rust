@@ -996,10 +996,10 @@ impl Prelude<'_> {
     /// restates taken out](self#what-is-open-is-taken-out-of-the-messages),
     /// so no list makes a client hold anything twice.
     ///
-    /// A snapshot is the carrier to prefer when a client may already hold
-    /// part of the conversation: it replaces the messages it carries and
-    /// drops the ones it leaves out, where [`echo_input`](Self::echo_input)
-    /// only adds.
+    /// A snapshot is the carrier to prefer. Every client takes it, and it
+    /// is right for a client that already holds part of the conversation:
+    /// it replaces the messages it carries and drops the ones it leaves out,
+    /// where [`echo_input`](Self::echo_input) at most adds.
     pub fn messages(mut self, messages: impl Into<Vec<Message>>) -> Self {
         self.messages = Some(messages.into());
         self.restate = true;
@@ -1010,11 +1010,14 @@ impl Prelude<'_> {
     /// [`Runner::echo_input`](crate::server::Runner::echo_input) does on a
     /// run's own.
     ///
-    /// A client adds the echoed messages whose ids it does not hold, and
-    /// leaves the ones it holds as they are. So this carries the
-    /// conversation to a client that holds none of it, and
-    /// [`messages`](Self::messages) is for the rest. What the prelude
-    /// restates is taken out of `input.messages` as it is out of a snapshot.
+    /// The reference TypeScript client adds the echoed messages whose ids
+    /// it does not hold and leaves the ones it holds as they are, so the
+    /// echo carries the conversation to such a client when it holds none of
+    /// it. This crate's own client reads the echo for who owns which
+    /// message and adds nothing to its conversation.
+    /// [`messages`](Self::messages) is the carrier for the rest. What the
+    /// prelude restates is taken out of `input.messages` as it is out of a
+    /// snapshot.
     ///
     /// The echo is the whole request: state, tools, context and forwarded
     /// properties as well as the messages.
