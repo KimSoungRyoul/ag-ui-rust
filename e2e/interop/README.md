@@ -1,8 +1,9 @@
 # AG-UI schema semantics
 
 This suite feeds the same boundary cases to the Zod schemas of
-`@ag-ui/core@1.0.4` (`@ag-ui/core/schemas`) and the Rust SDK. npm pins the
-official SDK and its `zod` peer dependency with an integrity-checked lockfile.
+`@ag-ui/core@1.0.4` (`@ag-ui/core/schemas`), on `zod@4.6.7`, and the Rust SDK.
+npm pins the official SDK and its `zod` peer dependency with an
+integrity-checked lockfile.
 The Rust probe uses ordinary typed decoding and `RunOutcome::validate()` for its
 non-empty interrupt rule. It never substitutes an SDK parser with a test parser.
 
