@@ -179,11 +179,6 @@ impl<T> RemoteAgent<T> {
     pub fn transport(&self) -> &T {
         &self.transport
     }
-
-    /// Unwraps the transport.
-    pub fn into_transport(self) -> T {
-        self.transport
-    }
 }
 
 impl<T: Transport> RemoteAgent<T> {

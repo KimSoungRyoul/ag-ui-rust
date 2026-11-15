@@ -56,7 +56,7 @@ client = ["dep:futures-core", "dep:futures-util", "dep:json-patch", "dep:getrand
 http = ["client", "sse", "dep:reqwest"]
 
 # ---- axum: mount a hosted agent on a router ----
-axum = ["server", "sse", "dep:axum", "dep:futures-util"]
+axum = ["server", "sse", "dep:axum"]
 
 [dependencies]
 serde.workspace = true

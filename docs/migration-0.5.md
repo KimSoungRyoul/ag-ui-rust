@@ -245,6 +245,14 @@ These are on `main` and not yet in a published version.
 - A path in a protocol error or warning names a list member by its index in the
   input. It used to skip the members dropped before it, so the third of
   `[unknown, unknown, malformed]` was reported as `/0`.
+- `BaseEvent::new()` is removed. Use `BaseEvent::default()`, which it returned.
+- `client::Verifier::is_finished()` is removed, and nothing replaces it. A caller that needs
+  to know whether a run ended watches for `RUN_FINISHED` or `RUN_ERROR` itself.
+- `client::RemoteAgent::into_transport()` is removed. Borrow the transport with
+  `transport()`, or keep a clone or an `Arc` of it before passing it to `RemoteAgent::new`.
+- The constructors `SseFrame::event(e)` and `SseFrame::comment(text)` on
+  `encode::sse::SseFrame` (also `axum::SseFrame`) are removed. Write the variants instead:
+  `SseFrame::Event(e)` and `SseFrame::Comment(text.into())`.
 
 ## Verify the upgrade
 

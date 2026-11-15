@@ -141,11 +141,6 @@ impl Verifier {
         Self::default()
     }
 
-    /// Whether the run has reached a terminal event.
-    pub fn is_finished(&self) -> bool {
-        self.finished
-    }
-
     /// Checks one event against the rules, and records it.
     ///
     /// # Errors
