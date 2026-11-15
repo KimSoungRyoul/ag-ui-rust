@@ -80,10 +80,12 @@ impl<'a, S> MessageHandle<'a, S> {
     /// Emits `TEXT_MESSAGE_END` and consumes the handle.
     ///
     /// Only worth calling over letting the handle drop when you want to see the
-    /// error: `Drop` cannot report one.
+    /// error: `Drop` cannot report one. Like `Drop`, it still closes the
+    /// message after the run was cancelled.
     pub fn end(mut self) -> Result<()> {
         self.ended = true;
-        self.sink.emit(Event::text_message_end(self.id.clone()))
+        self.sink
+            .emit_forced(Event::text_message_end(self.id.clone()))
     }
 }
 
@@ -114,9 +116,12 @@ impl<S: AgentState> MessageHandle<'_, S> {
 impl<S> Drop for MessageHandle<'_, S> {
     fn drop(&mut self) {
         if !self.ended {
-            // Nowhere to report a failure to; a dead channel or a cancelled run
-            // makes the terminator moot anyway.
-            let _ = self.sink.emit(Event::text_message_end(self.id.clone()));
+            // Past cancellation too: a cancelled run still closes what it
+            // opened. Nowhere to report a failure to; a dead channel makes the
+            // terminator moot anyway.
+            let _ = self
+                .sink
+                .emit_forced(Event::text_message_end(self.id.clone()));
         }
     }
 }

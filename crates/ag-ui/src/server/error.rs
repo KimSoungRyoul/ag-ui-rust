@@ -40,6 +40,8 @@ pub enum Error {
     ///
     /// Every emit after cancellation fails with this, so an agent that uses `?`
     /// on its emits unwinds promptly without any cancellation code of its own.
+    /// A handle's terminator is the exception, so that unwinding still closes
+    /// what the run had open and the run ends with a cancelled `RUN_FINISHED`.
     #[error("the run was cancelled")]
     Cancelled,
 

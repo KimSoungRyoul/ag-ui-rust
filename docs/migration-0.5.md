@@ -197,6 +197,29 @@ These are on `main` and not yet in a published version.
   `content` and `error` carry `reason`; the call and the answer stay in the transcript and
   are sent with the next run. The refusal now reads "unanswered tool calls must be answered
   with tool messages, or abandoned", not "pending frontend tool calls".
+- A hosted run cancelled while a message, tool call, reasoning block, step or subagent is
+  open now ends with `RUN_FINISHED` and the cancelled outcome. Alpha.3 ended it with
+  `RUN_ERROR`, code `PROTOCOL_VIOLATION`. A handle's terminator — `end()`, `finish()`,
+  `fail()`, `suspend()` or `Drop` — now goes out after cancellation, and the driver closes a
+  subagent left active with `SUBAGENT_ERROR`, code `CANCELLED`. Every other emit still fails
+  with `Error::Cancelled`.
+- Without the `verify` feature, nothing is sent after `RUN_FINISHED` or `RUN_ERROR` any more:
+  such an emit fails with `Rule::RunEnded`, as it already did with `verify` on.
+- A hosted run learns the conversation it continues from the request's `messages`, whether
+  or not `echo_input` is on. A resumed run can now report `TOOL_CALL_RESULT` for a tool call
+  an earlier run opened; alpha.3 ended such a run with `RUN_ERROR` (rule `unknown-id`)
+  unless the input was echoed. `FilterToolCalls` and `SubagentVisibility::hidden()` judge
+  that result by the earlier call, with or without the echo. `StreamTransformer` gains a
+  provided `seed(&mut self, history: &[Message])` method that receives the same history;
+  existing implementations compile unchanged.
+- The Axum endpoint and the `AgUiInput` extractor refuse a request with no `Content-Type`
+  with `415`, code `UNSUPPORTED_MEDIA_TYPE` (`axum::Error::MissingContentType`). Alpha.3
+  read such a body as JSON. Send `Content-Type: application/json`; for a client that cannot,
+  `AgentEndpoint::allow_missing_content_type()` accepts an unlabelled body on a mounted
+  endpoint, and a hand-written handler can take `Bytes` and call `axum::extract::decode`.
+  The documentation no longer presents the check as a CSRF defence: a required JSON media
+  type means a browser must preflight a cross-origin run request, which leaves the decision
+  to your CORS policy, and it is not authentication.
 
 ## Verify the upgrade
 

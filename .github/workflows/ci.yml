@@ -209,6 +209,10 @@ jobs:
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui-server
       - run: cargo check --all-targets -p ag-ui-a2ui --all-features
       - run: cargo check --all-targets -p ag-ui --features axum
+      # Every other test run has the ordering verifier compiled in. This one
+      # runs the server without it, so what is documented to hold "even when
+      # `verify` is disabled" is executed, not only compiled.
+      - run: cargo test -p ag-ui --no-default-features --features server,sse
 
   # Every example built as the only package in the build, the way
   # `cargo run -p <example>` builds it. Every other job builds the workspace,
