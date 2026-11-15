@@ -170,11 +170,13 @@ types alone. The schema engine is pinned to `jsonschema 0.61.2` without its
 network/filesystem resolvers. Rust 1.85 and wasm builds are covered; browser
 entropy support is target- and feature-specific to the schema engine.
 
-Low-level constructors default to `v0.9`; `.with_version(A2uiVersion::V0_9_1)`
-selects the other supported discriminator. Both accept the four server
-operations: create, component update, data update, and delete. Candidate RPC
-payload shapes are retained as Rust types but cannot be encoded/decoded as
-v0.9-family messages; this is not v1.0 support.
+Low-level constructors default to `v0.9`; `.with_version(…)` selects another
+discriminator. Every version accepts the four server operations: create,
+component update, data update, and delete. The protocol modules also speak
+`1.0` (`A2uiVersion::V1_0`): a message is written and read as its version
+spells it. The agent layer, the author and the adapters speak the v0.9 family.
+The function-call messages of v1.0 are retained as Rust types but cannot be
+encoded or decoded.
 
 `BASIC_CATALOG_ID` is a historical toolkit ID. `A2uiAuthor::basic` uses the
 canonical `OFFICIAL_BASIC_CATALOG_ID` declared by the pinned schema. No alias is
@@ -188,9 +190,11 @@ The MIME type remains `application/a2ui+json`.
 
 ## Verification
 
-`tests/official_examples.rs` validates all 43 pinned official basic catalog
-examples against both their schemas and final surface state. Fixture provenance
-is recorded in `tests/spec_v0_9/README.md`.
+`tests/official_examples.rs` runs the example surfaces upstream publishes
+beside each basic catalog, 44 of v0.9, 43 of v0.9.1 and 43 of v1.0, against the
+schemas and the catalog of their own version, message by message and as the
+surfaces they leave. The files are under `tests/conformance/`, at their
+upstream paths, from the commit `tests/conformance/README.md` records.
 
 `tests/author.rs` exercises the official schema engine, local refs, targeted
 async generation, catalog negotiation, and multi-surface transitions.
@@ -198,17 +202,21 @@ async generation, catalog negotiation, and multi-surface transitions.
 The official conformance suite is vendored whole, and every suite in it is
 accounted for by name: executed, or skipped with the reason. The executed
 suites are the seven of the v0.9 core (validator, data context, data model,
-expressions, message processor, catalog, common types), the twelve of the
-agent tier that do not need another output format than direct JSON, and the
-A2A extension suite, with the four v0.9.1 transcripts; they report **521 passed,
-21 expected divergences, 4 failing**, and the per-suite counts are asserted by
-the test. The divergences
+expressions, message processor, catalog, common types), the nine of the v1.0
+core that need no function call between the two sides (validator, message
+processor, data deletion, data-model pointers, reserved keys, several
+catalogs, composition constraints, the `@index` function, validation
+results), the twelve of the agent tier that do not need another output format
+than direct JSON, and the A2A extension suite, with the four v0.9.1
+transcripts; they report **753 passed, 34 expected divergences, 5 failing**,
+and the per-suite counts are asserted by the test. The divergences
 are executed with pinned expectations: an unreachable component is a warning,
 an empty path segment is the empty key, a binding that cannot resolve is an
 error, and a streamed `updateDataModel` that states no path is emitted when its
 text closes. The failures are listed by name with what each case wants: two about
-removing a path that is not there, and two that ask the built-in catalog to be
-the published document. The three suites of the SDK design upstream had before
+removing a path that is not there from a v0.9 data model, and three about
+JSON Schema validation of a v1.0 message that draws from several catalogs.
+The three suites of the SDK design upstream had before
 its agent layer are not executed, since the code they describe is gone. See
 [conformance notes](tests/conformance/README.md) and [schema provenance](schemas/README.md).
 

@@ -1012,6 +1012,12 @@ fn resolve(case: &Value, args: &Value, lowered: &mut bool) -> Step {
     Ok(())
 }
 
+/// Reads a version a case states, for the agent layer: one of the v0.9
+/// family, until the agent layer speaks 1.0 in the next step of #42.
+fn agent_version(stated: &str) -> Option<A2uiVersion> {
+    A2uiVersion::parse(stated).filter(|version| A2uiVersion::V0_9.accepts(*version))
+}
+
 /// The version a case hands a provider, as this crate names it.
 fn provider_version(args: &Value, lowered: bool) -> Step<Option<A2uiVersion>> {
     let Some(stated) = args.get("protocol_version").and_then(Value::as_str) else {
@@ -1022,7 +1028,7 @@ fn provider_version(args: &Value, lowered: bool) -> Step<Option<A2uiVersion>> {
     } else {
         stated
     };
-    match A2uiVersion::parse(stated) {
+    match agent_version(stated) {
         Some(version) => Ok(Some(version)),
         // A case that states a version other than its document's needs a
         // second protocol family to state it in.
@@ -1148,7 +1154,7 @@ fn read_capabilities(case: &Value, args: &Value) -> Step {
         .and_then(Value::as_str)
         .unwrap_or_default();
     // Each case states its own version, so it runs as written or not at all.
-    let Some(version) = A2uiVersion::parse(stated) else {
+    let Some(version) = agent_version(stated) else {
         return if stated.starts_with("v0.8") {
             skip(NEEDS_V0_8, "capabilities of a v0.8 renderer")
         } else {
@@ -1717,7 +1723,7 @@ fn transcript(case: &Value) -> Step {
         .get("protocolVersion")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let Some(version) = A2uiVersion::parse(stated) else {
+    let Some(version) = agent_version(stated) else {
         return skip(NEEDS_V1_0, format!("a {stated} transcript"));
     };
     let catalogs = names(case.get("catalogPaths"))

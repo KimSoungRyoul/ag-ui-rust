@@ -297,17 +297,25 @@ impl RendererState {
             if surface.components.is_empty() {
                 continue;
             }
-            let Some(summary) = self.processor.catalog(&surface.catalog_id) else {
+            let catalog_id = surface.catalog_id.as_deref().unwrap_or_default();
+            let Some(summary) = self.processor.catalog(catalog_id) else {
                 return Err(inactive_catalog(
                     format!("surfaces[{surface_id:?}]"),
-                    &surface.catalog_id,
+                    catalog_id,
                     &self.catalogs,
                 ));
             };
             let origin = self.store().origin(surface_id);
             let found = Validator::new(summary).validate_stored(self.store(), surface);
             report.errors.extend(found.errors);
-            for violation in summary.composition_violations(&surface.components) {
+            // A version that constrains composition has it in the report
+            // already.
+            let violations = if surface.spoken_version().constrains_composition() {
+                Vec::new()
+            } else {
+                summary.composition_violations(&surface.components)
+            };
+            for violation in violations {
                 // `components[3].children[0]`: the position in the surface,
                 // then where in that component. Name the message instead when
                 // one of this answer's wrote the component.
@@ -423,7 +431,7 @@ impl RendererState {
                             .surface_id
                             .as_deref()
                             .and_then(|surface_id| self.store().get(surface_id))
-                            .map(|surface| surface.catalog_id.clone())
+                            .and_then(|surface| surface.catalog_id.clone())
                             .unwrap_or_default(),
                     ),
                 };

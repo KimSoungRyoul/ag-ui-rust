@@ -6,6 +6,7 @@
 
 use serde_json::{Map, Number, Value};
 
+use super::version::A2uiVersion;
 use crate::error::{Error, Result};
 
 /// Longest template [`parse_template`] reads, in characters.
@@ -57,16 +58,50 @@ impl TemplatePart {
     ///
     /// [`Scope::resolve_dynamic`](crate::binding::Scope::resolve_dynamic)
     /// evaluates the result.
+    ///
+    /// That is the spelling of the v0.9 family. [`TemplatePart::to_json_in`]
+    /// writes the part as another version does.
     pub fn to_json(&self) -> Value {
+        self.to_json_in(A2uiVersion::DEFAULT)
+    }
+
+    /// The part as the `DynamicValue` a component of `version` would carry in
+    /// its place.
+    ///
+    /// Before v1.0 a path is `{"path": …}` and a call is
+    /// `{"call": …, "args": {…}, "returnType": "any"}`. In v1.0 they are
+    /// `{"@path": …}` and `{"@call": …, "args": {…}}`: a v1.0 call states no
+    /// return type on the wire.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::A2uiVersion;
+    /// use ag_ui_a2ui::binding::parse_template;
+    /// use serde_json::json;
+    ///
+    /// let parts = parse_template("${/name} is #${@index(offset: 1)}")?;
+    /// assert_eq!(parts[0].to_json_in(A2uiVersion::V1_0), json!({"@path": "/name"}));
+    /// assert_eq!(
+    ///     parts[2].to_json_in(A2uiVersion::V1_0),
+    ///     json!({"@call": "@index", "args": {"offset": 1}})
+    /// );
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    pub fn to_json_in(&self, version: A2uiVersion) -> Value {
         match self {
             Self::Literal(value) => value.clone(),
-            Self::Path(path) => serde_json::json!({ "path": path }),
+            Self::Path(path) => version.path(path.as_str()),
             Self::Call { name, args } => {
                 let args: Map<String, Value> = args
                     .iter()
-                    .map(|(name, value)| (name.clone(), value.to_json()))
+                    .map(|(name, value)| (name.clone(), value.to_json_in(version)))
                     .collect();
-                serde_json::json!({ "call": name, "args": args, "returnType": "any" })
+                let mut call = version.call(name.as_str(), Value::Object(args));
+                // The v0.9 family states what a call returns; v1.0 leaves it
+                // to the catalog.
+                if !version.reserves_at_keys() {
+                    call["returnType"] = Value::String("any".to_string());
+                }
+                call
             }
         }
     }

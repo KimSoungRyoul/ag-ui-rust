@@ -52,7 +52,7 @@ use ag_ui_a2ui::binding::{Scope, absolute_path, parse_template};
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::processor::{MessageProcessor, Rejection, RejectionKind};
 use ag_ui_a2ui::schema::SchemaBundle;
-use ag_ui_a2ui::schema_validation::{SchemaValidator, validate_common_type};
+use ag_ui_a2ui::schema_validation::{SchemaValidator, validate_common_type_in};
 use ag_ui_a2ui::surface::{Lifecycle, SurfaceStore};
 use ag_ui_a2ui::validate::{ErrorCode, ValidateOptions, ValidationReport, Validator};
 use ag_ui_a2ui::version::A2uiVersion;
@@ -175,23 +175,23 @@ const SUITES: &[Suite] = &[
     run("core/validator_v0_9.yaml", [39, 3, 5, 0]),
     run("core/data_context.yaml", [9, 2, 0, 0]),
     run("core/data_model.yaml", [45, 4, 1, 2]),
-    run("core/expressions.yaml", [92, 0, 6, 0]),
+    run("core/expressions.yaml", [97, 0, 1, 0]),
     run("core/message_processor_v0_9.yaml", [42, 2, 4, 0]),
-    run("core/catalog.yaml", [14, 3, 54, 2]),
-    run("core/common_types.yaml", [8, 0, 14, 0]),
+    run("core/catalog.yaml", [48, 8, 16, 1]),
+    run("core/common_types.yaml", [19, 0, 3, 0]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
 
     // --- core tier: A2UI v1.0 ------------------------------------------------------------------
-    skip("core/validator_v1_0.yaml", 49, Why::V1_0, "envelope, schema and topology validation of v1.0 messages"),
-    skip("core/message_processor_v1_0.yaml", 84, Why::V1_0, "the v1.0 message processor"),
-    skip("core/message_processor_scaling.yaml", 3, Why::V1_0, "timing of the v1.0 message processor"),
-    skip("core/data_deletion.yaml", 7, Why::V1_0, "updateDataModel removal by null"),
-    skip("core/data_model_pointers.yaml", 7, Why::V1_0, "data-model pointer rules in v1.0 messages"),
-    skip("core/reserved_keys.yaml", 10, Why::V1_0, "`@`-prefixed reserved keys"),
-    skip("core/multi_catalog.yaml", 8, Why::V1_0, "several catalogs on one surface"),
-    skip("core/composition_constraints.yaml", 10, Why::V1_0, "allowedParents and allowedChildren through the v1.0 processor"),
-    skip("core/index_function.yaml", 4, Why::V1_0, "the `@index` function in v1.0 templates"),
-    skip("core/validation_result.yaml", 6, Why::V1_0, "per-component validation results"),
+    run("core/validator_v1_0.yaml", [56, 2, 2, 0]),
+    run("core/message_processor_v1_0.yaml", [73, 4, 5, 2]),
+    skip("core/message_processor_scaling.yaml", 3, Why::Timing, "the v1.0 message processor: time against the number of messages"),
+    run("core/data_deletion.yaml", [14, 0, 0, 0]),
+    run("core/data_model_pointers.yaml", [14, 0, 0, 0]),
+    run("core/reserved_keys.yaml", [10, 0, 0, 0]),
+    run("core/multi_catalog.yaml", [5, 1, 2, 0]),
+    run("core/composition_constraints.yaml", [9, 1, 0, 0]),
+    run("core/index_function.yaml", [1, 0, 3, 0]),
+    run("core/validation_result.yaml", [0, 0, 7, 0]),
     skip("core/rpc_functions.yaml", 33, Why::V1_0, "callRendererFunction and its response"),
     skip("core/agent_function_routing.yaml", 43, Why::V1_0, "routing function calls to the agent with callAgentFunction"),
 
@@ -475,17 +475,28 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
         "core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]",
         "removing a path that does not exist creates the containers on the way to it (#42)",
     ),
+    // A schema is one catalog's. What a message draws from another catalog
+    // than its surface's own is checked by name, and not against that
+    // catalog's schema.
     (
-        "core/catalog.yaml::test_v09_basic_catalog_from_json",
-        "Catalog::basic() is not the published v0.9 catalog read back: it has its own id, \
-         declares `checks` itself where the document takes it from the Checkable mixin, and \
-         has no List.listStyle",
+        "core/message_processor_v1_0.yaml::test_v10_function_call_naming_catalog_with_invalid_args_errors",
+        OTHER_CATALOG_SCHEMA,
     ),
     (
-        "core/catalog.yaml::test_v09_basic_catalog_to_json",
-        "Catalog::basic() was not read from a document and has none to give",
+        "core/message_processor_v1_0.yaml::test_v10_call_in_list_with_invalid_args_errors",
+        OTHER_CATALOG_SCHEMA,
+    ),
+    (
+        "core/catalog.yaml::test_v10_published_basic_catalog_validates_nested_calls",
+        "a call that names another catalog than the one the schema was compiled for matches no \
+         function of that schema (#97)",
     ),
 ];
+
+/// Why the arguments of a call into another catalog go unchecked.
+const OTHER_CATALOG_SCHEMA: &str = "the arguments of a call that names another catalog than its \
+                                    surface's own are not held to that catalog's JSON Schema \
+                                    (#97)";
 
 /// Set `A2UI_CONFORMANCE_VERBOSE=1` to list every executed check by name.
 fn verbose() -> bool {
@@ -554,6 +565,41 @@ const DIVERGENCES: &[(&str, &str, &str)] = &[
         NOT_BUNDLED,
         REGISTRY,
     ),
+    // The built-in catalog is the published document, so the two are the
+    // same catalog. What is left of each case is the bundled schema.
+    (
+        "core/catalog.yaml::test_v09_basic_catalog_from_json",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    (
+        "core/catalog.yaml::test_v10_basic_catalog_from_json",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    (
+        "core/catalog.yaml::test_v10_published_mcp_catalog_is_self_contained",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    (
+        "core/catalog.yaml::test_v10_published_vegachart_catalog_is_self_contained",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    (
+        "core/catalog.yaml::test_v10_catalog_from_json_leaf_defs",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    // A processor holds the catalogs of every version it serves, and a
+    // surface has no list of its own.
+    (
+        "core/multi_catalog.yaml::test_multi_catalog_version_mismatch_error",
+        "accepted",
+        "a catalog of another version is refused where a surface, a component or a call names \
+         it, and not for being registered beside the surface's own",
+    ),
     // The same difference as in `core/validator_v0_9.yaml`: the component is
     // found and reported, and the message is not refused for it.
     (
@@ -561,7 +607,44 @@ const DIVERGENCES: &[(&str, &str, &str)] = &[
         r#"accepted, with unreachable ["orphan_comp"] on s1"#,
         "an unreachable component is a warning here, an error upstream",
     ),
+    (
+        "core/composition_constraints.yaml::test_composition_dropped_child_is_reported_as_orphan[step 1]",
+        r#"accepted, with unreachable ["h"] on s1"#,
+        "an unreachable component is a warning here, an error upstream",
+    ),
+    // The reply a renderer would send is the same, `RECURSION_LIMIT_EXCEEDED`.
+    // The v1.0 suite files a loop under `IntegrityError`, the v0.9 suite under
+    // `ValidationError`, and this crate under the kind its reply names.
+    (
+        "core/message_processor_v1_0.yaml::test_batch_atomic_rollback_on_candidate_topology_cycle[step 1]",
+        "refused as RecursionError: child_cycle at messages[0].updateComponents.components[1].children[0]",
+        "a loop of child references is a RecursionError here, as its renderer code says; the \
+         v1.0 suite files it under IntegrityError",
+    ),
+    // The store holds a component as it was sent. The bare `metadata` of the
+    // v1.0 drafts is read as the component's envelope where the catalog does
+    // not declare the name, and is not rewritten to `@metadata`.
+    (
+        "core/message_processor_v1_0.yaml::test_v10_update_components_stores_component_metadata",
+        "root.@metadata is absent",
+        LEGACY_KEPT,
+    ),
+    (
+        "core/message_processor_v1_0.yaml::test_v10_update_components_replaces_component_metadata",
+        "root.@metadata is absent",
+        LEGACY_KEPT,
+    ),
+    (
+        "core/message_processor_v1_0.yaml::test_v10_inline_catalog_id_and_metadata_standard_only_beside_inline_id",
+        "root.@metadata is absent",
+        LEGACY_KEPT,
+    ),
 ];
+
+/// Why a component sent with a bare envelope key of the v1.0 drafts is not
+/// read back under the `@` key.
+const LEGACY_KEPT: &str = "a component is stored as it was sent: a bare `metadata` of the v1.0 \
+                           drafts is validated as the envelope and not rewritten to `@metadata`";
 
 const TRAILING_SLASH: &str =
     "an empty path segment is the empty key here, as RFC 6901 reads it; the reference drops it";
@@ -958,7 +1041,8 @@ fn conformance_suite() {
 
 /// Actions of the core tier in the current layout. Each case is about one
 /// protocol version, and is run only at a version this crate speaks.
-const CORE_ACTIONS: [&str; 13] = [
+const CORE_ACTIONS: [&str; 14] = [
+    "select_catalog",
     "validate",
     "resolve_path",
     "data_model",
@@ -1012,12 +1096,14 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
         ("validate_common_type", Format::Current) => {
             settle(check, run_validate_common_type(case), tally);
         }
-        ("process_messages", Format::Current) => {
-            settle(check, run_process_messages(case), tally);
-        }
+        ("process_messages", Format::Current) => match process_messages_skip(case) {
+            Some(reason) => tally.record(check, Outcome::Skipped(reason.to_string())),
+            None => settle(check, run_process_messages(case), tally),
+        },
         ("get_renderer_data_model", Format::Current) => {
             settle(check, run_renderer_data_model(case), tally);
         }
+        ("select_catalog", Format::Current) => settle(check, run_select_catalog(case), tally),
         ("get_renderer_capabilities", Format::Current) => tally.record(
             check,
             Outcome::Skipped(
@@ -1203,19 +1289,16 @@ fn case_version(case: &Value) -> CaseVersion {
         return CaseVersion::Supported;
     };
     // The suites write a version with and without the `v`: "0.9" and "v0.9".
-    let wire = if stated.starts_with('v') {
-        stated.clone()
-    } else {
-        format!("v{stated}")
-    };
-    if A2uiVersion::parse(&wire).is_some() {
+    if A2uiVersion::from_number(&stated).is_some() {
         CaseVersion::Supported
-    } else if wire.starts_with("v0.8") {
+    } else if stated.trim_start_matches('v').starts_with("0.8") {
         CaseVersion::Unsupported(
-            "protocol v0.8: this crate targets the v0.9 wire format only".to_string(),
+            "protocol v0.8: this crate speaks v0.9, v0.9.1 and v1.0".to_string(),
         )
     } else {
-        CaseVersion::Unsupported(format!("protocol {stated}: A2UI v1.0 support is #42"))
+        CaseVersion::Unsupported(format!(
+            "protocol {stated}: not a version this crate speaks"
+        ))
     }
 }
 
@@ -1678,11 +1761,20 @@ fn strict_schema(document: &Value) -> Result<Option<SchemaValidator>, String> {
 fn case_processor(case: &Value) -> Result<MessageProcessor, Miss> {
     let setup = |what: String| Miss::new(what, "a processor for the case");
     let strict = case.get("strictMode") == Some(&Value::Bool(true));
-    let options = if strict {
-        conformance_options()
-    } else {
-        lenient_options()
+    let options = match case.get("validationConfig") {
+        // The rules of the case, where it states them: one it leaves out is
+        // strict. An unreachable component is reported here and never
+        // refused, so `allowOrphanComponents` has nothing to switch.
+        Some(config) => ValidateOptions {
+            allow_dangling_children: config.get("allowDanglingReferences")
+                == Some(&Value::Bool(true)),
+            require_root: false,
+            ..conformance_options()
+        },
+        None if strict => conformance_options(),
+        None => lenient_options(),
     };
+    let strict = strict || case.get("validationConfig").is_some();
     let mut processor = MessageProcessor::with_options(options);
     // Registers the schemas of `document` for the surfaces of catalog `id`.
     let with_schema = |processor: &mut MessageProcessor, id: &str, document: &Value| {
@@ -1699,12 +1791,21 @@ fn case_processor(case: &Value) -> Result<MessageProcessor, Miss> {
             ))),
         }
     };
-    for document in case
+    // A case states its version once; an inline catalog that states none is
+    // written for it, as the reference harnesses read one.
+    let stated = stated_case_version(case);
+    let inline: Vec<Value> = case
         .get("catalogs")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-    {
+        .chain(
+            case.get("catalog")
+                .filter(|catalog| catalog.get("catalogId").is_some()),
+        )
+        .map(|document| versioned(document, stated))
+        .collect();
+    for document in &inline {
         let catalog = Catalog::from_schema(document)
             .map_err(|error| setup(format!("an inline catalog was rejected: {error}")))?;
         let id = catalog.catalog_id.clone();
@@ -1730,26 +1831,73 @@ fn case_processor(case: &Value) -> Result<MessageProcessor, Miss> {
     let expects_catalog_error = case
         .pointer("/expectError/category")
         .and_then(Value::as_str)
-        == Some("CatalogError");
-    if let (Some((catalog, document)), false) = (published.first(), expects_catalog_error) {
-        let steps = case.get("steps").and_then(Value::as_array);
-        let batches = std::iter::once(case.get("messages"))
-            .chain(steps.into_iter().flatten().map(|step| step.get("messages")));
-        for message in batches.flat_map(message_list) {
-            let named = message
-                .pointer("/createSurface/catalogId")
-                .and_then(Value::as_str);
-            if let Some(id) = named.filter(|id| processor.catalog(id).is_none()) {
-                let mut alias = catalog.clone();
-                alias.catalog_id = id.to_string();
-                processor
-                    .register(alias)
-                    .map_err(|error| setup(error.to_string()))?;
+        == Some("CatalogError")
+        || case
+            .get("steps")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|step| {
+                step.pointer("/expectError/category")
+                    .and_then(Value::as_str)
+                    == Some("CatalogError")
+            });
+    if expects_catalog_error {
+        return Ok(processor);
+    }
+    // The suite's messages create their surfaces under ids of their own
+    // (`test-catalog-v10`, `basic`). As the reference harnesses do, such an id
+    // is another name for the catalog the case declares, and where the case
+    // declares none, for the basic catalog of the surface's version.
+    let steps = case.get("steps").and_then(Value::as_array);
+    let batches = std::iter::once(case.get("messages")).chain(
+        steps
+            .into_iter()
+            .flatten()
+            .map(|step| step.get("messages").or_else(|| step.get("payload"))),
+    );
+    for message in batches.flat_map(message_list) {
+        let Some(id) = message
+            .pointer("/createSurface/catalogId")
+            .and_then(Value::as_str)
+            .filter(|id| processor.catalog(id).is_none())
+        else {
+            continue;
+        };
+        let version = message
+            .get("version")
+            .and_then(Value::as_str)
+            .and_then(A2uiVersion::parse);
+        let alias = match (published.first(), inline.is_empty(), version) {
+            (Some((catalog, document)), _, _) => {
+                Some((catalog.clone().with_catalog_id(id), Some(document)))
+            }
+            (None, true, Some(version)) => {
+                Some((Catalog::basic_for(version).with_catalog_id(id), None))
+            }
+            _ => None,
+        };
+        if let Some((alias, document)) = alias {
+            processor
+                .register(alias)
+                .map_err(|error| setup(error.to_string()))?;
+            if let Some(document) = document {
                 with_schema(&mut processor, id, document)?;
             }
         }
     }
     Ok(processor)
+}
+
+/// `document` as a catalog of `version`, when it states no version itself.
+fn versioned(document: &Value, version: Option<A2uiVersion>) -> Value {
+    let mut document = document.clone();
+    if let (Some(version), Some(fields)) = (version, document.as_object_mut()) {
+        fields
+            .entry("protocolVersion")
+            .or_insert_with(|| Value::String(version.number().to_string()));
+    }
+    document
 }
 
 /// What a refusal was, written the way [`DIVERGENCES`] pins it.
@@ -1793,12 +1941,62 @@ fn refusal_says(phrase: &str, rejection: &Rejection) -> Option<bool> {
         } else if phrase.starts_with("Surface not found for message: ") {
             integrity && (first_says("does not exist") || first_says("was deleted"))
         } else if let Some(id) = phrase.strip_prefix("Catalog not found: ") {
+            // A surface's catalog is quoted; a call's is as the call wrote it.
+            let said = rejection.error.to_string();
             rejection.kind == RejectionKind::Catalog
-                && rejection.error.to_string().contains(&format!("{id:?}"))
+                && (said.contains(&format!("{id:?}")) || said.contains(&format!(": {id}")))
+        } else if phrase == "Catalog not found" {
+            rejection.kind == RejectionKind::Catalog
+        } else if phrase == "has no default catalogId" {
+            rejection.kind == RejectionKind::Catalog
+                && rejection.error.to_string().contains("no default catalogId")
         } else if phrase == "catalogId" {
+            errors.iter().any(|e| {
+                matches!(e.code, ErrorCode::MissingField | ErrorCode::InvalidValue)
+                    && e.path.to_lowercase().ends_with("catalogid")
+            })
+        } else if let Some(name) = phrase
+            .strip_prefix("Unrecognized function '")
+            .and_then(|rest| rest.strip_suffix('\''))
+        {
+            first_says(&format!("Unrecognized function '{name}'"))
+        } else if phrase == "valid UAX #31 identifier" {
+            first_says("valid UAX #31 identifier")
+        } else if phrase == "agentOnly" {
+            first_says("agentOnly")
+        } else if phrase.starts_with('@') {
+            // A system function that does not exist.
+            first_says(&format!("'{phrase}' is not a system function"))
+        } else if phrase.starts_with("Unsupported protocol version ") {
             errors
                 .iter()
-                .any(|e| e.code == ErrorCode::MissingField && e.path.ends_with(".catalogId"))
+                .any(|e| e.code == ErrorCode::InvalidValue && e.path.ends_with(".version"))
+        } else if phrase == "Missing required version field" {
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::MissingField && e.path.ends_with(".version"))
+        } else if phrase.starts_with("Component '") && phrase.contains(" cannot be placed under ") {
+            errors
+                .first()
+                .is_some_and(|e| e.code == ErrorCode::UnallowedParent && e.message == phrase)
+        } else if phrase.starts_with("Container '") && phrase.contains(" cannot contain child ") {
+            errors
+                .first()
+                .is_some_and(|e| e.code == ErrorCode::UnallowedChild && e.message == phrase)
+        } else if let Some((id, _)) = phrase
+            .strip_prefix("Catalog '")
+            .and_then(|rest| rest.split_once("' is not supported by surface '"))
+        {
+            // A catalog a component names that the surface cannot draw from.
+            rejection.kind == RejectionKind::Catalog && rejection.error.to_string().contains(id)
+        } else if rejection.kind == RejectionKind::Catalog
+            && rejection.error.to_string().contains(phrase)
+        {
+            // A catalog the refusal names, such as one of another version.
+            true
+        } else if first_says(&format!("'{}'", phrase.trim_matches('\''))) {
+            // A thing the error has to be about, which it names in quotes.
+            true
         } else if phrase == "missing an 'id'" {
             any(ErrorCode::MissingId)
         } else if phrase.starts_with("Cannot create component ")
@@ -1851,10 +2049,32 @@ fn refusal_says(phrase: &str, rejection: &Rejection) -> Option<bool> {
 fn check_refusal(rejection: &Rejection, wanted: &Value) -> Result<(), Miss> {
     unknown_key(
         wanted,
-        &["category", "surfaceId", "message", "rendererError"],
+        &[
+            "category",
+            "surfaceId",
+            "message",
+            "rendererError",
+            "code",
+            "path",
+            "details",
+        ],
         "expectError",
     )?;
     let actual = refusal_outcome(rejection);
+    // What a renderer would send back, which is where a case reads the code
+    // and the place of a failure from.
+    let reply = serde_json::to_value(rejection.renderer_error())
+        .map_err(|error| Miss::new(error.to_string(), "an error message"))?;
+    for (key, pointer) in [("code", "/error/code"), ("path", "/error/path")] {
+        if let Some(wanted) = wanted.get(key) {
+            if reply.pointer(pointer) != Some(wanted) {
+                return Err(Miss::new(
+                    format!("{actual}, sent as {reply}"),
+                    format!("{key} {wanted}"),
+                ));
+            }
+        }
+    }
     if let Some(category) = wanted.get("category").and_then(Value::as_str) {
         if !rejection.kind.is(category) {
             return Err(Miss::new(actual, format!("a {category}")));
@@ -1885,7 +2105,7 @@ fn check_refusal(rejection: &Rejection, wanted: &Value) -> Result<(), Miss> {
         let error = reply.get("error").unwrap_or(&Value::Null);
         unknown_key(
             error,
-            &["code", "surfaceId", "message"],
+            &["code", "surfaceId", "message", "path"],
             "rendererError.error",
         )?;
         let sent = serde_json::to_value(rejection.renderer_error())
@@ -1894,6 +2114,7 @@ fn check_refusal(rejection: &Rejection, wanted: &Value) -> Result<(), Miss> {
             ("/version", reply.get("version")),
             ("/error/code", error.get("code")),
             ("/error/surfaceId", error.get("surfaceId")),
+            ("/error/path", error.get("path")),
         ] {
             if wanted.is_some() && sent.pointer(pointer) != wanted {
                 return Err(Miss::new(
@@ -1903,12 +2124,17 @@ fn check_refusal(rejection: &Rejection, wanted: &Value) -> Result<(), Miss> {
             }
         }
         // The sentence is this crate's own. The fault it is about is the one
-        // `message` names, which was held above.
-        let says_something = sent
+        // `message` names, which was held above; a reply that names something
+        // else has to be found in the sentence.
+        let said = sent
             .pointer("/error/message")
             .and_then(Value::as_str)
-            .is_some_and(|text| !text.is_empty());
-        if error.get("message") != wanted.get("message") || !says_something {
+            .unwrap_or_default();
+        let says_something = !said.is_empty();
+        let named = error.get("message").and_then(Value::as_str);
+        let names_it = error.get("message") == wanted.get("message")
+            || named.is_some_and(|named| said.contains(named));
+        if !names_it || !says_something {
             return Err(Miss::new(
                 format!("a renderer error {sent}"),
                 format!("a renderer error {reply}"),
@@ -1920,6 +2146,11 @@ fn check_refusal(rejection: &Rejection, wanted: &Value) -> Result<(), Miss> {
 
 /// Holds the state a processor is in to a case's `expect.surfaces`.
 fn check_surfaces(processor: &MessageProcessor, expect: Option<&Value>) -> Result<(), Miss> {
+    check_store(processor.surfaces(), expect)
+}
+
+/// Holds the surfaces a store holds to a case's `expect.surfaces`.
+fn check_store(store: &SurfaceStore, expect: Option<&Value>) -> Result<(), Miss> {
     let Some(expect) = expect else {
         return Ok(());
     };
@@ -1932,12 +2163,12 @@ fn check_surfaces(processor: &MessageProcessor, expect: Option<&Value>) -> Resul
                 "exists",
                 "sendDataModel",
                 "theme",
+                "metadata",
                 "components",
                 "dataModel",
             ],
             "expect.surfaces",
         )?;
-        let store = processor.surfaces();
         let live = store.lifecycle(id) == Lifecycle::Live;
         if wanted.get("exists") == Some(&Value::Bool(false)) {
             if live {
@@ -1962,6 +2193,14 @@ fn check_surfaces(processor: &MessageProcessor, expect: Option<&Value>) -> Resul
                 ));
             }
         }
+        if let Some(metadata) = wanted.get("metadata") {
+            if surface.metadata.as_ref() != Some(metadata) {
+                return Err(Miss::new(
+                    format!("{id} has metadata {:?}", surface.metadata),
+                    format!("{id} to have metadata {metadata}"),
+                ));
+            }
+        }
         if let Some(send) = wanted.get("sendDataModel").and_then(Value::as_bool) {
             // Not asked for is not sent.
             if surface.send_data_model.unwrap_or(false) != send {
@@ -1971,7 +2210,9 @@ fn check_surfaces(processor: &MessageProcessor, expect: Option<&Value>) -> Resul
                 ));
             }
         }
-        let data = surface.data_model.to_json().unwrap_or(Value::Null);
+        // A slot that was removed from a list reads as `null` in a case, which
+        // writes its expectation as JSON.
+        let data = lossy_json(surface.data_model.root());
         if let Some(model) = wanted.get("dataModel") {
             // The whole model, so that a key that should be gone is seen.
             if !same_json(&data, model) {
@@ -2001,7 +2242,7 @@ fn check_surfaces(processor: &MessageProcessor, expect: Option<&Value>) -> Resul
             Value::Object(items) => items.iter().map(|(id, item)| (id.clone(), item)).collect(),
             _ => Vec::new(),
         };
-        let scope = Scope::root(&data);
+        let scope = Scope::root(&data).speaking(surface.spoken_version());
         for (component_id, wanted) in listed {
             let Some(component) = surface.components.iter().find(|c| c.id == component_id) else {
                 return Err(Miss::new(
@@ -2019,10 +2260,12 @@ fn check_surfaces(processor: &MessageProcessor, expect: Option<&Value>) -> Resul
                         .prop(key)
                         .map(|raw| scope.resolve_dynamic(raw).unwrap_or_else(|_| raw.clone())),
                 };
-                if !actual
-                    .as_ref()
-                    .is_some_and(|actual| same_json(actual, wanted))
-                {
+                // A key a case expects to be `null` is one it expects gone.
+                let held = match &actual {
+                    Some(actual) => same_json(actual, wanted),
+                    None => wanted.is_null(),
+                };
+                if !held {
                     return Err(Miss::new(
                         format!(
                             "{component_id}.{key} is {}",
@@ -2035,6 +2278,25 @@ fn check_surfaces(processor: &MessageProcessor, expect: Option<&Value>) -> Resul
         }
     }
     Ok(())
+}
+
+/// A model value as the JSON a case compares it with: an undefined slot of a
+/// list as `null`, and an undefined field left out.
+fn lossy_json(value: &ModelValue) -> Value {
+    match value {
+        ModelValue::Undefined | ModelValue::Null => Value::Null,
+        ModelValue::Bool(flag) => Value::Bool(*flag),
+        ModelValue::Number(number) => Value::Number(number.clone()),
+        ModelValue::String(text) => Value::String(text.clone()),
+        ModelValue::Array(slots) => Value::Array(slots.iter().map(lossy_json).collect()),
+        ModelValue::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .filter(|(_, field)| !matches!(field, ModelValue::Undefined))
+                .map(|(key, field)| (key.clone(), lossy_json(field)))
+                .collect(),
+        ),
+    }
 }
 
 /// One batch of a `process_messages` case: taken in as a transaction, and held
@@ -2070,6 +2332,7 @@ fn run_process_messages(case: &Value) -> Result<(), Miss> {
                 "catalogPaths",
                 "catalogs",
                 "strictMode",
+                "validationConfig",
                 "messages",
                 "steps",
                 "expect",
@@ -2088,19 +2351,40 @@ fn run_process_messages(case: &Value) -> Result<(), Miss> {
             case.get("expectError"),
         );
     };
+    let last = steps.len().saturating_sub(1);
     for (index, step) in steps.iter().enumerate() {
-        unknown_key(step, &["messages", "expect", "expectError"], "step")
-            .and_then(|()| {
-                process_step(
-                    &mut processor,
-                    step.get("messages"),
-                    step.get("expect"),
-                    step.get("expectError"),
-                )
-            })
-            .map_err(|miss| miss.at(index))?;
+        // A case that states what it expects once states it of its last step.
+        let of_case = |key: &str| case.get(key).filter(|_| index == last);
+        unknown_key(
+            step,
+            &["messages", "payload", "expect", "expectError"],
+            "step",
+        )
+        .and_then(|()| {
+            process_step(
+                &mut processor,
+                step.get("messages").or_else(|| step.get("payload")),
+                step.get("expect").or_else(|| of_case("expect")),
+                step.get("expectError").or_else(|| of_case("expectError")),
+            )
+        })
+        .map_err(|miss| miss.at(index))?;
     }
     Ok(())
+}
+
+/// A `process_messages` case this crate has nothing to run with, and why.
+fn process_messages_skip(case: &Value) -> Option<&'static str> {
+    let per_call = case
+        .get("steps")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|step| step.get("validationConfig").is_some());
+    per_call.then_some(
+        "not applicable: validation rules given for one call (the optional agent_renderer_app \
+         feature); a processor here has the options it was made with",
+    )
 }
 
 /// `get_renderer_data_model`: the `a2uiClientDataModel` metadata a renderer
@@ -2110,7 +2394,14 @@ fn run_renderer_data_model(case: &Value) -> Result<(), Miss> {
         case,
         &[
             &CASE_KEYS[..],
-            &["catalogPaths", "catalogs", "messages", "args", "expect"],
+            &[
+                "catalogPaths",
+                "catalogs",
+                "messages",
+                "steps",
+                "args",
+                "expect",
+            ],
         ]
         .concat(),
         "case",
@@ -2118,11 +2409,16 @@ fn run_renderer_data_model(case: &Value) -> Result<(), Miss> {
     let args = case.get("args").unwrap_or(&Value::Null);
     unknown_key(args, &["version"], "args")?;
     let mut processor = case_processor(case)?;
-    processor
-        .process_all(&message_list(case.get("messages")))
-        .map_err(|rejection| {
-            Miss::new(refusal_outcome(&rejection), "the messages to be accepted")
-        })?;
+    let steps = case.get("steps").and_then(Value::as_array);
+    let batches = std::iter::once(case.get("messages"))
+        .chain(steps.into_iter().flatten().map(|step| step.get("messages")));
+    for batch in batches.flatten() {
+        processor
+            .process_all(&message_list(Some(batch)))
+            .map_err(|rejection| {
+                Miss::new(refusal_outcome(&rejection), "the messages to be accepted")
+            })?;
+    }
     let version = args
         .get("version")
         .and_then(Value::as_str)
@@ -2141,6 +2437,176 @@ fn run_renderer_data_model(case: &Value) -> Result<(), Miss> {
     }
 }
 
+// --- select_catalog ---------------------------------------------------------
+
+/// `select_catalog`: the catalog a component or a function call of a surface
+/// is read from, on a surface whose version lets one name it.
+///
+/// A case describes the surface and what is drawn on it in the abstract. Here
+/// that becomes messages. A catalog is registered for each id the surface
+/// supports, declaring what the case draws from it and nothing else; the
+/// surface is created under its default; the components are sent as one
+/// update, a call in a component of its own. A component read from another
+/// catalog than the one that declares it is then refused as unknown.
+///
+/// What the case selects is asked of the surface for its last component
+/// ([`SurfaceState::catalog_of`](ag_ui_a2ui::surface::SurfaceState::catalog_of)).
+/// A call's function is declared by the catalog the case selects and by no
+/// other, so the call resolves only if it is read from that one.
+fn run_select_catalog(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["args", "expectSelected", "expectError"]].concat(),
+        "case",
+    )?;
+    let args = case.get("args").unwrap_or(&Value::Null);
+    unknown_key(
+        args,
+        &["surface", "components", "functionCall", "catalogs"],
+        "args",
+    )?;
+    let surface = args.get("surface").unwrap_or(&Value::Null);
+    unknown_key(
+        surface,
+        &["id", "defaultCatalogId", "supportedCatalogIds"],
+        "args.surface",
+    )?;
+    let setup = |what: String| Miss::new(what, "a surface for the case");
+    let version = stated_case_version(case).unwrap_or(A2uiVersion::LATEST);
+    let Some(catalog_key) = version.component_keys().catalog_id else {
+        return Err(setup(format!("{version} lets no component name a catalog")));
+    };
+    let surface_id = surface.get("id").and_then(Value::as_str).unwrap_or("main");
+    let default = surface.get("defaultCatalogId").and_then(Value::as_str);
+    let selected = case.get("expectSelected").and_then(Value::as_str);
+
+    // What each supported catalog has to declare: components, then functions.
+    let mut declared: BTreeMap<String, [BTreeSet<String>; 2]> =
+        string_list(surface.get("supportedCatalogIds"))
+            .into_iter()
+            .map(|id| (id, Default::default()))
+            .collect();
+    let mut declare = |catalog: Option<&str>, section: usize, name: &str| {
+        if let Some(entries) = catalog.and_then(|id| declared.get_mut(id)) {
+            entries[section].insert(name.to_string());
+        }
+    };
+    let mut components = Vec::new();
+    for (id, body) in args
+        .get("components")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let mut component = body.as_object().cloned().unwrap_or_default();
+        let named = component.remove("catalogId");
+        let kind = component
+            .get("component")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        declare(named.as_ref().and_then(Value::as_str).or(default), 0, kind);
+        component.insert("id".to_string(), Value::String(id.clone()));
+        if let Some(named) = named {
+            component.insert(catalog_key.to_string(), named);
+        }
+        components.push(Value::Object(component));
+    }
+    let last = components.last().and_then(|c| c.get("id")).cloned();
+    if let Some(call) = args.get("functionCall").and_then(Value::as_object) {
+        let mut call = call.clone();
+        let name = call.remove("call").unwrap_or(Value::Null);
+        let named = call.get("catalogId").and_then(Value::as_str);
+        declare(
+            selected.or(named).or(default),
+            1,
+            name.as_str().unwrap_or_default(),
+        );
+        declare(default, 0, "Caller");
+        call.insert(version.call_key().to_string(), name);
+        components.push(serde_json::json!({
+            "id": "caller", "component": "Caller", "value": call,
+        }));
+    }
+
+    let mut processor = MessageProcessor::with_options(ValidateOptions {
+        require_root: false,
+        ..conformance_options()
+    });
+    for (id, [kinds, functions]) in &declared {
+        let stated = args
+            .get("catalogs")
+            .and_then(|catalogs| catalogs.get(id)?.get("protocolVersion"))
+            .map_or_else(|| version.number().to_string(), render_version);
+        let entries = |names: &BTreeSet<String>, entry: Value| -> Value {
+            names
+                .iter()
+                .map(|name| (name.clone(), entry.clone()))
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        };
+        let document = serde_json::json!({
+            "catalogId": id,
+            "protocolVersion": stated,
+            "components": entries(kinds, serde_json::json!({"type": "object"})),
+            "functions": entries(functions, serde_json::json!({"returnType": "number"})),
+        });
+        let catalog = Catalog::from_schema(&document)
+            .map_err(|error| setup(format!("catalog {id:?} was rejected: {error}")))?;
+        processor
+            .register(catalog)
+            .map_err(|error| setup(error.to_string()))?;
+    }
+
+    let mut create = serde_json::json!({"surfaceId": surface_id});
+    if let Some(default) = default {
+        create["catalogId"] = Value::String(default.to_string());
+    }
+    let mut messages = vec![serde_json::json!({
+        "version": version.as_str(), "createSurface": create,
+    })];
+    if !components.is_empty() {
+        messages.push(serde_json::json!({
+            "version": version.as_str(),
+            "updateComponents": {"surfaceId": surface_id, "components": components},
+        }));
+    }
+    match (processor.process_all(&messages), case.get("expectError")) {
+        (Ok(()), Some(wanted)) => Err(Miss::new(
+            accepted_outcome(&processor),
+            format!("a refusal: {wanted}"),
+        )),
+        (Err(rejection), Some(wanted)) => check_refusal(&rejection, wanted),
+        (Err(rejection), None) => Err(Miss::new(
+            refusal_outcome(&rejection),
+            format!("catalog {selected:?} selected"),
+        )),
+        (Ok(()), None) => {
+            let state = processor
+                .surfaces()
+                .get(surface_id)
+                .ok_or_else(|| setup("the surface is not held".to_string()))?;
+            // The last component's catalog. A case about a call has none:
+            // that the call resolved is the selection.
+            let found = match &last {
+                Some(last) => state
+                    .components
+                    .iter()
+                    .find(|component| Some(component.id.as_str()) == last.as_str())
+                    .and_then(|component| state.catalog_of(component)),
+                None => selected,
+            };
+            if found == selected {
+                Ok(())
+            } else {
+                Err(Miss::new(
+                    format!("catalog {found:?} selected"),
+                    format!("catalog {selected:?} selected"),
+                ))
+            }
+        }
+    }
+}
+
 // --- catalog: from_json, to_json, round_trip, validation_schema, derive -----
 
 /// A document a core case names by repository path.
@@ -2148,8 +2614,7 @@ fn run_renderer_data_model(case: &Value) -> Result<(), Miss> {
 /// The tree mirrors upstream's repository root, with `conformance/` itself at
 /// the top of it.
 fn repository_document(path: &str) -> Result<Value, String> {
-    let relative = path.strip_prefix("conformance/").unwrap_or(path);
-    let text = std::fs::read_to_string(fixture(relative))
+    let text = std::fs::read_to_string(fixture(path))
         .map_err(|_| format!("{path} is not vendored under tests/conformance/"))?;
     serde_json::from_str(&text).map_err(|error| format!("{path} is not JSON: {error}"))
 }
@@ -2200,35 +2665,48 @@ fn run_catalog_case(check: &str, action: &str, case: &Value, tally: &mut Tally) 
         _ => tally.record(
             check,
             Outcome::Skipped(
-                "Catalog has no derive; 7 of the 8 derive cases are on a v1.0 catalog (#42)"
+                "Catalog has no derive, which builds a catalog from the entries of another (#96)"
                     .to_string(),
             ),
         ),
     }
 }
 
-/// The version a catalog case runs under: the one it or its document states,
-/// or v0.9, which is the reference's reading of a document that states none.
-fn catalog_version(case: &Value, document: Option<&Value>) -> String {
-    case.get("protocolVersion")
-        .or_else(|| document.and_then(|document| document.get("protocolVersion")))
-        .map_or_else(|| A2uiVersion::DEFAULT.as_str().to_string(), render_version)
-}
-
 /// A validator for messages on a surface of this catalog, built from the
 /// documents the crate ships and this one, and from nothing else.
 fn catalog_validator(document: &Value) -> Result<SchemaValidator, String> {
-    let mut bundle = SchemaBundle::basic().map_err(|error| error.to_string())?;
+    // The envelope and the common types are the ones of the version the
+    // catalog is written against. A v0.9-family document is held to the
+    // v0.9.1 set, which accepts both of the family's discriminators.
+    let version = document
+        .get("protocolVersion")
+        .map(render_version)
+        .and_then(|stated| A2uiVersion::from_number(&stated))
+        .filter(|version| !A2uiVersion::V0_9.accepts(*version))
+        .unwrap_or(A2uiVersion::V0_9_1);
+    let mut bundle = SchemaBundle::for_version(version).map_err(|error| error.to_string())?;
     bundle.catalog = document.clone();
     SchemaValidator::new(&bundle, &BTreeMap::new()).map_err(|error| error.to_string())
 }
 
+/// The version a case states, when it is one this crate speaks: its own
+/// `protocolVersion`, or the one its `catalog` block states.
+fn stated_case_version(case: &Value) -> Option<A2uiVersion> {
+    let stated = case.get("protocolVersion").or_else(|| {
+        let catalog = case.get("catalog")?;
+        catalog
+            .get("protocolVersion")
+            .or_else(|| catalog.get("version"))
+    })?;
+    A2uiVersion::from_number(&render_version(stated))
+}
+
 /// What makes a catalog read from the published document differ from the one
-/// this crate builds in: its id, its component and function names, each
-/// component's properties and required properties, each function's return
-/// type.
+/// this crate builds in for the same version: its id, its component and
+/// function names, each component's properties and required properties, each
+/// function's return type.
 fn differences_from_builtin(loaded: &Catalog) -> Vec<String> {
-    let builtin = Catalog::basic();
+    let builtin = Catalog::basic_for(loaded.version());
     let mut out = Vec::new();
     if loaded.catalog_id != builtin.catalog_id {
         out.push(format!(
@@ -2314,12 +2792,17 @@ fn check_entries(
 }
 
 /// The fault a phrase of the reference's `CatalogError` names, as this crate's
-/// reason for it starts.
+/// reason for it says it. The rules of a v1.0 catalog are said in the
+/// reference's own words.
 fn catalog_fault(phrase: &str) -> Option<&'static str> {
     match phrase {
         "catalog_id must be provided or exist in catalog schema" => {
             Some("catalog document is missing 'catalogId'")
         }
+        "requiresUserActivation" => Some("requiresUserActivation"),
+        "Invalid UAX #31 component identifier" => Some("Invalid UAX #31 component identifier"),
+        "Invalid UAX #31 function identifier" => Some("Invalid UAX #31 function identifier"),
+        "Unsupported external $ref" => Some("Unsupported external $ref"),
         _ => None,
     }
 }
@@ -2336,7 +2819,14 @@ fn run_from_json(case: &Value, document: Option<Value>) -> Result<(), Miss> {
         .concat(),
         "case",
     )?;
-    let document = document.ok_or_else(|| Miss::new("the case names no catalog", "one"))?;
+    let mut document = document.ok_or_else(|| Miss::new("the case names no catalog", "one"))?;
+    // The id and the version a case states are the ones the document is read
+    // under, where the document states none: the reference harnesses hand
+    // both to their loader.
+    if let (Some(id), Some(fields)) = (case.get("catalogId"), document.as_object_mut()) {
+        fields.entry("catalogId").or_insert_with(|| id.clone());
+    }
+    let document = versioned(&document, stated_case_version(case));
     let loaded = Catalog::from_schema(&document);
 
     if let Some(wanted) = case.get("expectError") {
@@ -2346,12 +2836,19 @@ fn run_from_json(case: &Value, document: Option<Value>) -> Result<(), Miss> {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let fault = catalog_fault(phrase);
+        let category = wanted.get("category").and_then(Value::as_str);
         return match loaded {
             Ok(_) => Err(Miss::new("loaded", format!("a refusal: {wanted}"))),
             Err(Error::Catalog(reason))
-                if wanted.get("category").and_then(Value::as_str) == Some("CatalogError")
-                    && (phrase.is_empty()
-                        || fault.is_some_and(|fault| reason.starts_with(fault))) =>
+                if category == Some("CatalogError")
+                    && (phrase.is_empty() || fault.is_some_and(|fault| reason.contains(fault))) =>
+            {
+                Ok(())
+            }
+            // A document that is a catalog, with a value in it that is not
+            // what the protocol lets it be.
+            Err(Error::Validation { .. })
+                if category == Some("ValidationError") && phrase.is_empty() =>
             {
                 Ok(())
             }
@@ -2371,6 +2868,7 @@ fn run_from_json(case: &Value, document: Option<Value>) -> Result<(), Miss> {
             "catalogId",
             "protocolVersion",
             "components",
+            "componentMetadata",
             "functions",
             "matchesBuiltinCatalog",
             "selfContained",
@@ -2387,14 +2885,33 @@ fn run_from_json(case: &Value, document: Option<Value>) -> Result<(), Miss> {
             ));
         }
     }
-    // A catalog has no version of its own here. The expectation is held to
-    // the version the case runs under.
-    let version = catalog_version(case, Some(&document));
+    // The version the catalog was read as, which is also the one the sample
+    // messages below are written in.
+    let version = catalog.version().as_str();
     if let Some(wanted) = expect.get("protocolVersion").map(render_version) {
-        if wanted != version {
+        if A2uiVersion::from_number(&wanted) != Some(catalog.version()) {
             return Err(Miss::new(
                 format!("version {version}"),
                 format!("version {wanted}"),
+            ));
+        }
+    }
+    // What each component's definition says of itself beside its schema.
+    for (name, wanted) in expect
+        .get("componentMetadata")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let held = catalog
+            .component(name)
+            .and_then(|definition| definition.metadata())
+            .cloned()
+            .unwrap_or(Value::Null);
+        if !same_json(&held, wanted) {
+            return Err(Miss::new(
+                format!("{name} metadata {held}"),
+                format!("{name} metadata {wanted}"),
             ));
         }
     }
@@ -2418,7 +2935,11 @@ fn run_from_json(case: &Value, document: Option<Value>) -> Result<(), Miss> {
         let differences = differences_from_builtin(&catalog);
         if !differences.is_empty() {
             return Err(Miss::new(
-                format!("differs from Catalog::basic(): {}", differences.join("; ")),
+                format!(
+                    "differs from Catalog::basic_for({}): {}",
+                    catalog.version(),
+                    differences.join("; ")
+                ),
                 "the catalog this crate builds in",
             ));
         }
@@ -2524,10 +3045,11 @@ fn run_to_json(case: &Value) -> Result<(), Miss> {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let published = repository_document(path).map_err(|reason| Miss::new(reason, "a file"))?;
-    match Catalog::basic().document() {
+    let version = stated_case_version(case).unwrap_or(A2uiVersion::DEFAULT);
+    match Catalog::basic_for(version).document() {
         Some(document) if *document == published => Ok(()),
         Some(_) => Err(Miss::new("another document", path)),
-        None => Err(Miss::new("Catalog::basic() has no document", path)),
+        None => Err(Miss::new("the built-in catalog has no document", path)),
     }
 }
 
@@ -2550,7 +3072,10 @@ fn run_validate_common_type(case: &Value) -> Result<(), Miss> {
         let held = || -> Result<(), Miss> {
             unknown_key(step, &["value", "expectError"], "step")?;
             let value = step.get("value").cloned().unwrap_or(Value::Null);
-            let verdict = validate_common_type(definition, &value);
+            // A case that states no version is about the v0.9 family, whose
+            // v0.9.1 common types are the ones both of its versions share.
+            let version = stated_case_version(case).unwrap_or(A2uiVersion::V0_9_1);
+            let verdict = validate_common_type_in(version, definition, &value);
             let Some(wanted) = step.get("expectError") else {
                 // An accepted value is the value: nothing is rewritten on the
                 // way through a schema, so there is no serialized form to
@@ -2584,20 +3109,36 @@ fn run_validate_common_type(case: &Value) -> Result<(), Miss> {
 /// versions, as JSON.
 #[test]
 fn the_shipped_common_types_are_the_published_ones() {
-    let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas/v0_9_1/common_types.json");
-    let shipped: Value =
-        serde_json::from_str(&std::fs::read_to_string(shipped).expect("the shipped document"))
-            .expect("JSON");
+    let mut compared = Vec::new();
     for case in cases_of("core/common_types.yaml") {
         if case.get("action").and_then(Value::as_str) != Some("common_types_schema")
             || matches!(case_version(&case), CaseVersion::Unsupported(_))
         {
             continue;
         }
+        // `specification/v1_0/json/common_types.json` is shipped as
+        // `schemas/v1_0/common_types.json`.
         let path = case["expectFile"].as_str().expect("expectFile");
+        let version = path.split('/').nth(1).expect("a specification directory");
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("schemas")
+            .join(version)
+            .join("common_types.json");
+        let shipped: Value = serde_json::from_str(
+            &std::fs::read_to_string(&shipped)
+                .unwrap_or_else(|_| panic!("{} is not shipped", shipped.display())),
+        )
+        .expect("JSON");
         let published = repository_document(path).unwrap_or_else(|reason| panic!("{reason}"));
         assert_eq!(shipped, published, "{path}");
+        compared.push(version.to_string());
     }
+    compared.sort();
+    assert_eq!(
+        compared,
+        ["v0_9", "v0_9_1", "v1_0"],
+        "one case for each version"
+    );
 }
 
 // --- validate, current layout ---------------------------------------------
@@ -2618,30 +3159,62 @@ fn conformance_options() -> ValidateOptions {
     }
 }
 
-/// The catalog a current-layout case validates against: an inline `catalog`
-/// document, or the specification document `catalogPaths` names.
-fn case_catalog(case: &Value) -> Result<Catalog, Outcome> {
-    let document = match (case.get("catalog"), case.get("catalogPaths")) {
-        (Some(inline), _) if inline.get("components").is_some() => inline.clone(),
-        (_, Some(Value::Array(paths))) => {
-            let [Value::String(path)] = paths.as_slice() else {
-                return Err(Outcome::Skipped(format!(
-                    "validates against {} catalogs at once",
-                    paths.len()
-                )));
-            };
-            let text = std::fs::read_to_string(fixture(path)).map_err(|_| {
-                Outcome::Skipped(format!(
-                    "catalog {path} is not vendored under tests/conformance/"
-                ))
-            })?;
-            serde_json::from_str(&text)
-                .map_err(|e| Outcome::Failed(format!("catalog {path} is not JSON: {e}")))?
+/// The catalogs a current-layout case validates against: an inline `catalog`
+/// document (or the `catalogSchema` in it), the `catalogs` it lists, and the
+/// specification documents `catalogPaths` names. An inline document that
+/// states no version is written for the case's.
+fn case_catalogs(case: &Value) -> Result<Vec<Catalog>, Outcome> {
+    let stated = stated_case_version(case);
+    let mut documents = Vec::new();
+    if let Some(inline) = case.get("catalog") {
+        if inline.get("components").is_some() || inline.get("functions").is_some() {
+            documents.push(versioned(inline, stated));
+        } else if let Some(schema) = inline.get("catalogSchema").filter(|s| s.is_object()) {
+            documents.push(versioned(schema, stated));
         }
-        _ => return Ok(Catalog::empty("conformance")),
-    };
-    Catalog::from_schema(&document)
-        .map_err(|error| Outcome::Failed(format!("catalog rejected: {error}")))
+    }
+    for inline in case
+        .get("catalogs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        documents.push(versioned(inline, stated));
+    }
+    for path in string_list(case.get("catalogPaths")) {
+        let text = std::fs::read_to_string(fixture(&path)).map_err(|_| {
+            Outcome::Skipped(format!(
+                "catalog {path} is not vendored under tests/conformance/"
+            ))
+        })?;
+        documents.push(
+            serde_json::from_str(&text)
+                .map_err(|e| Outcome::Failed(format!("catalog {path} is not JSON: {e}")))?,
+        );
+    }
+    let mut catalogs = documents
+        .iter()
+        .map(|document| {
+            let mut document = document.clone();
+            // A fragment that names no catalog is the case's only one.
+            if let Some(fields) = document.as_object_mut() {
+                fields
+                    .entry("catalogId")
+                    .or_insert_with(|| Value::String("conformance".to_string()));
+            }
+            Catalog::from_schema(&document)
+                .map_err(|error| Outcome::Failed(format!("catalog rejected: {error}")))
+        })
+        .collect::<Result<Vec<Catalog>, Outcome>>()?;
+    // A case that declares a catalog of its own and has its messages name
+    // `basic` beside it means the basic catalog of its version, which every
+    // reference harness holds without being told.
+    let names_basic = case.to_string().contains(r#""catalogId":"basic""#);
+    if names_basic && !catalogs.is_empty() && catalogs.iter().all(|c| c.catalog_id != "basic") {
+        let version = stated.unwrap_or(A2uiVersion::LATEST);
+        catalogs.push(Catalog::basic_for(version).with_catalog_id("basic"));
+    }
+    Ok(catalogs)
 }
 
 /// A `validate` case in the current layout: one validator, and one surface
@@ -2650,21 +3223,31 @@ fn case_catalog(case: &Value) -> Result<Catalog, Outcome> {
 /// [`Validator::validate_json_updates`] is for.
 ///
 /// A step that fails changes nothing: the state the next step sees is the one
-/// the last accepted step left.
+/// the last accepted step left. What the case expects of the surfaces is held
+/// to the state its last step leaves.
 fn run_validate_steps(check: &str, case: &Value, tally: &mut Tally) {
-    let catalog = match case_catalog(case) {
-        Ok(catalog) => catalog,
+    let catalogs = match case_catalogs(case) {
+        Ok(catalogs) => catalogs,
         Err(outcome) => {
             tally.record(check, outcome);
             return;
         }
     };
-    let validator = Validator::with_options(&catalog, conformance_options());
+    // One catalog stands for whatever the case's surfaces name, as the
+    // reference harnesses alias it. Several are read by id. A case that
+    // declares none is checked for what no catalog is needed for.
+    let none = Catalog::empty("conformance");
+    let validator = match catalogs.as_slice() {
+        [] => Validator::with_options(&none, conformance_options()),
+        [only] => Validator::with_options(only, conformance_options()),
+        several => Validator::over(several, conformance_options()),
+    };
     let steps: Vec<&Value> = match case.get("steps").and_then(Value::as_array) {
         Some(steps) => steps.iter().collect(),
         None => vec![case],
     };
     let mut state = SurfaceStore::new();
+    let last = steps.len().saturating_sub(1);
     for (index, step) in steps.iter().enumerate() {
         let id = format!("{check}[step {index}]");
         let messages: Vec<Value> = match step.get("messages").or_else(|| step.get("payload")) {
@@ -2679,13 +3262,73 @@ fn run_validate_steps(check: &str, case: &Value, tally: &mut Tally) {
             }
         };
         let expect_error = field(step, "expect_error").or_else(|| field(case, "expect_error"));
-        let (outcome, next) = validate_step(&id, &validator, &state, &messages, expect_error);
+        let (mut outcome, next) = validate_step(&id, &validator, &state, &messages, expect_error);
         if let Some(next) = next {
             state = next;
+        }
+        // The surfaces the case expects, of the state its steps leave.
+        let expect = step
+            .get("expect")
+            .or_else(|| case.get("expect").filter(|_| index == last));
+        if let (Outcome::Passed, Some(expect)) = (&outcome, expect) {
+            // The result of a component's checks is a renderer's to compute.
+            let checked = [
+                "isValid",
+                "validationResult",
+                "validationResults",
+                "validationErrors",
+            ]
+            .iter()
+            .any(|key| expect.to_string().contains(&format!("\"{key}\"")));
+            let renderer_only = RENDERER_VALUES
+                .iter()
+                .find(|(listed, _)| *listed == id)
+                .map(|(_, reason)| *reason)
+                .or(checked.then_some("the result of a component's checks"));
+            outcome = match renderer_only {
+                Some(reason) => Outcome::Skipped(format!("out of scope: renderer: {reason}")),
+                None => match check_store(&state, Some(expect)) {
+                    Ok(()) => Outcome::Passed,
+                    Err(miss) => {
+                        Outcome::Failed(format!("expected {}, got {}", miss.expected, miss.actual))
+                    }
+                },
+            };
         }
         tally.record(&id, outcome);
     }
 }
+
+/// Steps whose expectation is a value only a renderer has: what a catalog
+/// function returns, the components a template draws, the result of a check.
+/// The messages of such a step are validated; what a renderer would then show
+/// is not this crate's to compute.
+const RENDERER_VALUES: &[(&str, &str)] = &[
+    (
+        "core/expressions.yaml::test_expression_parser_nested_function_call[step 0]",
+        "the text `formatCurrency` returns",
+    ),
+    (
+        "core/index_function.yaml::test_index_function_in_collection_loop[step 0]",
+        "the components a list template draws",
+    ),
+    (
+        "core/index_function.yaml::test_index_function_with_offset[step 0]",
+        "the components a list template draws",
+    ),
+    (
+        "core/index_function.yaml::test_index_function_nested_path[step 0]",
+        "the components a list template draws",
+    ),
+    (
+        "core/multi_catalog.yaml::test_multi_catalog_function_call_catalog_id_override[step 0]",
+        "the text `formatDate` returns",
+    ),
+    (
+        "core/multi_catalog.yaml::test_multi_catalog_format_string_index_and_catalog_call_without_default[step 0]",
+        "the components a list template draws",
+    ),
+];
 
 fn validate_step(
     id: &str,
@@ -2739,7 +3382,11 @@ fn validate_step(
             }
             return (Outcome::Passed, Some(next));
         }
-        let (report, next) = validator.validate_json_updates(state, messages);
+        let (mut report, next) = validator.validate_json_updates(state, messages);
+        // The same for a surface that has data and no components yet.
+        report
+            .errors
+            .retain(|error| error.code != ErrorCode::EmptyComponents);
         return if report.is_valid() && report.unreachable.is_empty() {
             (Outcome::Passed, Some(next))
         } else {
@@ -2794,6 +3441,10 @@ const SCHEMA_ONLY: &[(&str, &str)] = &[
         "a function argument of the wrong type",
     ),
     (
+        "core/validator_v1_0.yaml::test_v10_function_argument_schema_mismatch_error[step 0]",
+        "a function argument of the wrong type",
+    ),
+    (
         "core/validator_v0_9.yaml::test_v09_theme_schema_validation_error[step 0]",
         "a theme value the catalog's theme schema rejects",
     ),
@@ -2824,6 +3475,63 @@ const CATEGORY_ONLY: &[(&str, ErrorCode, &str)] = &[
         "core/validator_v0_9.yaml::test_v09_child_list_template_missing_path_error[step 0]",
         ErrorCode::InvalidValue,
         ".components[0].children",
+    ),
+    (
+        "core/validator_v1_0.yaml::test_v10_child_list_template_missing_path_error[step 0]",
+        ErrorCode::InvalidValue,
+        ".components[0].children",
+    ),
+    // A message that is a `createSurface` and a `deleteSurface` at once.
+    (
+        "core/validator_v1_0.yaml::test_v10_multiple_action_envelope_error[step 0]",
+        ErrorCode::InvalidValue,
+        "messages[0]",
+    ),
+    // An extension name with a `.` in it, then one with a `-`, the second
+    // under the bare `metadata` of the v1.0 drafts.
+    (
+        "core/validator_v1_0.yaml::test_v10_validate_component_metadata_invalid_extension_key_error[step 0]",
+        ErrorCode::InvalidValue,
+        ".components[0].@metadata.extensions.com.example.invalid",
+    ),
+    (
+        "core/validator_v1_0.yaml::test_v10_validate_component_metadata_invalid_extension_key_error[step 1]",
+        ErrorCode::InvalidValue,
+        ".components[0].metadata.extensions.com-example-invalid",
+    ),
+    // An envelope key written twice, with the `@` and without.
+    (
+        "core/validator_v1_0.yaml::test_v10_validate_component_envelope_conflict_at_and_bare_error[step 0]",
+        ErrorCode::InvalidValue,
+        ".components[0].metadata",
+    ),
+    (
+        "core/validator_v1_0.yaml::test_v10_validate_component_envelope_conflict_at_and_bare_error[step 1]",
+        ErrorCode::InvalidValue,
+        ".components[0].accessibility",
+    ),
+    // `@checks` on a `Text`, which is not checkable.
+    (
+        "core/validator_v1_0.yaml::test_v10_validate_at_checks_on_non_checkable_component_error[step 0]",
+        ErrorCode::InvalidValue,
+        ".components[0].@checks",
+    ),
+    // A single `@` key that is no directive: `@if`, `@`, and an envelope key
+    // of a component nested inside a value.
+    (
+        "core/reserved_keys.yaml::test_disallowed_unknown_single_at_key[step 0]",
+        ErrorCode::ReservedKey,
+        ".components[0].details.@if",
+    ),
+    (
+        "core/reserved_keys.yaml::test_disallowed_bare_at_key[step 0]",
+        ErrorCode::ReservedKey,
+        ".components[0].details.@",
+    ),
+    (
+        "core/reserved_keys.yaml::test_disallowed_nested_at_envelope_keys_in_dynamic_object[step 0]",
+        ErrorCode::ReservedKey,
+        ".components[0].details.@metadata",
     ),
 ];
 
@@ -2861,6 +3569,8 @@ fn judge_error(expect_error: &Value, report: &ValidationReport) -> Outcome {
                 "missing_field" => &[ErrorCode::MissingField, ErrorCode::MissingRequiredProp],
                 "invalid_value" => &[ErrorCode::InvalidValue, ErrorCode::UnknownComponent],
                 "type_mismatch" => &[ErrorCode::TypeMismatch],
+                "UNALLOWED_PARENT" => &[ErrorCode::UnallowedParent],
+                "UNALLOWED_CHILD" => &[ErrorCode::UnallowedChild],
                 other => {
                     return Outcome::Skipped(format!(
                         "expects the JSON Schema error code {other:?}, which this crate does not \
@@ -2935,6 +3645,37 @@ fn judge_error(expect_error: &Value, report: &ValidationReport) -> Outcome {
             Outcome::Passed
         } else {
             expect_code(ErrorCode::UnresolvedBinding)
+        }
+    } else if let Some(fault) = template_fault(message) {
+        // A `formatString` template that does not parse, by the parser's
+        // own reason.
+        let found = report.errors.iter().any(|error| {
+            error
+                .message
+                .strip_prefix("The formatString template does not parse: ")
+                .is_some_and(fault)
+        });
+        if found {
+            Outcome::Passed
+        } else {
+            Outcome::Failed(format!("expected {message:?}, got {:?}", got()))
+        }
+    } else if phrase("non-numeric segment") || phrase("Cannot set path") {
+        // A write the data model refuses: a list read at a segment that is
+        // not an index, or a path through a value that holds nothing.
+        let wanted = if phrase("non-numeric segment") {
+            "expected a canonical array index"
+        } else {
+            "path walks through a scalar value"
+        };
+        let found = report
+            .errors
+            .iter()
+            .any(|error| error.code == ErrorCode::InvalidValue && error.message.contains(wanted));
+        if found {
+            Outcome::Passed
+        } else {
+            Outcome::Failed(format!("expected {message:?}, got {:?}", got()))
         }
     } else if phrase("is not of type") {
         expect_code(ErrorCode::TypeMismatch)
@@ -3041,6 +3782,8 @@ fn run_validate_case(case_id: &str, case: &Value, tally: &mut Tally) {
 /// `tests/conformance/`. A fixture only the retired suites still name is kept
 /// with them, so `retired/` is searched second.
 fn fixture(relative: &str) -> PathBuf {
+    // A path from the repository root into `conformance/` is the same file.
+    let relative = relative.strip_prefix("conformance/").unwrap_or(relative);
     let current = conformance_dir().join(relative);
     if current.exists() {
         return current;
