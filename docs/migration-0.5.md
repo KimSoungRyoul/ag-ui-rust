@@ -864,6 +864,21 @@ These are on `main` and not yet in a published version.
   is sent first: `progress.prelude().messages(conversation).into_events()`. Alpha.3
   had neither; a server replayed every stored event to a joining client or built the
   prelude by hand.
+- New: a supported way to have two runs in flight on one conversation. Alpha.3 had
+  none: `send` borrows its thread until the stream ends, and two threads made with the
+  same thread id each kept only their own messages. Hold two threads, the second from
+  `Thread::restore(transport, main.snapshot())`, and once both streams have ended write
+  `main.merge_messages_from(&side)?`. `main` takes the messages it lacks, by id, after
+  its own, with a tool result behind the message that holds its call. An id both hold
+  with different content keeps the copy of `main` and is named in
+  `MergeReport::differing`. The merge changes nothing and returns the new
+  `client::Error::Merge` when the threads have different thread ids, when either has
+  pending interrupts, a resume submission, unanswered tool calls or a request in
+  flight, and when a tool call has a result on each thread. State is not merged: call
+  `set_state` with the value the next run should start from.
+  `client::merge_messages(ours, theirs)` applies the same rules to two lists, for a
+  view of both while a run is still open. The `client::thread` module docs have the
+  example, and `docs/DESIGN.md` the reasons.
 
 ## Verify the upgrade
 
