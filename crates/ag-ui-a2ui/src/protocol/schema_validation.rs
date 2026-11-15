@@ -36,6 +36,13 @@ pub struct SchemaValidator {
 impl SchemaValidator {
     /// Compiles the official envelope against the supplied catalog and common types.
     /// Additional resources must be supplied locally, keyed by their absolute URI.
+    ///
+    /// A catalog need not declare a theme: the published VegaChart and MCP
+    /// catalogs do not. The envelope refers to the catalog's `$defs/theme` all
+    /// the same, and a reference to nothing does not compile. For such a
+    /// catalog the validator supplies the definition: any theme that is an
+    /// object, which is what the reference renderers accept for it. A catalog
+    /// that declares a theme is held to it.
     pub fn new(bundle: &SchemaBundle, resources: &BTreeMap<String, Value>) -> Result<Self> {
         let mut documents = resources.clone();
         let mut register = |id: &str, value: &Value| -> Result<()> {
@@ -56,10 +63,13 @@ impl SchemaValidator {
         }
         // Official s2c references this relative URI while the catalog declares
         // its own, longer canonical URI. This is a resolver alias, not a wire ID alias.
-        register(
-            "https://a2ui.org/specification/v0_9/catalog.json",
-            &bundle.catalog,
-        )?;
+        register(CATALOG_ALIAS, &bundle.catalog)?;
+        if let Some(catalog) = with_any_theme(&bundle.catalog) {
+            let own = bundle.catalog.get("$id").and_then(Value::as_str);
+            for id in own.into_iter().chain([CATALOG_ALIAS]) {
+                documents.insert(id.to_string(), catalog.clone());
+            }
+        }
         // Each document keeps the draft its own `$schema` declares. An unknown
         // `$schema` is a meta-schema the retriever would have to fetch, so it
         // fails here rather than reaching the network.
@@ -185,6 +195,26 @@ impl SchemaValidator {
             .into(),
         })
     }
+}
+
+/// The URI the envelope schema reaches the surface's catalog by.
+const CATALOG_ALIAS: &str = "https://a2ui.org/specification/v0_9/catalog.json";
+
+/// A catalog that declares no `$defs/theme`, with one that takes any theme
+/// object. `None` for a catalog that declares its own, or that is not a
+/// document a definition could be added to.
+fn with_any_theme(catalog: &Value) -> Option<Value> {
+    if catalog.pointer("/$defs/theme").is_some() {
+        return None;
+    }
+    let mut catalog = catalog.clone();
+    let root = catalog.as_object_mut()?;
+    let definitions = root
+        .entry("$defs")
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()?;
+    definitions.insert("theme".to_string(), serde_json::json!({"type": "object"}));
+    Some(catalog)
 }
 
 // jsonschema 0.61 words a failed `enum` as `"x" is not one of "a", "b" or 5

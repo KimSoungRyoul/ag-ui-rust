@@ -284,3 +284,72 @@ fn a_definition_the_common_types_do_not_have_is_named_as_such() {
     assert!(reason.contains("\"DynamicColor\""), "{reason}");
     assert!(reason.contains("DynamicString"), "{reason}");
 }
+
+/// The published VegaChart and MCP catalogs declare no `$defs/theme`, and the
+/// envelope schema refers to it for a surface's theme. No validator could be
+/// built for either: compiling failed on the reference.
+#[test]
+fn a_published_catalog_that_declares_no_theme_gets_a_validator() {
+    for path in [
+        "catalogs/vegachart/v0_9/catalog.json",
+        "catalogs/mcp/catalog.json",
+    ] {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/conformance")
+            .join(path);
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        assert!(document.pointer("/$defs/theme").is_none(), "{path}");
+        let mut bundle = SchemaBundle::basic().unwrap();
+        bundle.catalog = document.clone();
+        let schema = SchemaValidator::new(&bundle, &Default::default())
+            .unwrap_or_else(|error| panic!("{path}: {error}"));
+
+        let create = |theme: Option<Value>| {
+            let mut message = json!({"version": "v0.9.1", "createSurface": {
+                "surfaceId": "s", "catalogId": document["catalogId"]
+            }});
+            if let Some(theme) = theme {
+                message["createSurface"]["theme"] = theme;
+            }
+            message
+        };
+        // No theme, and any theme that is an object.
+        schema.validate_message(&create(None)).unwrap();
+        schema
+            .validate_message(&create(Some(
+                json!({"primaryColor": "teal", "dense": true}),
+            )))
+            .unwrap();
+        // A theme is an object, whatever the catalog says about it.
+        for not_an_object in [json!("dark"), json!(["dark"]), json!(7)] {
+            assert!(
+                schema
+                    .validate_message(&create(Some(not_an_object.clone())))
+                    .is_err(),
+                "{path}: {not_an_object}"
+            );
+        }
+
+        // The stateful validator registers the same catalog.
+        let mut surfaces = SurfaceValidator::new();
+        surfaces.register(&bundle, &Default::default()).unwrap();
+        surfaces.push(&create(Some(json!({"any": 1})))).unwrap();
+
+        // A caller that hands the catalog in as a resource as well is not
+        // told that it conflicts with itself.
+        let id = document["$id"].as_str().unwrap().to_string();
+        let resources = [(id, document.clone())].into_iter().collect();
+        SchemaValidator::new(&bundle, &resources).unwrap();
+    }
+
+    // A catalog that declares a theme is still held to it.
+    let schema =
+        SchemaValidator::new(&SchemaBundle::basic().unwrap(), &Default::default()).unwrap();
+    let off_pattern = json!({"version": "v0.9.1", "createSurface": {
+        "surfaceId": "s",
+        "catalogId": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
+        "theme": {"primaryColor": "not-a-hex-color"}
+    }});
+    assert!(schema.validate_message(&off_pattern).is_err());
+}

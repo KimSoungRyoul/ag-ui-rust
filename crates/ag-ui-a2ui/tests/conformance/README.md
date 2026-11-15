@@ -54,7 +54,7 @@ other suite counts one check per case and verifies its steps in order; a case
 that stops at a step is reported under that step, `suite::case[step 2]`, and
 that is the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 376 passed, 21 expected divergence, 1640 skipped, 10 failing.
+Totals: 376 passed, 22 expected divergence, 1640 skipped, 9 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -66,7 +66,7 @@ Totals: 376 passed, 21 expected divergence, 1640 skipped, 10 failing.
 | `core/data_model.yaml` | 52 | 45 | 4 | 1 | 2 | executed |
 | `core/expressions.yaml` | 98 | 92 | 0 | 6 | 0 | executed |
 | `core/message_processor_v0_9.yaml` | 48 | 40 | 2 | 4 | 2 | executed |
-| `core/catalog.yaml` | 73 | 14 | 2 | 54 | 3 | executed |
+| `core/catalog.yaml` | 73 | 14 | 3 | 54 | 2 | executed |
 | `core/common_types.yaml` | 22 | 8 | 0 | 14 | 0 | executed |
 | `retired/core/validator.yaml` | 45 | 26 | 0 | 25 | 0 | executed; retired upstream |
 | `retired/core/catalog.yaml` | 24 | 23 | 0 | 1 | 0 | executed; retired upstream |
@@ -158,9 +158,9 @@ under `extensions/`.
 
 ## Expected divergences
 
-Twenty-one checks: three in `core/validator_v0_9.yaml`, eight in
+Twenty-two checks: three in `core/validator_v0_9.yaml`, eight in
 `agent/legacy/streaming_parser.yaml`, two in `core/data_context.yaml`, four in
-`core/data_model.yaml`, two in `core/message_processor_v0_9.yaml` and two in
+`core/data_model.yaml`, two in `core/message_processor_v0_9.yaml` and three in
 `core/catalog.yaml`. Those of the suites run one check per case are listed in
 `DIVERGENCES` in the harness with what this crate gives, and the harness holds
 it to exactly that.
@@ -174,7 +174,7 @@ it to exactly that.
 | 1 (`test_cut_unicode_multibyte_emoji_v09`) | Emit text cut after the first half of a surrogate pair. | Emit nothing until the pair is whole: half a pair is not a string in Rust. The suite writes that half as a YAML escape, which is not valid YAML either; the harness reads it as U+FFFD and pins the case. |
 | 2 + 1 (`test_resolve_path_context_with_trailing_slash`, `test_resolve_path_empty_in_trailing_slash_context`; `test_resolve_path_relative_trailing_slash` in the processor suite) | A trailing slash on the scope is dropped: `foo` under `/bar/` is `/bar/foo`. | An empty segment is the empty key, as RFC 6901 reads it, and `""` is a key JSON allows: `foo` under `/bar/` is `/bar//foo`, and the scope `/user/` itself is `/user/`. Only `/` alone is the root. |
 | 2 (`test_data_model_normalizes_trailing_slash`, `test_data_model_normalizes_empty_path_segments`) | Empty segments are dropped from a data-model path: `/foo/` is `/foo`, and `//a///b//` is `/a/b`. | The same rule as above: `/foo/` is the key `""` under `foo`. The write is accepted and stored there, so `/foo` then holds `{"": "bar"}`. |
-| 2 (`test_v09_published_minimal_catalog_is_self_contained`, `test_v091_published_basic_catalog_is_self_contained`) | Loading a published catalog gives a resolved schema that is self-contained: the common types are inlined and every `$ref` is inside the document. | This crate bundles nothing. A catalog's references resolve through the validator's registry of local documents, with retrieval off. The harness checks that: a `SchemaValidator` compiles from the catalog and the documents the crate ships, and from nothing else. |
+| 3 (`test_v09_published_minimal_catalog_is_self_contained`, `test_v091_published_basic_catalog_is_self_contained`, `test_v09_published_vegachart_catalog_is_self_contained`) | Loading a published catalog gives a resolved schema that is self-contained: the common types are inlined and every `$ref` is inside the document. | This crate bundles nothing. A catalog's references resolve through the validator's registry of local documents, with retrieval off. The harness checks that: a `SchemaValidator` compiles from the catalog and the documents the crate ships, and from nothing else. |
 | 2 (`test_data_model_get_out_of_range_index`, `test_data_model_rejects_leading_zero_list_index`) | Reading a list at `-1`, `invalid` or `01` finds no value. | It is an `Error::Pointer`, on a read as on a write. The specification says of a path that "it is an error to use a non-numeric index on a path segment that refers to an array", and RFC 6901 has no index `01`. |
 
 The `test_sniff_partial_datamodel_with_cut_key_v09` fixture never becomes valid
@@ -194,9 +194,8 @@ about the toolkit's parsers; the agent layer replaces those parsers, and these
 cases are for it to pass. Two are about removing a path that is not there,
 where upstream's rule and the renderer this workspace tests against disagree
 (#42). Two are refusals only a JSON Schema engine makes, which
-`MessageProcessor` does not run. Three are about catalogs: two ask the
-catalog this crate builds in to be the published document, and one found a
-published catalog no schema validator can be built for.
+`MessageProcessor` does not run. Two ask the catalog this crate builds in to
+be the published document.
 
 | Check | What happens |
 |---|---|
@@ -209,7 +208,6 @@ published catalog no schema validator can be built for.
 | `core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys` | A `Text` carrying `@metadata`, which the basic catalog does not declare, is accepted. A property a component does not declare is `unevaluatedProperties` in the catalog's schema, and the same engine's to refuse. |
 | `core/catalog.yaml::test_v09_basic_catalog_from_json` | The published v0.9 basic catalog, read with `Catalog::from_schema`, is not `Catalog::basic()`. The built-in one has its own id (`BASIC_CATALOG_ID`), declares `checks` on the six input components where the document takes it from the `Checkable` mixin, and has no `List.listStyle`, which the v0.9 document has and the v0.9.1 one does not. Component names, function names, return types and every other property agree. |
 | `core/catalog.yaml::test_v09_basic_catalog_to_json` | The case wants the document of the SDK's own basic catalog to be the published file. `Catalog::basic()` is written in Rust and has no document. The published v0.9.1 one ships with the crate, as `SchemaBundle::basic()`. |
-| `core/catalog.yaml::test_v09_published_vegachart_catalog_is_self_contained` | No `SchemaValidator` can be built for the published VegaChart catalog. It declares no `$defs/theme`, and the envelope schema refers to `catalog.json#/$defs/theme` for a surface's theme, so compiling fails on that reference. |
 
 ## Skips inside the executed suites
 

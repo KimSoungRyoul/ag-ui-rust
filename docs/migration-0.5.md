@@ -522,6 +522,11 @@ These are on `main` and not yet in a published version.
   `FunctionDef::return_type` was `None` for every function of a published catalog.
 - `schema_validation::validate_common_type` is new: one value against one definition
   of the published common types (`DynamicValue`, `ChildList`, `Action`, …).
+- `SchemaValidator::new` and `SurfaceValidator::register` take a catalog that declares
+  no `$defs/theme`, as the published VegaChart and MCP catalogs do not. alpha.3 failed
+  on it with `Pointer '/$defs/theme' does not exist`, because the envelope schema
+  refers to that definition. A surface of such a catalog takes any theme that is an
+  object. A catalog that declares a theme is held to it, as before.
 
 ## Verify the upgrade
 

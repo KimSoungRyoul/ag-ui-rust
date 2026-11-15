@@ -146,7 +146,7 @@ const SUITES: &[Suite] = &[
     run("core/data_model.yaml", [45, 4, 1, 2]),
     run("core/expressions.yaml", [92, 0, 6, 0]),
     run("core/message_processor_v0_9.yaml", [40, 2, 4, 2]),
-    run("core/catalog.yaml", [14, 2, 54, 3]),
+    run("core/catalog.yaml", [14, 3, 54, 2]),
     run("core/common_types.yaml", [8, 0, 14, 0]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
     retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
@@ -457,11 +457,6 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
         "core/catalog.yaml::test_v09_basic_catalog_to_json",
         "Catalog::basic() was not read from a document and has none to give",
     ),
-    (
-        "core/catalog.yaml::test_v09_published_vegachart_catalog_is_self_contained",
-        "no SchemaValidator can be built for a catalog that declares no `$defs/theme`, which \
-         the envelope schema refers to",
-    ),
 ];
 
 /// Set `A2UI_CONFORMANCE_VERBOSE=1` to list every executed check by name.
@@ -523,6 +518,11 @@ const DIVERGENCES: &[(&str, &str, &str)] = &[
     ),
     (
         "core/catalog.yaml::test_v091_published_basic_catalog_is_self_contained",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    (
+        "core/catalog.yaml::test_v09_published_vegachart_catalog_is_self_contained",
         NOT_BUNDLED,
         REGISTRY,
     ),
