@@ -1,67 +1,30 @@
 # ag-ui-rust
 
-## What this is
+An independent Rust SDK for the AG-UI protocol, not an official AG-UI project. In scope: protocol
+types, server event emitters, client conversations. Out of scope: agent execution, scheduling,
+model loops, durable workflows.
 
-A Rust SDK for the AG-UI protocol — hosting an agent and consuming one, in a single workspace.
+- `crates/ag-ui`: protocol types at the root; `server`, `client`, `http`, `axum` behind features.
+- `crates/ag-ui-a2ui`: A2UI, a separate protocol, usable without AG-UI.
+- `ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are an unrelated SDK. Never depend
+  on them.
 
-This is an independent SDK, not an official AG-UI project. Protocol types, server
-event emitters and client conversations are its scope. Agent execution, scheduling,
-model loops and durable workflows remain in applications or agent frameworks.
+Design rationale is in `docs/DESIGN.md`.
 
-The server story is the priority here; the client is written against the same types, and `e2e/` proves
-the two halves against each other over a real port rather than against a mock.
-
-## Crate layout
-
-Two SDK crates. **`ag-ui`** is the SDK: the protocol types at the crate root, always
-compiled, with `server` (host an agent), `client` / `http` (consume one) and `axum` behind
-features. Each runtime keeps its own `Error` under its own module — `ag_ui::Error` is a
-protocol error, `ag_ui::server::Error` is a hosting error. **`ag-ui-a2ui`** stays separate
-because A2UI is a different protocol, usable with no AG-UI at all.
-
-Features rather than crates because in Rust features are how a dependency is kept out of a
-build, and this workspace versions in lockstep so a split bought no independent versioning
-either — `docs/DESIGN.md`, "Crate boundaries", has the reasoning. The one cost is feature
-unification: a graph that wants `server` in one place and `client` in another compiles both.
-
-`ag-ui-core`, `ag-ui-server` and `ag-ui-client` on crates.io are an earlier, unrelated
-community SDK. Do not write them as dependency lines for this project.
-
-## Links
-
-| What | Where |
-| --- | --- |
-| AG-UI protocol docs | <https://docs.ag-ui.com> |
-| AG-UI spec repository | <https://github.com/ag-ui-protocol/ag-ui> |
-| The community Rust SDK this replaces | <https://github.com/ag-ui-protocol/ag-ui/tree/main/sdks/community/rust> |
-| Why it is not enough, with the numbers | `docs/DESIGN.md` — "Why another Rust AG-UI SDK" |
-| This project's documentation | <https://kimsoungryoul.github.io/ag-ui-rust/> |
-| rustdoc for both crates | <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/index.html> |
-| A2UI, the surface protocol `ag-ui-a2ui` speaks | <https://a2ui.org> |
-| Agent skills this repo publishes | `skills/`, installed per the README |
-
-## Working here
-
-Two test commands, and the second is not optional — **`cargo nextest` never sees doctests**, and a
-lot of what this workspace proves lives in them (every crate README, the README quickstart, the
-website's pages, the skills, and the `compile_fail` example that is the only executable proof that
-two overlapping message handles do not compile):
+## Checks
 
 ```sh
 cargo nextest run --workspace --all-features
-cargo test --doc --workspace --all-features
+cargo test --doc --workspace --all-features   # nextest never runs doctests
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+prek run --all-files                          # what CI runs
 ```
 
-Hygiene is `prek run --all-files`, which is what CI runs. The rest — the design rationale, the
-upstream analysis, the spec drift check — is in `README.md` and `docs/`.
+## Issues, branches, commits
 
-Work starts from an issue, and the branch carries its number: `<issue>-<type>-<slug>`, for example
-`20-fix-subagents-key`. The `prepare-commit-msg` hook then prefixes every commit with `[#20]`, and
-with the type when the subject does not already start with one — `fix(core): …` is kept and becomes
-`[#20] fix(core): …`. `prek install` once per clone turns the hooks on. Three things to know:
-
-- A worktree made by a tool may come out named `worktree-<name>`. Rename the branch
-  (`git branch -m 20-fix-subagents-key`), or the hook finds no issue number and adds nothing.
-- The prefix only links. Closing the issue still takes `Closes #20` in the pull request.
-- Commit messages written for the upstream copy must not carry the prefix: `#20` there is somebody
-  else's issue.
+- Work starts from an issue. Name the branch `<issue>-<type>-<slug>`, e.g. `20-fix-subagents-key`.
+- Commit subjects read `[#20] fix(core): …`. After `prek install`, the hook adds the `[#20]` prefix.
+- A tool-made worktree branch is named `worktree-<name>`. Rename it (`git branch -m …`), or the
+  hook adds nothing.
+- The prefix only links. Close the issue with `Closes #20` in the pull request.
+- Commits for the upstream copy carry no prefix: `#20` there is another project's issue.
