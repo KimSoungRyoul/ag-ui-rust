@@ -9,7 +9,12 @@ use crate::event::Event;
 /// Comments are independent of the AG-UI event lifecycle. They can carry
 /// replay boundaries without manufacturing a protocol event. Each line is
 /// escaped as a comment by the SDK, so input cannot inject a data frame.
+///
+/// `#[non_exhaustive]`: `text/event-stream` has fields this enum does not
+/// write yet, such as `id` and `retry`, and a frame for one can be added
+/// without a breaking release.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum SseFrame<E = Event> {
     /// One serializable value. Standard live producers use `Event` and its
     /// `metadata` field. Other representations are a host compatibility choice,

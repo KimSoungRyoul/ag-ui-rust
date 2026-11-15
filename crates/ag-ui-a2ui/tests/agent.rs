@@ -52,6 +52,7 @@ fn texts(parts: &[StreamPart]) -> Vec<String> {
             StreamPart::Text(text) => format!("text {text}"),
             StreamPart::A2ui(messages) => format!("a2ui x{}", messages.len()),
             StreamPart::Rejected(error) => format!("rejected {}", category(error)),
+            other => format!("unknown {other:?}"),
         })
         .collect()
 }
@@ -487,6 +488,7 @@ Anything else?"#
                                 }
                             }
                             StreamPart::Rejected(error) => panic!("{format:?}: {error}"),
+                            other => panic!("{format:?}: {other:?}"),
                         }
                     }
                 };
@@ -605,10 +607,7 @@ fn a_stream_can_read_past_a_rejected_block() {
     let mut stream = processor
         .open_stream(
             &state,
-            StreamOptions {
-                after_rejected_block: AfterRejectedBlock::Continue,
-                ..StreamOptions::default()
-            },
+            StreamOptions::new().with_after_rejected_block(AfterRejectedBlock::Continue),
         )
         .unwrap();
     let answer = format!(
@@ -683,6 +682,298 @@ fn prose_under_a_progressive_key_shows_as_it_is_written() {
     stream.close(&mut state).unwrap();
     // An id is never ended early; the prose is.
     assert_eq!(seen, ["Hel", "Hello, wor", "Hello, world"]);
+}
+
+/// A canvas an earlier turn left: surface `s`, one text bound to its data,
+/// and a data model of two keys.
+fn canvas(processor: &A2uiRequestProcessor) -> RendererState {
+    let mut state = processor.create_state();
+    let earlier = format!(
+        r#"<a2ui-json>[
+  {{"version": "v0.9", "createSurface": {{"surfaceId": "s", "catalogId": "{BASIC}"}}}},
+  {{"version": "v0.9", "updateComponents": {{"surfaceId": "s", "components": [
+    {{"id": "root", "component": "Text", "text": {{"path": "/title"}}}}]}}}},
+  {{"version": "v0.9", "updateDataModel": {{"surfaceId": "s", "value": {{"title": "Kept", "cart": [1, 2, 3]}}}}}}
+]</a2ui-json>"#
+    );
+    processor.parse_response_in(&earlier, &mut state).unwrap();
+    state
+}
+
+/// Streams `chunks` into a copy of `before`. Gives the state the stream
+/// leaves, and what a renderer that started from `before` and applied each
+/// emitted message in turn holds.
+fn streamed(
+    processor: &A2uiRequestProcessor,
+    before: &RendererState,
+    options: StreamOptions,
+    chunks: &[&str],
+) -> Result<(RendererState, RendererState), String> {
+    let mut state = before.clone();
+    let mut renderer = before.clone();
+    let mut stream = processor.open_stream(&state, options).unwrap();
+    let mut send = |parts: Vec<StreamPart>| -> Result<(), String> {
+        for part in parts {
+            match part {
+                StreamPart::A2ui(messages) => {
+                    for message in messages {
+                        let message = serde_json::to_value(&message).unwrap();
+                        renderer
+                            .apply(&[message])
+                            .map_err(|error| format!("the renderer refused a message: {error}"))?;
+                    }
+                }
+                StreamPart::Rejected(error) => return Err(error.to_string()),
+                _ => {}
+            }
+        }
+        Ok(())
+    };
+    for chunk in chunks {
+        let parts = stream
+            .feed(chunk, &mut state)
+            .map_err(|rejected| format!("after {chunk:?}: {}", rejected.error))?;
+        send(parts)?;
+    }
+    let parts = stream
+        .close(&mut state)
+        .map_err(|rejected| format!("at the end: {}", rejected.error))?;
+    send(parts)?;
+    Ok((state, renderer))
+}
+
+/// A model may write the keys of a message in any order. An `updateDataModel`
+/// whose `path` comes after its `value` reads, until the path arrives, like
+/// one that replaces the whole data model; emitted then, it would.
+#[test]
+fn a_data_model_update_is_not_applied_before_its_path_has_arrived() {
+    let processor = processor();
+    let before = canvas(&processor);
+    let block = r#"[{"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"name":"Ada"}, "path":"/user"}}]"#;
+    let cut = block.find(" \"path\"").unwrap();
+
+    let mut whole = before.clone();
+    processor.parse_block_in(block, &mut whole).unwrap();
+    let expected = json!({"cart": [1, 2, 3], "title": "Kept", "user": {"name": "Ada"}});
+    assert_eq!(
+        whole.surface("s").unwrap().data_model.to_json().unwrap(),
+        expected
+    );
+
+    let options = StreamOptions::new().with_wrapped(false);
+    let (state, renderer) = streamed(
+        &processor,
+        &before,
+        options,
+        &[&block[..cut], &block[cut..]],
+    )
+    .unwrap();
+    assert_eq!(
+        renderer.surface("s").unwrap().data_model.to_json().unwrap(),
+        expected,
+        "what a renderer holds after applying each emitted message"
+    );
+    assert_eq!(state, whole);
+
+    // Nothing is emitted for the message until its text has closed.
+    let mut state = before.clone();
+    let mut stream = processor.open_stream(&state, options).unwrap();
+    assert!(stream.feed(&block[..cut], &mut state).unwrap().is_empty());
+    assert_eq!(state, before);
+    assert_eq!(
+        texts(&stream.feed(&block[cut..], &mut state).unwrap()),
+        ["a2ui x1"]
+    );
+}
+
+/// Once the path is there, the value is emitted as it grows, at that path.
+#[test]
+fn a_data_model_update_grows_at_its_path_once_the_path_has_arrived() {
+    let processor = processor();
+    let mut state = canvas(&processor);
+    let mut stream = processor
+        .open_stream(&state, StreamOptions::default())
+        .unwrap();
+    let chunks = [
+        r#"<a2ui-json>[{"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/user","value":{"name":"Ada","#,
+        r#""langs":["en","#,
+        r#""fr"]}}}]</a2ui-json>"#,
+    ];
+    let mut seen = Vec::new();
+    for chunk in chunks {
+        let emitted = stream.feed(chunk, &mut state).unwrap();
+        assert_eq!(texts(&emitted), ["a2ui x1"], "after {chunk:?}");
+        let model = state.surface("s").unwrap().data_model.to_json().unwrap();
+        assert_eq!(model["title"], "Kept", "the rest of the model stays");
+        seen.push(model["user"].clone());
+    }
+    assert_eq!(
+        seen,
+        [
+            json!({"name": "Ada"}),
+            json!({"name": "Ada", "langs": ["en"]}),
+            json!({"name": "Ada", "langs": ["en", "fr"]}),
+        ]
+    );
+}
+
+/// A small generator of the same numbers every run.
+struct Dice(u64);
+
+impl Dice {
+    fn roll(&mut self, sides: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % sides as u64) as usize
+    }
+}
+
+/// The differential check that found the defect above: every answer, in
+/// every format setting, cut at random, against the same answer read whole.
+/// The answers write their keys in the orders a model does.
+#[test]
+fn an_answer_streamed_in_any_chunks_leaves_what_it_leaves_read_whole() {
+    let message = |body: &str| format!(r#"{{"version": "v0.9", {body}}}"#);
+    let wrapped = |messages: &[String]| {
+        format!(
+            "Here you go.\n<a2ui-json>[\n  {}\n]</a2ui-json>\nAnything else?",
+            messages.join(",\n  ")
+        )
+    };
+    let bare = |messages: &[String]| format!("[{}]", messages.join(", "));
+    let answers: Vec<(bool, String)> = vec![
+        // The path after the value, and after everything else.
+        (
+            true,
+            wrapped(&[message(
+                r#""updateDataModel": {"surfaceId": "s", "value": {"name": "Ada"}, "path": "/user"}"#,
+            )]),
+        ),
+        (
+            false,
+            bare(&[message(
+                r#""updateDataModel": {"value": ["a", "b"], "surfaceId": "s", "path": "/cart"}"#,
+            )]),
+        ),
+        // The path first, with a value that nests.
+        (
+            true,
+            wrapped(&[message(
+                r#""updateDataModel": {"surfaceId": "s", "path": "/user", "value": {"name": "Ada", "langs": ["en", "fr"], "home": {"city": "Paris"}}}"#,
+            )]),
+        ),
+        // No path: the whole model.
+        (
+            true,
+            wrapped(&[message(
+                r#""updateDataModel": {"surfaceId": "s", "value": {"title": "New", "cart": [4, {"n": 5}]}}"#,
+            )]),
+        ),
+        // No value: a removal, which must not run before it is whole.
+        (
+            false,
+            bare(&[
+                message(r#""updateDataModel": {"surfaceId": "s", "path": "/cart"}"#),
+                message(
+                    r#""updateDataModel": {"surfaceId": "s", "value": "Renamed", "path": "/title"}"#,
+                ),
+            ]),
+        ),
+        // The version last, and the surface after the components.
+        (
+            true,
+            wrapped(&[
+                r#"{"updateDataModel": {"value": {"title": "Late version"}, "path": "/", "surfaceId": "s"}, "version": "v0.9"}"#
+                    .to_string(),
+                message(
+                    r#""updateComponents": {"components": [{"id": "root", "component": "Column", "children": ["a", "b"]}, {"id": "a", "component": "Text", "text": "One"}, {"id": "b", "component": "Text", "text": {"path": "/title"}}], "surfaceId": "s"}"#,
+                ),
+            ]),
+        ),
+        // Data that carries the protocol's own words.
+        (
+            true,
+            wrapped(&[message(
+                r#""updateDataModel": {"surfaceId": "s", "value": {"path": "/x", "updateDataModel": {"path": "/y", "value": 1}, "text": "</a2ui-json> is text here"}, "path": "/note"}"#,
+            )]),
+        ),
+        // A second surface beside the first, a delete of one that never was,
+        // and text between two blocks.
+        (
+            true,
+            format!(
+                "{} and {}",
+                wrapped(&[
+                    message(r#""deleteSurface": {"surfaceId": "never"}"#),
+                    message(&format!(
+                        r#""createSurface": {{"surfaceId": "t", "catalogId": "{BASIC}"}}"#
+                    )),
+                    message(
+                        r#""updateDataModel": {"value": {"label": "Second “surface” 🚀"}, "surfaceId": "t", "path": "/"}"#,
+                    ),
+                    message(
+                        r#""updateComponents": {"surfaceId": "t", "components": [{"id": "root", "component": "Text", "text": {"path": "/label"}}]}"#,
+                    ),
+                ]),
+                wrapped(&[
+                    message(r#""updateDataModel": {"surfaceId": "s", "value": 7, "path": "/cart/1"}"#),
+                    message(r#""deleteSurface": {"surfaceId": "t"}"#),
+                ]),
+            ),
+        ),
+    ];
+
+    let generator = A2uiGenerator::new(vec![CatalogConfig::basic(A2uiVersion::V0_9).unwrap()]);
+    let renderer = RendererCapabilities::supporting(A2uiVersion::V0_9, [BASIC]);
+    let formats = [
+        DirectJson::new(),
+        DirectJson::new().with_progressive_keys(["text", "value", "name", "title", "label"]),
+        DirectJson::new()
+            .with_progressive_keys(ag_ui_a2ui::schema::DEFAULT_CUTTABLE_KEYS)
+            .holding_components_until_closed(true),
+    ];
+    let mut dice = Dice(0x9e37_79b9_7f4a_7c15);
+    for format in formats {
+        let processor = generator
+            .create_processor_with(Some(&renderer), Arc::new(format.clone()))
+            .unwrap();
+        let before = canvas(&processor);
+        for (is_wrapped, answer) in &answers {
+            let mut whole = before.clone();
+            let read = if *is_wrapped {
+                processor.parse_response_in(answer, &mut whole)
+            } else {
+                processor.parse_block_in(answer, &mut whole)
+            };
+            read.unwrap_or_else(|rejected| panic!("{answer}: {}", rejected.error));
+            assert_ne!(whole, before, "{answer}");
+
+            let options = StreamOptions::new().with_wrapped(*is_wrapped);
+            let boundaries: Vec<usize> = (1..answer.len())
+                .filter(|at| answer.is_char_boundary(*at))
+                .collect();
+            for _ in 0..40 {
+                let mut cuts: Vec<usize> = (0..1 + dice.roll(7))
+                    .map(|_| boundaries[dice.roll(boundaries.len())])
+                    .collect();
+                cuts.sort_unstable();
+                cuts.dedup();
+                let mut chunks = Vec::with_capacity(cuts.len() + 1);
+                let mut from = 0;
+                for cut in cuts {
+                    chunks.push(&answer[from..cut]);
+                    from = cut;
+                }
+                chunks.push(&answer[from..]);
+
+                let (state, renderer) = streamed(&processor, &before, options, &chunks)
+                    .unwrap_or_else(|error| panic!("{format:?}\n{chunks:?}\n{error}"));
+                assert_eq!(state, whole, "{format:?}\n{chunks:?}");
+                assert_eq!(renderer, whole, "{format:?}\n{chunks:?}");
+            }
+        }
+    }
 }
 
 #[test]

@@ -191,8 +191,12 @@ impl fmt::Display for Rule {
 /// TEXT_MESSAGE_CONTENT breaks rule `not-open` (content and terminators require
 /// a matching start): message "msg-2" is not open [open: messages={"msg-1"}]
 /// ```
+///
+/// `#[non_exhaustive]`: a rejection can come to say more, such as the id it
+/// is about, without a breaking release. Build one with [`new`](Self::new).
 #[derive(Debug, Error)]
 #[error("{event} breaks rule `{rule}` ({}): {detail}", rule.describe())]
+#[non_exhaustive]
 pub struct VerificationError {
     /// The event that was rejected.
     pub event: EventType,

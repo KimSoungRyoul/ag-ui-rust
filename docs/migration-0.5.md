@@ -800,7 +800,7 @@ These are on `main` and not yet in a published version.
 
 | Removed | Write instead |
 |---|---|
-| `toolkit::recovery::generate_with_recovery`, `generate_with_recovery_async` | `loop { match retry.judge(&call_model(&prompt).await?, &mut state) { Verdict::Done(parts) => break parts, Verdict::Retry(feedback) => prompt = feedback.prompt(&request), Verdict::GiveUp(error) => return Err(error) } }`, or `author.create(id, request).generate(call).await` for one surface |
+| `toolkit::recovery::generate_with_recovery`, `generate_with_recovery_async` | `loop { match retry.judge(&call_model(&prompt).await?, &mut state) { Verdict::Done(parts) => break parts, Verdict::Retry(feedback) => prompt = feedback.prompt(&request), Verdict::GiveUp(error) => return Err(error), _ => return Err(Error::parse("a verdict this agent does not know")) } }`, or `author.create(id, request).generate(call).await` for one surface |
 | `RecoveryOptions::max_attempts` | `RetryDriver::new(&processor, max_attempts)` |
 | `RecoveryOptions::prior` | The `RendererState` given to `judge`, kept for the conversation |
 | `RecoveryOptions::validate`, `RecoveryOptions::for_update()` | Nothing: an answer is checked against the state it is read into, so an update needs no other options |
@@ -840,7 +840,7 @@ These are on `main` and not yet in a published version.
 | `constants::MIME_TYPE` | `adapters::a2a::MIME_TYPE` (feature `a2a`) |
 | `toolkit::ops::{Intent, SurfaceSpec, assemble_ops, create_surface, update_components, update_data_model}` | The same names in `adapters::agui` |
 | `toolkit::envelope::{wrap_as_operations_envelope, operations_envelope, is_operations_envelope, unwrap_operations_envelope}`, `ag_ui_a2ui::wrap_as_operations_envelope` | The same names in `adapters::agui` |
-| `toolkit::envelope::wrap_error_envelope(surface_id, message, &errors)`, `ag_ui_a2ui::wrap_error_envelope` | `adapters::agui::error_envelope(message)`, or `recovery_exhausted_envelope(&[Attempt { attempt, ok: false, errors }])?` when the attempts are used up |
+| `toolkit::envelope::wrap_error_envelope(surface_id, message, &errors)`, `ag_ui_a2ui::wrap_error_envelope` | `adapters::agui::error_envelope(message)`, or `recovery_exhausted_envelope(&[Attempt::failed(attempt, errors)])?` when the attempts are used up |
 | `toolkit::tools::render_a2ui_tool(Some(&catalog))`, `generate_a2ui_tool()`, `tool_definitions(catalog)` | `adapters::agui::render_a2ui_tool()` and `generate_a2ui_tool()`, each an `ag_ui::Tool` |
 | `ToolDefinition`, `Tool::from(definition)` | Nothing: the functions return the `ag_ui::Tool` a run carries |
 | `ToolDefinition::to_anthropic_value()` | `json!({"name": tool.name, "description": tool.description, "input_schema": tool.parameters})` |
@@ -931,8 +931,9 @@ These are on `main` and not yet in a published version.
 - A surface that could not be made is reported in AG-UI's shapes. The tool result is
   `error_envelope(message)`, `{"error": …}`, or `recovery_exhausted_envelope(&attempts)`,
   `{"error": "Failed to generate valid A2UI after N attempt(s)", "code":
-  "a2ui_recovery_exhausted", "attempts": […]}`. `surface_status(tool_call_id, &status)`
-  puts the call's surface activity in `SurfaceStatus::Building`, `Retrying` or `Failed`.
+  "a2ui_recovery_exhausted", "attempts": […]}`. `painter.status(tool_call_id, &status)`,
+  on the `SurfacePainter` that paints for the call, gives the event that puts the
+  call's surface activity in `SurfaceStatus::Building`, `Retrying` or `Failed`.
   alpha.3's `wrap_error_envelope` wrote `{"error", "code": "VALIDATION_FAILED",
   "surfaceId", "path", "details"}`, which no AG-UI frontend reads.
 - Reading a conversation: `operations_in(&message)` gives the operations a message
@@ -1114,6 +1115,139 @@ These are on `main` and not yet in a published version.
   refers to it by. It returned `Error::Catalog` for one. A `SchemaValidator` is one
   catalog's: a v1.0 message that names another catalog fails it, and a
   `MessageProcessor` does not put such a message to a schema.
+- A `ResponseStream` emits an `updateDataModel` that is still arriving only once it
+  holds its `path`, and again each time a chunk adds to its `value`. One whose `path`
+  is written after its `value`, and one that states no path and so means the whole
+  data model, is emitted once, when its text has closed. alpha.3's `StreamParser` held
+  an update without a path the same way. To see a data model fill in while it is
+  written, have the model write `path` before `value`.
+- A `deleteSurface` for a surface that is not live, one never created or one already
+  deleted, does nothing on any layer. `MessageProcessor` accepts it and changes
+  nothing; `parse_response_in`, `RetryDriver::judge` and a `ResponseStream` return it
+  among an answer's messages, since a renderer is told and does nothing; and
+  `SurfacePainter::settle` and `paint`, `surfaces_in` and `latest_surface` pass it
+  over: it is not applied, no activity is sent for it, and it is not what a
+  conversation touched last. The tool result still carries the batch as sent, and a
+  batch of nothing else gives a tool result and no activity. The `render_a2ui`
+  arguments that `paint` sends name the first surface the batch changed. alpha.3's
+  `find_prior_surface_in` replayed the one surface the last operation named, and gave
+  `None` when that operation was such a delete. `SurfaceStore::apply` on its own still
+  refuses one.
+- A call that shows a state first is painted in its own activity. After
+  `painter.status(tool_call_id, &SurfaceStatus::Building)`, `painter.settle` for the
+  same call puts the first surface of the batch that the painter has not painted
+  under `a2ui-surface-<tool call id>`, or moves the first one there when it has
+  painted them all, so the skeleton gives way to a surface. A batch of a call that
+  showed no state is painted as before: in place for a surface painted earlier in the
+  run, and under `a2ui-surface-<surface id>-<tool call id>` for each surface of a
+  batch of several. alpha.3 sent no activity. A state stays until something is painted
+  in its place, so a call that ends without a surface says so with
+  `SurfaceStatus::Failed`. `SurfacePainter::from_history` notes a state that an
+  activity in the messages shows; only a client's list holds activities, so a
+  painter made from a server's request notes none.
+- `adapters::a2a::renderer_capabilities` reads data parts only, a part whose `kind` is
+  `data` or one written without a `kind` that has `data`, and passes over a data part
+  whose `data.metadata` is not an object: what is inside a part's data is the
+  application's. It returned `Error::Catalog` for such a message. alpha.3 had no A2A
+  helpers.
+- Eleven types added after alpha.3 are `#[non_exhaustive]`, because later work adds
+  fields and variants to them. A struct expression for `StreamOptions`, `Attempt`,
+  `Painted`, `Candidate`, `UserAction` or `CatalogContext` no longer compiles outside
+  the crate, and a `match` on `Verdict`, `StreamPart`, `ReaderEvent`,
+  `AfterRejectedBlock` or `SurfaceStatus` needs a wildcard arm. Reading a field and
+  building a variant are unchanged. Write:
+
+  | Instead of | Write |
+  |---|---|
+  | `StreamOptions { wrapped: false, ..StreamOptions::default() }` | `StreamOptions::new().with_wrapped(false)` |
+  | `StreamOptions { after_rejected_block: AfterRejectedBlock::Continue, ..StreamOptions::default() }` | `StreamOptions::new().with_after_rejected_block(AfterRejectedBlock::Continue)` |
+  | `Attempt { attempt, ok: false, errors }` | `Attempt::failed(attempt, errors)`, or `Attempt::rejected(&feedback)` from a `Verdict::Retry` |
+  | `Attempt { attempt, ok: true, errors: Vec::new() }` | `Attempt::stood(attempt)` |
+  | `Painted { envelope, activities }` | `Painted::new(envelope, activities)` |
+  | `Candidate { message, closed }` | `Candidate::new(message, closed)` |
+  | `UserAction { name: Some(name), ..UserAction::default() }` | `let mut action = UserAction::default(); action.name = Some(name);` |
+  | `CatalogContext { catalog_id, schema }` | `CatalogContext::new(schema)`, which takes the id from the schema's `catalogId` |
+  | `match retry.judge(..) { Verdict::Done(..) => .., Verdict::Retry(..) => .., Verdict::GiveUp(error) => return Err(error) }` | The same with `_ => return Err(Error::parse("a verdict this agent does not know"))`: a verdict a later version adds is one the loop cannot act on |
+  | `match part { StreamPart::Text(..) => .., StreamPart::A2ui(..) => .., StreamPart::Rejected(..) => .. }` | The same with `_ => {}` |
+
+- `FilterToolCalls` filters a conversation the stream restates by the same names as the
+  tool-call events. A `MESSAGES_SNAPSHOT`, and the request echoed on `RUN_STARTED`, go out
+  without a filtered call, without the encrypted value that call carries and without the
+  tool message that answers it. Alpha.3 dropped the four tool-call events and sent a
+  restated conversation as it was. Two more things are taken out: an assistant message
+  left with neither content nor tool calls, and a tool message that answers a call
+  nothing named. There is nothing to write; a call a client has to see does not belong on
+  the filter's list.
+- `FilterToolCalls` learns the calls a `MESSAGES_SNAPSHOT` carries, so the result of a
+  call a snapshot introduced goes where the call went. Alpha.3 dropped that result
+  whatever the tool, and the run finished with the call unanswered. An event of a call
+  nothing named is still dropped, and its emit returns `Ok` as in alpha.3: the filter
+  cannot tell such a call from one it removed in an earlier run. There is nothing to
+  write.
+- `StreamTransformer` gains a provided method, `replay(&mut self, sent: &[Event])`, and
+  existing implementations compile unchanged. `Runner::continue_run` calls it once, after
+  `seed` and before the first event, with the events the run already sent; the default
+  ignores them. Alpha.3 showed a continued run's transformers nothing of `sent`.
+  Implement it for a transformer that judges an event by the id it names.
+- In a run continued with `Runner::continue_run`, `FilterToolCalls` and
+  `ToolResultToState` know the calls that `sent` opened. A continuation can finish and
+  answer a call the earlier driver left open under `FilterToolCalls`, and a
+  `ToolResultToState` promotes its result; before, the filter dropped those events and
+  the run ended in `RUN_ERROR` (`open-at-finish`). A call the earlier driver's filter
+  removed is not in `sent`, so its events are dropped with `Ok`. The filter does not take
+  up the chunk streams `sent` left open: a continuation that keeps streaming a call by
+  chunks names the call's id on its first chunk, and the chunks after it may name none. A
+  `TOOL_CALL_CHUNK` with no id before that is dropped with `Ok`, because the filter
+  cannot tell whose it is: the earlier driver may have been streaming a call its filter
+  removed in the same lane, and `sent` does not show it.
+- `ToolResultToState` promotes the result of a call the run did not open itself: one the
+  request's history holds unanswered, and one a `MESSAGES_SNAPSHOT` introduced. Alpha.3
+  promoted only the result of a call started in the same run, so a resumed run's result
+  went out with no state event after it.
+- `ToolResultToState::delta` leaves a result alone unless its content is a JSON Patch a
+  consumer can read: the `path` and `from` of every operation must be JSON Pointers.
+  Alpha.3 promoted `[{"op":"add","path":"oops","value":1}]`, and the run then ended in
+  `RUN_ERROR` (`SERIALIZATION`) after the result was sent, or sent a `STATE_DELTA` that
+  the client rejects. A hosted run now refuses to send a `STATE_DELTA` with such a patch
+  whether or not state was published before it: the emit fails with `Error::Json`, where
+  alpha.3 sent it when nothing had been published. A well-formed patch that does not
+  apply to the state is still sent.
+- `SubagentVisibility::inline()` and `hidden()` give a `*_CHUNK` event the fields that
+  open its item when the event has to open it again for the consumer: `toolCallName` and
+  `parentMessageId` on a `TOOL_CALL_CHUNK`, `role` and `name` on a `TEXT_MESSAGE_CHUNK`.
+  That happens when a chunk stream is still open for the agent and has ended for the
+  consumer, because an event that left its subagent's lane ended it: under `inline()`
+  another subagent's chunk, under `hidden()` the state a subagent published. Alpha.3
+  sent the continuation as it was, and the run ended in `RUN_ERROR` ("opens tool call
+  … without a toolCallName"). A `TOOL_CALL_CHUNK` that named no id used to be given the
+  tool's name every time; it now gets it only when it opens the call again.
+- A run continued with `Runner::continue_run` and then cancelled closes what `sent` left
+  open, and ends with `RUN_FINISHED` and the cancelled outcome. The driver sends the end
+  event of each message, tool call, reasoning message, reasoning block and step that
+  `sent` opened and nothing closed, innermost first and under the subagent that opened
+  it, as it already sent `SUBAGENT_ERROR` for a subagent left active. Before, such a run
+  ended in `RUN_ERROR` (`open-at-finish`), or without the `verify` feature in a
+  `RUN_FINISHED` with the entity still open. An end event the agent emits itself after
+  cancellation still fails with `Error::Cancelled`. Without the `verify` feature, a
+  continued run that is not cancelled and leaves such an entity open now ends in
+  `RUN_ERROR` as it does with `verify` on, not in `RUN_FINISHED`.
+- The ids a context hands out in a continued run are never ones `sent` already used, and
+  the counter behind them cannot overflow. An id in `sent` of the shape the context
+  hands out with the largest number a counter holds, such as
+  `<runId>-msg-18446744073709551615`, used to panic the driver in a build with overflow
+  checks and to repeat ids otherwise. The count now starts again from 1 and passes over
+  every number in use.
+- `server::SubagentVisibility`, `server::StatePublish`, `encode::sse::SseFrame` (also
+  `axum::SseFrame`) and `server::VerificationError` are `#[non_exhaustive]`. A `match` on
+  one of the three enums needs a wildcard arm; for `StatePublish`, `other.into_event()`
+  covers every variant. `VerificationError` can no longer be built with a struct literal
+  outside the crate, and a struct pattern needs `..`: write
+  `VerificationError::new(event, rule, detail)`. Variants are built as before.
+- `ExecutionCapabilities` reads `maxIterations` and `maxExecutionTime` written as a
+  float with no fractional part, such as `10.0` or `3e4`, as the integer it is, which is
+  what the schema's `integer` means. Alpha.3 failed the whole document over such a
+  number. They are written back as `10` and `30000`. A number with a fractional part is
+  still an error, and `-1.0` reads as `None` like `-1`.
 - An event the conversation has nowhere to keep is dropped, and a `Thread` warns once
   per item per run (`Update::Warning`, kind `warning`): `TOOL_CALL_ARGS` or
   `TOOL_CALL_END` for a call no message holds, as after a `MESSAGES_SNAPSHOT` that

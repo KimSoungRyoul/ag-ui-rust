@@ -37,6 +37,11 @@ where
 /// For limits the schema bounds with `minimum: 0` while producers in the wild
 /// send `-1` for "no limit". Absent already means not declared, and failing
 /// the whole document over it would lose everything else in it.
+///
+/// The schema types these `integer`, which in JSON Schema is any number with
+/// no fractional part: `10.0` and `1e1` are the integer ten, and a producer
+/// whose language keeps its numbers as floats writes them that way. They are
+/// read as the integer they are, as the wire boundary reads them.
 pub(crate) fn non_negative<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,
@@ -45,10 +50,17 @@ where
     let Some(number) = Option::<serde_json::Number>::deserialize(deserializer)? else {
         return Ok(None);
     };
-    match number.as_u64() {
-        Some(value) => Ok(Some(value)),
-        None if number.is_i64() => Ok(None),
-        None => Err(D::Error::custom(format!(
+    if let Some(value) = number.as_u64() {
+        return Ok(Some(value));
+    }
+    if number.is_i64() {
+        return Ok(None);
+    }
+    match number.as_f64() {
+        Some(value) if value.fract() == 0.0 && value < 0.0 => Ok(None),
+        // Below 2^64 a float with no fractional part converts exactly.
+        Some(value) if value.fract() == 0.0 && value < u64::MAX as f64 => Ok(Some(value as u64)),
+        _ => Err(D::Error::custom(format!(
             "expected an integer, found {number}"
         ))),
     }

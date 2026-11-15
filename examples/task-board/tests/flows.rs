@@ -9,7 +9,7 @@
 use ag_ui::client::transport::HttpTransport;
 use ag_ui::client::{HttpAgent, RunEnd, RunParams, SubagentStatus, Thread, Update};
 use ag_ui::{Event, EventType, Message, SubagentRunId};
-use ag_ui_a2ui::adapters::agui::operations_in;
+use ag_ui_a2ui::adapters::agui::{latest_surface, operations_in, wrap_as_operations_envelope};
 use ag_ui_a2ui::message::AgentPayload;
 use futures_util::StreamExt as _;
 use task_board::board::{self, Board};
@@ -262,6 +262,61 @@ async fn a_second_run_in_the_same_thread_carries_the_conversation_and_the_board(
             .all(|op| !matches!(op.payload, AgentPayload::CreateSurface(_))),
         "a surface already on screen must not be re-created: {updated:?}"
     );
+
+    // And the conversation the two runs left replays, which is what the third
+    // run's agent and any client that draws from the thread depend on.
+    let surface = latest_surface(thread.messages())
+        .expect("a conversation that replays")
+        .expect("the board both runs drew");
+    assert_eq!(surface.surface_id, board::SURFACE_ID);
+    assert!(!surface.deleted);
+}
+
+/// A conversation that does not replay is not a conversation with nothing on
+/// screen. The agent says so and fails the run before it touches the board,
+/// and the terminal prints the failure; neither draws a fresh surface over
+/// whatever the user is looking at.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_conversation_that_does_not_replay_fails_the_run_and_says_why() {
+    // What an agent that created its surface on every turn left behind.
+    let created = wrap_as_operations_envelope(&[ag_ui_a2ui::AgentMessage::create_surface(
+        board::SURFACE_ID,
+        "basic",
+    )])
+    .expect("an envelope");
+    let broken = vec![
+        Message::user("u-1", "list"),
+        Message::tool("m-1", "call-1", created.clone()),
+        Message::user("u-2", "list"),
+        Message::tool("m-2", "call-2", created),
+    ];
+    assert!(latest_surface(&broken).is_err());
+
+    let url = serve().await;
+    let mut thread: Thread<HttpTransport, Board> = HttpAgent::new(&url)
+        .expect("a valid endpoint URL")
+        .thread_builder("broken")
+        .tools(board::tools())
+        .messages(broken)
+        .build()
+        .expect("valid initial board");
+
+    let mut terminal = Terminal::new("add draft the agenda\n".as_bytes(), Vec::new()).echoing();
+    chat::converse(&mut thread, &mut terminal)
+        .await
+        .expect("a Vec never fails to be written to");
+    let printed = String::from_utf8(terminal.into_output()).expect("the client prints UTF-8");
+
+    assert!(
+        printed.contains("  !! the run failed: ")
+            && printed.contains("the conversation's A2UI surfaces do not replay")
+            && printed.contains("already exists"),
+        "{printed}"
+    );
+    // Nothing was done first: no task added, no surface drawn.
+    assert!(!printed.contains("add_task"), "{printed}");
+    assert!(drawn(&printed).is_empty(), "{printed}");
+    assert!(thread.state().expect("a board").tasks.is_empty());
 }
 
 /// The low-level API, and the only test here that reads the wire itself:

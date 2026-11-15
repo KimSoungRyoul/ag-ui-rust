@@ -57,7 +57,11 @@ pub enum ResponsePart {
 
 /// A piece of a streamed answer: a [`ResponsePart`], or a block the stream
 /// rejected and read past.
+///
+/// A later version may add a kind of part, so a `match` on one needs a
+/// wildcard arm.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum StreamPart {
     /// Conversational text.
     Text(String),
@@ -112,7 +116,11 @@ impl From<ResponseError> for Error {
 }
 
 /// One message of a block that is still arriving, as it reads now.
+///
+/// A later version may add a field, so a reader builds one with
+/// [`Candidate::new`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Candidate {
     /// The message as far as it can be read.
     pub message: Value,
@@ -122,8 +130,19 @@ pub struct Candidate {
     pub closed: bool,
 }
 
+impl Candidate {
+    /// A message as far as it can be read, and whether its text has closed.
+    pub fn new(message: Value, closed: bool) -> Self {
+        Self { message, closed }
+    }
+}
+
 /// What a reader makes of a chunk.
+///
+/// A later version may add an event, so a `match` on one needs a wildcard
+/// arm. A reader builds the events it yields from the variants as they are.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ReaderEvent {
     /// A piece of conversational text, already trimmed as a run.
     Text(String),
