@@ -57,7 +57,7 @@ suite counts one check per case and verifies its steps in order; a case that
 stops at a step is reported under that step, `suite::case[step 2]`, and that is
 the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 757 passed, 30 expected divergence, 1242 skipped, 5 failing.
+Totals: 753 passed, 34 expected divergence, 1242 skipped, 5 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -99,7 +99,7 @@ Totals: 757 passed, 30 expected divergence, 1242 skipped, 5 failing.
 | `agent/streamed_answer.yaml` | 6 | 6 | 0 | 0 | 0 | executed |
 | `agent/direct_json/prompt_generator.yaml` | 15 | 1 | 0 | 14 | 0 | executed |
 | `agent/direct_json/response_parser.yaml` | 36 | 35 | 0 | 1 | 0 | executed |
-| `agent/direct_json/response_streaming.yaml` | 139 | 91 | 3 | 45 | 0 | executed |
+| `agent/direct_json/response_streaming.yaml` | 139 | 87 | 7 | 45 | 0 | executed |
 | `agent/direct_json/compiler.yaml` | 38 | 18 | 0 | 20 | 0 | executed |
 | `agent/direct_json/decompiler.yaml` | 11 | 9 | 0 | 2 | 0 | executed |
 | `agent/direct_json/scaling.yaml` | 7 | 0 | 0 | 7 | 0 | later: timing (#75): the direct JSON format: parse time against payload size |
@@ -279,27 +279,28 @@ described.
 
 ## Expected divergences
 
-Thirty checks: three in `core/validator_v0_9.yaml`, two in
+Thirty-four checks: three in `core/validator_v0_9.yaml`, two in
 `core/data_context.yaml`, four in `core/data_model.yaml`, two in
 `core/message_processor_v0_9.yaml`, eight in `core/catalog.yaml`, two in
 `core/validator_v1_0.yaml`, four in `core/message_processor_v1_0.yaml`, one
 each in `core/multi_catalog.yaml` and `core/composition_constraints.yaml`, and
-three in `agent/direct_json/response_streaming.yaml`.
+seven in `agent/direct_json/response_streaming.yaml`.
 Those of the core suites run one check per case are listed in `DIVERGENCES` in
 the harness with what this crate gives, and the harness holds it to exactly
 that.
 
-The three agent-tier ones are listed in `AGENT_DIVERGENCES` in the harness, each
+The seven agent-tier ones are listed in `AGENT_DIVERGENCES` in the harness, each
 with what its failure has to say, so that an entry cannot go on covering a case
-that started failing for another reason. All three follow from what
+that started failing for another reason. Two follow from what
 `ag_ui_a2ui::validate` holds a finished surface to, which the agent layer does
-not relax.
+not relax. Five follow from when a stream emits an `updateDataModel` that
+states no `path`.
 
 | Checks | Reference expectation | Checked behaviour |
 |---:|---|---|
 | 1 (`test_stream_orphan_component_fails_v09`) | A block that leaves a component the root cannot reach is rejected. | The block is emitted. An unreachable component is a warning, for the reason the next row gives. |
 | 1 (`test_stream_relative_path_kept_v09`) | A binding with a relative path on the root component is emitted as written. | It is rejected as `unresolved_binding`: a relative path has no scope outside a list template. The reference does not look at bindings. |
-| 1 (`test_stream_data_model_grows_v09`) | A list template whose path holds a map is emitted, with the data model growing under it. | It is rejected as `unresolved_binding` once the data model arrives: a template iterates an array. The reference does not look at the data model. |
+| 5 (`test_chunk_progressive_key_heals_a_partial_string`, `test_chunk_data_model_grows_across_chunks`, `test_stream_data_model_grows_v09`, `test_stream_data_model_cut_key_and_value_v09`, `test_stream_data_model_keeps_earlier_entries_v09`) | An `updateDataModel` that states no `path` is emitted as its `value` grows, at the root, from the first chunk that holds part of the value. | It is emitted once, whole, on the chunk that closes it. The keys of a message arrive in the order the model wrote them, so a `path` may still follow the `value`; a value applied at the root before its path arrives replaces the surface's whole data model, and the stream then leaves something else than the same answer read whole. An `updateDataModel` that already holds its `path` is emitted as it grows, at that path. The last of the five would be rejected on its closing chunk as `unresolved_binding`: its list template iterates a path that holds a map, and the reference does not look at the data model. |
 | 2 + 1 + 2 + 1 (`test_v09_topology_orphaned_component_error`, `test_v09_topology_plain_string_property_not_treated_as_child_ref`; `test_topology_orphaned_component_error` in the v0.9 processor suite; `test_v10_topology_orphaned_component_error`, `test_v10_topology_plain_string_property_not_treated_as_child_ref`; `test_composition_dropped_child_is_reported_as_orphan`, step 1) | A component the root cannot reach is an error. | It is reported in `ValidationReport::unreachable`, as a warning. The specification tells renderers to buffer a component until its parent arrives, so an unreachable component is usually a half-streamed tree. The processor accepts the message, and `MessageProcessor::report` names the component. |
 | 1 (`test_custom_catalog_0_9`, step 2) | `children: 123` is `invalid_value`. | It is `type_mismatch`, at the same place. |
 | 2 + 1 (`test_resolve_path_context_with_trailing_slash`, `test_resolve_path_empty_in_trailing_slash_context`; `test_resolve_path_relative_trailing_slash` in the processor suite) | A trailing slash on the scope is dropped: `foo` under `/bar/` is `/bar/foo`. | An empty segment is the empty key, as RFC 6901 reads it, and `""` is a key JSON allows: `foo` under `/bar/` is `/bar//foo`, and the scope `/user/` itself is `/user/`. Only `/` alone is the root. |

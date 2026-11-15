@@ -47,12 +47,15 @@ pub fn panel<T>(thread: &Thread<T, Board>) -> Vec<String> {
     }
 
     let surface = match surface_in_history(thread.messages()) {
-        Some(prior) => format!(
+        Ok(Some(prior)) => format!(
             " · surface {} ({})",
             prior.surface_id,
             prior.components.len()
         ),
-        None => String::new(),
+        Ok(None) => String::new(),
+        // Not "no surface": the conversation holds operations that do not
+        // apply in order, and every later run will be sent them.
+        Err(error) => format!(" · surfaces do not replay ({error})"),
     };
     lines.push(format!(
         "└ run {} · {} messages{surface}",
@@ -68,18 +71,31 @@ pub fn panel<T>(thread: &Thread<T, Board>) -> Vec<String> {
 /// A2UI operations are in the transcript, so anything holding the transcript can
 /// replay them. No hand-written message mapping and no fold of the operations —
 /// that is what the adapter is for.
-pub fn surface_in_history(messages: &[Message]) -> Option<SurfaceState> {
-    latest_surface(messages)
-        .ok()
-        .flatten()
-        .filter(|surface| !surface.deleted)
+///
+/// `Ok(None)` is a conversation with no surface on screen.
+///
+/// # Errors
+///
+/// A conversation whose operations do not apply in order, a surface created
+/// twice, say, does not replay. That is an agent's defect or the adapter's,
+/// and it is returned, not folded into "no surface": a watcher that hid it
+/// would show a second turn that silently lost its surface.
+pub fn surface_in_history(messages: &[Message]) -> ag_ui_a2ui::Result<Option<SurfaceState>> {
+    Ok(latest_surface(messages)?.filter(|surface| !surface.deleted))
 }
 
 /// The surface the conversation shows once `message` is part of it.
 ///
 /// A tool result that updates a surface carries only what changed; what a
 /// person sees is the surface it leaves.
-pub fn surface_after(messages: &[Message], message: &Message) -> Option<SurfaceState> {
+///
+/// # Errors
+///
+/// As [`surface_in_history`].
+pub fn surface_after(
+    messages: &[Message],
+    message: &Message,
+) -> ag_ui_a2ui::Result<Option<SurfaceState>> {
     let mut conversation = messages.to_vec();
     if !conversation.iter().any(|known| known.id() == message.id()) {
         conversation.push(message.clone());
@@ -172,8 +188,44 @@ mod tests {
             Message::tool("m-1", "call-1", r#"{"id":1}"#),
             Message::tool("m-2", "call-2", "not json at all"),
         ];
-        assert!(surface_in_history(&ordinary).is_none());
-        assert!(surface_after(&ordinary[..1], &ordinary[1]).is_none());
+        assert!(surface_in_history(&ordinary).unwrap().is_none());
+        assert!(
+            surface_after(&ordinary[..1], &ordinary[1])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// "The conversation does not replay" is not "the conversation has no
+    /// surface". An agent that creates its surface again on every turn makes
+    /// the first, and a view that folded it into the second would show a
+    /// second turn that lost its surface and a run that says `done success`.
+    #[test]
+    fn a_conversation_that_does_not_replay_is_shown_as_that() {
+        use ag_ui_a2ui::AgentMessage;
+        use ag_ui_a2ui::adapters::agui::wrap_as_operations_envelope;
+
+        let created =
+            wrap_as_operations_envelope(&[AgentMessage::create_surface("board", "basic")]).unwrap();
+        let twice = vec![
+            Message::tool("m-1", "call-1", created.clone()),
+            Message::tool("m-2", "call-2", created),
+        ];
+        assert!(surface_in_history(&twice[..1]).unwrap().is_some());
+        let error = surface_in_history(&twice).unwrap_err().to_string();
+        assert!(error.contains("already exists"), "{error}");
+        assert!(surface_after(&twice[..1], &twice[1]).is_err());
+
+        let thread: Thread<ReplayTransport, Board> = Thread::builder(ReplayTransport::new([]), "t")
+            .messages(twice)
+            .build()
+            .expect("valid initial board");
+        let footer = panel(&thread).pop().unwrap();
+        assert!(
+            footer.contains("2 messages · surfaces do not replay (")
+                && footer.contains("already exists"),
+            "{footer}"
+        );
     }
 
     #[test]
@@ -206,11 +258,15 @@ mod tests {
                 .with_data_model(json!({"tasks": [{"line": "one"}, {"line": "two"}]})),
         );
 
-        let first = surface_after(&[], &created).expect("a surface");
+        let first = surface_after(&[], &created)
+            .expect("a conversation that replays")
+            .expect("a surface");
         assert_eq!(surface_lines(&first).unwrap(), ["one"]);
         // Whether or not the conversation already holds the message.
         for known in [vec![created.clone()], vec![created, updated.clone()]] {
-            let second = surface_after(&known, &updated).expect("a surface");
+            let second = surface_after(&known, &updated)
+                .expect("a conversation that replays")
+                .expect("a surface");
             assert_eq!(surface_lines(&second).unwrap(), ["one", "two"]);
         }
     }

@@ -25,6 +25,16 @@
 //! Text is not read. A reasoning message, an assistant message or a user
 //! message that quotes an envelope is talk about a surface, and replaying it
 //! would draw one nobody sent.
+//!
+//! # A delete of a surface that is not there
+//!
+//! A `deleteSurface` that names a surface the conversation does not hold
+//! live, one never created or one already deleted, is passed over: it changes
+//! nothing, and it is not what the conversation touched last. That is the
+//! rule of [`MessageProcessor`](crate::processor::MessageProcessor), which
+//! the conformance suite asks of a renderer, and the agent layer returns such
+//! a delete among the messages of an answer that stood, so a tool result may
+//! carry one. [`SurfaceStore::apply`] on its own refuses it.
 
 use std::collections::BTreeSet;
 
@@ -33,9 +43,23 @@ use serde_json::Value;
 
 use super::activity::SURFACE_ACTIVITY_TYPE;
 use super::envelope::{is_operations_envelope, unwrap_operations_envelope};
+use crate::constants::A2UI_OPERATIONS_KEY;
 use crate::error::Result;
 use crate::protocol::message::{AgentMessage, AgentPayload};
-use crate::protocol::surface::{SurfaceState, SurfaceStore};
+use crate::protocol::surface::{Lifecycle, SurfaceState, SurfaceStore};
+
+/// Whether `operation` deletes a surface that `surfaces` does not hold live:
+/// one never created, or one deleted already. There is nothing to delete, so
+/// there is nothing to do, and the adapter passes the operation over wherever
+/// it applies operations.
+pub(super) fn deletes_nothing(surfaces: &SurfaceStore, operation: &AgentMessage) -> bool {
+    match &operation.payload {
+        AgentPayload::DeleteSurface(delete) => {
+            surfaces.lifecycle(&delete.surface_id) != Lifecycle::Live
+        }
+        _ => false,
+    }
+}
 
 /// What a message carries, by where it was found.
 enum Carried {
@@ -136,12 +160,21 @@ pub fn operations_in(message: &Message) -> Option<Vec<AgentMessage>> {
 /// # Ok::<(), ag_ui_a2ui::Error>(())
 /// ```
 ///
+/// A `deleteSurface` for a surface that is not live at that point of the
+/// conversation is passed over, as a renderer passes it over.
+///
 /// # Errors
 ///
 /// Returns [`Error::Json`](crate::Error::Json) when an envelope's operations
 /// do not decode, and what [`SurfaceStore::apply`] returns when one does not
 /// apply: a conversation that cannot be replayed is not half replayed.
 pub fn surfaces_in(messages: &[Message]) -> Result<SurfaceStore> {
+    Ok(replay(messages)?.0)
+}
+
+/// The surfaces a conversation has drawn, and the id of the one its last
+/// operation changed.
+fn replay(messages: &[Message]) -> Result<(SurfaceStore, Option<String>)> {
     let mut read = Vec::with_capacity(messages.len());
     // The tool calls whose results carry operations.
     let mut recorded = BTreeSet::new();
@@ -154,6 +187,7 @@ pub fn surfaces_in(messages: &[Message]) -> Result<SurfaceStore> {
     }
 
     let mut store = SurfaceStore::new();
+    let mut latest = None;
     for (message, carried) in messages.iter().zip(read) {
         let operations = match carried {
             None => continue,
@@ -171,10 +205,53 @@ pub fn surfaces_in(messages: &[Message]) -> Result<SurfaceStore> {
             }
         };
         for operation in &operations {
+            if deletes_nothing(&store, operation) {
+                continue;
+            }
             store.apply(operation)?;
+            if let Some(surface_id) = operation.surface_id() {
+                latest = Some(surface_id.to_string());
+            }
         }
     }
-    Ok(store)
+    Ok((store, latest))
+}
+
+/// The tool calls whose surface activity, in `messages`, shows a state and
+/// not a surface: `building`, `retrying` or `failed`, with no paint in its
+/// place.
+///
+/// Only a list that holds activity messages says so. A client's does; the
+/// request a server is sent does not.
+pub(super) fn calls_showing_a_status(messages: &[Message]) -> BTreeSet<String> {
+    let mut showing = BTreeSet::new();
+    for message in messages {
+        let Message::Activity(activity) = message else {
+            continue;
+        };
+        if activity.activity_type != SURFACE_ACTIVITY_TYPE {
+            continue;
+        }
+        let Some(tool_call_id) = activity
+            .id
+            .as_str()
+            .strip_prefix(SURFACE_ACTIVITY_TYPE)
+            .and_then(|rest| rest.strip_prefix('-'))
+        else {
+            continue;
+        };
+        let painted = activity
+            .content
+            .get(A2UI_OPERATIONS_KEY)
+            .is_some_and(Value::is_array);
+        if !painted && activity.content.contains_key("status") {
+            showing.insert(tool_call_id.to_string());
+        } else {
+            // A later message with the same id took the state's place.
+            showing.remove(tool_call_id);
+        }
+    }
+    showing
 }
 
 /// Whether a surface activity belongs to a tool call whose result is in the
@@ -202,10 +279,11 @@ fn repeats_a_result(
 
 /// The surface a conversation touched last: what the user is looking at.
 ///
-/// It is the surface the last operation in `messages` names, as every message
-/// before and including it left it. A surface that was deleted comes back with
-/// `deleted` set, since "it was there and is gone" is not "there was none".
-/// `None` when the conversation drew no surface.
+/// It is the surface the last operation in `messages` changed, as every
+/// message before and including it left it. A surface that was deleted comes
+/// back with `deleted` set, since "it was there and is gone" is not "there was
+/// none". `None` when the conversation drew no surface. An operation that is
+/// passed over, as [`surfaces_in`] says, changed nothing and is not the last.
 ///
 /// ```
 /// use ag_ui::Message;
@@ -228,19 +306,8 @@ fn repeats_a_result(
 ///
 /// As [`surfaces_in`].
 pub fn latest_surface(messages: &[Message]) -> Result<Option<SurfaceState>> {
-    let mut latest = None;
-    for message in messages {
-        if let Some(Carried::Batch(operations) | Carried::Snapshot(operations)) = carried(message)?
-        {
-            if let Some(surface_id) = operations.iter().rev().find_map(AgentMessage::surface_id) {
-                latest = Some(surface_id.to_string());
-            }
-        }
-    }
-    let Some(latest) = latest else {
-        return Ok(None);
-    };
-    Ok(surfaces_in(messages)?.get(&latest).cloned())
+    let (surfaces, latest) = replay(messages)?;
+    Ok(latest.and_then(|surface_id| surfaces.get(&surface_id).cloned()))
 }
 
 #[cfg(test)]
@@ -572,6 +639,69 @@ mod tests {
         let malformed = Message::tool("m-1", "call-1", r#"{"a2ui_operations": [{"nope": 1}]}"#);
         assert!(operations_in(&malformed).is_none());
         assert!(surfaces_in(&[malformed]).is_err());
+    }
+
+    /// A conversation may hold a delete of a surface that is not there: the
+    /// agent layer returns one among an answer's messages, and another
+    /// producer may have written one. A renderer does nothing with it, and
+    /// neither does the replay.
+    #[test]
+    fn a_delete_of_a_surface_that_is_not_live_is_passed_over() {
+        let history = [
+            tool("1", &[AgentMessage::delete_surface("never")]),
+            tool("2", &assemble_ops(Intent::Create, &spec("cart", "Cart"))),
+            tool("3", &[AgentMessage::delete_surface("cart")]),
+            tool(
+                "4",
+                &[
+                    AgentMessage::delete_surface("cart"),
+                    AgentMessage::delete_surface("never"),
+                ],
+            ),
+        ];
+        // Nothing drawn yet: no surface, and none that was touched last.
+        assert_eq!(surfaces_in(&history[..1]).unwrap(), SurfaceStore::new());
+        assert!(latest_surface(&history[..1]).unwrap().is_none());
+
+        for upto in 2..=history.len() {
+            let surfaces = surfaces_in(&history[..upto]).unwrap();
+            assert!(surfaces.get("never").is_none(), "no tombstone for it");
+            // What was touched last is the cart, whatever came after it.
+            let latest = latest_surface(&history[..upto]).unwrap().unwrap();
+            assert_eq!(latest.surface_id, "cart");
+            assert_eq!(latest.deleted, upto > 2);
+            assert_eq!(Some(&latest), surfaces.get("cart"));
+        }
+
+        // An activity that carries one is read the same way.
+        let snapshot = Message::Activity(ActivityMessage {
+            id: "a2ui-surface-call-9".into(),
+            activity_type: SURFACE_ACTIVITY_TYPE.into(),
+            content: match crate::adapters::agui::operations_envelope(&[
+                AgentMessage::delete_surface("never"),
+            ])
+            .unwrap()
+            {
+                Value::Object(content) => content,
+                _ => unreachable!("an envelope is an object"),
+            },
+            ..ActivityMessage::default()
+        });
+        assert_eq!(surfaces_in(&[snapshot]).unwrap(), SurfaceStore::new());
+
+        // Only a delete is passed over. An update of a surface that is not
+        // live still means the conversation does not replay.
+        let mut orphan = history.to_vec();
+        orphan.push(tool(
+            "5",
+            &[AgentMessage::update_data_model(
+                "cart",
+                "/title",
+                json!("x"),
+            )],
+        ));
+        assert!(surfaces_in(&orphan).is_err());
+        assert!(latest_surface(&orphan).is_err());
     }
 
     #[test]

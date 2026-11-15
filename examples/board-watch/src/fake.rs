@@ -334,6 +334,17 @@ async fn slow(ctx: &mut RunContext<Board>) -> Result<RunOutcome> {
 /// pointing it at `task-board`, and the awkward scenarios read as departures
 /// from something rather than as the only thing on offer.
 fn board_turn(ctx: &mut RunContext<Board>) -> Result<()> {
+    // What the frontend holds. The agent stores nothing between runs, so the
+    // answer is in the conversation the client sent: the adapter replays the
+    // operations its tool results carry. A conversation that does not replay
+    // is not one with nothing on screen, so it fails the run, and says so,
+    // before the run does anything else.
+    let painter = SurfacePainter::from_history(ctx.messages()).map_err(|error| {
+        Error::agent(format!(
+            "the conversation's A2UI surfaces do not replay: {error}"
+        ))
+    })?;
+
     let mut step = ctx.step("turn")?;
     step.think("nothing unusual about this one")?;
 
@@ -348,13 +359,20 @@ fn board_turn(ctx: &mut RunContext<Board>) -> Result<()> {
     message.end()?;
 
     step.publish_state()?;
-    surface(&mut step)
+    surface(&mut step, painter)
 }
+
+/// The id of the surface the board is painted on.
+pub const SURFACE_ID: &str = "board-watch";
 
 /// Paints the board as an A2UI surface: a `render_a2ui` tool call whose result
 /// is the operations, then the `a2ui-surface` activity a frontend draws from.
-fn surface(ctx: &mut RunContext<Board>) -> Result<()> {
-    let spec = SurfaceSpec::new("board-watch")
+///
+/// `Create` the first time the thread shows the surface, `Update` afterwards:
+/// creating a surface that is on screen is an error on any renderer, and the
+/// conversation that held two creations would not replay from then on.
+fn surface(ctx: &mut RunContext<Board>, mut painter: SurfacePainter) -> Result<()> {
+    let spec = SurfaceSpec::new(SURFACE_ID)
         .with_components(vec![
             Component::new("root", "Column").with("children", json!(["heading", "list"])),
             Component::new("heading", "Text")
@@ -374,7 +392,16 @@ fn surface(ctx: &mut RunContext<Board>) -> Result<()> {
                 .collect::<Vec<_>>(),
         }));
 
-    SurfacePainter::new().paint(ctx, &assemble_ops(Intent::Create, &spec))?;
+    let on_screen = painter
+        .surfaces()
+        .get(SURFACE_ID)
+        .is_some_and(|surface| !surface.deleted);
+    let intent = if on_screen {
+        Intent::Update
+    } else {
+        Intent::Create
+    };
+    painter.paint(ctx, &assemble_ops(intent, &spec))?;
     Ok(())
 }
 

@@ -208,11 +208,12 @@ processor, data deletion, data-model pointers, reserved keys, several
 catalogs, composition constraints, the `@index` function, validation
 results), the twelve of the agent tier that do not need another output format
 than direct JSON, and the A2A extension suite, with the four v0.9.1
-transcripts; they report **757 passed, 30 expected divergences, 5 failing**,
+transcripts; they report **753 passed, 34 expected divergences, 5 failing**,
 and the per-suite counts are asserted by the test. The divergences
 are executed with pinned expectations: an unreachable component is a warning,
-an empty path segment is the empty key, and a binding that cannot resolve is an
-error. The failures are listed by name with what each case wants: two about
+an empty path segment is the empty key, a binding that cannot resolve is an
+error, and a streamed `updateDataModel` that states no path is emitted when its
+text closes. The failures are listed by name with what each case wants: two about
 removing a path that is not there from a v0.9 data model, and three about
 JSON Schema validation of a v1.0 message that draws from several catalogs.
 The three suites of the SDK design upstream had before

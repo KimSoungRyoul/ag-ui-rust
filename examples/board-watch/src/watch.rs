@@ -205,8 +205,10 @@ async fn drive<T: Transport>(
             Update::Message(message) => {
                 // A result that carries a surface is drawn as the surface it
                 // leaves, which for an update is more than the result holds.
+                // One whose operations do not apply to the conversation so
+                // far is said to be that, not drawn as a plain result.
                 let surface = operations_in(&message.message)
-                    .and_then(|_| view::surface_after(run.thread().messages(), &message.message));
+                    .map(|_| view::surface_after(run.thread().messages(), &message.message));
                 open.print(out, &message, settings, surface.as_ref())?;
             }
 
@@ -349,12 +351,16 @@ struct Open {
 
 impl Open {
     /// Prints one message change, closing whatever it displaces.
+    ///
+    /// `surface` is there for a result that carries A2UI operations: the
+    /// surface the conversation shows once the result is part of it, or why
+    /// the conversation no longer replays.
     fn print(
         &mut self,
         out: &mut impl Write,
         update: &MessageUpdate,
         settings: Watch,
-        surface: Option<&SurfaceState>,
+        surface: Option<&Replayed>,
     ) -> io::Result<()> {
         match &update.change {
             MessageChangeKind::Started => self.open_text(out, &update.id),
@@ -474,18 +480,37 @@ fn mark(delta: &str, settings: Watch) -> String {
     }
 }
 
+/// What replaying a conversation gave for a result that carries operations:
+/// the surface on screen, none, or why the conversation does not replay.
+type Replayed = ag_ui_a2ui::Result<Option<SurfaceState>>;
+
 /// Prints a tool result — as a drawn surface when it is one, clipped otherwise.
+///
+/// A result whose operations do not apply to the conversation so far is
+/// neither: it is printed as the failure it is, and the result after it, so
+/// that a surface an agent broke does not read as a turn that drew nothing.
 fn print_result(
     out: &mut impl Write,
     message: &Message,
-    surface: Option<&SurfaceState>,
+    surface: Option<&Replayed>,
 ) -> io::Result<()> {
     let Message::Tool(tool) = message else {
         return Ok(());
     };
 
     let content = tool.content.to_text();
-    match surface.and_then(view::surface_lines) {
+    let drawn = match surface {
+        Some(Err(error)) => {
+            writeln!(
+                out,
+                "  error  this result's surface does not replay: {error}"
+            )?;
+            None
+        }
+        Some(Ok(surface)) => surface.as_ref().and_then(view::surface_lines),
+        None => None,
+    };
+    match drawn {
         Some(lines) => {
             writeln!(out, "  surface")?;
             for line in lines {

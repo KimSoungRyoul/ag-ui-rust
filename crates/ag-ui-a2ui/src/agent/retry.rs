@@ -78,7 +78,12 @@ pub struct RetryDriver {
 }
 
 /// What to do with an answer.
+///
+/// A later version may add a verdict, so a `match` on one needs a wildcard
+/// arm. A verdict a caller does not know is one it cannot act on: stop asking
+/// the model, as after [`Verdict::GiveUp`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Verdict {
     /// The answer stands. Its messages have been applied to the state, in
     /// order, and are what the agent sends.
