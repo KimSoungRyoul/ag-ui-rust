@@ -47,11 +47,15 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::binding::{ModelScope, collect_bindings};
-use crate::catalog::{Catalog, ComponentDef, PropKind, PropType};
-use crate::constants::{PROTOCOL_VERSION, ROOT_ID};
+use super::binding::{ModelScope, collect_bindings};
+use super::catalog::{Catalog, ComponentDef, PropKind};
+use super::graph::{Cycle, Finding, Graph};
+use super::message::{AgentMessage, Component};
+use super::model::{DataModel, ModelValue};
+use super::surface::{Origin, SurfaceState, SurfaceStore};
+use super::version::A2uiVersion;
+use crate::constants::ROOT_ID;
 use crate::error::{Error, Result, ValidationErrors};
-use crate::message::{AgentMessage, AgentPayload, Component};
 
 /// Deepest nesting accepted by default, for both the component graph and the
 /// raw JSON of a message.
@@ -70,7 +74,7 @@ pub const MAX_FUNCTION_CALL_DEPTH: usize = 5;
 /// Deliberately closed: these codes are the contract with callers that route on
 /// them (a recovery loop, a renderer's error channel), so adding one is a
 /// breaking change. Composition-constraint failures have their own codes and
-/// live in [`crate::catalog::CompositionCode`].
+/// live in [`crate::core::catalog::CompositionCode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -200,7 +204,7 @@ pub struct ValidateOptions {
     /// Only properties the catalog pins to one type are type-checked, and a
     /// value the renderer resolves — a `{"path": …}` binding or a function call
     /// — is never checked, because its type on the wire says nothing about the
-    /// type it will have. See [`PropType`].
+    /// type it will have. See [`PropType`](super::catalog::PropType).
     ///
     /// Structural properties are outside this switch: a child reference must be
     /// a component id however this is set, because a child written any other
@@ -459,17 +463,13 @@ impl<'a> Validator<'a> {
             .enumerate()
             .map(|(i, c)| Node::from_component(i, c))
             .collect();
-        let model = data_model.cloned().map(crate::DataModel::from);
+        let model = data_model.cloned().map(DataModel::from);
         self.run(&nodes, model.as_ref(), "components")
     }
 
     /// Validates graph and bindings against a lossless model, including every
     /// defined item of a template collection and undefined array slots.
-    pub fn validate_model(
-        &self,
-        components: &[Component],
-        model: &crate::DataModel,
-    ) -> ValidationReport {
+    pub fn validate_model(&self, components: &[Component], model: &DataModel) -> ValidationReport {
         let nodes: Vec<_> = components
             .iter()
             .enumerate()
@@ -493,7 +493,7 @@ impl<'a> Validator<'a> {
             .enumerate()
             .map(|(i, v)| Node::from_json(i, v))
             .collect();
-        let model = data_model.cloned().map(crate::DataModel::from);
+        let model = data_model.cloned().map(DataModel::from);
         self.run(&nodes, model.as_ref(), "components")
     }
 
@@ -557,8 +557,10 @@ impl<'a> Validator<'a> {
         if !message_report.errors.is_empty() {
             return message_report;
         }
-        let mut store = crate::surface::SurfaceStore::new();
-        let mut origins: BTreeMap<String, Origin> = BTreeMap::new();
+        let mut store = SurfaceStore::new();
+        // Surfaces an update could not be folded into, so its components are
+        // missing from the store.
+        let mut incomplete: BTreeSet<String> = BTreeSet::new();
         for (index, message) in messages.iter().enumerate() {
             let components = message
                 .pointer("/updateComponents/components")
@@ -575,9 +577,7 @@ impl<'a> Validator<'a> {
                         .unwrap_or_default();
                     match store.live(surface_id) {
                         Ok(_) => {
-                            if let Some(origin) = origins.get_mut(surface_id) {
-                                origin.incomplete = true;
-                            }
+                            incomplete.insert(surface_id.to_string());
                         }
                         Err(error) => message_report.errors.push(ValidationError::new(
                             ErrorCode::InvalidValue,
@@ -587,18 +587,16 @@ impl<'a> Validator<'a> {
                     }
                     false
                 }
+                // The store numbers what it is given, and this loop skips
+                // messages, so it says which one this is.
                 _ => match serde_json::from_value::<AgentMessage>(message.clone())
                     .map_err(|error| error.to_string())
                     .and_then(|op| {
                         store
-                            .apply(&op)
-                            .map(|()| op)
+                            .apply_at(index, &op)
                             .map_err(|error| error.to_string())
                     }) {
-                    Ok(op) => {
-                        record_origins(&mut origins, index, &op);
-                        true
-                    }
+                    Ok(()) => true,
                     Err(detail) => {
                         message_report.errors.push(ValidationError::new(
                             ErrorCode::InvalidValue,
@@ -630,8 +628,7 @@ impl<'a> Validator<'a> {
             }
         }
         for surface in store.surfaces().filter(|surface| !surface.deleted) {
-            let origin = origins.get(&surface.surface_id);
-            let incomplete = origin.is_some_and(|origin| origin.incomplete);
+            let incomplete = incomplete.contains(&surface.surface_id);
             // A surface that lost a message is missing what it carried, and
             // that is already reported: held to the whole-surface contract it
             // would be reported again, as a missing root or children.
@@ -647,26 +644,8 @@ impl<'a> Validator<'a> {
             } else {
                 self.options.clone()
             };
-            let list = origin.map_or_else(|| "components".to_string(), Origin::list);
-            let nodes: Vec<Node<'_>> = surface
-                .components
-                .iter()
-                .enumerate()
-                .map(|(i, component)| {
-                    let node = Node::from_component(i, component);
-                    match origin.and_then(|origin| origin.components.get(&component.id)) {
-                        Some((message, position)) => node.at(format!(
-                            "messages[{message}].updateComponents.components[{position}]"
-                        )),
-                        None => node,
-                    }
-                })
-                .collect();
-            let report = Validator::with_options(self.catalog, options).run(
-                &nodes,
-                Some(&surface.data_model),
-                &list,
-            );
+            let report =
+                Validator::with_options(self.catalog, options).validate_stored(&store, surface);
             message_report.errors.extend(report.errors);
             message_report.unreachable.extend(report.unreachable);
         }
@@ -675,24 +654,62 @@ impl<'a> Validator<'a> {
 
     /// Validates updates against explicit previously observed renderer state.
     /// The caller receives a candidate store only when every message succeeds.
+    ///
+    /// A failure names the message that has to change: a component one of
+    /// `messages` wrote is located as
+    /// `messages[1].updateComponents.components[0]`, the same way
+    /// [`Validator::validate_json_messages`] locates it. A component carried
+    /// over from `prior` has no message here, and is located by its position
+    /// in the surface, `components[3]`.
     pub fn validate_updates(
         &self,
-        prior: &crate::surface::SurfaceStore,
+        prior: &SurfaceStore,
         messages: &[AgentMessage],
-    ) -> Result<crate::surface::SurfaceStore> {
+    ) -> Result<SurfaceStore> {
         let mut next = prior.clone();
-        for message in messages {
+        // Whatever `prior` was built from, its messages are not these ones.
+        next.begin_batch();
+        for (index, message) in messages.iter().enumerate() {
             let raw = serde_json::to_value(message)?;
             let mut report = ValidationReport::default();
-            check_envelope(&raw, "message", &mut report);
+            check_envelope(&raw, &format!("messages[{index}]"), &mut report);
             report.into_result()?;
-            next.apply(message)?;
+            next.apply_at(index, message)?;
         }
         for surface in next.surfaces().filter(|s| !s.deleted) {
-            self.validate_model(&surface.components, &surface.data_model)
-                .into_result()?;
+            self.validate_stored(&next, surface).into_result()?;
         }
         Ok(next)
+    }
+
+    /// Validates one surface a store holds, graph and bindings both, locating
+    /// each component in the message that last wrote it.
+    ///
+    /// The store knows which of the messages applied to it wrote what
+    /// ([`SurfaceStore`]); a component none of them wrote was already there, and
+    /// keeps the locator its position in the surface gives it.
+    pub(crate) fn validate_stored(
+        &self,
+        store: &SurfaceStore,
+        surface: &SurfaceState,
+    ) -> ValidationReport {
+        let origin = store.origin(&surface.surface_id);
+        let list = origin
+            .and_then(Origin::list)
+            .unwrap_or_else(|| "components".to_string());
+        let nodes: Vec<Node<'_>> = surface
+            .components
+            .iter()
+            .enumerate()
+            .map(|(i, component)| {
+                let node = Node::from_component(i, component);
+                match origin.and_then(|origin| origin.component(&component.id)) {
+                    Some(locator) => node.at(locator),
+                    None => node,
+                }
+            })
+            .collect();
+        self.run(&nodes, Some(&surface.data_model), &list)
     }
 
     /// Every check, over `nodes`. `list` locates the component list itself, for
@@ -700,7 +717,7 @@ impl<'a> Validator<'a> {
     fn run(
         &self,
         nodes: &[Node<'_>],
-        data_model: Option<&crate::DataModel>,
+        data_model: Option<&DataModel>,
         list: &str,
     ) -> ValidationReport {
         let mut report = ValidationReport::default();
@@ -731,11 +748,13 @@ impl<'a> Validator<'a> {
             ));
         }
 
-        let adjacency = self.build_adjacency(nodes, &ids, &mut report);
-        self.check_cycles(nodes, &adjacency, &mut report);
+        let graph = self.build_graph(nodes, &ids, &mut report);
+        self.check_cycles(nodes, &graph, &mut report);
 
-        let reachable = reachable_from_root(&ids, &adjacency, &self.options.root_id);
-        if let Some(reachable) = &reachable {
+        // A second pass of the same walk, from the root alone and with no
+        // depth limit: what the root can reach, not what a renderer will draw.
+        if let Some(&root) = ids.get(self.options.root_id.as_str()) {
+            let reachable = graph.walk([root], None).reached;
             for node in nodes {
                 if let Some(id) = node.id {
                     if !reachable.contains(&node.index) {
@@ -746,7 +765,7 @@ impl<'a> Validator<'a> {
         }
 
         if self.options.check_bindings || self.options.check_binding_syntax {
-            self.check_bindings(nodes, &adjacency, data_model, &mut report);
+            self.check_bindings(nodes, &graph, data_model, &mut report);
         }
         report
     }
@@ -920,169 +939,67 @@ impl<'a> Validator<'a> {
         }
     }
 
-    /// Child edges, reporting references that do not resolve.
-    fn build_adjacency(
+    /// The child-reference graph, reporting references that do not resolve.
+    fn build_graph(
         &self,
         nodes: &[Node<'_>],
         ids: &BTreeMap<&str, usize>,
         report: &mut ValidationReport,
-    ) -> Vec<Vec<Edge>> {
-        let mut adjacency: Vec<Vec<Edge>> = vec![Vec::new(); nodes.len()];
-        for node in nodes {
-            let Some(component) = node.component() else {
-                continue;
-            };
-            for reference in self.catalog.references(component) {
-                match ids.get(reference.id.as_str()) {
-                    Some(&target) => adjacency[node.index].push(Edge {
-                        target,
-                        location: reference.location,
-                    }),
-                    None if self.options.allow_dangling_children => {}
-                    None => report.errors.push(ValidationError::new(
-                        ErrorCode::UnresolvedChild,
-                        node.locator(&reference.location),
-                        format!(
-                            "Component '{}' references '{}', which is not defined in this \
-                             payload. Add a component with that id, or point at one that exists.",
-                            component.id, reference.id
-                        ),
-                    )),
+    ) -> Graph {
+        Graph::build(
+            self.catalog,
+            nodes.iter().map(Node::component),
+            ids,
+            |node, component, reference| {
+                if self.options.allow_dangling_children {
+                    return;
                 }
-            }
-        }
-        adjacency
-    }
-
-    /// Iterative depth-first search reporting each distinct cycle once, and
-    /// flagging a component graph nested past [`ValidateOptions::max_depth`].
-    ///
-    /// Iterative rather than recursive because the input is model-generated and
-    /// may be arbitrarily deep — the very thing the depth limit reports on. A
-    /// back edge to a node still on the current path closes a cycle; a
-    /// self-reference is the one-node case of the same thing.
-    ///
-    /// Depth is measured along the search path, so it is the depth of the first
-    /// route the search finds to a node rather than the longest possible one.
-    /// That matches every other toolkit, and finding true longest paths in a
-    /// general graph is not something a validator should be doing.
-    fn check_cycles(
-        &self,
-        nodes: &[Node<'_>],
-        adjacency: &[Vec<Edge>],
-        report: &mut ValidationReport,
-    ) {
-        const WHITE: u8 = 0;
-        const GRAY: u8 = 1;
-        const BLACK: u8 = 2;
-
-        let mut color = vec![WHITE; nodes.len()];
-        let mut reported: BTreeSet<Vec<usize>> = BTreeSet::new();
-        let mut reported_depth = false;
-
-        for start in 0..nodes.len() {
-            if color[start] != WHITE {
-                continue;
-            }
-            color[start] = GRAY;
-            let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
-
-            while let Some(&(node, edge_index)) = stack.last() {
-                if edge_index >= adjacency[node].len() {
-                    color[node] = BLACK;
-                    stack.pop();
-                    continue;
-                }
-                if let Some(top) = stack.last_mut() {
-                    top.1 += 1;
-                }
-                let edge = &adjacency[node][edge_index];
-                match color[edge.target] {
-                    // `stack.len() - 1` is the depth of `node`, so the target
-                    // sits one deeper.
-                    WHITE if stack.len() > self.options.max_depth => {
-                        if !reported_depth {
-                            reported_depth = true;
-                            report.errors.push(ValidationError::new(
-                                ErrorCode::MaxDepthExceeded,
-                                nodes[node].locator(&edge.location),
-                                format!(
-                                    "Global recursion limit exceeded: logical depth > {}. The \
-                                     component tree nests deeper than a renderer will draw; \
-                                     flatten it.",
-                                    self.options.max_depth
-                                ),
-                            ));
-                        }
-                        // Leave the subtree unexplored: it is condemned, and a
-                        // pathological payload should not cost more work.
-                        color[edge.target] = BLACK;
-                    }
-                    WHITE => {
-                        color[edge.target] = GRAY;
-                        stack.push((edge.target, 0));
-                    }
-                    GRAY => {
-                        // Back edge: the cycle is the current path from the
-                        // target onwards, closed by this edge.
-                        let path: Vec<usize> = stack.iter().map(|(n, _)| *n).collect();
-                        let start_of_cycle =
-                            path.iter().position(|n| *n == edge.target).unwrap_or(0);
-                        let cycle = &path[start_of_cycle..];
-                        let mut key = cycle.to_vec();
-                        key.sort_unstable();
-                        if reported.insert(key) {
-                            report
-                                .errors
-                                .push(self.cycle_error(nodes, cycle, node, edge));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn cycle_error(
-        &self,
-        nodes: &[Node<'_>],
-        cycle: &[usize],
-        from: usize,
-        edge: &Edge,
-    ) -> ValidationError {
-        let name = |index: usize| nodes[index].id.unwrap_or("<missing id>");
-        let mut chain: Vec<&str> = cycle.iter().map(|index| name(*index)).collect();
-        chain.push(name(edge.target));
-        // The two lead-ins are the phrasing every A2UI SDK uses for these
-        // conditions; keeping them identical means a renderer or an operator
-        // reading logs from a mixed-language system sees one vocabulary.
-        let detail = if cycle.len() == 1 {
-            format!(
-                "Self-reference detected: component '{}' references itself in '{}'.",
-                name(from),
-                edge.location
-            )
-        } else {
-            format!(
-                "Circular reference detected: child references form a loop: {}.",
-                chain.join(" -> ")
-            )
-        };
-        ValidationError::new(
-            ErrorCode::ChildCycle,
-            nodes[from].locator(&edge.location),
-            format!(
-                "{detail} A component tree must be acyclic; break the loop by pointing at a \
-                 different component."
-            ),
+                report.errors.push(ValidationError::new(
+                    ErrorCode::UnresolvedChild,
+                    nodes[node].locator(&reference.location),
+                    format!(
+                        "Component '{}' references '{}', which is not defined in this \
+                         payload. Add a component with that id, or point at one that exists.",
+                        component.id, reference.id
+                    ),
+                ));
+            },
         )
+    }
+
+    /// Reports each distinct cycle once, and a component graph nested past
+    /// [`ValidateOptions::max_depth`].
+    ///
+    /// The walk itself is [`Graph::walk`], started from every component so
+    /// that a loop the root cannot reach is found too.
+    fn check_cycles(&self, nodes: &[Node<'_>], graph: &Graph, report: &mut ValidationReport) {
+        let walk = graph.walk(0..graph.len(), Some(self.options.max_depth));
+        for finding in walk.findings {
+            report.errors.push(match finding {
+                Finding::Cycle(cycle) => cycle_error(
+                    &cycle,
+                    |node| nodes[node].id.unwrap_or("<missing id>"),
+                    nodes[cycle.from].locator(&cycle.edge.location),
+                ),
+                Finding::TooDeep { from, edge } => ValidationError::new(
+                    ErrorCode::MaxDepthExceeded,
+                    nodes[from].locator(&edge.location),
+                    format!(
+                        "Global recursion limit exceeded: logical depth > {}. The \
+                         component tree nests deeper than a renderer will draw; \
+                         flatten it.",
+                        self.options.max_depth
+                    ),
+                ),
+            });
+        }
     }
 
     fn check_bindings(
         &self,
         nodes: &[Node<'_>],
-        adjacency: &[Vec<Edge>],
-        model: Option<&crate::DataModel>,
+        graph: &Graph,
+        model: Option<&DataModel>,
         report: &mut ValidationReport,
     ) {
         let bindings: Vec<_> = nodes
@@ -1127,7 +1044,7 @@ impl<'a> Validator<'a> {
         }
 
         let mut has_parent = vec![false; nodes.len()];
-        for edge in adjacency.iter().flatten() {
+        for edge in graph.all_edges() {
             has_parent[edge.target] = true;
         }
         let root_scope = model.map(ModelScope::root);
@@ -1167,7 +1084,7 @@ impl<'a> Validator<'a> {
                 };
                 let Some(resolver) = resolver else { continue };
                 let detail = match resolver.resolve(&binding.path) {
-                    Ok(Some(crate::ModelValue::Array(_))) => None,
+                    Ok(Some(ModelValue::Array(_))) => None,
                     Ok(Some(_)) if binding.is_collection => Some(format!(
                         "Template path '{}' must point at an array to iterate.",
                         resolver.absolute(&binding.path)
@@ -1190,7 +1107,7 @@ impl<'a> Validator<'a> {
             let Some(component) = node.component() else {
                 continue;
             };
-            for edge in &adjacency[index] {
+            for edge in graph.edges(index) {
                 if let Some(path) = template_path(component, &edge.location) {
                     let resolver = if path.is_empty() || path.starts_with('/') {
                         root_scope.as_ref()
@@ -1198,9 +1115,9 @@ impl<'a> Validator<'a> {
                         scope.as_ref()
                     };
                     if let Some(resolver) = resolver {
-                        if let Ok(Some(crate::ModelValue::Array(items))) = resolver.resolve(&path) {
+                        if let Ok(Some(ModelValue::Array(items))) = resolver.resolve(&path) {
                             for (i, item) in items.iter().enumerate() {
-                                if !matches!(item, crate::ModelValue::Undefined) {
+                                if !matches!(item, ModelValue::Undefined) {
                                     queue.push((edge.target, Some(resolver.item(&path, i)), true));
                                 }
                             }
@@ -1216,9 +1133,46 @@ impl<'a> Validator<'a> {
     }
 }
 
+/// Renders a loop the graph walk closed.
+///
+/// `name` gives a node's component id, and `locator` is the path to the
+/// reference that closes the loop. The validator and the streaming parser both
+/// report a loop through here, so it reads the same wherever it is found.
+pub(crate) fn cycle_error<'a>(
+    cycle: &Cycle,
+    name: impl Fn(usize) -> &'a str,
+    locator: String,
+) -> ValidationError {
+    let mut chain: Vec<&str> = cycle.nodes.iter().map(|node| name(*node)).collect();
+    chain.push(name(cycle.edge.target));
+    // The two lead-ins are the phrasing every A2UI SDK uses for these
+    // conditions; keeping them identical means a renderer or an operator
+    // reading logs from a mixed-language system sees one vocabulary.
+    let detail = if cycle.nodes.len() == 1 {
+        format!(
+            "Self-reference detected: component '{}' references itself in '{}'.",
+            name(cycle.from),
+            cycle.edge.location
+        )
+    } else {
+        format!(
+            "Circular reference detected: child references form a loop: {}.",
+            chain.join(" -> ")
+        )
+    };
+    ValidationError::new(
+        ErrorCode::ChildCycle,
+        locator,
+        format!(
+            "{detail} A component tree must be acyclic; break the loop by pointing at a \
+             different component."
+        ),
+    )
+}
+
 /// Whether a string is a syntactically valid RFC 6901 JSON Pointer.
 fn is_valid_pointer(path: &str) -> bool {
-    crate::binding::pointer_is_valid(path)
+    super::binding::pointer_is_valid(path)
 }
 
 /// Whether the renderer computes this value rather than reading it literally.
@@ -1391,66 +1345,6 @@ fn type_name(value: &Value) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Edge {
-    target: usize,
-    location: String,
-}
-
-/// Which messages wrote a surface, so a failure found on the folded surface is
-/// located in the message a model would have to change.
-#[derive(Debug, Default)]
-struct Origin {
-    /// The `createSurface` that began the surface's current life.
-    created: usize,
-    /// The last `updateComponents` folded into it.
-    updated: Option<usize>,
-    /// Each component's latest definition, as (message, position).
-    components: BTreeMap<String, (usize, usize)>,
-    /// An update to the surface could not be folded, so its components are
-    /// missing here.
-    incomplete: bool,
-}
-
-impl Origin {
-    /// Locates the component list as a whole: where a missing root or an empty
-    /// surface would be fixed.
-    fn list(&self) -> String {
-        match self.updated {
-            Some(message) => format!("messages[{message}].updateComponents.components"),
-            None => format!("messages[{}].createSurface", self.created),
-        }
-    }
-}
-
-/// Notes what a message that was folded into the store wrote.
-fn record_origins(origins: &mut BTreeMap<String, Origin>, index: usize, message: &AgentMessage) {
-    let Some(surface_id) = message.surface_id() else {
-        return;
-    };
-    match &message.payload {
-        AgentPayload::CreateSurface(_) => {
-            origins.insert(
-                surface_id.to_string(),
-                Origin {
-                    created: index,
-                    ..Origin::default()
-                },
-            );
-        }
-        AgentPayload::UpdateComponents(update) => {
-            let origin = origins.entry(surface_id.to_string()).or_default();
-            origin.updated = Some(index);
-            for (position, component) in update.components.iter().enumerate() {
-                origin
-                    .components
-                    .insert(component.id.clone(), (index, position));
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Whether the store can fold these components: a non-empty list of objects,
 /// each with a non-empty string id and type, and no id twice.
 ///
@@ -1486,49 +1380,18 @@ fn template_path(component: &Component, location: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Fields of each agent → renderer operation: name, JSON type, and whether the
-/// protocol requires it.
-///
-/// Transcribed from the payload structs in [`crate::message`], which are the
-/// port of the v0.9 wire format. Fields the specification leaves untyped (an
-/// `updateDataModel` value, a function's arguments) are simply absent: this is
-/// the envelope contract, not a schema for everything inside it.
-pub(crate) type EnvelopeField = (&'static str, PropType, bool);
-pub(crate) const OPERATIONS: [(&str, &[EnvelopeField]); 4] = [
-    (
-        "createSurface",
-        &[
-            ("surfaceId", PropType::String, true),
-            ("catalogId", PropType::String, true),
-            ("theme", PropType::Object, false),
-            ("sendDataModel", PropType::Boolean, false),
-        ],
-    ),
-    (
-        "updateComponents",
-        &[
-            ("surfaceId", PropType::String, true),
-            ("components", PropType::Array, true),
-        ],
-    ),
-    (
-        "updateDataModel",
-        &[
-            ("surfaceId", PropType::String, true),
-            ("path", PropType::String, false),
-        ],
-    ),
-    ("deleteSurface", &[("surfaceId", PropType::String, true)]),
-];
-
-/// Checks one message against the v0.9 envelope contract.
+/// Checks one message against the envelope contract of the version it names.
 ///
 /// Every other toolkit gets this from `server_to_client.json` through a JSON
-/// Schema engine. This crate speaks exactly one protocol version (see
-/// `docs/DESIGN.md`), so the contract is a table rather than a document — and a
-/// table is what lets a failure carry a locator into the message the caller
-/// sent, rather than a path into a schema the caller never saw. The codes match
-/// the ones the schema-driven toolkits report, because callers route on them.
+/// Schema engine. Here the contract is a table the version carries
+/// (`A2uiVersion::envelope`) rather than a document — and a table is what lets
+/// a failure carry a locator into the message the caller sent, rather than a
+/// path into a schema the caller never saw. The codes match the ones the
+/// schema-driven toolkits report, because callers route on them.
+///
+/// This is the one envelope check: the validator, the stateful
+/// [`SurfaceValidator`](crate::core::schema_validation::SurfaceValidator) path
+/// and the streaming parser all report what it finds.
 ///
 /// Only agent → renderer messages belong here: a renderer's reply is not agent
 /// output and is not part of a payload this validator is asked about.
@@ -1542,22 +1405,33 @@ pub(crate) fn check_envelope(message: &Value, locator: &str, report: &mut Valida
         return;
     };
 
-    match map.get("version") {
-        Some(Value::String(version)) if matches!(version.as_str(), "v0.9" | "v0.9.1") => {}
-        Some(version) => report.errors.push(ValidationError::new(
+    let declared = map.get("version");
+    let version = declared
+        .and_then(Value::as_str)
+        .and_then(A2uiVersion::parse);
+    match (declared, version) {
+        (_, Some(_)) => {}
+        (Some(declared), None) => report.errors.push(ValidationError::new(
             ErrorCode::InvalidValue,
             format!("{locator}.version"),
             format!(
-                "This crate speaks A2UI {PROTOCOL_VERSION}, but the message declares {version}. \
-                 Every message in a stream carries the same version."
+                "This crate speaks A2UI {}, but the message declares {declared}. \
+                 Every message in a stream carries the same version.",
+                A2uiVersion::DEFAULT
             ),
         )),
-        None => report.errors.push(ValidationError::new(
+        (None, None) => report.errors.push(ValidationError::new(
             ErrorCode::MissingField,
             format!("{locator}.version"),
-            format!("Every message needs \"version\": \"{PROTOCOL_VERSION}\"."),
+            format!(
+                "Every message needs \"version\": \"{}\".",
+                A2uiVersion::DEFAULT
+            ),
         )),
     }
+    // A message with no usable version is still held to a contract, so one
+    // retry can fix the version and the payload together.
+    let version = version.unwrap_or(A2uiVersion::DEFAULT);
 
     if map.keys().filter(|key| key.as_str() != "version").count() != 1 {
         report.errors.push(ValidationError::new(
@@ -1567,12 +1441,13 @@ pub(crate) fn check_envelope(message: &Value, locator: &str, report: &mut Valida
         ));
     }
 
-    let Some((key, fields)) = OPERATIONS
+    let operations = version.operations();
+    let Some(operation) = operations
         .iter()
-        .find(|(key, _)| map.contains_key(*key))
         .copied()
+        .find(|operation| map.contains_key(operation.as_str()))
     else {
-        let names: Vec<&str> = OPERATIONS.iter().map(|(key, _)| *key).collect();
+        let names: Vec<&str> = operations.iter().map(|op| op.as_str()).collect();
         report.errors.push(ValidationError::new(
             ErrorCode::MissingField,
             locator.to_string(),
@@ -1584,6 +1459,8 @@ pub(crate) fn check_envelope(message: &Value, locator: &str, report: &mut Valida
         ));
         return;
     };
+    let key = operation.as_str();
+    let fields = version.envelope(operation);
 
     let Some(payload) = map[key].as_object() else {
         report.errors.push(ValidationError::new(
@@ -1720,26 +1597,6 @@ fn check_value_depth(
             _ => {}
         }
     }
-}
-
-/// Node indices reachable from the root, or `None` when there is no root.
-fn reachable_from_root(
-    ids: &BTreeMap<&str, usize>,
-    adjacency: &[Vec<Edge>],
-    root_id: &str,
-) -> Option<BTreeSet<usize>> {
-    let root = *ids.get(root_id)?;
-    let mut seen = BTreeSet::new();
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if !seen.insert(node) {
-            continue;
-        }
-        for edge in &adjacency[node] {
-            stack.push(edge.target);
-        }
-    }
-    Some(seen)
 }
 
 #[cfg(test)]

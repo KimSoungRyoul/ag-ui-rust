@@ -49,7 +49,7 @@
 //! [`Scope::resolve_dynamic`] and [`collect_bindings`] carry their own cap
 //! ([`MAX_VALUE_DEPTH`]) for values built in memory, which `serde_json` does not
 //! check. The component *graph* — where depth is genuinely unbounded — is walked
-//! iteratively in [`crate::validate`] instead.
+//! iteratively in [`crate::core::validate`] instead.
 //!
 //! [rfc6901]: https://datatracker.ietf.org/doc/html/rfc6901
 

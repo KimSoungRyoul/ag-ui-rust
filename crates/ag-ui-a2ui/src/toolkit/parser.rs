@@ -482,12 +482,13 @@ mod tests {
             let content = format!("hello {tag}{BODY}</a2ui-json>");
 
             let whole = unwrap_response(&content).is_ok();
-            let streamed =
-                crate::toolkit::streaming::StreamParser::new(crate::catalog::Catalog::basic())
-                    .process_chunk(&content)
-                    .expect("a tag this scanner rejects is conversational text, not an error")
-                    .iter()
-                    .any(|part| part.a2ui.is_some());
+            let streamed = crate::toolkit::streaming::StreamParser::new(
+                crate::core::catalog::Catalog::basic(),
+            )
+            .process_chunk(&content)
+            .expect("a tag this scanner rejects is conversational text, not an error")
+            .iter()
+            .any(|part| part.a2ui.is_some());
 
             assert_eq!(whole, streamed, "the two scanners disagree about {tag:?}");
         }

@@ -28,7 +28,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::catalog::Catalog;
+use crate::core::catalog::Catalog;
 use crate::error::{Error, Result};
 use crate::toolkit::schema::SchemaBundle;
 
@@ -122,7 +122,7 @@ impl ClientCapabilitiesWire {
     /// then decodes the v0.9 namespace. No resources are fetched.
     #[cfg(feature = "schema-validation")]
     pub fn from_json(value: &Value) -> Result<Self> {
-        crate::schema_validation::validate_capabilities(value)?;
+        crate::core::schema_validation::validate_capabilities(value)?;
         Ok(serde_json::from_value(value.clone())?)
     }
 }

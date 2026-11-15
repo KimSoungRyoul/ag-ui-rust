@@ -11,17 +11,26 @@
 //! job, and it is a genuinely different program — one with a widget toolkit, an
 //! event loop, and a reactive data model. What this crate gives you instead:
 //!
-//! - [`message`] — the v0.9-family protocol envelopes, in both directions.
-//! - [`catalog`] — what a surface may contain, including the standard
-//!   18-component basic catalog.
-//! - [`validate`] — the semantic checks JSON Schema cannot express: does every
-//!   child reference resolve, is there a root, is the tree acyclic. Plus the two
-//!   a generating model gets wrong often enough to be worth checking without a
-//!   schema engine: the message envelope, and property values against the type
-//!   the catalog declares.
-//! - [`binding`] — JSON Pointer resolution, template scopes, and the
-//!   `formatString` interpolation grammar, so an agent can check its own
-//!   bindings before shipping them.
+//! - [`core`] — the protocol itself, with no I/O. Its modules are also
+//!   reachable at the crate root under the names they had before `core`
+//!   existed, so `ag_ui_a2ui::validate` and `ag_ui_a2ui::core::validate` are
+//!   the same module:
+//!   - [`core::version`] and [`core::operation`] — which protocol versions and
+//!     operations exist, each named in one place.
+//!   - [`core::message`] — the v0.9-family protocol envelopes, in both
+//!     directions.
+//!   - [`core::catalog`] — what a surface may contain, including the standard
+//!     18-component basic catalog.
+//!   - [`core::surface`] — the surface state machine every stream of
+//!     operations is folded through.
+//!   - [`core::validate`] — the semantic checks JSON Schema cannot express:
+//!     does every child reference resolve, is there a root, is the tree
+//!     acyclic. Plus the two a generating model gets wrong often enough to be
+//!     worth checking without a schema engine: the message envelope, and
+//!     property values against the type the catalog declares.
+//!   - [`core::binding`] and [`core::model`] — JSON Pointer resolution,
+//!     template scopes, the `formatString` interpolation grammar and the data
+//!     model, so an agent can check its own bindings before shipping them.
 // Gate module links with their features so minimal rustdoc builds resolve them.
 #![cfg_attr(
     feature = "toolkit",
@@ -68,8 +77,10 @@
 //! # Version
 //!
 //! Supports `v0.9` and `v0.9.1`. Low-level constructors retain `v0.9` as
-//! their default; use `A2uiVersion` to select a discriminator. Candidate RPC
-//! payloads are not accepted or serialized as v0.9-family messages.
+//! their default; use [`A2uiVersion`] to select a discriminator. It is the one
+//! place a version is parsed or named, and what differs between versions is a
+//! method on it. Candidate RPC payloads are not accepted or serialized as
+//! v0.9-family messages.
 //!
 //! # Example
 //!
@@ -102,6 +113,9 @@ pub mod constants;
 pub mod core;
 pub mod error;
 
+// The protocol modules live in `core`. Their earlier paths at the crate root
+// (`ag_ui_a2ui::validate`, `ag_ui_a2ui::catalog`, …) name the same modules, so
+// code written against them keeps compiling.
 pub use crate::core::{binding, catalog, message, model, surface, validate};
 #[cfg(feature = "schema-validation")]
 pub use crate::core::{client_schema, schema_validation};
@@ -110,8 +124,6 @@ pub use crate::core::{client_schema, schema_validation};
 pub mod author;
 #[cfg(feature = "author")]
 pub use author::{A2uiAuthor, AuthorRequest, ValidatedSurface};
-pub use message::{A2uiVersion, DataModelUpdate};
-pub use model::{DataModel, ModelValue};
 
 #[cfg(feature = "toolkit")]
 pub mod toolkit;
@@ -119,13 +131,19 @@ pub mod toolkit;
 #[cfg(feature = "ag-ui")]
 pub mod agui;
 
-pub use catalog::Catalog;
-pub use error::{Error, Result, ValidationErrors};
-pub use message::{
+pub use crate::core::catalog::Catalog;
+pub use crate::core::message::{
     AgentMessage, AgentPayload, ChildList, ChildTemplate, ClientDataModel, Component,
-    RendererMessage, RendererPayload,
+    DataModelUpdate, RendererMessage, RendererPayload,
 };
-pub use validate::{ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator};
+pub use crate::core::model::{DataModel, ModelValue};
+pub use crate::core::operation::Operation;
+pub use crate::core::surface::{Lifecycle, SurfaceState, SurfaceStore};
+pub use crate::core::validate::{
+    ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator,
+};
+pub use crate::core::version::A2uiVersion;
+pub use error::{Error, Result, ValidationErrors};
 
 #[cfg(feature = "toolkit")]
 pub use toolkit::{StreamParser, wrap_as_operations_envelope, wrap_error_envelope};

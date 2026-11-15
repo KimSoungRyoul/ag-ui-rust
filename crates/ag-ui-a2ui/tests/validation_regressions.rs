@@ -178,3 +178,269 @@ fn required_nullable_custom_property_is_present_but_still_type_checked() {
         .remove("value");
     assert!(author.validate_create("s", &messages).is_err());
 }
+
+/// Collects the located codes of a failed validation.
+fn located(error: ag_ui_a2ui::Error) -> Vec<(ErrorCode, String)> {
+    let ag_ui_a2ui::Error::Validation { errors } = error else {
+        panic!("expected a validation error, got {error:?}");
+    };
+    errors
+        .0
+        .into_iter()
+        .map(|error| (error.code, error.path))
+        .collect()
+}
+
+/// `validate_json_messages` names the message and the position in it that last
+/// wrote a failing component. `validate_updates` used to name the component's
+/// index in the whole folded surface instead, which is not a place in anything
+/// the caller sent.
+#[test]
+fn validate_updates_names_the_message_that_wrote_the_component() {
+    use ag_ui_a2ui::{AgentMessage, SurfaceStore};
+    let catalog = Catalog::basic();
+    let validator = Validator::new(&catalog);
+
+    // Prior state built from three messages of its own, whose numbering must
+    // not leak into the locators of the batch validated against it.
+    let mut prior = SurfaceStore::new();
+    for message in [
+        AgentMessage::create_surface("s", "c"),
+        AgentMessage::update_components(
+            "s",
+            vec![
+                Component::new("root", "Column").with("children", json!(["a", "b"])),
+                Component::new("a", "Text").with("text", json!("a")),
+            ],
+        ),
+        AgentMessage::update_components(
+            "s",
+            vec![Component::new("b", "Text").with("text", json!("b"))],
+        ),
+    ] {
+        prior.apply(&message).unwrap();
+    }
+
+    let updates = [
+        AgentMessage::update_data_model("s", "/x", json!(1)),
+        AgentMessage::update_components(
+            "s",
+            vec![
+                Component::new("c", "Text").with("text", json!("c")),
+                // Redefines the second component of the surface from the
+                // second position of the second message.
+                Component::new("a", "Card").with("child", json!("missing")),
+            ],
+        ),
+    ];
+    let error = validator.validate_updates(&prior, &updates).unwrap_err();
+    assert_eq!(
+        located(error),
+        vec![(
+            ErrorCode::UnresolvedChild,
+            "messages[1].updateComponents.components[1].child".to_string()
+        )]
+    );
+
+    // The candidate store of a successful batch carries no stale numbering
+    // into the next one either.
+    let next = validator
+        .validate_updates(
+            &prior,
+            &[AgentMessage::update_components(
+                "s",
+                vec![Component::new("c", "Text").with("text", json!("c"))],
+            )],
+        )
+        .unwrap();
+    let error = validator
+        .validate_updates(
+            &next,
+            &[AgentMessage::update_components(
+                "s",
+                vec![Component::new("c", "Card").with("child", json!("missing"))],
+            )],
+        )
+        .unwrap_err();
+    assert_eq!(
+        located(error),
+        vec![(
+            ErrorCode::UnresolvedChild,
+            "messages[0].updateComponents.components[0].child".to_string()
+        )]
+    );
+}
+
+/// A component the batch did not write has no message in it to name. It keeps
+/// the locator its position in the surface gives it, which is also its position
+/// in the prior state the caller supplied.
+#[test]
+fn validate_updates_locates_a_prior_component_by_its_position_in_the_surface() {
+    use ag_ui_a2ui::{AgentMessage, SurfaceStore};
+    let catalog = Catalog::basic();
+    let mut prior = SurfaceStore::new();
+    prior
+        .apply(&AgentMessage::create_surface("s", "c"))
+        .unwrap();
+    prior
+        .apply(&AgentMessage::update_components(
+            "s",
+            vec![
+                Component::new("root", "Column").with("children", json!(["a", "ghost"])),
+                Component::new("a", "Text").with("text", json!("a")),
+            ],
+        ))
+        .unwrap();
+
+    let error = Validator::new(&catalog)
+        .validate_updates(
+            &prior,
+            &[AgentMessage::update_data_model("s", "/x", json!(1))],
+        )
+        .unwrap_err();
+    assert_eq!(
+        located(error),
+        vec![(
+            ErrorCode::UnresolvedChild,
+            "components[0].children[1]".to_string()
+        )]
+    );
+}
+
+/// The stateful validator numbers the messages it accepts, so `push` and
+/// `finish` locate a failure the same way.
+#[test]
+#[cfg(feature = "schema-validation")]
+fn the_stateful_validator_names_the_message_that_wrote_the_component() {
+    use ag_ui_a2ui::schema_validation::SurfaceValidator;
+    use ag_ui_a2ui::toolkit::schema::SchemaBundle;
+    let bundle = SchemaBundle::basic().unwrap();
+    let catalog_id = ag_ui_a2ui::constants::OFFICIAL_BASIC_CATALOG_ID;
+    let update = |components: serde_json::Value| json!({"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": components}});
+
+    let mut stream = SurfaceValidator::new();
+    stream.register(&bundle, &Default::default()).unwrap();
+    stream
+        .push(&json!({"version": "v0.9", "createSurface": {"surfaceId": "s", "catalogId": catalog_id}}))
+        .unwrap();
+    stream
+        .push(&update(json!([
+            {"id": "root", "component": "Column", "children": ["title", "later"]},
+            {"id": "title", "component": "Text", "text": "Title"}
+        ])))
+        .unwrap();
+
+    // `finish` holds the surface to the whole contract: the dangling child is
+    // in the first component of the second message.
+    assert_eq!(
+        located(stream.finish().unwrap_err()),
+        vec![(
+            ErrorCode::UnresolvedChild,
+            "messages[1].updateComponents.components[0].children[1]".to_string()
+        )]
+    );
+
+    // `push` rejects a loop where it is written. The rejected message would
+    // have been the third, and takes no number: the next one accepted is.
+    let looping = update(json!([
+        {"id": "later", "component": "Text", "text": "Later"},
+        {"id": "title", "component": "Card", "child": "title"}
+    ]));
+    assert_eq!(
+        located(stream.push(&looping).unwrap_err()),
+        vec![(
+            ErrorCode::ChildCycle,
+            "messages[2].updateComponents.components[1].child".to_string()
+        )]
+    );
+    stream
+        .push(&update(json!([
+            {"id": "later", "component": "Card", "child": "nowhere"}
+        ])))
+        .unwrap();
+    assert_eq!(
+        located(stream.finish().unwrap_err()),
+        vec![(
+            ErrorCode::UnresolvedChild,
+            "messages[2].updateComponents.components[0].child".to_string()
+        )]
+    );
+
+    // Resumed from observed state, nothing in that state has a message to
+    // name, and the messages pushed from here are numbered from zero.
+    let mut resumed = SurfaceValidator::from_state(stream.state().clone());
+    resumed.register(&bundle, &Default::default()).unwrap();
+    assert_eq!(
+        located(resumed.finish().unwrap_err()),
+        vec![(
+            ErrorCode::UnresolvedChild,
+            "components[2].child".to_string()
+        )]
+    );
+    resumed
+        .push(&update(json!([
+            {"id": "extra", "component": "Card", "child": "also-nowhere"}
+        ])))
+        .unwrap();
+    assert_eq!(
+        located(resumed.finish().unwrap_err()),
+        vec![
+            (
+                ErrorCode::UnresolvedChild,
+                "components[2].child".to_string()
+            ),
+            (
+                ErrorCode::UnresolvedChild,
+                "messages[0].updateComponents.components[0].child".to_string()
+            ),
+        ]
+    );
+}
+
+/// Composition failures are found on the folded surface too, and are located
+/// the same way as the semantic ones.
+#[test]
+#[cfg(feature = "schema-validation")]
+fn the_stateful_validator_locates_a_composition_failure_in_its_message() {
+    use ag_ui_a2ui::schema_validation::SurfaceValidator;
+    use ag_ui_a2ui::toolkit::schema::SchemaBundle;
+    let child_list = "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ChildList";
+    let bundle = SchemaBundle::from_inline_catalog(json!({
+        "catalogId": "example.com:menu",
+        "components": {
+            "Menu": {
+                "type": "object",
+                "allowedChildren": ["MenuItem"],
+                "properties": {"children": {"$ref": child_list}},
+                "required": ["children"]
+            },
+            "MenuItem": {"type": "object", "properties": {"label": {"type": "string"}}},
+            "Text": {"type": "object", "properties": {"text": {"type": "string"}}}
+        }
+    }))
+    .unwrap();
+
+    let mut stream = SurfaceValidator::new();
+    stream.register(&bundle, &Default::default()).unwrap();
+    for message in [
+        json!({"version": "v0.9", "createSurface": {"surfaceId": "s", "catalogId": "example.com:menu"}}),
+        json!({"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": [
+            {"id": "item", "component": "MenuItem", "label": "One"},
+            {"id": "root", "component": "Menu", "children": ["item", "t"]}
+        ]}}),
+        json!({"version": "v0.9", "updateComponents": {"surfaceId": "s", "components": [
+            {"id": "t", "component": "Text", "text": "not a menu item"}
+        ]}}),
+    ] {
+        stream.push(&message).unwrap();
+    }
+
+    let error = stream.finish().unwrap_err();
+    let ag_ui_a2ui::Error::Catalog(detail) = &error else {
+        panic!("expected a composition failure, got {error:?}");
+    };
+    assert!(
+        detail.contains(r#"path: "messages[1].updateComponents.components[1].children[1]""#),
+        "{detail}"
+    );
+}

@@ -58,7 +58,7 @@ fn validate(schema: &jsonschema::Validator, value: &Value) -> Result<()> {
             ValidationError::new(
                 ErrorCode::InvalidValue,
                 error.instance_path().to_string(),
-                crate::schema_validation::message(&error),
+                crate::core::schema_validation::message(&error),
             )
         })
         .collect();

@@ -1,7 +1,7 @@
 //! Lossless local A2UI data model. Undefined slots are never sent as JSON values.
 
-use crate::binding::MAX_VALUE_DEPTH;
-use crate::message::DataModelUpdate;
+use crate::core::binding::MAX_VALUE_DEPTH;
+use crate::core::message::DataModelUpdate;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

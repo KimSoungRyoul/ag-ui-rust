@@ -1,5 +1,6 @@
 //! Full Draft 2020-12 validation with an explicitly local resource registry.
 
+use super::operation::Operation;
 use crate::toolkit::schema::SchemaBundle;
 use crate::{Error, ErrorCode, Result, ValidationError};
 use jsonschema::Evaluation;
@@ -85,12 +86,29 @@ impl SchemaValidator {
     /// and its creation theme. Useful when restoring state or changing validators.
     pub fn validate_surface(
         &self,
-        surface: &crate::surface::SurfaceState,
+        surface: &crate::core::surface::SurfaceState,
+        catalog: &crate::Catalog,
+    ) -> Result<()> {
+        self.validate_surface_in(None, surface, catalog)
+    }
+
+    /// [`SchemaValidator::validate_surface`], for a surface `store` holds.
+    ///
+    /// The store knows which of its messages wrote each component, so a
+    /// semantic or composition failure names that message and the position in
+    /// it — `messages[1].updateComponents.components[0]` — instead of the
+    /// component's position in the folded surface. Schema failures are located
+    /// in the surface as a whole, since that is the document the schema is
+    /// given here; each message was already checked against it on its own.
+    pub(crate) fn validate_surface_in(
+        &self,
+        store: Option<&crate::core::surface::SurfaceStore>,
+        surface: &crate::core::surface::SurfaceState,
         catalog: &crate::Catalog,
     ) -> Result<()> {
         let create = crate::AgentMessage {
             version: surface.version.clone(),
-            payload: crate::AgentPayload::CreateSurface(crate::message::CreateSurface {
+            payload: crate::AgentPayload::CreateSurface(crate::core::message::CreateSurface {
                 surface_id: surface.surface_id.clone(),
                 catalog_id: surface.catalog_id.clone(),
                 theme: surface.theme.clone(),
@@ -100,16 +118,38 @@ impl SchemaValidator {
         self.validate_message(&serde_json::to_value(create)?)?;
         let components = crate::AgentMessage {
             version: surface.version.clone(),
-            payload: crate::AgentPayload::UpdateComponents(crate::message::UpdateComponents {
-                surface_id: surface.surface_id.clone(),
-                components: surface.components.clone(),
-            }),
+            payload: crate::AgentPayload::UpdateComponents(
+                crate::core::message::UpdateComponents {
+                    surface_id: surface.surface_id.clone(),
+                    components: surface.components.clone(),
+                },
+            ),
         };
         self.validate_message(&serde_json::to_value(components)?)?;
-        crate::Validator::new(catalog)
-            .validate_model(&surface.components, &surface.data_model)
-            .into_result()?;
-        let composition = catalog.composition_violations(&surface.components);
+        let validator = crate::Validator::new(catalog);
+        match store {
+            Some(store) => validator.validate_stored(store, surface),
+            None => validator.validate_model(&surface.components, &surface.data_model),
+        }
+        .into_result()?;
+        let mut composition = catalog.composition_violations(&surface.components);
+        if let Some(origin) = store.and_then(|store| store.origin(&surface.surface_id)) {
+            for violation in &mut composition {
+                // `components[3].children[0]`: the position in the surface,
+                // then where in that component.
+                let located = violation
+                    .path
+                    .strip_prefix("components[")
+                    .and_then(|rest| rest.split_once(']'))
+                    .and_then(|(position, rest)| {
+                        let component = surface.components.get(position.parse::<usize>().ok()?)?;
+                        Some(format!("{}{rest}", origin.component(&component.id)?))
+                    });
+                if let Some(located) = located {
+                    violation.path = located;
+                }
+            }
+        }
         if !composition.is_empty() {
             return Err(Error::catalog(format!(
                 "component composition constraints failed: {composition:?}"
@@ -348,7 +388,7 @@ fn schema_diagnostics(
 #[derive(Debug, Default)]
 pub struct SurfaceValidator {
     catalogs: BTreeMap<String, (SchemaValidator, crate::Catalog)>,
-    state: crate::surface::SurfaceStore,
+    state: crate::core::surface::SurfaceStore,
 }
 impl SurfaceValidator {
     /// Empty renderer state and catalog registry.
@@ -356,7 +396,12 @@ impl SurfaceValidator {
         Self::default()
     }
     /// Begins a partial update stream from explicit, previously observed state.
-    pub fn from_state(state: crate::surface::SurfaceStore) -> Self {
+    ///
+    /// The messages pushed from here on are numbered from zero; a component
+    /// the supplied state already held is located by its position in its
+    /// surface.
+    pub fn from_state(mut state: crate::core::surface::SurfaceStore) -> Self {
+        state.begin_batch();
         Self {
             state,
             ..Self::default()
@@ -381,17 +426,21 @@ impl SurfaceValidator {
     /// Validates raw JSON before decoding, then applies one message atomically.
     /// Unknown catalogs never cause network requests. Invalid messages leave
     /// all previously accepted state unchanged.
+    ///
+    /// A semantic failure names the message that wrote the component, counting
+    /// the messages this validator has accepted: the third one accepted is
+    /// `messages[2]`, and a rejected message takes no number.
     pub fn push(&mut self, raw: &Value) -> Result<()> {
-        let catalog_id = if let Some(create) = raw.get("createSurface") {
+        let catalog_id = if let Some(create) = raw.get(Operation::CreateSurface.as_str()) {
             create
                 .get("catalogId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| Error::catalog("createSurface.catalogId is required"))?
         } else {
-            let surface_id = ["updateComponents", "updateDataModel", "deleteSurface"]
+            let surface_id = Operation::ALL
                 .iter()
-                .find_map(|key| {
-                    raw.get(*key)
+                .find_map(|operation| {
+                    raw.get(operation.as_str())
                         .and_then(|p| p.get("surfaceId"))
                         .and_then(Value::as_str)
                 })
@@ -420,24 +469,26 @@ impl SurfaceValidator {
                 ..crate::ValidateOptions::incremental_update()
             };
             crate::Validator::with_options(catalog, options)
-                .validate(&surface.components)
+                .validate_stored(&next, surface)
                 .into_result()?;
         }
         self.state = next;
         Ok(())
     }
     /// Checks pending roots, references, and bindings at the end of a batch.
+    ///
+    /// Failures are located the way [`SurfaceValidator::push`] locates them.
     pub fn finish(&self) -> Result<()> {
         for surface in self.state.surfaces().filter(|s| !s.deleted) {
             let (schema, catalog) = self.catalogs.get(&surface.catalog_id).ok_or_else(|| {
                 Error::catalog(format!("unregistered catalog {}", surface.catalog_id))
             })?;
-            schema.validate_surface(surface, catalog)?;
+            schema.validate_surface_in(Some(&self.state), surface, catalog)?;
         }
         Ok(())
     }
     /// Observed accepted state, for incremental streams and lossless replay.
-    pub fn state(&self) -> &crate::surface::SurfaceStore {
+    pub fn state(&self) -> &crate::core::surface::SurfaceStore {
         &self.state
     }
 }

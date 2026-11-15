@@ -35,35 +35,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::constants::PROTOCOL_VERSION;
-
-/// Supported A2UI server-message profiles. Candidate v1.0 RPC is excluded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum A2uiVersion {
-    /// v0.9 wire discriminator, also accepted by the v0.9.1 schema.
-    #[serde(rename = "v0.9")]
-    V0_9,
-    /// v0.9.1 discriminator.
-    #[serde(rename = "v0.9.1")]
-    V0_9_1,
-}
-impl A2uiVersion {
-    /// The exact wire discriminator.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::V0_9 => "v0.9",
-            Self::V0_9_1 => "v0.9.1",
-        }
-    }
-}
-
+use super::operation::Operation;
+pub use super::version::A2uiVersion;
 use crate::error::Result;
 
 fn serialize_version<S: serde::Serializer>(
     version: &str,
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
-    if !matches!(version, "v0.9" | "v0.9.1") {
+    if A2uiVersion::parse(version).is_none() {
         return Err(serde::ser::Error::custom("unsupported A2UI version"));
     }
     serializer.serialize_str(version)
@@ -72,13 +52,13 @@ fn deserialize_version<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<String, D::Error> {
     let version = String::deserialize(deserializer)?;
-    if !matches!(version.as_str(), "v0.9" | "v0.9.1") {
+    if A2uiVersion::parse(&version).is_none() {
         return Err(serde::de::Error::custom("unsupported A2UI version"));
     }
     Ok(version)
 }
 fn default_version() -> String {
-    PROTOCOL_VERSION.to_string()
+    A2uiVersion::DEFAULT.as_str().to_string()
 }
 
 /// One agent → renderer message.
@@ -86,7 +66,7 @@ fn default_version() -> String {
 #[serde(deny_unknown_fields)]
 pub struct AgentMessage {
     /// Protocol version stamped on the wire; defaults to
-    /// [`PROTOCOL_VERSION`].
+    /// [`A2uiVersion::DEFAULT`].
     #[serde(
         serialize_with = "serialize_version",
         deserialize_with = "deserialize_version"
@@ -187,6 +167,9 @@ impl AgentMessage {
 }
 
 /// The payload of an [`AgentMessage`], externally tagged by its wire key.
+///
+/// The keys are the names [`Operation`] lists; [`AgentPayload::operation`]
+/// says which one a payload is.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentPayload {
@@ -204,6 +187,22 @@ pub enum AgentPayload {
     /// Candidate RPC response, excluded from v0.9-family serialization/deserialization.
     #[serde(skip)]
     AgentFunctionResponse(FunctionResponse),
+}
+
+impl AgentPayload {
+    /// The operation this payload is, by name.
+    ///
+    /// `None` for the candidate RPC shapes, which are not operations of the
+    /// v0.9 family and never reach the wire.
+    pub fn operation(&self) -> Option<Operation> {
+        match self {
+            Self::CreateSurface(_) => Some(Operation::CreateSurface),
+            Self::UpdateComponents(_) => Some(Operation::UpdateComponents),
+            Self::UpdateDataModel(_) => Some(Operation::UpdateDataModel),
+            Self::DeleteSurface(_) => Some(Operation::DeleteSurface),
+            Self::CallRendererFunction(_) | Self::AgentFunctionResponse(_) => None,
+        }
+    }
 }
 
 /// Payload of a `createSurface` message.
@@ -290,13 +289,13 @@ fn root_pointer() -> String {
 }
 impl UpdateDataModel {
     /// Applies an update losslessly, including undefined roots and array slots.
-    pub fn apply_model(&self, model: &mut crate::model::DataModel) -> Result<()> {
+    pub fn apply_model(&self, model: &mut crate::core::model::DataModel) -> Result<()> {
         model.apply(&self.path, &self.value)
     }
     /// Applies to plain JSON atomically. Undefined results are rejected; use
     /// `apply_model` when deletions can affect array slots or the root.
     pub fn apply(&self, model: &mut Value) -> Result<()> {
-        let mut exact = crate::model::DataModel::from(model.clone());
+        let mut exact = crate::core::model::DataModel::from(model.clone());
         self.apply_model(&mut exact)?;
         *model = exact.to_json()?;
         Ok(())
@@ -403,7 +402,7 @@ impl RendererMessage {
     /// before decoding. Serde alone permits omitted optional fields and defaults.
     #[cfg(feature = "schema-validation")]
     pub fn from_json(value: &Value) -> Result<Self> {
-        crate::client_schema::ClientSchemaValidator::new()?.decode_message(value)
+        crate::core::client_schema::ClientSchemaValidator::new()?.decode_message(value)
     }
 
     /// The `surfaceId` this message relates to, if any.
@@ -507,7 +506,7 @@ impl ClientDataModel {
     /// Validates the original metadata against the pinned official schema.
     #[cfg(feature = "schema-validation")]
     pub fn from_json(value: &Value) -> Result<Self> {
-        crate::client_schema::ClientSchemaValidator::new()?.decode_data_model(value)
+        crate::core::client_schema::ClientSchemaValidator::new()?.decode_data_model(value)
     }
 }
 
@@ -554,7 +553,7 @@ impl Component {
 ///
 /// Either a static list of ids, or a template: one component id instantiated
 /// once per item of the array at `path`. The template form is what creates a
-/// collection scope for relative data bindings (see [`crate::binding`]).
+/// collection scope for relative data bindings (see [`crate::core::binding`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ChildList {

@@ -26,7 +26,8 @@
 use serde_json::Value;
 
 use crate::constants::DEFAULT_SURFACE_ID;
-use crate::message::{AgentMessage, Component};
+use crate::core::message::{AgentMessage, Component};
+use crate::core::operation::Operation;
 use crate::toolkit::envelope::{is_operations_envelope, unwrap_operations_envelope};
 use crate::toolkit::parser::unwrap_response;
 
@@ -149,7 +150,7 @@ fn try_replay(
     per_message: &[Vec<AgentMessage>],
     target: &str,
 ) -> crate::Result<Option<PriorSurface>> {
-    let mut store = crate::surface::SurfaceStore::new();
+    let mut store = crate::core::surface::SurfaceStore::new();
     for op in per_message
         .iter()
         .flatten()
@@ -235,30 +236,20 @@ fn collect_from_value(value: &Value, out: &mut Vec<AgentMessage>) -> crate::Resu
     }
     match value {
         Value::Array(items) => {
-            if items.iter().any(|item| {
-                [
-                    "createSurface",
-                    "updateComponents",
-                    "updateDataModel",
-                    "deleteSurface",
-                ]
-                .iter()
-                .any(|key| item.get(*key).is_some())
-            }) {
+            if items.iter().any(|item| Operation::of(item).is_some()) {
                 out.extend(serde_json::from_value::<Vec<AgentMessage>>(value.clone())?);
             }
         }
+        // The two candidate RPC keys are not operations of the v0.9 family.
+        // An object carrying one is still recognized as a protocol message,
+        // so that decoding it fails the replay instead of skipping it.
         Value::Object(object)
             if object.keys().any(|key| {
-                matches!(
-                    key.as_str(),
-                    "createSurface"
-                        | "updateComponents"
-                        | "updateDataModel"
-                        | "deleteSurface"
-                        | "callRendererFunction"
-                        | "agentFunctionResponse"
-                )
+                Operation::parse(key).is_some()
+                    || matches!(
+                        key.as_str(),
+                        "callRendererFunction" | "agentFunctionResponse"
+                    )
             }) =>
         {
             out.push(serde_json::from_value(value.clone())?)
