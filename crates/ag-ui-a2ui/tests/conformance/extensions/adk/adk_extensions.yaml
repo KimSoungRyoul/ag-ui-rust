@@ -1,0 +1,117 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+- name: test_converter_emits_failed_event
+  features: [F-AGT-34]
+  action: convert_event
+  args:
+    errorCode: "some_error"
+    errorMessage: "Server crash"
+    hasCatalog: true
+  expect:
+    type: TaskStatusUpdateEvent
+    state: FAILED
+    message: "Server crash"
+
+- name: test_converter_emits_working_event
+  features: [F-AGT-34]
+  action: convert_event
+  args:
+    contentText: "Regular text response"
+    hasCatalog: true
+  expect:
+    type: TaskStatusUpdateEvent
+    state: WORKING
+    message: "Regular text response"
+
+- name: test_converter_returns_empty_when_no_catalog
+  features: [F-AGT-34]
+  action: convert_event
+  args:
+    hasCatalog: false
+  expectEmpty: true
+
+- name: test_toolset_execute_valid_payload
+  features: [F-AGT-33]
+  action: execute_tool
+  args:
+    a2uiJson: '{"beginRendering": {"surfaceId": "dummy-surface", "root": "1"}}'
+  expect:
+    success: true
+    containsValidatedJson: true
+
+- name: test_toolset_execute_invalid_payload
+  features: [F-AGT-33]
+  action: execute_tool
+  args:
+    wrongArg: "b"
+  expect:
+    success: false
+    errorContains: "missing required arg"
+
+- name: test_subagent_map_record_surface_ownership
+  features: [F-AGT-35]
+  description: Verifies surface creation assigns ownership to authoring subagent in session state.
+  action: convert_event
+  args:
+    subagent: "agent_alpha"
+    surfaceId: "surface1"
+    message:
+      createSurface:
+        surfaceId: "surface1"
+  expect:
+    stateDelta:
+      a2ui_surface_id_surface1: "agent_alpha"
+
+- name: test_subagent_map_surface_collision_error
+  features: [F-AGT-35]
+  description: Verifies attempting to create a surface with an existing ID owned by another agent raises SurfaceIdAlreadyExistsError.
+  action: convert_event
+  args:
+    subagent: "agent_beta"
+    surfaceId: "surface1"
+    state:
+      a2ui_surface_id_surface1: "agent_alpha"
+    message:
+      createSurface:
+        surfaceId: "surface1"
+  expectError:
+    category: "IntegrityError"
+    message: "already exists"
+
+- name: test_subagent_map_strip_unowned_surfaces
+  features: [F-AGT-35]
+  description: Verifies client data models strip surfaces not owned by the recipient subagent.
+  action: data_model
+  args:
+    subagent: "subagent_a"
+    state:
+      a2ui_surface_id_surface_1: "subagent_a"
+      a2ui_surface_id_surface_2: "subagent_b"
+      a2ui_surface_id_surface_3: "subagent_a"
+    clientDataModel:
+      surfaces:
+        surface_1:
+          count: 1
+        surface_2:
+          count: 2
+        surface_3:
+          count: 3
+  expect:
+    clientDataModel:
+      surfaces:
+        surface_1:
+          count: 1
+        surface_3:
+          count: 3
