@@ -583,17 +583,120 @@ These are on `main` and not yet in a published version.
   `ChunkNormalizer` in front, applying what `normalize` appends and calling `finish` when
   the stream ends, and reads a stream that may carry `THINKING_*` through
   `TransportStream::into_events` or `transport::enforce_events`, which translate it.
-- `ag-ui-a2ui` has a new feature, `agent`, and a module behind it,
-  `ag_ui_a2ui::agent`: catalog negotiation (`RendererCapabilities`, `resolve_catalogs`),
-  `A2uiGenerator` and the per-request `A2uiRequestProcessor`, the `OutputFormat` trait
-  with `DirectJson`, `RendererState`, `ResponseStream` and `RetryDriver`. alpha.3 had no
-  such layer; `toolkit` and `A2uiAuthor` are unchanged and still there. The feature is
-  off by default: enable it with `features = ["agent"]`.
-- `SchemaBundle`, `SCHEMA_BLOCK_START`, `SCHEMA_BLOCK_END`, `remove_strict_validation`
-  and `DEFAULT_CUTTABLE_KEYS` are defined in the new module `ag_ui_a2ui::schema`, which
-  needs no feature. alpha.3 defined them in `toolkit::schema` and `toolkit::streaming`,
-  where they are still re-exported, so existing paths compile. New code can write
+- `ag-ui-a2ui` has a module `ag_ui_a2ui::agent` (feature `agent`), and it is the one
+  place A2UI is generated: catalog negotiation (`RendererCapabilities`,
+  `resolve_catalogs`), `A2uiGenerator` and the per-request `A2uiRequestProcessor`, the
+  `OutputFormat` trait with `DirectJson`, `RendererState`, `ResponseStream` and
+  `RetryDriver`. The framework makes the model call; the layer supplies the prompt
+  snippet, reads the answer, validates it against the catalogs the renderer can draw,
+  and says whether to ask again. alpha.3 had three loops, three parsers and two prompt
+  builders in `toolkit` and `author`; they are removed (the table below) or, for
+  `A2uiAuthor`, rebuilt on the layer.
+- The default feature of `ag-ui-a2ui` is `agent`; in alpha.3 it was `toolkit`. A
+  dependency with no features named gets the protocol modules and the agent layer.
+  `toolkit` is now the conventions of an agent hosted on AG-UI only (`ops`, `envelope`,
+  `tools`, `history`), and code that uses them without the `ag-ui` or `ag-ui-server`
+  feature writes `features = ["toolkit"]`. `toolkit` turns `agent` on.
+  `schema-validation` no longer turns `toolkit` on, and `author` is `agent` plus
+  `schema-validation`.
+- `SchemaBundle`, `SCHEMA_BLOCK_START`, `SCHEMA_BLOCK_END` and `DEFAULT_CUTTABLE_KEYS`
+  are in the module `ag_ui_a2ui::schema`, which needs no feature. alpha.3 had them in
+  `toolkit::schema` and `toolkit::streaming`, which are gone. Write
   `ag_ui_a2ui::schema::SchemaBundle`.
+- `A2uiAuthor` keeps its constructors and methods and is now a use of the agent layer:
+  `AuthorRequest::prompt` is the request's target followed by
+  `A2uiRequestProcessor::prompt_snippet`, an answer is read by `DirectJson` (the
+  messages as a JSON array, inside `<a2ui-json>` tags or on their own), and the attempts
+  are a `RetryDriver`'s. `A2uiAuthor::processor()` is new and gives that processor. What
+  changes for a caller:
+  - A batch that is valid A2UI and not what was asked for (another surface, another
+    version, a `deleteSurface`, a `createSurface` in an edit) is `Error::Validation`,
+    located in the message (`messages[1].version`). alpha.3 returned `Error::Parse` or
+    `Error::Catalog` with no location, and fed it back to the model at `response`.
+  - A component without an `id` is located where it is,
+    `messages[1].updateComponents.components[1].id`. alpha.3 reported a decode error at
+    `response`.
+  - A composition violation (`allowedParents`, `allowedChildren`) is `Error::Validation`
+    with one `invalid_value` per violation, each located. alpha.3 returned
+    `Error::Catalog` with the list in its message, and fed that back at `response`.
+  - A create that draws nothing (`createSurface` and no `updateComponents`) is
+    `empty_components` at `response`.
+  - The prompt shows the envelope and common-types schemas this crate pins, cut down to
+    what the catalog refers to, and the bundle's catalog. A bundle with its own `s2c` or
+    `common_types` is still what every message is validated against.
+- `MessageProcessor` is what the agent layer's `RendererState` runs on, and gained what
+  that needed:
+  - `MessageProcessor::register_schema(catalog_id, SchemaValidator)` (feature
+    `schema-validation`) also holds every message of that catalog's surfaces to the JSON
+    Schemas. A refusal is located like any other,
+    `messages[0].createSurface.theme.primaryColor`.
+  - `begin_batch()` and `process_at(index, message)` take a batch one message at a time.
+  - `accepting_version(version)` refuses a message of another protocol family.
+  - `register` takes a `Catalog` or an `Arc<Catalog>`.
+  - A component that carries `@metadata`, `@catalogId`, `@accessibility` or `@checks` is
+    refused, with `invalid_value` at the key, unless its catalog declares a property by
+    that name. Those are component keys of A2UI v1.0, and the reference renderers refuse
+    them on an earlier surface. alpha.3 had no processor; `Validator` ignores the keys,
+    as before.
+- `Validator` resolves bindings only in the components the root reaches. A component
+  the root cannot reach is still reported in `ValidationReport::unreachable` and still
+  checked for its type, properties and path syntax, but a relative path in it is no
+  longer "not inside a list template" and its data is not looked up: where it would sit
+  is not known, and nothing draws it. alpha.3 resolved the bindings of every component
+  nothing pointed at, so a row left behind when its list was replaced failed the
+  surface. A payload with no root (a fragment of an update) is checked as before.
+- `RetryDriver::judge_block` judges an answer that is one block with no tags, such as a
+  tool call argument, and `RetryDriver::reject` turns down an answer that stood for a
+  reason of the caller's own.
+- `toolkit::history` finds `<a2ui-json>` blocks with the agent layer's scanner. A block
+  in a transcript is still read strictly, as JSON as it stands, and an unterminated one
+  is still an error.
+- A block of direct JSON with an invalid escape (`"\approx"`) is rejected with
+  "Unescaped backslash found" and how to write one, so that the model reading the
+  retry prompt can fix it.
+- Removed from `ag-ui-a2ui`, with what to write instead. `processor` is an
+  `A2uiRequestProcessor`, `state` its `RendererState`, `retry` a `RetryDriver`:
+
+| Removed | Write instead |
+|---|---|
+| `toolkit::recovery::generate_with_recovery`, `generate_with_recovery_async` | `loop { match retry.judge(&call_model(&prompt).await?, &mut state) { Verdict::Done(parts) => break parts, Verdict::Retry(feedback) => prompt = feedback.prompt(&request), Verdict::GiveUp(error) => return Err(error) } }`, or `author.create(id, request).generate(call).await` for one surface |
+| `RecoveryOptions::max_attempts` | `RetryDriver::new(&processor, max_attempts)` |
+| `RecoveryOptions::prior` | The `RendererState` given to `judge`, kept for the conversation |
+| `RecoveryOptions::validate`, `RecoveryOptions::for_update()` | Nothing: an answer is checked against the state it is read into, so an update needs no other options |
+| `RecoveryOptions::target_surface_id`, `RecoveredSurface::surface_id` | `state.surface(id)` |
+| `RecoveredSurface::operations`, `text` | The `ResponsePart::A2ui` and `ResponsePart::Text` parts of `Verdict::Done` |
+| `RecoveredSurface::components`, `data_model` | `state.surface(id)` and its `components`, `data_model` |
+| `RecoveredSurface::attempts` | `retry.attempts()` |
+| `RecoveryActivity`, `RecoveryStatus`, `constants::A2UI_RECOVERY_ACTIVITY_TYPE` | Report from the verdict: `Feedback::attempt()` and `Feedback::errors()`; write `"a2ui_recovery"` if a frontend routes on it |
+| `toolkit::parser::parse_response` | `processor.parse_response(answer)` for validated, typed messages; `DirectJson::new().unwrap(answer)` then `.compile(&raw, closed)` for the raw JSON of each block |
+| `toolkit::parser::unwrap_response` | `DirectJson::new().unwrap(answer)` |
+| `toolkit::parser::parse_and_fix` | `DirectJson::new().compile(payload, true)` |
+| `toolkit::parser::has_a2ui_parts` | `DirectJson::new().has_content(answer, true)` |
+| `toolkit::parser::ResponsePart` | `agent::ResponsePart`, or `agent::RawPart` before compiling |
+| `toolkit::streaming::StreamParser`, `ag_ui_a2ui::StreamParser`, `process_chunk` | `let mut stream = processor.open_stream(&state, StreamOptions::default())?;` then `stream.feed(chunk, &mut state)?` and `stream.close(&mut state)?`, or `StreamedAnswer` |
+| `StreamParser::with_cuttable_keys` | `A2uiGenerator::with_format(Arc::new(DirectJson::new().with_progressive_keys(keys)))` |
+| `StreamParser::without_validation` | Nothing: a stream emits what a renderer would accept. `OutputFormat::reader` yields the unvalidated candidates |
+| `StreamParser::surface_id`, `root_id` | `state.surfaces()` |
+| `loading_…` placeholder components in a stream | Nothing: a component is emitted when it arrives, and the renderer buffers it until its parent does |
+| `toolkit::prompt::build_subagent_prompt`, `PromptSpec` | `format!("{role}\n\n{}", processor.prompt_snippet())`; the role, the task and the conversation are the framework's own prompt |
+| `PromptSpec::with_examples`, `toolkit::schema::load_examples` | `A2uiGenerator::with_examples(vec![serde_json::from_str(&std::fs::read_to_string(path)?)?])` |
+| `PromptSpec::with_schemas`, `SchemaBundle::render_llm_instructions`, `Catalog::render_summary` | `processor.prompt_snippet()` |
+| `toolkit::prompt::GENERATION_GUIDELINES`, `WORKFLOW_SECTION`, `UI_SECTION`, `EXAMPLES_SECTION` | Nothing: the snippet carries its own rules |
+| `toolkit::prompt::augment_prompt_with_errors`, `format_validation_errors` | `feedback.prompt(original)` from `Verdict::Retry`, or `retry.reject(errors)?.prompt(original)` for errors of the caller's own |
+| `toolkit::prompt::describe_surface`, `render_data_model` | Nothing; `serde_json::to_string_pretty(&value)` for the second |
+| `toolkit::negotiate::ClientCapabilities`, `ClientCapabilitiesWire::from_json` | `RendererCapabilities::from_json(&capabilities)?`, or `RendererCapabilities::from_metadata(Some(&metadata), version)?` for a transport's metadata; `schema_validation::validate_capabilities(&capabilities)?` for the schema check `from_json` used to run |
+| `ClientCapabilities::supporting(ids)` | `RendererCapabilities::supporting(version, ids)` |
+| `toolkit::negotiate::select_catalog`, `select_catalog_schema` | `resolve_catalogs(&configs, Some(&capabilities), accepts_inline)?`, which gives every active catalog, or `generator.create_processor(Some(&capabilities))?` |
+| `CatalogRegistry`, `RegistryEntry` | `A2uiGenerator::new(vec![CatalogConfig::new(CatalogDocument::read(path, None, Some(version))?)])` |
+| `CatalogRegistry::insert_alias`, `relax_strict_validation` | Nothing: a catalog has one id, and a schema is used as published |
+| `SchemaBundle::prune` | `CatalogConfig::keeping_components(names)` and `keeping_functions(names)`; `DirectJson::allowing_messages(operations)` for the envelope |
+| `SchemaBundle::relaxed`, `toolkit::schema::remove_strict_validation` | Nothing |
+| `SchemaBundle::from_catalog(catalog)` | `SchemaBundle { catalog, ..Default::default() }` |
+| `SchemaBundle::custom_cuttable_keys`, `cuttable_keys()` | `DirectJson::with_progressive_keys(keys)` |
+| `ValidateOptions::with_root_id(id)` | `ValidateOptions { root_id: id.into(), ..options }` |
+| `catalog::BASIC_FUNCTIONS` | `Catalog::basic().functions.keys()` |
+| `catalog::COMMON_PROPS` | Nothing |
+| `constants::MIME_TYPE` | `"application/a2ui+json"` |
 
 ## Verify the upgrade
 
