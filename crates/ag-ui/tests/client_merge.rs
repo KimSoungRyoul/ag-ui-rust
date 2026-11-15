@@ -585,13 +585,13 @@ async fn a_copy_made_while_a_call_was_running_gives_it_up_and_merges_into_the_th
 
     // Saved and restored, the copy still knows its stand-in for one ...
     let saved = side.snapshot();
-    assert_eq!(saved.abandoned, [stand_in.clone()]);
+    assert_eq!(saved.abandoned, std::slice::from_ref(&stand_in));
     let side = Thread::<_>::restore(ReplayTransport::new([]), saved.clone()).unwrap();
     let before = main.snapshot();
 
     // ... so the main thread keeps its result, and takes the rest.
     let merged = main.merge_messages_from(&side).unwrap();
-    assert_eq!(merged.superseded, [stand_in.clone()]);
+    assert_eq!(merged.superseded, std::slice::from_ref(&stand_in));
     assert_eq!(merged.added.len(), 2, "{merged:?}");
     assert!(merged.differing.is_empty(), "{merged:?}");
     let asked = main.messages()[0].id().to_string();

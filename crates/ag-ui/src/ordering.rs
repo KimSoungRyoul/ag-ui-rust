@@ -272,12 +272,22 @@ pub(crate) struct Ordering {
 /// however many are open: a producer that opens items and never closes them
 /// does not make each later event slower. The order of opening is read only
 /// to name what is still open, which ends a run.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct OpenSet<K, V> {
     /// Each open key, with its place in the order of opening.
     by_key: HashMap<K, (u64, V)>,
     /// The place the next one opened takes.
     next: u64,
+}
+
+/// In the order of opening, so that two sets holding the same items read
+/// the same however the map below them came to hold them.
+impl<K: Eq + std::hash::Hash + std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug
+    for OpenSet<K, V>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.in_order()).finish()
+    }
 }
 
 impl<K, V> Default for OpenSet<K, V> {
