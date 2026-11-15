@@ -2,10 +2,85 @@
 
 use ag_ui_a2ui::{
     Error,
-    schema_validation::{SchemaValidator, SurfaceValidator},
+    schema_validation::{SchemaValidator, SurfaceValidator, validate_capabilities},
     toolkit::schema::SchemaBundle,
 };
-use serde_json::json;
+use serde_json::{Value, json};
+
+const TEXT_VARIANTS: &str = "/components/Text/allOf/2/properties/variant/enum";
+
+fn variant_diagnostic(bundle: &SchemaBundle) -> ag_ui_a2ui::ValidationError {
+    let schema = SchemaValidator::new(bundle, &Default::default()).unwrap();
+    let message = json!({"version":"v0.9.1","updateComponents":{"surfaceId":"s","components":[
+        {"id":"root","component":"Text","text":"Title","variant":"huge"}
+    ]}});
+    let Err(Error::Validation { errors }) = schema.validate_message(&message) else {
+        panic!("an unknown variant must fail");
+    };
+    errors
+        .0
+        .iter()
+        .find(|error| error.path == "/updateComponents/components/0/variant")
+        .unwrap_or_else(|| panic!("no diagnostic at the variant: {errors}"))
+        .clone()
+}
+
+// The retry loop hands these diagnostics to the model that wrote the message.
+// jsonschema 0.61 names two allowed values and counts the rest; the model needs
+// all of them to pick a valid one.
+#[test]
+fn enum_failures_name_every_allowed_value() {
+    let bundle = SchemaBundle::basic().unwrap();
+    let allowed = bundle
+        .catalog
+        .pointer(TEXT_VARIANTS)
+        .and_then(Value::as_array)
+        .expect("the basic catalog's Text variants");
+    assert!(allowed.len() > 2, "this needs more values than 0.61 names");
+    let error = variant_diagnostic(&bundle);
+    for value in allowed {
+        assert!(
+            error.message.contains(&value.to_string()),
+            "{value} is missing from {:?}",
+            error.message
+        );
+    }
+    assert!(
+        !error.message.contains("other candidates"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn a_huge_enum_is_still_bounded() {
+    let mut bundle = SchemaBundle::basic().unwrap();
+    let values: Vec<_> = (0..500).map(|i| format!("variant-{i}")).collect();
+    *bundle.catalog.pointer_mut(TEXT_VARIANTS).unwrap() = json!(values);
+    let error = variant_diagnostic(&bundle);
+    assert!(
+        error
+            .message
+            .starts_with("value is not one of [\"variant-0\"")
+    );
+    assert_eq!(error.message.chars().count(), 385, "{}", error.message);
+    assert!(error.message.ends_with('…'));
+}
+
+#[test]
+fn capability_enum_failures_name_every_allowed_value() {
+    let capabilities = json!({"v0.9":{"supportedCatalogIds":["c"],"inlineCatalogs":[{
+        "catalogId":"c","functions":[{"name":"f","parameters":{},"returnType":"date"}]
+    }]}});
+    let Err(Error::Catalog(message)) = validate_capabilities(&capabilities) else {
+        panic!("an unknown return type must fail");
+    };
+    for value in [
+        "string", "number", "boolean", "array", "object", "any", "void",
+    ] {
+        assert!(message.contains(&format!("\"{value}\"")), "{message}");
+    }
+}
 
 #[test]
 fn required_properties_and_enums_report_the_matching_component_branch() {
@@ -38,6 +113,21 @@ fn required_properties_and_enums_report_the_matching_component_branch() {
             .iter()
             .all(|error| error.message.chars().count() <= 385)
     );
+}
+
+#[test]
+fn unexpected_properties_are_reported_once_per_component() {
+    let schema =
+        SchemaValidator::new(&SchemaBundle::basic().unwrap(), &Default::default()).unwrap();
+    let message = json!({"version":"v0.9.1","updateComponents":{"surfaceId":"s","components":[
+        {"id":"root","component":"Text","text":"hi","bogus":1,"more":2}
+    ]}});
+    let Err(Error::Validation { errors }) = schema.validate_message(&message) else {
+        panic!("expected a schema failure");
+    };
+    assert_eq!(errors.0.len(), 1, "{errors}");
+    assert_eq!(errors.0[0].path, "/updateComponents/components/0");
+    assert!(errors.0[0].message.contains("'bogus', 'more'"), "{errors}");
 }
 
 #[test]

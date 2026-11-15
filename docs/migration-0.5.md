@@ -181,6 +181,13 @@ These are on `main` and not yet in a published version.
   name the message that last wrote the component, for example
   `messages[1].updateComponents.components[0].child` rather than
   `components[0].child`. Update code that matches on the old paths.
+- `ag-ui/http` and `ag-ui-a2ui/schema-validation` no longer pin `yoke-derive` to
+  `=0.8.2`. Its 0.8.4 declares Rust 1.82, so a fresh Rust 1.85 resolution selects it.
+- `ag-ui-a2ui/schema-validation` uses `jsonschema` 0.61.2 instead of 0.29.1. The same
+  messages pass and fail with the same diagnostics, and an `enum` failure still names
+  every allowed value. A message with several errors can list them in a different order.
+- `ag-ui-a2ui` requires exactly its own version of `ag-ui` (`=0.5.0-…`) while both are
+  prereleases, instead of accepting any later alpha.
 
 ## Verify the upgrade
 
