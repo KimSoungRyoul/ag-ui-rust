@@ -55,7 +55,7 @@ use super::model::{DataModel, ModelValue};
 use super::surface::{Origin, SurfaceState, SurfaceStore};
 use super::version::A2uiVersion;
 use crate::constants::ROOT_ID;
-use crate::error::{Error, Result, ValidationErrors};
+use crate::error::{Error, Result, ShownPath, ValidationErrors};
 
 /// Deepest nesting accepted by default, for both the component graph and the
 /// raw JSON of a message.
@@ -1025,7 +1025,7 @@ impl<'a> Validator<'a> {
                                 format!(
                                     "Invalid path syntax: '{}' is not a valid JSON Pointer. \
                                      Escape '~' as '~0' and '/' within a key as '~1'.",
-                                    binding.path
+                                    ShownPath(&binding.path)
                                 ),
                             ));
                         }
@@ -1072,7 +1072,7 @@ impl<'a> Validator<'a> {
                         format!(
                             "Relative path '{}' is not inside a list template. \
                              Use an absolute path starting with '/'.",
-                            binding.path
+                            ShownPath(&binding.path)
                         ),
                     ));
                     continue;
@@ -1087,11 +1087,11 @@ impl<'a> Validator<'a> {
                     Ok(Some(ModelValue::Array(_))) => None,
                     Ok(Some(_)) if binding.is_collection => Some(format!(
                         "Template path '{}' must point at an array to iterate.",
-                        resolver.absolute(&binding.path)
+                        ShownPath(&resolver.absolute(&binding.path))
                     )),
                     Ok(None) if self.options.require_bound_values => Some(format!(
                         "Path '{}' is missing or undefined in the data model.",
-                        resolver.absolute(&binding.path)
+                        ShownPath(&resolver.absolute(&binding.path))
                     )),
                     Err(error) => Some(error.to_string()),
                     _ => None,

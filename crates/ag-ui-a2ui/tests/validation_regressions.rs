@@ -525,3 +525,97 @@ fn the_parsed_specification_catalog_rejects_an_icon_it_does_not_list() {
         assert!(report.is_valid(), "{:?}", report.errors);
     }
 }
+
+/// `Error::Pointer` carries the offending path, and its message is fed back to
+/// a model. A path long enough to be refused for its length is exactly the one
+/// that used to make the longest message; the message now quotes a bounded
+/// part of it, on every route a model reads.
+#[test]
+fn a_very_long_path_does_not_make_a_very_long_message() {
+    use ag_ui_a2ui::DataModelUpdate;
+    use ag_ui_a2ui::error::MAX_SHOWN_PATH_CHARS;
+    let catalog = Catalog::basic();
+    let long = "/segment".repeat(10_000);
+    // What a message may spend on a path: the bound, the ellipsis and the
+    // stated length, with room for the sentence around them.
+    let budget = MAX_SHOWN_PATH_CHARS + 200;
+
+    // Straight from the data model.
+    let error = DataModel::default()
+        .apply(&long, &DataModelUpdate::Set(json!(1)))
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.len() < budget, "{} bytes", message.len());
+    assert!(message.contains("(80000 characters)"), "{message}");
+    assert!(
+        message.ends_with("path has more than 256 segments"),
+        "{message}"
+    );
+
+    // Through whole-stream validation, as one of the errors a retry prompt lists.
+    let report = Validator::new(&catalog).validate_json_messages(&[
+        json!({"version": "v0.9", "createSurface": {"surfaceId": "s", "catalogId": "c"}}),
+        json!({"version": "v0.9", "updateDataModel": {"surfaceId": "s", "path": long, "value": 1}}),
+    ]);
+    let refused = report
+        .errors
+        .iter()
+        .find(|error| error.path == "messages[1]")
+        .expect("the update is refused");
+    assert!(refused.message.len() < budget, "{}", refused.message.len());
+
+    // Through a binding, in each sentence that quotes one.
+    let options = ValidateOptions {
+        require_bound_values: true,
+        ..ValidateOptions::full_surface()
+    };
+    let validator = Validator::with_options(&catalog, options);
+    let relative = long.trim_start_matches('/');
+    for (path, sentence) in [
+        (long.clone(), "invalid data-model pointer"),
+        (relative.to_string(), "is not inside a list template"),
+        (format!("/~bad{long}"), "is not a valid JSON Pointer"),
+        (
+            format!("/missing{}", "/x".repeat(100)),
+            "is missing or undefined",
+        ),
+    ] {
+        let components = [Component::new("root", "Text").with("text", json!({"path": path}))];
+        let report = validator.validate_surface(&components, Some(&json!({})));
+        let found = report
+            .errors
+            .iter()
+            .find(|error| error.message.contains(sentence))
+            .unwrap_or_else(|| panic!("no error says {sentence:?}: {:?}", report.errors));
+        assert_eq!(found.code, ErrorCode::UnresolvedBinding);
+        assert!(
+            found.message.len() < budget,
+            "{sentence}: {}",
+            found.message.len()
+        );
+        assert!(found.message.contains("characters)"), "{}", found.message);
+    }
+
+    let components = [
+        Component::new("root", "List").with(
+            "children",
+            json!({"componentId": "row", "path": format!("/scalar{}", "/x".repeat(100))}),
+        ),
+        Component::new("row", "Text").with("text", json!("row")),
+    ];
+    let mut model = json!({"scalar": {}});
+    let mut node = &mut model["scalar"];
+    for _ in 0..99 {
+        node["x"] = json!({});
+        node = &mut node["x"];
+    }
+    node["x"] = json!("not a list");
+    let report = validator.validate_surface(&components, Some(&model));
+    let found = report
+        .errors
+        .iter()
+        .find(|error| error.message.contains("must point at an array"))
+        .unwrap_or_else(|| panic!("{:?}", report.errors));
+    assert!(found.message.len() < budget, "{}", found.message.len());
+    assert!(found.message.contains("characters)"), "{}", found.message);
+}
