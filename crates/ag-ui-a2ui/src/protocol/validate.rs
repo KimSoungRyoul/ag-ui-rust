@@ -61,6 +61,13 @@ use super::version::A2uiVersion;
 use crate::constants::ROOT_ID;
 use crate::error::{Error, Result, ShownPath, ValidationErrors};
 
+#[cfg(test)]
+thread_local! {
+    /// How many (component, scope) entries the binding walk took off its
+    /// queue, on this thread: what a test reads to hold the walk linear.
+    static BINDING_SCOPES_QUEUED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Deepest nesting accepted by default, for both the component graph and the
 /// raw JSON of a message.
 ///
@@ -2014,13 +2021,27 @@ impl<'a> Validator<'a> {
             })
             .map(|node| (node.index, root_scope.clone(), false))
             .collect();
-        let mut visited = BTreeSet::new();
-        while let Some((index, scope, in_template)) = queue.pop() {
-            if !visited.insert((
+        // A component is checked once in each scope it is drawn in: the key
+        // is the component, the item its scope is at, and whether it is
+        // inside a template.
+        let key = |index: usize, scope: &Option<ModelScope<'_>>, in_template: bool| {
+            (
                 index,
                 scope.as_ref().map(|s| s.base().to_owned()),
                 in_template,
-            )) {
+            )
+        };
+        let mut visited = BTreeSet::new();
+        // The collections a template has been expanded over, by the component
+        // it draws. A template over an absolute path draws the same items
+        // whichever scope it is reached from, so one inside another over the
+        // same list is expanded once and not once per outer item: the walk is
+        // linear in components times items.
+        let mut expanded: BTreeSet<(usize, String)> = BTreeSet::new();
+        while let Some((index, scope, in_template)) = queue.pop() {
+            #[cfg(test)]
+            BINDING_SCOPES_QUEUED.with(|queued| queued.set(queued.get() + 1));
+            if !visited.insert(key(index, &scope, in_template)) {
                 continue;
             }
             let node = &nodes[index];
@@ -2079,17 +2100,26 @@ impl<'a> Validator<'a> {
                         scope.as_ref()
                     };
                     if let Some(resolver) = resolver {
-                        if let Ok(Some(ModelValue::Array(items))) = resolver.resolve(&path) {
-                            for (i, item) in items.iter().enumerate() {
-                                if !matches!(item, ModelValue::Undefined) {
-                                    queue.push((edge.target, Some(resolver.item(&path, i)), true));
+                        let collection = resolver.absolute(&path);
+                        if expanded.insert((edge.target, collection)) {
+                            if let Ok(Some(ModelValue::Array(items))) = resolver.resolve(&path) {
+                                for (i, item) in items.iter().enumerate() {
+                                    if matches!(item, ModelValue::Undefined) {
+                                        continue;
+                                    }
+                                    let item = Some(resolver.item(&path, i));
+                                    if !visited.contains(&key(edge.target, &item, true)) {
+                                        queue.push((edge.target, item, true));
+                                    }
                                 }
                             }
                         }
                     }
                     // Also check syntax and absolute bindings in empty or pending templates.
-                    queue.push((edge.target, None, true));
-                } else {
+                    if !visited.contains(&key(edge.target, &None, true)) {
+                        queue.push((edge.target, None, true));
+                    }
+                } else if !visited.contains(&key(edge.target, &scope, in_template)) {
                     queue.push((edge.target, scope.clone(), in_template));
                 }
             }
@@ -2870,6 +2900,41 @@ mod tests {
 
     fn create(surface: &str) -> Value {
         json!({"version": "v0.9", "createSurface": {"surfaceId": surface, "catalogId": "c"}})
+    }
+
+    /// A list template inside another, both over the same absolute path: each
+    /// item of the outer list draws the inner list over every item again. The
+    /// inner list is the same list whichever item it is drawn for, so its
+    /// items are walked once, and the walk is linear in the items.
+    #[test]
+    fn nested_templates_over_one_absolute_path_are_walked_once_per_item() {
+        let catalog = basic();
+        let validator = Validator::with_options(
+            &catalog,
+            ValidateOptions {
+                require_bound_values: true,
+                ..ValidateOptions::default()
+            },
+        );
+        let components = vec![
+            Component::new("root", "List").with(
+                "children",
+                json!({"componentId": "inner", "path": "/items"}),
+            ),
+            Component::new("inner", "List")
+                .with("children", json!({"componentId": "leaf", "path": "/items"})),
+            Component::new("leaf", "Text").with("text", json!({"path": "/title"})),
+        ];
+        for items in [100, 400] {
+            let data = json!({"title": "t", "items": vec![0; items]});
+            BINDING_SCOPES_QUEUED.with(|queued| queued.set(0));
+            let report = validator.validate_surface(&components, Some(&data));
+            assert!(report.is_valid(), "{report:?}");
+            let queued = BINDING_SCOPES_QUEUED.with(std::cell::Cell::get);
+            // `inner` and `leaf` once in each item's scope and once outside
+            // any, and the root.
+            assert!(queued <= 2 * items + 8, "{items} items: {queued} scopes");
+        }
     }
 
     fn update(surface: &str, components: Value) -> Value {
