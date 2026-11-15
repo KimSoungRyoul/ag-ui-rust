@@ -2,7 +2,9 @@
 
 use ag_ui_a2ui::{
     Error,
-    schema_validation::{SchemaValidator, SurfaceValidator, validate_capabilities},
+    schema_validation::{
+        SchemaValidator, SurfaceValidator, validate_capabilities, validate_common_type,
+    },
     toolkit::schema::SchemaBundle,
 };
 use serde_json::{Value, json};
@@ -184,4 +186,101 @@ fn diagnostics_do_not_change_acceptance_and_fallbacks_are_bounded() {
             .all(|error| error.message.chars().count() <= 385)
     );
     assert!(!errors.to_string().contains("private content"));
+}
+
+#[test]
+fn a_value_is_held_to_one_common_type_on_its_own() {
+    for (definition, accepted, refused) in [
+        (
+            "DynamicString",
+            vec![json!("text"), json!({"path": "/name"})],
+            vec![json!(3), json!({"path": "/name", "extra": 1})],
+        ),
+        (
+            "DynamicValue",
+            vec![
+                json!("text"),
+                json!(3),
+                json!(true),
+                json!(["a"]),
+                json!({"call": "now"}),
+            ],
+            // No literal object: an object is a binding or a call, and one
+            // that is both is neither.
+            vec![json!({"label": "x"}), json!({"call": "now", "path": "/a"})],
+        ),
+        (
+            "ChildList",
+            vec![
+                json!(["a", "b"]),
+                json!({"componentId": "row", "path": "/items"}),
+            ],
+            vec![json!("a"), json!({"componentId": "row"})],
+        ),
+        (
+            "Action",
+            vec![
+                json!({"event": {"name": "submit", "context": {"id": {"path": "/id"}}}}),
+                json!({"functionCall": {"call": "openUrl", "args": {"url": "https://example.com"}}}),
+            ],
+            vec![
+                json!({}),
+                json!({"event": {"name": "a"}, "functionCall": {"call": "b"}}),
+            ],
+        ),
+        (
+            // Any function name, since there is no catalog to ask; only the
+            // keys a call has.
+            "FunctionCall",
+            vec![
+                json!({"call": "anything"}),
+                json!({"call": "x", "args": {"a": 1}, "returnType": "string"}),
+            ],
+            vec![
+                json!({"call": "x", "bogus": 1}),
+                json!({"args": {}}),
+                json!({"call": "x", "returnType": "nothing"}),
+            ],
+        ),
+    ] {
+        for value in accepted {
+            validate_common_type(definition, &value)
+                .unwrap_or_else(|error| panic!("{definition} refuses {value}: {error}"));
+        }
+        for value in refused {
+            let error = validate_common_type(definition, &value).unwrap_err();
+            let Error::Validation { errors } = error else {
+                panic!("{definition} on {value}: expected validation errors, got {error}");
+            };
+            assert!(!errors.0.is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_common_type_failure_is_located_in_the_value_and_echoes_none_of_it() {
+    let secret = "private content ".repeat(50);
+    let value = json!({"event": {"name": "submit", "context": {"note": {"path": 7, "x": secret}}}});
+    let Err(Error::Validation { errors }) = validate_common_type("Action", &value) else {
+        panic!("a binding whose path is a number must fail");
+    };
+    assert!(errors.0.len() <= 16);
+    assert!(
+        errors
+            .0
+            .iter()
+            .all(|error| error.path.is_empty() || error.path.starts_with('/')),
+        "{errors}"
+    );
+    assert!(!errors.to_string().contains("private content"), "{errors}");
+}
+
+#[test]
+fn a_definition_the_common_types_do_not_have_is_named_as_such() {
+    let error = validate_common_type("DynamicColor", &json!("red")).unwrap_err();
+    let Error::Catalog(reason) = error else {
+        panic!("expected a catalog error, got {error}");
+    };
+    assert!(reason.contains("\"DynamicColor\""), "{reason}");
+    assert!(reason.contains("DynamicString"), "{reason}");
 }

@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use ag_ui_a2ui::binding::{Scope, absolute_path, parse_template};
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::processor::{MessageProcessor, Rejection, RejectionKind};
-use ag_ui_a2ui::schema_validation::SchemaValidator;
+use ag_ui_a2ui::schema_validation::{SchemaValidator, validate_common_type};
 use ag_ui_a2ui::surface::{Lifecycle, SurfaceStore};
 use ag_ui_a2ui::toolkit::negotiate::{CatalogRegistry, ClientCapabilities, select_catalog_schema};
 use ag_ui_a2ui::toolkit::parser::{has_a2ui_parts, parse_and_fix, parse_response};
@@ -69,9 +69,6 @@ enum Why {
     Renderer,
     /// It asks something of an SDK that does not apply to this one.
     NotApplicable,
-    /// It tests the pre-1.0 core this crate implements, and this harness has
-    /// no runner for its action yet. Issue #72 adds the runners.
-    Unharnessed,
 }
 
 impl Why {
@@ -84,7 +81,6 @@ impl Why {
             Why::V0_8 => "out of scope: v0.8",
             Why::Renderer => "out of scope: renderer",
             Why::NotApplicable => "not applicable",
-            Why::Unharnessed => "no runner yet (#72)",
         }
     }
 }
@@ -151,12 +147,10 @@ const SUITES: &[Suite] = &[
     run("core/expressions.yaml", [92, 0, 6, 0]),
     run("core/message_processor_v0_9.yaml", [40, 2, 4, 2]),
     run("core/catalog.yaml", [14, 2, 54, 3]),
+    run("core/common_types.yaml", [8, 0, 14, 0]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
     retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
     retired("retired/agent/inference_format.yaml", [13, 0, 6, 0]),
-
-    // --- core tier, pre-1.0: in scope, no runner in this harness yet (#72) ---------------------
-    skip("core/common_types.yaml", 22, Why::Unharnessed, "values against the published common types; 3 cases compare a schema generated from an SDK's own types"),
 
     // --- core tier: A2UI v1.0 ------------------------------------------------------------------
     skip("core/validator_v1_0.yaml", 49, Why::V1_0, "envelope, schema and topology validation of v1.0 messages"),
@@ -428,8 +422,8 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
          messages after it are not dispatched",
     ),
     // Four rules of the reference data model this crate does not have. The
-    // first two came with upstream's change of 2026-09-15; before it the
-    // reference renderer padded and created, as this crate does.
+    // official renderer core that `examples/review-desk/interop` runs against
+    // pads on the first of them, as this crate does.
     (
         "core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]",
         "removing an index past the end of a list pads the list out to it with undefined slots",
@@ -804,7 +798,7 @@ fn conformance_suite() {
 
 /// Actions of the core tier in the current layout. Each case is about one
 /// protocol version, and is run only at a version this crate speaks.
-const CORE_ACTIONS: [&str; 12] = [
+const CORE_ACTIONS: [&str; 13] = [
     "validate",
     "resolve_path",
     "data_model",
@@ -817,6 +811,7 @@ const CORE_ACTIONS: [&str; 12] = [
     "round_trip",
     "validation_schema",
     "derive",
+    "validate_common_type",
 ];
 
 /// Actions on a model's output, which is in one wire format or another in
@@ -850,6 +845,19 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     // Wire-format actions are gated on the version a case targets. Schema
     // surgery and prompt assembly work on the shape of documents rather than
     // on the protocol, and gate themselves where a version matters.
+    // Asked of every version alike, and of none of them here.
+    if action == "common_types_schema" {
+        tally.record(
+            check,
+            Outcome::Skipped(
+                "not applicable: compares a schema generated from an SDK's own types with the \
+                 published one; this crate ships the published document"
+                    .to_string(),
+            ),
+        );
+        return;
+    }
+
     let wire_format = match format {
         Format::Current => CORE_ACTIONS.contains(&action) || STREAM_ACTIONS.contains(&action),
         Format::Retired => STREAM_ACTIONS.contains(&action),
@@ -882,6 +890,9 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
             Format::Current,
         ) => {
             run_catalog_case(check, action, case, tally);
+        }
+        ("validate_common_type", Format::Current) => {
+            settle(check, run_validate_common_type(case), tally);
         }
         ("process_messages", Format::Current) => {
             settle(check, run_process_messages(case), tally);
@@ -2589,6 +2600,75 @@ fn run_to_json(case: &Value) -> Result<(), Miss> {
         Some(document) if *document == published => Ok(()),
         Some(_) => Err(Miss::new("another document", path)),
         None => Err(Miss::new("Catalog::basic() has no document", path)),
+    }
+}
+
+// --- validate_common_type ---------------------------------------------------
+
+/// `validate_common_type`: each step's value against one definition of the
+/// published common types.
+fn run_validate_common_type(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["definition", "steps"]].concat(),
+        "case",
+    )?;
+    let definition = case
+        .get("definition")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let steps = case.get("steps").and_then(Value::as_array);
+    for (index, step) in steps.into_iter().flatten().enumerate() {
+        let held = || -> Result<(), Miss> {
+            unknown_key(step, &["value", "expectError"], "step")?;
+            let value = step.get("value").cloned().unwrap_or(Value::Null);
+            let verdict = validate_common_type(definition, &value);
+            let Some(wanted) = step.get("expectError") else {
+                // An accepted value is the value: nothing is rewritten on the
+                // way through a schema, so there is no serialized form to
+                // compare it with.
+                return verdict.map_err(|error| {
+                    Miss::new(format!("{value} is refused: {error}"), "it accepted")
+                });
+            };
+            unknown_key(wanted, &["category"], "expectError")?;
+            let category = wanted.get("category").and_then(Value::as_str);
+            match verdict {
+                Err(Error::Validation { .. }) if category == Some("ValidationError") => Ok(()),
+                Err(error) => Err(Miss::new(
+                    format!("{value} is refused: {error}"),
+                    format!("a {category:?}"),
+                )),
+                Ok(()) => Err(Miss::new(
+                    format!("{value} is accepted"),
+                    format!("a {category:?}"),
+                )),
+            }
+        };
+        held().map_err(|miss| miss.at(index))?;
+    }
+    Ok(())
+}
+
+/// The reason three `common_types_schema` cases are skipped is that this
+/// crate ships the published common types and generates none. This is that
+/// claim, checked: the document the crate ships is the published one of both
+/// versions, as JSON.
+#[test]
+fn the_shipped_common_types_are_the_published_ones() {
+    let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas/v0_9_1/common_types.json");
+    let shipped: Value =
+        serde_json::from_str(&std::fs::read_to_string(shipped).expect("the shipped document"))
+            .expect("JSON");
+    for case in cases_of("core/common_types.yaml") {
+        if case.get("action").and_then(Value::as_str) != Some("common_types_schema")
+            || matches!(case_version(&case), CaseVersion::Unsupported(_))
+        {
+            continue;
+        }
+        let path = case["expectFile"].as_str().expect("expectFile");
+        let published = repository_document(path).unwrap_or_else(|reason| panic!("{reason}"));
+        assert_eq!(shipped, published, "{path}");
     }
 }
 

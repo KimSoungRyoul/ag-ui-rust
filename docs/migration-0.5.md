@@ -513,6 +513,8 @@ These are on `main` and not yet in a published version.
 - `Catalog::from_schema` reads a function's return type from the schema of its call,
   `properties.returnType.const`, which is how the specification's catalogs state it.
   `FunctionDef::return_type` was `None` for every function of a published catalog.
+- `schema_validation::validate_common_type` is new: one value against one definition
+  of the published common types (`DynamicValue`, `ChildList`, `Action`, …).
 
 ## Verify the upgrade
 

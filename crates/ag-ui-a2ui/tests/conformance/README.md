@@ -23,7 +23,7 @@ below from the report the harness prints: the harness fails until the two agree.
 | `test_data/` | The fixtures the suites load, verbatim. |
 | `features.yaml`, `*.schema.json`, `conformance_schema.json`, `manifest_corpora.json` | Upstream's feature registry and the schemas of the case vocabulary, verbatim. |
 | `UPSTREAM_README.md`, `conformance_harness_implementation_guide.md` | Upstream's description of the suites and of how to write a harness. `UPSTREAM_README.md` is upstream's `README.md`, renamed because this file has the name. |
-| `specification/`, `catalogs/` | The documents the executed suites name by repository path: the basic catalogs of v0.9 and v0.9.1 and the v0.9 minimal catalog under `specification/`, the v0.9 VegaChart and MCP catalogs under `catalogs/`. Copied from the same commit, byte for byte, at the same path relative to the repository root. |
+| `specification/`, `catalogs/` | The documents the executed suites name by repository path: under `specification/`, the basic catalogs and the common types of v0.9 and v0.9.1 and the v0.9 minimal catalog; under `catalogs/`, the v0.9 VegaChart and MCP catalogs. Copied from the same commit, byte for byte, at the same path relative to the repository root. |
 | `retired/` | Suites as they stood at the previous pin, `44a420b67957fafc0b02d55a153fdaf72e32ffb5` (2026-08-14). See "Retired suites". |
 | `LICENSE` | Upstream's licence. |
 
@@ -54,7 +54,7 @@ other suite counts one check per case and verifies its steps in order; a case
 that stops at a step is reported under that step, `suite::case[step 2]`, and
 that is the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 366 passed, 21 expected divergence, 1648 skipped, 12 failing.
+Totals: 374 passed, 21 expected divergence, 1640 skipped, 12 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -67,10 +67,10 @@ Totals: 366 passed, 21 expected divergence, 1648 skipped, 12 failing.
 | `core/expressions.yaml` | 98 | 92 | 0 | 6 | 0 | executed |
 | `core/message_processor_v0_9.yaml` | 48 | 40 | 2 | 4 | 2 | executed |
 | `core/catalog.yaml` | 73 | 14 | 2 | 54 | 3 | executed |
+| `core/common_types.yaml` | 22 | 8 | 0 | 14 | 0 | executed |
 | `retired/core/validator.yaml` | 45 | 26 | 0 | 25 | 0 | executed; retired upstream |
 | `retired/core/catalog.yaml` | 24 | 23 | 0 | 1 | 0 | executed; retired upstream |
 | `retired/agent/inference_format.yaml` | 19 | 13 | 0 | 6 | 0 | executed; retired upstream |
-| `core/common_types.yaml` | 22 | 0 | 0 | 22 | 0 | no runner yet (#72): values against the published common types; 3 cases compare a schema generated from an SDK's own types |
 | `core/validator_v1_0.yaml` | 49 | 0 | 0 | 49 | 0 | later: A2UI v1.0 (#42): envelope, schema and topology validation of v1.0 messages |
 | `core/message_processor_v1_0.yaml` | 84 | 0 | 0 | 84 | 0 | later: A2UI v1.0 (#42): the v1.0 message processor |
 | `core/message_processor_scaling.yaml` | 3 | 0 | 0 | 3 | 0 | later: A2UI v1.0 (#42): timing of the v1.0 message processor |
@@ -148,7 +148,6 @@ name.
 | later: agent layer (#41) | 28 | 772 | The suite tests the agent layer: inference formats, the per-request processor, catalog resolution, renderer capabilities and state. The next pull request of #41 builds it. |
 | later: A2UI v1.0 (#42) | 19 | 397 | The suite tests A2UI v1.0. |
 | later: adapters (#43) | 1 | 11 | The suite tests the A2A transport adapter. |
-| no runner yet (#72) | 1 | 22 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
 | out of scope: renderer | 8 | 241 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. |
 | out of scope: v0.8 | 2 | 36 | The suite tests the v0.8 wire format. This crate speaks v0.9 and v0.9.1. |
 | not applicable | 2 | 12 | The suite asks something of an SDK that does not apply here: a schema generated from the SDK's own types, an integration with Google's ADK. |
@@ -156,17 +155,6 @@ name.
 Upstream's `adapter/` tier is its UI framework adapters (`@a2ui/lit`, React,
 Angular, Flutter, SwiftUI), that is, renderers. The suites about transports are
 under `extensions/`.
-
-### The one suite with no runner yet
-
-These are in scope: they test the same core this crate implements, at the
-versions it speaks. They are not run because each needs a runner for an action
-this harness does not have, and in most cases an entry point the crate does not
-expose. Issue #72 tracks them, suite by suite.
-
-| Suite | What a runner would need |
-|---|---|
-| `core/common_types.yaml` | 19 cases validate a value against a published common type; 3 compare a schema generated from an SDK's own types, which this crate does not generate. |
 
 ## Expected divergences
 
@@ -214,8 +202,8 @@ published catalog no schema validator can be built for.
 | `agent/legacy/parser.yaml::test_fix_payload_unescaped_latex_backslashes_diagnostic_hint` | The payload is rejected, with the JSON parser's message. The case wants the hint "Unescaped backslash found". |
 | `agent/legacy/streaming_parser.yaml::test_no_placeholders_without_placeholder_component_v09` | With validation off, a `Row` placeholder is emitted for a catalog that defines no `Row`. The case wants nothing emitted until the children arrive. |
 | `agent/legacy/streaming_parser.yaml::test_cut_escape_sequences_v09` | The fixture writes a second `<a2ui-json>` inside a block that is still open. It is read as JSON, and the messages after it are not dispatched. |
-| `core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]` | Removing `/items/10` from a list of three pads the list to eleven slots, eight of them undefined. The case wants the list left as it was. Upstream made this a no-op on 2026-09-15; the reference renderer padded before that, and `examples/review-desk/interop` still checks a renderer that does. |
-| `core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]` | Removing `/nonexistent/child/path` from an empty model leaves `{"nonexistent": {"child": {}}}`. The case wants nothing created, and no watched path changed. Same upstream change. |
+| `core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]` | Removing `/items/10` from a list of three pads the list to eleven slots, eight of them undefined. The case wants the list left as it was. Upstream added the case on 2026-09-15. The official renderer core that `examples/review-desk/interop` runs against, `@a2ui/web_core` 0.11.0, pads as this crate does, and that test asserts it. |
+| `core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]` | Removing `/nonexistent/child/path` from an empty model leaves `{"nonexistent": {"child": {}}}`. The case wants nothing created, and no watched path changed. |
 | `core/data_model.yaml::test_data_model_rejects_forbidden_path_segments[step 0]` | A write to `/__proto__/polluted` is accepted. The reference refuses the segments `__proto__`, `constructor` and `prototype` in every language, so that a payload behaves the same in all of them. |
 | `core/data_model.yaml::test_data_model_rejects_excessive_list_index[step 2]` | A write to `/items/10001` is accepted. The reference refuses an index above 10,000; this crate bounds how far one write may grow a list instead, at 65,536 slots (`DEFAULT_ARRAY_GROWTH_LIMIT`). |
 | `core/message_processor_v0_9.yaml::test_create_surface_strict_theme_validation_failure` | A `createSurface` whose theme breaks the `pattern` in the catalog's theme schema is accepted. The processor checks what the semantic validator checks. `SchemaValidator`, behind `schema-validation`, is the JSON Schema engine, and it takes whole schema documents, not the fragment this case declares. |
@@ -229,7 +217,7 @@ published catalog no schema validator can be built for.
 | Count | Reason |
 |---:|---|
 | 39 + 25 + 4 | **v0.8 wire format.** v0.8 nests component properties under the type name and uses different message names. 39 cases of `agent/legacy/streaming_parser.yaml`, 25 checks of `retired/core/validator.yaml`, 4 cases of `core/catalog.yaml` on the v0.8 catalog. |
-| 6 + 4 + 6 + 47 | **A2UI v1.0** (#42). 6 cases of `agent/legacy/streaming_parser.yaml`, 4 of `agent/legacy/inference_format.yaml`, the 6 `validate` cases of `core/expressions.yaml`, which evaluate a template on a v1.0 surface, and 47 cases of `core/catalog.yaml`: 26 that state the version and 21 whose catalog document does. |
+| 6 + 4 + 6 + 47 + 11 | **A2UI v1.0** (#42). 6 cases of `agent/legacy/streaming_parser.yaml`, 4 of `agent/legacy/inference_format.yaml`, the 6 `validate` cases of `core/expressions.yaml`, which evaluate a template on a v1.0 surface, 47 cases of `core/catalog.yaml` (26 that state the version and 21 whose catalog document does), and 11 of `core/common_types.yaml`. |
 | 4 + 4 | **Superseded toolkit policy.** Default fallback and cross-ID inline merging conflict with the reviewed contract. `toolkit::negotiate` tests enforce explicit matching, complete inline documents, and conflict rejection. The same four cases in the current and the retired `inference_format.yaml`. |
 | 2 + 2 | **v0.8 schema bundle in a prompt.** Two `generate_prompt` cases ask for the v0.8 schema documents to be embedded in the prompt; this crate ships v0.9. In both `inference_format.yaml` files. |
 | 5 | **A JSON Schema failure** in `core/validator_v0_9.yaml`: an undeclared property, an undeclared function, a function argument of the wrong type, and two theme values. The semantic validator the harness runs does not evaluate these; `SchemaValidator`, behind the `schema-validation` feature, does. They are listed by name in `SCHEMA_ONLY`, because their fixtures are also invalid in ways the semantic validator does report, and would otherwise pass for the wrong reason. |
@@ -237,6 +225,7 @@ published catalog no schema validator can be built for.
 | 1 | **Detaching observers.** `test_data_model_stops_notifying_after_dispose`, in `core/data_model.yaml`. Registering observers on a data model is a renderer's; `DataModel` has none to detach. |
 | 2 | **`validation_schema`**, on v0.9, in `core/catalog.yaml`. `validationSchema` is the reference's bundled schema: `allOf` envelopes flattened, an `id` envelope added to each component, the referenced common types inlined, compared whole with a golden file. This crate validates against the documents as published, through a registry, and has no bundled form to compare. |
 | 1 | **`derive`**, on v0.9, in `core/catalog.yaml`. `Catalog` has no `derive`. Restricting a catalog to some of its entries is `SchemaBundle::prune` in the toolkit; building a new catalog from named entries and new ones is left for #42, where the other 7 `derive` cases are. |
+| 3 | **A schema generated from an SDK's own types.** The three `common_types_schema` cases of `core/common_types.yaml` compare the common types an SDK generates from its models with the published document. This crate generates none: it ships the published document, and `the_shipped_common_types_are_the_published_ones` in the harness checks that it is the published one, for v0.9 and for v0.9.1. Not applicable, like `core/agent_to_renderer.yaml`. |
 | 4 | **Advertising capabilities.** The four `get_renderer_capabilities` cases of `core/message_processor_v0_9.yaml` ask for the `a2uiClientCapabilities` a renderer sends, with its catalogs rewritten inline. This crate reads capabilities (`toolkit::negotiate`); nothing in it writes them. |
 
 ## How the validator cases are run
@@ -280,6 +269,9 @@ that was understood.
   that says so counts as notified, once for each time `watch` lists it. That
   is the reference's own rule for firing an observer. The one case that
   detaches observers (`dispose`) has nothing to run against and is skipped.
+  One case changes a value after handing it to `set` (`mutate_input`) and
+  expects the model not to follow. The harness does change its copy; a
+  `DataModel` owns what it stores, so in Rust the case cannot fail.
 - **`parse_expression_template`** (`core/expressions.yaml`).
   `binding::parse_template`, each part written as the value a component would
   carry in its place (`TemplatePart::to_json`): a literal, `{path}`, or
@@ -336,6 +328,11 @@ that was understood.
   and reading what it gave back gives it back again.
 - **`to_json`** (same suite). The document of `Catalog::basic()` against the
   published file.
+- **`validate_common_type`** (`core/common_types.yaml`).
+  `schema_validation::validate_common_type(definition, value)` on each step's
+  value. A `ValidationError` is an `Error::Validation`. The suite also wants an
+  accepted value to serialize back to itself; a schema rewrites nothing, so
+  there is no second form to compare.
 
 The version of a catalog case is the one it states, or the one its document
 states: 21 cases about a v1.0 catalog say so only in the document.
