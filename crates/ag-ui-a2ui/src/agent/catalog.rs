@@ -16,8 +16,9 @@ use crate::protocol::version::A2uiVersion;
 ///
 /// Holds the catalog as a JSON document and as a [`Catalog`]. The document is
 /// what a prompt shows the model and what a JSON Schema validator compiles;
-/// the summary is what the semantic validator reads. Both come from the same
-/// load and are pruned together, so they always agree.
+/// the summary is what the semantic validator reads. The summary is read from
+/// the document, at the load and again after every transformer, so the two
+/// always agree, and [`Catalog::document`] of the summary is this document.
 ///
 /// Cloning is cheap: the two are shared.
 #[derive(Debug, Clone)]
@@ -228,12 +229,19 @@ impl CatalogDocument {
         &self.inner.document
     }
 
-    /// A copy changed by `change`, which is handed the document and the
-    /// summary and has to change both the same way.
-    fn changed(&self, change: impl FnOnce(&mut Value, &mut Catalog)) -> Self {
+    /// A copy whose document `change` has rewritten.
+    ///
+    /// The summary is read again from the rewritten document, as it was at
+    /// the load, so the two cannot disagree and [`Catalog::document`] is the
+    /// document this value shows.
+    fn changed(&self, change: impl FnOnce(&mut Value)) -> Self {
         let mut document = self.inner.document.clone();
-        let mut catalog = self.inner.catalog.clone();
-        change(&mut document, &mut catalog);
+        change(&mut document);
+        // A rule removes entries from an object that carries its id, which is
+        // all a catalog needs to be read. Were a rule ever to leave less, the
+        // catalog would allow nothing rather than everything.
+        let catalog =
+            Catalog::from_schema(&document).unwrap_or_else(|_| Catalog::empty(self.catalog_id()));
         Self {
             inner: Arc::new(Inner {
                 document,
@@ -274,15 +282,13 @@ impl CatalogTransformer {
     /// The catalog this rule leaves. Its id and version are unchanged.
     pub fn apply(&self, catalog: &CatalogDocument) -> CatalogDocument {
         match self {
-            Self::KeepComponents(names) => catalog.changed(|document, summary| {
+            Self::KeepComponents(names) => catalog.changed(|document| {
                 let allowed: Vec<String> = names.iter().cloned().collect();
                 prune_components(document, &allowed);
-                summary.components.retain(|name, _| names.contains(name));
             }),
-            Self::KeepFunctions(names) => catalog.changed(|document, summary| {
+            Self::KeepFunctions(names) => catalog.changed(|document| {
                 let allowed: Vec<String> = names.iter().cloned().collect();
                 prune_functions(document, &allowed);
-                summary.functions.retain(|name, _| names.contains(name));
             }),
         }
     }
@@ -552,6 +558,13 @@ mod tests {
         );
         assert_eq!(pruned.catalog_id(), "test/shapes");
         assert_eq!(pruned.version(), A2uiVersion::V0_9);
+
+        // The summary is the pruned document's, and says so.
+        assert_eq!(pruned.catalog().document(), Some(pruned.document()));
+        assert_eq!(
+            &Catalog::from_schema(pruned.document()).unwrap(),
+            pruned.catalog()
+        );
 
         // The registration keeps what was published.
         assert_eq!(config.catalog().catalog().components.len(), 2);
