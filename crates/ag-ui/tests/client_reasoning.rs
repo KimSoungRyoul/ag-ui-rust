@@ -375,6 +375,55 @@ fn an_encrypted_value_is_stored_only_where_something_can_hold_it() {
     ));
 }
 
+#[tokio::test]
+async fn a_thread_warns_once_per_run_about_an_encrypted_value_it_cannot_store() {
+    use ReasoningEncryptedValueSubtype::{Message as OfMessage, ToolCall as OfToolCall};
+    let run = || {
+        vec![
+            Event::run_started("t", "r"),
+            Event::reasoning_encrypted_value(OfMessage, "nobody", "opaque"),
+            Event::reasoning_encrypted_value(OfMessage, "nobody", "opaque"),
+            Event::reasoning_encrypted_value(OfMessage, "activity-1", "opaque"),
+            Event::reasoning_encrypted_value(OfToolCall, "no-call", "opaque"),
+            // Stored, so nothing to warn about.
+            Event::reasoning_encrypted_value(OfMessage, "answer-1", "opaque"),
+            Event::run_finished_success("t", "r"),
+        ]
+    };
+    let transport = ReplayTransport::with_runs([run(), run()]).matching_requests();
+    let mut thread = Thread::<_>::builder(transport, "t")
+        .messages(vec![
+            activity("activity-1"),
+            Message::assistant("answer-1", "the answer"),
+        ])
+        .build()
+        .unwrap();
+
+    // The second run warns again: once per text per run.
+    for _ in 0..2 {
+        let updates: Vec<_> = thread.run().unwrap().collect().await;
+        let warnings: Vec<&str> = updates
+            .iter()
+            .filter_map(|update| match update {
+                Update::Warning(warning) => Some(warning.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            warnings,
+            [
+                r#"REASONING_ENCRYPTED_VALUE for message "nobody" was dropped: the thread holds no message with that id that can store it"#,
+                r#"REASONING_ENCRYPTED_VALUE for message "activity-1" was dropped: the thread holds no message with that id that can store it"#,
+                r#"REASONING_ENCRYPTED_VALUE for tool call "no-call" was dropped: the thread holds no tool call with that id that can store it"#,
+            ]
+        );
+        assert!(matches!(
+            updates.last(),
+            Some(Update::Done(RunEnd::Success { .. }))
+        ));
+    }
+}
+
 // ---- MESSAGES_SNAPSHOT -----------------------------------------------------
 
 #[test]

@@ -965,6 +965,30 @@ These are on `main` and not yet in a published version.
   `renderer_capabilities(&message, version)` for what a client's message says it
   draws. alpha.3 had none of these.
 
+- A continuation `*_CHUNK` without a `delta` that carries `metadata`, such as a final
+  chunk reporting a finish reason, expands to a content event with an empty delta
+  (`TEXT_MESSAGE_CONTENT`, `TOOL_CALL_ARGS` or `REASONING_MESSAGE_CONTENT`) that carries
+  the metadata, so it merges into the message, tool call or reasoning message, as
+  AG-UI 1.0 requires. So does any chunk without a `delta` that carries a `rawEvent`.
+  Alpha.3 expanded such a chunk to nothing, and its metadata and `rawEvent` were lost. A
+  `Thread` yields one more update for it, `MessageChangeKind::Content`,
+  `MessageChangeKind::ToolCallArgs` or `ReasoningChangeKind::Content` with an empty
+  `delta`; code that treats every content update as new text skips an empty one.
+- The events `ChunkNormalizer` and `normalize_all` synthesize from a chunk no longer
+  carry its `timestamp`, which AG-UI 1.0 keeps off them. The synthesized `*_START` no
+  longer carries its `rawEvent` either: the content event carries it, once, as in the
+  reference client. Both still carry its `metadata`. Alpha.3 copied the chunk's
+  `timestamp`, `rawEvent` and `metadata` onto the start and onto the content event. Read
+  a chunk's `timestamp` from the chunk, which `Thread::on_event` observes before
+  expansion, and its `rawEvent` from the content event.
+- A `Thread` yields an `Update::Warning` for a `REASONING_ENCRYPTED_VALUE` it drops
+  because no message or tool call it holds by that `entityId` can store the value, an
+  activity message included, as AG-UI 1.0 says a consumer should:
+  "REASONING_ENCRYPTED_VALUE for message "m-9" was dropped: the thread holds no message
+  with that id that can store it". Each text comes once per run, and
+  `RunReport::diagnostics` keeps it with kind `warning`. Alpha.3 dropped the value
+  without a word. The run is unaffected, and `Applier::apply` still returns
+  `Changed::Nothing` for such an event.
 
 ## Verify the upgrade
 
