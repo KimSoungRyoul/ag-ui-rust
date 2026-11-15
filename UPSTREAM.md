@@ -64,6 +64,12 @@ that belongs with a source fix has to travel with it.
   the monorepo's own `spec/1.0/` instead.
 - `crates/ag-ui/Cargo.toml` — the description. The `yoke-derive` pin that also differed
   went in #29.
+- `crates/ag-ui/src` — the public API changed here in #38 and was not ported.
+  `client::Transport` has one method, which returns a `TransportStream`; the copy has `run`
+  and `run_raw`. `server::Runner::run` yields `Event`; the copy yields `Result<Event>`. The
+  rest of that batch is listed in `docs/migration-0.5.md` under "Changes after alpha.3".
+  #38 is not labelled `upstream-pr-2778`, so these commits show as ahead and stay a
+  difference until that pull request takes them.
 - `crates/ag-ui/README.md` — install instructions for crates.io and this repository's
   guides; upstream's points at path dependencies and its migration proposal.
 - `xtask/` — this repository's drift check, baseline and `upstream-sync`. Upstream carries
