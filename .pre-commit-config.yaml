@@ -9,9 +9,17 @@
 # CI job at all, plus the two Rust gates worth catching before the code leaves
 # the machine rather than ten minutes later on a runner.
 
-# So that `prek install` wires up both shims: the pre-push one is what runs
-# clippy, and without it the clippy hook below would never fire locally.
-default_install_hook_types: [pre-commit, pre-push]
+# So that `prek install` wires up all three shims: the pre-push one is what
+# runs clippy, and without it the clippy hook below would never fire locally;
+# the prepare-commit-msg one is what prefixes a commit with its issue number.
+default_install_hook_types: [pre-commit, pre-push, prepare-commit-msg]
+
+# Hooks run at commit time unless they name another stage. Without this line a
+# hook that names no stage runs at every installed one, so the file fixers below
+# would be handed the commit message file at prepare-commit-msg and "fix" it.
+# The price is that the hygiene hooks no longer repeat at push time, which loses
+# nothing: they have already run on the same files at commit time.
+default_stages: [pre-commit]
 
 # Files this repo has promised not to touch. Every one of them is either copied
 # from another project or written by a tool, and their worth depends on staying
@@ -73,6 +81,30 @@ repos:
         # whitespace fixers above. `--force-exclude` is kept so that _typos.toml
         # still applies when prek passes file paths explicitly.
         args: [--force-exclude]
+
+  # Prefixes the commit subject with the issue number taken from the branch
+  # name, and with the change type when the author did not write one:
+  #
+  #   branch   20-fix-subagents-key
+  #   typed    read and write the 1.0 key
+  #   commit   [#20] fix: read and write the 1.0 key
+  #
+  # A subject that already starts with a type keeps it, scope included, so
+  # `fix(core): ...` becomes `[#20] fix(core): ...`. The hook only ever adds
+  # text and never rejects a commit: on a branch whose name does not start with
+  # an issue number it does nothing, and merge commits are left alone.
+  #
+  # `^[0-9]+` rather than the hook's default `#[0-9]{1,5}`, because the branches
+  # here carry no `#`, and anchored so that a number elsewhere in a name
+  # (`feat/pr2778-qa`) is never mistaken for an issue.
+  - repo: https://github.com/KimSoungRyoul/commit-issue-prefix
+    rev: v1.3.1
+    hooks:
+      - id: commit-issue-prefix
+        args:
+          - '--issue-regex=^[0-9]+'
+          - '--template=[#{issue}]'
+          - '--types=feat,fix,refactor,perf,docs,test,chore,ci,build,revert,style,i18n'
 
   - repo: local
     hooks:

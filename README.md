@@ -167,6 +167,10 @@ cargo run --locked -p xtask -- drift-check --local
 prek run --all-files
 ```
 
+`prek install` once per clone turns the git hooks on. Work starts from an issue and
+the branch carries its number, `<issue>-<type>-<slug>`; the `prepare-commit-msg` hook
+then prefixes each commit with it, as in `[#20] fix: read and write the 1.0 key`.
+
 The client and server runtimes use executor-neutral futures. HTTP and axum are
 optional. CI checks Rust 1.85, wasm feature builds, dependency boundaries, docs,
 and the vendored AG-UI 1.0 schema and event baseline.
