@@ -772,7 +772,7 @@ These are on `main` and not yet in a published version.
 | `toolkit::prompt::describe_surface`, `render_data_model` | Nothing; `serde_json::to_string_pretty(&value)` for the second |
 | `toolkit::negotiate::ClientCapabilities`, `ClientCapabilitiesWire::from_json` | `RendererCapabilities::from_json(&capabilities)?`, or `RendererCapabilities::from_metadata(Some(&metadata), version)?` for a transport's metadata; `schema_validation::validate_capabilities(&capabilities)?` for the schema check `from_json` used to run |
 | `ClientCapabilities::supporting(ids)` | `RendererCapabilities::supporting(version, ids)` |
-| `toolkit::negotiate::select_catalog`, `select_catalog_schema` | `resolve_catalogs(&configs, Some(&capabilities), accepts_inline)?`, which gives every active catalog, or `generator.create_processor(Some(&capabilities))?` |
+| `toolkit::negotiate::select_catalog`, `select_catalog_schema` | `resolve_catalogs(&configs, Some(&capabilities), accepts_inline)?`, which gives every active catalog, the agent's own first, or `generator.create_processor(Some(&capabilities))?`. An agent registers at least one catalog: `select_catalog_schema(&[], …, true)` chose a renderer's inline catalog alone, and `resolve_catalogs` refuses an empty registration |
 | `CatalogRegistry`, `RegistryEntry` | `A2uiGenerator::new(vec![CatalogConfig::new(CatalogDocument::read(path, None, Some(version))?)])` |
 | `CatalogRegistry::insert_alias`, `relax_strict_validation` | Nothing: a catalog has one id, and a schema is used as published |
 | `SchemaBundle::prune` | `CatalogConfig::keeping_components(names)` and `keeping_functions(names)`; `DirectJson::allowing_messages(operations)` for the envelope |
