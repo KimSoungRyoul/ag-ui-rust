@@ -258,7 +258,9 @@ fn main() {
 `4xx`를 대신 답해 줍니다. `Result<AgUiInput, Error>`를 받으면 실패를 먼저 들여다볼 수 있습니다.
 
 `SseResponse`가 나머지 절반입니다. run을 시작하기 전에 자기 할 일을 먼저 하는 handler를 위한
-것입니다. `route_agui`가 바로 이것에 기본값을 채워 넣은 것입니다.
+것입니다. `route_agui`가 바로 이것에 기본값을 채워 넣은 것입니다. `stream`은 `Runner::run`이
+돌려주는 `Event` stream을 받습니다. 다른 곳에서 온 run이고 그 source가 실패할 수 있다면
+`try_stream`에 넘깁니다. source error는 그 run을 끝내고 `RUN_ERROR`로 전송됩니다.
 
 ```rust
 use ag_ui::axum::SseResponse;

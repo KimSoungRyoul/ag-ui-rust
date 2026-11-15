@@ -47,11 +47,11 @@ impl Agent for Patient {
     type State = ();
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-        let _ = self.token.send(ctx.cancel_token());
+        let _ = self.token.send(ctx.cancellation_token());
         ctx.say("working on it")?;
 
         let _guard = ExitGuard {
-            token: ctx.cancel_token(),
+            token: ctx.cancellation_token(),
             report: self.exit.clone(),
         };
         std::future::pending::<()>().await;
@@ -69,7 +69,7 @@ impl Agent for Prompt {
 
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
         let _guard = ExitGuard {
-            token: ctx.cancel_token(),
+            token: ctx.cancellation_token(),
             report: self.exit.clone(),
         };
         ctx.say("done")?;

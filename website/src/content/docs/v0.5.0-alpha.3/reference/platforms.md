@@ -27,7 +27,7 @@ The normal dependency graphs of `server` and `client` alone contain no Tokio.
 Enabling `axum` or `http` brings Tokio in. HTTP is opt-in.
 
 ```rust
-use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream};
+use ag_ui::client::transport::{Transport, TransportFuture, TransportStream};
 use ag_ui::client::Result;
 use ag_ui::{Event, RunAgentInput};
 use futures_util::stream;
@@ -41,14 +41,14 @@ impl Transport for Canned {
     // error item in the stream. That split is the whole interface.
     fn run(&self, _input: RunAgentInput) -> TransportFuture {
         let events: Vec<Result<Event>> = self.0.iter().cloned().map(Ok).collect();
-        Box::pin(async move { Ok(boxed_stream(stream::iter(events))) })
+        Box::pin(async move { Ok(TransportStream::typed(stream::iter(events))) })
     }
 }
 ```
 
 This is a replay transport example. In a browser, replace it with an implementation that
-sends POST requests and reads streaming responses. `EventStream` and `TransportFuture`
-require `Send` on native targets and omit that bound on wasm.
+sends POST requests and hands the response on with `TransportStream::json`. `TransportFuture`
+and the stream a `TransportStream` takes require `Send` on native targets and omit that bound on wasm.
 
 ## Check locally
 

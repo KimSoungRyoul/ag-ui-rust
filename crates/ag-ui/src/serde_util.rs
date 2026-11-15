@@ -32,6 +32,28 @@ where
     Ok(value)
 }
 
+/// Reads an optional non-negative integer, taking a negative one as absent.
+///
+/// For limits the schema bounds with `minimum: 0` while producers in the wild
+/// send `-1` for "no limit". Absent already means not declared, and failing
+/// the whole document over it would lose everything else in it.
+pub(crate) fn non_negative<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let Some(number) = Option::<serde_json::Number>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match number.as_u64() {
+        Some(value) => Ok(Some(value)),
+        None if number.is_i64() => Ok(None),
+        None => Err(D::Error::custom(format!(
+            "expected an integer, found {number}"
+        ))),
+    }
+}
+
 /// Reads an optional field that may be absent but never `null`.
 ///
 /// Pair it with `#[serde(default)]`: a missing key takes the default, `None`;

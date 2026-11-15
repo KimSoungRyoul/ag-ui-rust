@@ -256,7 +256,9 @@ Its rejection type is `ag_ui::axum::Error`, which implements `IntoResponse`. Tak
 the failure first.
 
 `SseResponse` is the other half, for a handler that does its own work before starting the
-run. `route_agui` is this, with the defaults filled in:
+run. `route_agui` is this, with the defaults filled in. `stream` takes what `Runner::run`
+returns, a stream of `Event`. A run supplied from somewhere else, whose source can fail, goes
+to `try_stream` instead: a source error ends that run and is sent as `RUN_ERROR`.
 
 ```rust
 use ag_ui::axum::SseResponse;

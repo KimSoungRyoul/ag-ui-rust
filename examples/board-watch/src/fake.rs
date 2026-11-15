@@ -95,7 +95,7 @@ impl Agent for Awkward {
         let scenario = said.split_whitespace().next().unwrap_or("").to_lowercase();
 
         let _guard = self.exits.clone().map(|report| ExitGuard {
-            token: ctx.cancel_token(),
+            token: ctx.cancellation_token(),
             report,
         });
 

@@ -74,6 +74,37 @@ impl Interrupt {
         }
     }
 
+    /// Sets the prompt to show the user.
+    ///
+    /// ```
+    /// use ag_ui::Interrupt;
+    ///
+    /// let interrupt = Interrupt::new("i-1", "tool_approval")
+    ///     .with_message("Delete the staging database?")
+    ///     .with_tool_call_id("call-7");
+    /// assert_eq!(interrupt.message.as_deref(), Some("Delete the staging database?"));
+    /// assert_eq!(interrupt.tool_call_id.as_ref().map(|id| id.as_str()), Some("call-7"));
+    /// ```
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    /// Names the tool call this interrupt asks to approve.
+    #[must_use]
+    pub fn with_tool_call_id(mut self, tool_call_id: impl Into<ToolCallId>) -> Self {
+        self.tool_call_id = Some(tool_call_id.into());
+        self
+    }
+
+    /// Sets the JSON Schema the resume payload must satisfy.
+    #[must_use]
+    pub fn with_response_schema(mut self, schema: JsonObject) -> Self {
+        self.response_schema = Some(schema);
+        self
+    }
+
     /// Attributes the interrupt to the subagent that raised it.
     #[must_use]
     pub fn with_subagent_run_id(mut self, subagent_run_id: impl Into<SubagentRunId>) -> Self {

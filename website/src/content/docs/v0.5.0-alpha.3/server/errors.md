@@ -28,7 +28,6 @@ impl Agent for Flaky {
 #[tokio::main]
 async fn main() {
     let events: Vec<Event> = run(Flaky, RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -159,7 +158,7 @@ impl Agent for Chatty {
     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
         ctx.say("one")?;
         // Standing in for the transport noticing the client hung up.
-        ctx.cancel_token().cancel();
+        ctx.cancellation_token().cancel();
         ctx.say("two")?;   // fails, and `?` returns
         ctx.say("three")?;
         Ok(RunOutcome::Success)
@@ -169,7 +168,6 @@ impl Agent for Chatty {
 #[tokio::main]
 async fn main() {
     let events: Vec<Event> = run(Chatty, RunAgentInput::new("t", "r"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -239,7 +237,7 @@ async fn main() -> ag_ui::server::Result<()> {
     assert_eq!(answer.as_deref(), Some("the model's reply"));
 
     // A future that never resolves, against a token that has been tripped.
-    ctx.cancel_token().cancel();
+    ctx.cancellation_token().cancel();
     let never = futures_util::future::pending::<String>();
     assert!(ctx.until_cancelled(never).await.is_none());
     Ok(())

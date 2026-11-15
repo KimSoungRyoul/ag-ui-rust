@@ -66,19 +66,13 @@ impl Agent for Deployer {
 
 /// What the client is asked, and the shape its answer must take.
 fn request() -> Interrupt {
-    Interrupt {
-        id: APPROVE_DEPLOY.to_owned(),
-        reason: "tool_approval".to_owned(),
-        message: Some("Deploy build 42 to production?".to_owned()),
-        ..Default::default()
-    }
+    Interrupt::new(APPROVE_DEPLOY, "tool_approval").with_message("Deploy build 42 to production?")
 }
 
 #[tokio::main]
 async fn main() {
     // Turn one: the agent pauses.
     let first: Vec<Event> = run(Deployer, RunAgentInput::new("deploy", "run-1"))
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -98,7 +92,6 @@ async fn main() {
     )]);
 
     let second: Vec<Event> = run(Deployer, resumed)
-        .map(|event| event.expect("the stream should not break"))
         .collect()
         .await;
 
@@ -112,7 +105,9 @@ async fn main() {
 ## What to put in an interrupt
 
 `Interrupt::new(id, reason)` sets the two required fields; the rest are optional and exist so
-a client can render the question without knowing anything about your agent.
+a client can render the question without knowing anything about your agent. `with_message`,
+`with_tool_call_id`, `with_response_schema` and `with_subagent_run_id` chain onto it; the
+other fields are public and set directly.
 
 | Field | What it is for |
 | --- | --- |
@@ -139,13 +134,9 @@ fn confirm_clear(count: usize) -> Interrupt {
     );
     schema.insert("required".to_owned(), json!(["confirm"]));
 
-    Interrupt {
-        id: "confirm-clear".to_owned(),
-        reason: "tool_approval".to_owned(),
-        message: Some(format!("Clear the board? {count} task(s) will be removed.")),
-        response_schema: Some(schema),
-        ..Default::default()
-    }
+    Interrupt::new("confirm-clear", "tool_approval")
+        .with_message(format!("Clear the board? {count} task(s) will be removed."))
+        .with_response_schema(schema)
 }
 
 fn main() {

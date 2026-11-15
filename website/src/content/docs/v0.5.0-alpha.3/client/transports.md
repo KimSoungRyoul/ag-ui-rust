@@ -26,12 +26,30 @@ trait Transport {
 }
 ```
 
-One method. Hand it a `RunAgentInput`, get back a future that resolves to a
-stream of events. Failing to *connect* is an error from the future; failing
+One method. Hand it a `RunAgentInput`, get back a future that resolves to the
+run's stream. Failing to *connect* is an error from the future; failing
 mid-stream is an error item in the stream — and the two are different things a
 client wants to say differently.
 
-`TransportFuture` is `Pin<Box<dyn Future<Output = Result<EventStream>> + Send>>`.
+What the future resolves to is a `TransportStream`: the run's events in the form
+the transport has them. `TransportStream::json` takes wire JSON, one value per
+event, exactly as received. `TransportStream::typed` takes events that were built
+as `Event` in this process and never serialized. A transport decodes nothing and
+checks nothing. The client runs either form through the same compatibility
+boundary — schema enforcement, the optional-null registry, the translation of
+retired events — so its warnings reach a `Thread` as `Update::Warning` whichever
+form fed it. Typed events skip the schema walk, because an `Event` holds nothing
+this version does not know; `TransportStream::enforced` puts them through it
+anyway.
+
+:::note[Changed after 0.5.0-alpha.3]
+The published `0.5.0-alpha.3` has a second method, `run_raw`, and its `run`
+returns typed events. This page describes `main`; the
+[migration notes](https://github.com/KimSoungRyoul/ag-ui-rust/blob/main/docs/migration-0.5.md)
+show both shapes.
+:::
+
+`TransportFuture` is `Pin<Box<dyn Future<Output = Result<TransportStream>> + Send>>`.
 Nothing in that names a lifetime, which means the default one for a boxed trait
 object — `'static` — and that is load-bearing. A transport is usually held
 inside a `Thread`, which mutates its own state as events arrive. If the
@@ -67,7 +85,8 @@ async fn main() {
 }
 ```
 
-On wasm the `EventStream` and `TransportFuture` aliases drop their `Send` bound.
+On wasm `TransportFuture` and the streams a `TransportStream` takes drop their
+`Send` bound.
 The browser APIs a transport would be built on there are single-threaded and not
 `Send` at all, and requiring it would make the wasm case — the reason this crate
 abstracts the transport in the first place — impossible to satisfy.
@@ -229,7 +248,7 @@ frontend takes — no HTTP client anywhere in it:
 
 ```rust
 // src/transport.rs
-use ag_ui::client::transport::{EventStream, Transport, TransportFuture};
+use ag_ui::client::transport::{Transport, TransportFuture, TransportStream};
 use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::{Event, RunAgentInput, TextMessageRole};
 use futures_util::StreamExt;
@@ -246,7 +265,7 @@ impl Transport for StaticTransport {
         let events = self.events.clone();
         Box::pin(async move {
             let stream = futures_util::stream::iter(events.into_iter().map(Ok));
-            Ok(Box::pin(stream) as EventStream)
+            Ok(TransportStream::typed(stream))
         })
     }
 }
@@ -275,13 +294,14 @@ async fn main() {
 }
 ```
 
-A transport that reads bytes rather than events puts `decode_events` in the
-middle, and `boxed_stream` is the helper that boxes the result into the shape
-the trait returns:
+A transport that reads bytes rather than events hands them on as JSON.
+`decode_raw_events` turns the chunks of a `text/event-stream` body into one
+value per event, and `TransportStream::json` passes them to the client as they
+are:
 
 ```rust
 // src/transport.rs
-use ag_ui::client::transport::{Transport, TransportFuture, boxed_stream, decode_events};
+use ag_ui::client::transport::{Transport, TransportFuture, TransportStream, decode_raw_events};
 use ag_ui::client::{RunEnd, Thread, Update};
 use ag_ui::{Event, RunAgentInput, SseFormatter};
 use futures_util::StreamExt;
@@ -296,7 +316,7 @@ impl Transport for Recorded {
             // One chunk here; a real body arrives in as many as the network
             // decides, and the decoder is written for that.
             let chunks = futures_util::stream::iter([Ok::<_, std::io::Error>(body)]);
-            Ok(boxed_stream(decode_events(chunks)))
+            Ok(TransportStream::json(decode_raw_events(chunks)))
         })
     }
 }

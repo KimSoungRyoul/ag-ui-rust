@@ -443,6 +443,21 @@ impl EventReceiver {
     /// Closes the channel, so the next emit fails with
     /// [`Error::Disconnected`].
     ///
+    /// Unlike dropping the receiver, this keeps what was already emitted: a
+    /// consumer that stops accepting events can still read the ones queued.
+    ///
+    /// ```
+    /// # use ag_ui::RunAgentInput;
+    /// # use ag_ui::server::RunContext;
+    /// let (mut ctx, mut events) = RunContext::<()>::new(RunAgentInput::new("t", "r"))?;
+    /// ctx.say("before")?;
+    ///
+    /// events.close();
+    /// assert!(ctx.say("after").is_err_and(|error| error.is_disconnected()));
+    /// assert_eq!(events.drain().len(), 3);
+    /// # Ok::<(), ag_ui::server::Error>(())
+    /// ```
+    ///
     /// [`Error::Disconnected`]: crate::server::Error::Disconnected
     pub fn close(&mut self) {
         self.rx.close();
