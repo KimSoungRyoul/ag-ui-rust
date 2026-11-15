@@ -30,6 +30,7 @@
 //! | [`surface`] | The surface state machine: lifecycle, and folding a stream of operations. Every stream is folded through it. |
 //! | [`processor`] | Taking raw messages into a surface store: the catalogs a context speaks, the order of the checks, a batch as a transaction, and the kinds of refusal. |
 //! | [`validate`] | The semantic checks JSON Schema cannot express: does every child reference resolve, is there a root, is the tree acyclic. Plus the two a generating model gets wrong often enough to be worth checking without a schema engine: the message envelope, and property values against the type the catalog declares. |
+//! | [`schema`] | The three JSON Schema documents that describe a surface (envelope, common types, catalog), and pruning them to what a model needs. |
 // Gate module links with their features so minimal rustdoc builds resolve them.
 #![cfg_attr(
     feature = "schema-validation",
@@ -43,16 +44,28 @@
 //!
 //! ## What depends on what
 //!
-//! The protocol modules reach into nothing above them, with one exception that
-//! is on its way out: the JSON Schema validator takes its three schema
-//! documents as a `toolkit::schema::SchemaBundle`, so the `schema-validation`
-//! feature still implies `toolkit`.
+//! The protocol modules reach into nothing above them. The `schema-validation`
+//! feature still turns `toolkit` on, for the callers that came to rely on it;
+//! nothing in the validator needs it.
 //!
 //! With default features off, the protocol modules are all there is, and they
 //! need only `serde`, `serde_json`, `thiserror`, `jsonptr` and `unicode-ident`.
 //!
 //! # Around the protocol
 //!
+#![cfg_attr(
+    feature = "agent",
+    doc = "- [`agent`] (feature `agent`) — what an agent framework delegates A2UI to:",
+    doc = "  catalog negotiation, the prompt snippet, reading a model's answer whole or",
+    doc = "  streamed, the mirror of the renderer's state, and the retry decision. The",
+    doc = "  framework makes the model call; nothing in the layer does I/O."
+)]
+#![cfg_attr(
+    not(feature = "agent"),
+    doc = "- `agent` (feature `agent`, off in this build) — what an agent framework",
+    doc = "  delegates A2UI to: negotiation, prompt snippet, answer parsing, renderer",
+    doc = "  state and the retry decision, with no model call and no I/O."
+)]
 #![cfg_attr(
     feature = "toolkit",
     doc = "- [`toolkit`] (feature `toolkit`) — building ops, negotiating a catalog,",
@@ -147,11 +160,14 @@ mod protocol;
 
 #[doc(inline)]
 pub use crate::protocol::{
-    binding, catalog, message, model, operation, processor, surface, validate, version,
+    binding, catalog, message, model, operation, processor, schema, surface, validate, version,
 };
 #[cfg(feature = "schema-validation")]
 #[doc(inline)]
 pub use crate::protocol::{client_schema, schema_validation};
+
+#[cfg(feature = "agent")]
+pub mod agent;
 
 #[cfg(feature = "author")]
 pub mod author;

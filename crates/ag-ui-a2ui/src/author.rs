@@ -1,8 +1,8 @@
 //! Provider-neutral async authoring with a single immutable validation contract.
 
+use crate::protocol::schema::SchemaBundle;
 use crate::protocol::schema_validation::SchemaValidator;
 use crate::protocol::surface::{SurfaceState, SurfaceStore};
-use crate::toolkit::schema::SchemaBundle;
 use crate::{A2uiVersion, AgentMessage, AgentPayload, Catalog, DataModel, Error, Result};
 use serde_json::Value;
 use std::{collections::BTreeMap, future::Future, sync::Arc};

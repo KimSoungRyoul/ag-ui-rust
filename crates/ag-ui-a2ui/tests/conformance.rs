@@ -19,17 +19,31 @@
 //! A check is never counted as passing unless this crate actually produced the
 //! expected outcome.
 //!
+//! # The agent tier
+//!
+//! The suites under `agent/` are run by the module in `conformance_agent/`.
+//! Upstream writes them against A2UI v1.0; a case is lowered to v0.9 on the
+//! way in and lifted on the way out, by the rules of
+//! `conformance_agent/lowering.rs` and nowhere else, and a case v0.9 cannot
+//! state is skipped. The report says, per suite, how many cases ran lowered,
+//! how many as written and how many were skipped under each label.
+//!
 //! Run with `cargo test -p ag-ui-a2ui --all-features --test conformance --
 //! --nocapture` to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list
 //! every check by name. The harness is compiled only with the
-//! `schema-validation` feature, which `--all-features` turns on. Without it,
-//! `tests/conformance_needs_schema_validation.rs` puts one ignored test in a
-//! run, which says so.
+//! `schema-validation` and `agent` features, which `--all-features` turns on.
+//! Without both, `tests/conformance_needs_schema_validation.rs` puts one
+//! ignored test in a run, which says so.
 
-// The catalog and common-types suites validate against the published schema
-// documents, so the harness needs the JSON Schema engine; `schema-validation`
-// brings `toolkit` with it.
-#![cfg(feature = "schema-validation")]
+// The standing of every suite is one table, so the harness needs every layer
+// the table speaks of. The catalog and common-types suites validate against
+// the published schema documents, so that is the JSON Schema engine
+// (`schema-validation` brings `toolkit` with it) and, for the suites under
+// `agent/`, the agent layer.
+#![cfg(all(feature = "schema-validation", feature = "agent"))]
+
+#[path = "conformance_agent/mod.rs"]
+mod agent_tier;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -59,8 +73,13 @@ const RETIRED_COMMIT: &str = "44a420b67957fafc0b02d55a153fdaf72e32ffb5";
 /// Why a whole suite is not executed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Why {
-    /// It tests the agent layer, which the next pull request of #41 builds.
-    AgentLayer,
+    /// It tests an output format other than direct JSON, or something built
+    /// on one. #74 adds them.
+    Formats,
+    /// It times an operation instead of checking its result. #75 makes the
+    /// direct JSON stream linear and runs the timing cases in a job of their
+    /// own.
+    Timing,
     /// It tests a transport adapter, which #43 builds.
     Adapters,
     /// It tests A2UI v1.0, which #42 adds.
@@ -77,7 +96,8 @@ impl Why {
     /// The label the per-suite table carries.
     fn label(self) -> &'static str {
         match self {
-            Why::AgentLayer => "later: agent layer (#41)",
+            Why::Formats => agent_tier::NEEDS_FORMAT,
+            Why::Timing => "later: timing (#75)",
             Why::Adapters => "later: adapters (#43)",
             Why::V1_0 => "later: A2UI v1.0 (#42)",
             Why::V0_8 => "out of scope: v0.8",
@@ -92,6 +112,10 @@ impl Why {
 enum Plan {
     /// Its cases are executed. One of them may still be skipped, with a reason.
     Run,
+    /// An agent-tier suite, executed by the runners in `conformance_agent/`.
+    /// A case written against v1.0 runs lowered to v0.9; one that v0.9 cannot
+    /// state is skipped, with the reason.
+    Agent,
     /// A suite as it stood at [`RETIRED_COMMIT`], before upstream deleted it or
     /// rewrote its cases under other names. It is kept, and executed whole,
     /// because the code it covers is still here: what passed at that pin goes
@@ -115,6 +139,14 @@ const fn run(path: &'static str, counts: [usize; 4]) -> Suite {
     Suite {
         path,
         plan: Plan::Run,
+        counts,
+    }
+}
+
+const fn agent(path: &'static str, counts: [usize; 4]) -> Suite {
+    Suite {
+        path,
+        plan: Plan::Agent,
         counts,
     }
 }
@@ -180,39 +212,39 @@ const SUITES: &[Suite] = &[
     skip("core/adapter_conformance.yaml", 22, Why::Renderer, "rendered view hierarchies in the UI framework adapters"),
 
     // --- agent tier ----------------------------------------------------------------------------
-    skip("agent/request_processor.yaml", 29, Why::AgentLayer, "building an inference format and a per-request processor"),
-    skip("agent/catalog_resolution.yaml", 23, Why::AgentLayer, "negotiating renderer capabilities against registered catalogs"),
-    skip("agent/catalog_provider.yaml", 10, Why::AgentLayer, "loading catalog documents from the filesystem"),
-    skip("agent/catalog_transformer.yaml", 15, Why::AgentLayer, "pruning a catalog before it reaches a prompt or a validator"),
-    skip("agent/renderer_capabilities.yaml", 24, Why::AgentLayer, "reading renderer capabilities from transport metadata"),
-    skip("agent/renderer_state.yaml", 9, Why::AgentLayer, "renderer state across turns"),
-    skip("agent/skill.yaml", 12, Why::AgentLayer, "skill documents generated from a format and its catalogs"),
-    skip("agent/streamed_answer.yaml", 6, Why::AgentLayer, "reading a streamed answer into a message processor"),
-    skip("agent/direct_json/prompt_generator.yaml", 15, Why::AgentLayer, "the direct JSON format: system prompt snippet"),
-    skip("agent/direct_json/response_parser.yaml", 36, Why::AgentLayer, "the direct JSON format: unwrapping and parsing a response"),
-    skip("agent/direct_json/response_streaming.yaml", 139, Why::AgentLayer, "the direct JSON format: parsing a response chunk by chunk"),
-    skip("agent/direct_json/compiler.yaml", 38, Why::AgentLayer, "the direct JSON format: compiling a block into messages"),
-    skip("agent/direct_json/decompiler.yaml", 11, Why::AgentLayer, "the direct JSON format: writing messages back as notation"),
-    skip("agent/direct_json/scaling.yaml", 7, Why::AgentLayer, "the direct JSON format: parse time against payload size"),
-    skip("agent/express/prompt_generator.yaml", 23, Why::AgentLayer, "the Express format: system prompt snippet"),
-    skip("agent/express/response_parser.yaml", 38, Why::AgentLayer, "the Express format: unwrapping and parsing a response"),
-    skip("agent/express/response_streaming.yaml", 41, Why::AgentLayer, "the Express format: parsing a response chunk by chunk"),
-    skip("agent/express/compiler.yaml", 135, Why::AgentLayer, "the Express format: compiling a block into messages"),
-    skip("agent/express/decompiler.yaml", 49, Why::AgentLayer, "the Express format: writing messages back as notation"),
-    skip("agent/express/scaling.yaml", 1, Why::AgentLayer, "the Express format: compile time against payload size"),
-    skip("agent/atom/compiler.yaml", 7, Why::AgentLayer, "the Atom format"),
-    skip("agent/elemental/compiler.yaml", 8, Why::AgentLayer, "the Elemental format"),
-    skip("agent/builder/builder.yaml", 22, Why::AgentLayer, "the typesafe builder API"),
-    skip("agent/macros/macros.yaml", 70, Why::AgentLayer, "builder macros"),
+    agent("agent/request_processor.yaml", [20, 0, 9, 0]),
+    agent("agent/catalog_resolution.yaml", [23, 0, 0, 0]),
+    agent("agent/catalog_provider.yaml", [9, 0, 1, 0]),
+    agent("agent/catalog_transformer.yaml", [15, 0, 0, 0]),
+    agent("agent/renderer_capabilities.yaml", [5, 0, 19, 0]),
+    agent("agent/renderer_state.yaml", [5, 0, 4, 0]),
+    agent("agent/streamed_answer.yaml", [6, 0, 0, 0]),
+    agent("agent/direct_json/prompt_generator.yaml", [1, 0, 14, 0]),
+    agent("agent/direct_json/response_parser.yaml", [35, 0, 1, 0]),
+    agent("agent/direct_json/response_streaming.yaml", [91, 3, 45, 0]),
+    agent("agent/direct_json/compiler.yaml", [18, 0, 20, 0]),
+    agent("agent/direct_json/decompiler.yaml", [9, 0, 2, 0]),
+    skip("agent/direct_json/scaling.yaml", 7, Why::Timing, "the direct JSON format: parse time against payload size"),
+    skip("agent/skill.yaml", 12, Why::Formats, "skill documents generated from a format and its catalogs; the goldens are Express"),
+    skip("agent/express/prompt_generator.yaml", 23, Why::Formats, "the Express format: system prompt snippet"),
+    skip("agent/express/response_parser.yaml", 38, Why::Formats, "the Express format: unwrapping and parsing a response"),
+    skip("agent/express/response_streaming.yaml", 41, Why::Formats, "the Express format: parsing a response chunk by chunk"),
+    skip("agent/express/compiler.yaml", 135, Why::Formats, "the Express format: compiling a block into messages"),
+    skip("agent/express/decompiler.yaml", 49, Why::Formats, "the Express format: writing messages back as notation"),
+    skip("agent/express/scaling.yaml", 1, Why::Formats, "the Express format: compile time against payload size"),
+    skip("agent/atom/compiler.yaml", 7, Why::Formats, "the Atom format"),
+    skip("agent/elemental/compiler.yaml", 8, Why::Formats, "the Elemental format"),
+    skip("agent/builder/builder.yaml", 22, Why::Formats, "the typesafe builder API"),
+    skip("agent/macros/macros.yaml", 70, Why::Formats, "builder macros"),
     skip("agent/multi_catalog_formats.yaml", 35, Why::V1_0, "components and function calls resolved across several active catalogs"),
     skip("agent/agent_functions.yaml", 64, Why::V1_0, "agent functions and the agent's side of renderer messages"),
     skip("agent/renderer_function_calls.yaml", 30, Why::V1_0, "the agent calling renderer functions"),
 
     // --- end to end: the agent half parses a transcript, a renderer half draws it ---------------
-    skip("e2e/v0_9_1/login_form_action.yaml", 1, Why::AgentLayer, "a v0.9.1 transcript through the agent layer's response parser"),
-    skip("e2e/v0_9_1/missing_surface_error.yaml", 1, Why::AgentLayer, "a v0.9.1 transcript through the agent layer's response parser"),
-    skip("e2e/v0_9_1/newsletter_signup.yaml", 1, Why::AgentLayer, "a v0.9.1 transcript through the agent layer's response parser"),
-    skip("e2e/v0_9_1/restaurant_list_booking.yaml", 1, Why::AgentLayer, "a v0.9.1 transcript through the agent layer's response parser"),
+    agent("e2e/v0_9_1/login_form_action.yaml", [1, 0, 1, 0]),
+    agent("e2e/v0_9_1/missing_surface_error.yaml", [1, 0, 1, 0]),
+    agent("e2e/v0_9_1/newsletter_signup.yaml", [1, 0, 1, 0]),
+    agent("e2e/v0_9_1/restaurant_list_booking.yaml", [1, 0, 1, 0]),
     skip("e2e/login_form_action.yaml", 1, Why::V1_0, "a v1.0 transcript"),
     skip("e2e/missing_surface_error.yaml", 1, Why::V1_0, "a v1.0 transcript"),
     skip("e2e/newsletter_signup.yaml", 1, Why::V1_0, "a v1.0 transcript"),
@@ -365,6 +397,10 @@ struct Tally {
     failing_reasons: BTreeMap<String, usize>,
     /// Failures nothing lists, and listed failures that did not happen.
     unexpected: Vec<String>,
+    /// Agent-tier cases written against v1.0 and executed lowered to v0.9.
+    lowered: usize,
+    /// Agent-tier cases executed as they are written.
+    as_written: usize,
 }
 
 impl Tally {
@@ -380,6 +416,26 @@ impl Tally {
             .iter()
             .find(|(listed, _)| *listed == check)
             .map(|(_, reason)| *reason);
+        // An agent-tier case this crate answers differently on purpose. The
+        // case is executed and has to go on ending the way the entry says.
+        let outcome = match AGENT_DIVERGENCES
+            .iter()
+            .find(|(listed, _, _)| *listed == check)
+        {
+            None => outcome,
+            Some((_, reason, ends_with)) => match outcome {
+                Outcome::Failed(detail) if detail.contains(ends_with) => {
+                    Outcome::ExpectedDivergence((*reason).to_string())
+                }
+                Outcome::Failed(detail) => Outcome::Failed(format!(
+                    "listed in AGENT_DIVERGENCES as ending in {ends_with:?}, but it ended: {detail}"
+                )),
+                other => Outcome::Failed(format!(
+                    "listed in AGENT_DIVERGENCES, but it no longer diverges ({other:?}); remove \
+                     it from the list"
+                )),
+            },
+        };
         match (outcome, known) {
             (Outcome::Failed(_), Some(reason)) => {
                 self.failing += 1;
@@ -676,9 +732,71 @@ fn tally_suite(suite: &Suite) -> (usize, Tally) {
             }
             Plan::Retired => run_case(&check, case, Format::Retired, &mut tally),
             Plan::Run => run_case(&check, case, Format::Current, &mut tally),
+            Plan::Agent => {
+                for (format, ran) in agent_tier::run_case(case) {
+                    match (&ran.outcome, ran.lowered) {
+                        (Outcome::Skipped(_), _) => {}
+                        (_, true) => tally.lowered += 1,
+                        (_, false) => tally.as_written += 1,
+                    }
+                    // A transcript is one check per format it declares.
+                    let check = match format {
+                        Some(format) => format!("{check}[{format}]"),
+                        None => check.clone(),
+                    };
+                    tally.record(&check, ran.outcome);
+                }
+            }
         }
     }
     (cases.len(), tally)
+}
+
+/// Agent-tier checks this crate answers differently from the reference on
+/// purpose: the check, why, and what its failure has to say, so that an entry
+/// cannot go on covering a case that started failing for another reason.
+const AGENT_DIVERGENCES: &[(&str, &str, &str)] = &[
+    (
+        "agent/direct_json/response_streaming.yaml::test_stream_orphan_component_fails_v09",
+        "a component the root cannot reach is a warning (ValidationReport::unreachable), not an \
+         error; the block is emitted",
+        "expected {\"category\":\"ValidationError\"}, got [{\"a2ui\"",
+    ),
+    (
+        "agent/direct_json/response_streaming.yaml::test_stream_relative_path_kept_v09",
+        "a relative binding path outside a list template is rejected; the reference does not \
+         look at bindings",
+        "is not inside a list template",
+    ),
+    (
+        "agent/direct_json/response_streaming.yaml::test_stream_data_model_grows_v09",
+        "a list template whose path holds a map, not an array, is rejected once the data model \
+         arrives; the reference does not look at the data model",
+        "must point at an array",
+    ),
+];
+
+/// The row of the agent-tier table for one suite: how many of its cases ran
+/// lowered from v1.0, how many as written, and how many were skipped under
+/// each label. It is what #42 reads to know what to stop lowering.
+fn agent_row(suite: &Suite, cases: usize, tally: &Tally) -> String {
+    let skipped = |label: &str| -> usize {
+        tally
+            .skip_reasons
+            .iter()
+            .filter(|(reason, _)| reason.starts_with(label))
+            .map(|(_, count)| count)
+            .sum()
+    };
+    format!(
+        "| `{}` | {cases} | {} | {} | {} | {} | {} |",
+        suite.path,
+        tally.lowered,
+        tally.as_written,
+        skipped(agent_tier::NEEDS_V1_0),
+        skipped(agent_tier::NEEDS_V0_8),
+        skipped(agent_tier::NEEDS_FORMAT),
+    )
 }
 
 /// Which case vocabulary a suite is written in.
@@ -694,7 +812,7 @@ enum Format {
 fn table_row(suite: &Suite, cases: usize, counts: [usize; 4]) -> String {
     let [passed, divergent, skipped, failing] = counts;
     let note = match suite.plan {
-        Plan::Run => "executed".to_string(),
+        Plan::Run | Plan::Agent => "executed".to_string(),
         Plan::Retired => "executed; retired upstream".to_string(),
         Plan::Skip(why, what) => format!("{}: {what}", why.label()),
     };
@@ -721,6 +839,7 @@ fn conformance_suite() {
     let mut total = Tally::default();
     let mut mismatches = Vec::new();
     let mut rows = Vec::new();
+    let mut agent_rows = Vec::new();
 
     for suite in SUITES {
         let (cases, tally) = tally_suite(suite);
@@ -750,6 +869,11 @@ fn conformance_suite() {
             ));
         }
         rows.push(table_row(suite, cases, counts));
+        if suite.plan == Plan::Agent {
+            agent_rows.push(agent_row(suite, cases, &tally));
+            total.lowered += tally.lowered;
+            total.as_written += tally.as_written;
+        }
 
         total.passed += tally.passed;
         total.divergent += tally.divergent;
@@ -765,6 +889,17 @@ fn conformance_suite() {
     println!("| Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |");
     println!("|---|---:|---:|---:|---:|---:|---|");
     for row in &rows {
+        println!("{row}");
+    }
+    println!(
+        "\nAGENT TIER: {} cases ran lowered from v1.0, {} as written\n",
+        total.lowered, total.as_written
+    );
+    println!(
+        "| Suite | Cases | Lowered from v1.0 | As written | Skipped: v1.0 | Skipped: v0.8 | Skipped: another format |"
+    );
+    println!("|---|---:|---:|---:|---:|---:|---:|");
+    for row in &agent_rows {
         println!("{row}");
     }
 
@@ -792,6 +927,7 @@ fn conformance_suite() {
     let readme = std::fs::read_to_string(conformance_dir().join("README.md")).expect("README");
     let stale: Vec<&String> = rows
         .iter()
+        .chain(&agent_rows)
         .filter(|row| !readme.contains(row.as_str()))
         .collect();
     assert!(
@@ -810,6 +946,14 @@ fn conformance_suite() {
     assert!(
         readme.contains(&total_line),
         "tests/conformance/README.md does not state the total: {total_line}"
+    );
+    let agent_line = format!(
+        "{} checks ran lowered from v1.0 and {} as written",
+        total.lowered, total.as_written
+    );
+    assert!(
+        readme.contains(&agent_line),
+        "tests/conformance/README.md does not state the agent-tier total: {agent_line}"
     );
 }
 

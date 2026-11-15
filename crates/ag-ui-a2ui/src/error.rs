@@ -186,6 +186,45 @@ impl ValidationErrors {
     }
 }
 
+/// The errors of a rejected attempt, as a request for a corrected one.
+///
+/// One line per error, code first so a model can see the kind at a glance,
+/// then the locator, then the sentence explaining the fix. Empty for no
+/// errors. The retry prompt of every layer is built from this.
+#[cfg(any(feature = "toolkit", feature = "agent"))]
+pub(crate) fn correction_request(errors: &[crate::protocol::validate::ValidationError]) -> String {
+    if errors.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "The previous attempt was rejected. Fix every problem below and return the corrected \
+         A2UI, not a diff:\n",
+    );
+    for error in errors {
+        out.push_str(&format!(
+            "- [{}] at {}: {}\n",
+            error.code, error.path, error.message
+        ));
+    }
+    out.trim_end().to_string()
+}
+
+/// `prompt`, followed by the [`correction_request`] for `errors`. The prompt
+/// itself when there is nothing to correct.
+#[cfg(any(feature = "toolkit", feature = "agent"))]
+pub(crate) fn prompt_with_corrections(
+    prompt: &str,
+    errors: &[crate::protocol::validate::ValidationError],
+) -> String {
+    if errors.is_empty() {
+        return prompt.to_string();
+    }
+    format!(
+        "{prompt}\n\n## Correction required\n{}",
+        correction_request(errors)
+    )
+}
+
 impl From<Vec<crate::protocol::validate::ValidationError>> for ValidationErrors {
     fn from(errors: Vec<crate::protocol::validate::ValidationError>) -> Self {
         Self(errors)

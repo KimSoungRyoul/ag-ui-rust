@@ -12,6 +12,7 @@ pub mod message;
 pub mod model;
 pub mod operation;
 pub mod processor;
+pub mod schema;
 pub mod surface;
 pub(crate) mod template;
 pub mod validate;
