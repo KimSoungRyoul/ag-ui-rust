@@ -25,7 +25,7 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
 - `website/src/content/docs/v0.5.0-alpha.3/client/transports.md` — the trait,
   `HttpTransport`'s two timeouts, `ReplayTransport`, `SseDecoder`, turning `http` off
 - `website/src/content/docs/v0.5.0-alpha.3/client/rendering.md` — arrival order
-- `crates/ag-ui/src/client/thread.rs`, `crates/ag-ui/src/client/interrupts.rs`,
+- `crates/ag-ui/src/client/thread/`, `crates/ag-ui/src/client/interrupts.rs`,
   `crates/ag-ui/src/client/transport/`, `crates/ag-ui/src/client/error.rs`
 
 ## references/rendering.md
