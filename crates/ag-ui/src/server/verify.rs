@@ -22,7 +22,10 @@
 //! | [`InvalidOutcome`] | `RUN_FINISHED` with an `interrupt` outcome that carries no interrupt |
 //!
 //! `RUN_ERROR` is exempt from [`OpenAtFinish`]: a run that blew up mid-message
-//! could not have closed it.
+//! could not have closed it. When several things are open, the error names
+//! one, and the same stream always names the same one: a message before a
+//! tool call, before a reasoning message, a reasoning block, a step and a
+//! subagent, and of several of a kind the one that was opened first.
 //!
 //! # After the run ended
 //!

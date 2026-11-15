@@ -569,6 +569,11 @@ These are on `main` and not yet in a published version.
   was never opened", and a chunk with nothing to continue ends "is open as a chunk
   stream". A `VerificationError::detail` quotes an id as `"m1"`, not as
   `MessageId("m1")`.
+- When several things are open at `RUN_FINISHED`, the `Rule::OpenAtFinish` detail names
+  the same one every time: a message before a tool call, a reasoning message, a
+  reasoning block, a step and a subagent, and of several of a kind the one opened first.
+  Alpha.3 named an arbitrary one of a kind, and looked at reasoning before tool calls.
+  The client verifier already named the first opened, in this order.
 
 ## Verify the upgrade
 

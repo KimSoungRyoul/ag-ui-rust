@@ -231,6 +231,61 @@ fn finishing_with_a_step_open_is_rejected() {
 }
 
 #[test]
+fn the_error_at_finish_names_the_first_thing_that_was_opened() {
+    // Whichever was opened first is the one a human is looking for, and the
+    // same stream always gets the same error. Repeated, because a hash map
+    // would name the right one now and then.
+    let what_is_open = |events: &[Event]| {
+        let (mut ctx, _events) = context();
+        for event in events {
+            ctx.emit(event.clone()).expect("opens");
+        }
+        let error = ctx
+            .emit(Event::run_finished_success("t", "r"))
+            .expect_err("something is open");
+        let Error::Verification(violation) = error else {
+            panic!("expected a verification error, got {error:?}");
+        };
+        assert_eq!(violation.rule, Rule::OpenAtFinish);
+        violation.detail
+    };
+    let message = |id: &str| Event::text_message_start(id, TextMessageRole::Assistant);
+    let messages = ["m-5", "m-1", "m-9", "m-3", "m-7", "m-0", "m-8", "m-2"].map(message);
+    let calls = ["c-4", "c-2", "c-6"].map(|id| Event::tool_call_start(id, "search"));
+    let steps = ["verify", "plan"].map(Event::step_started);
+    for _ in 0..16 {
+        // Within a kind: the one opened first, not the least id.
+        let detail = what_is_open(&messages);
+        assert!(
+            detail.starts_with(r#"message "m-5" is still open"#),
+            "{detail}"
+        );
+        // Across kinds: a message before a tool call, whichever opened first.
+        let mixed: Vec<Event> = calls
+            .iter()
+            .chain(&steps)
+            .chain(&messages)
+            .cloned()
+            .collect();
+        let detail = what_is_open(&mixed);
+        assert!(
+            detail.starts_with(r#"message "m-5" is still open"#),
+            "{detail}"
+        );
+        let detail = what_is_open(&[steps.as_slice(), calls.as_slice()].concat());
+        assert!(
+            detail.starts_with(r#"tool call "c-4" is still open"#),
+            "{detail}"
+        );
+        let detail = what_is_open(&steps);
+        assert!(
+            detail.starts_with(r#"step "verify" is still open under the parent agent"#),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
 fn run_error_may_leave_things_open() {
     let (mut ctx, _events) = context();
     ctx.emit(Event::text_message_start("m1", TextMessageRole::Assistant))
