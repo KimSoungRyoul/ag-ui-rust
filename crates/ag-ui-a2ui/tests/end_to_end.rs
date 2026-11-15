@@ -141,7 +141,7 @@ fn a_follow_up_turn_edits_the_surface_without_re_creating_it() {
     // Turn two recovers what is on screen, which is what the state holds.
     let surfaces = surfaces_in(&history).unwrap();
     let prior = surfaces.get("order").expect("the surface is in history");
-    assert_eq!(prior.catalog_id, OFFICIAL_BASIC_CATALOG_ID);
+    assert_eq!(prior.catalog_id.as_deref(), Some(OFFICIAL_BASIC_CATALOG_ID));
     assert_eq!(prior.components, state.surface("order").unwrap().components);
     assert_eq!(
         prior.data_model.to_json().unwrap()["items"][0]["name"],

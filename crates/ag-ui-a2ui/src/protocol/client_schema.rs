@@ -1,10 +1,16 @@
-//! Official client-to-server schema validation before typed decoding.
+//! Official renderer-to-agent schema validation before typed decoding.
+//!
+//! The v0.9 family calls these documents client-to-server; v1.0 calls them
+//! renderer-to-agent. One validator holds messages to one version's.
 
-use crate::{ClientDataModel, Error, ErrorCode, RendererMessage, Result, ValidationError};
+use crate::{
+    A2uiVersion, ClientDataModel, Error, ErrorCode, RendererMessage, Result, ValidationError,
+};
 use serde_json::Value;
 
-/// Compiled, local-only schemas for v0.9-family renderer messages and metadata.
-/// Reuse them when accepting multiple messages from a renderer.
+/// Compiled, local-only schemas for renderer messages and metadata of one
+/// protocol version. Reuse them when accepting multiple messages from a
+/// renderer.
 #[derive(Debug)]
 pub struct ClientSchemaValidator {
     message: jsonschema::Validator,
@@ -12,19 +18,60 @@ pub struct ClientSchemaValidator {
 }
 
 impl ClientSchemaValidator {
-    /// Compiles the pinned official schemas, which contain no external references.
+    /// Compiles the pinned official schemas of v0.9.1, which accept both
+    /// discriminators of the v0.9 family:
+    /// [`ClientSchemaValidator::for_version`] with [`A2uiVersion::V0_9_1`].
     pub fn new() -> Result<Self> {
+        Self::for_version(A2uiVersion::V0_9_1)
+    }
+
+    /// Compiles the pinned official schemas of `version`. Nothing is
+    /// retrieved: what a schema refers to is registered from the documents
+    /// this crate ships.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::A2uiVersion;
+    /// use ag_ui_a2ui::client_schema::ClientSchemaValidator;
+    /// use serde_json::json;
+    ///
+    /// let action = |version: &str| json!({"version": version, "action": {
+    ///     "name": "submit", "surfaceId": "s", "sourceComponentId": "button",
+    ///     "timestamp": "2026-09-28T00:00:00Z", "context": {}
+    /// }});
+    /// let v1_0 = ClientSchemaValidator::for_version(A2uiVersion::V1_0)?;
+    /// v1_0.validate_message(&action("1.0"))?;
+    /// assert!(v1_0.validate_message(&action("v0.9.1")).is_err());
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if a document this crate ships does not compile.
+    pub fn for_version(version: A2uiVersion) -> Result<Self> {
+        let (message, data_model, resources): (&str, &str, &[&str]) = match version {
+            A2uiVersion::V0_9 => (
+                include_str!("../../schemas/v0_9/client_to_server.json"),
+                include_str!("../../schemas/v0_9/client_data_model.json"),
+                &[],
+            ),
+            A2uiVersion::V0_9_1 => (
+                include_str!("../../schemas/v0_9_1/client_to_server.json"),
+                include_str!("../../schemas/v0_9_1/client_data_model.json"),
+                &[],
+            ),
+            A2uiVersion::V1_0 => (
+                include_str!("../../schemas/v1_0/renderer_to_agent.json"),
+                include_str!("../../schemas/v1_0/renderer_data_model.json"),
+                &[include_str!("../../schemas/v1_0/common_types.json")],
+            ),
+        };
         let compile = |source: &str| -> Result<_> {
             let schema: Value = serde_json::from_str(source)?;
-            jsonschema::options()
-                .with_draft(jsonschema::Draft::Draft202012)
-                .should_validate_formats(true)
-                .build(&schema)
-                .map_err(Error::catalog)
+            crate::protocol::schema_validation::compile_with(version, &schema, resources)
         };
         Ok(Self {
-            message: compile(include_str!("../../schemas/v0_9_1/client_to_server.json"))?,
-            data_model: compile(include_str!("../../schemas/v0_9_1/client_data_model.json"))?,
+            message: compile(message)?,
+            data_model: compile(data_model)?,
         })
     }
 
@@ -39,7 +86,8 @@ impl ClientSchemaValidator {
         Ok(serde_json::from_value(message.clone())?)
     }
 
-    /// Checks raw `a2uiClientDataModel` metadata without applying it to any surface.
+    /// Checks raw data-model metadata (`a2uiClientDataModel`, or
+    /// `a2uiRendererDataModel` from v1.0) without applying it to any surface.
     pub fn validate_data_model(&self, metadata: &Value) -> Result<()> {
         validate(&self.data_model, metadata)
     }

@@ -32,7 +32,9 @@ use serde_json::Value;
 
 use super::binding::Scope;
 use super::catalog::Catalog;
-use super::message::{AgentMessage, AgentPayload, ClientDataModel, Component};
+use super::message::{
+    AgentMessage, AgentPayload, ClientDataModel, Component, CreateSurface, UpdateComponents,
+};
 use super::model::{DataModel, ModelValue};
 use super::validate::MAX_DEPTH;
 use super::version::A2uiVersion;
@@ -40,16 +42,26 @@ use crate::constants::ROOT_ID;
 use crate::error::{Error, Result};
 
 /// The observed state of one live or deleted surface.
+///
+/// Non-exhaustive: a later protocol version may give a surface more. A state
+/// comes out of a [`SurfaceStore`], or is read back from one it was
+/// serialized from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SurfaceState {
     /// Wire version fixed by creation.
     pub version: String,
     /// Renderer-scoped surface ID.
     pub surface_id: String,
-    /// Catalog fixed by creation.
-    pub catalog_id: String,
-    /// Catalog-defined theme observed at creation.
+    /// Catalog fixed by creation. Before v1.0 a surface always has one. From
+    /// v1.0 it is the surface's default and may be absent, each component then
+    /// naming its own ([`SurfaceState::catalog_of`]).
+    pub catalog_id: Option<String>,
+    /// Catalog-defined theme observed at creation. The v0.9 family only.
     pub theme: Option<serde_json::Value>,
+    /// Surface-level metadata observed at creation. From v1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     /// Whether this surface asks the renderer to echo its data model.
     pub send_data_model: Option<bool>,
     /// Last component definition by ID, in first-definition order.
@@ -77,6 +89,47 @@ pub struct Placed<'a> {
 }
 
 impl SurfaceState {
+    /// The protocol version the surface was created under, which is the
+    /// spelling of everything it holds: its bindings, its components'
+    /// envelope keys, how a removal is written.
+    ///
+    /// [`A2uiVersion::DEFAULT`] for a state whose `version` is not one this
+    /// crate speaks, which a [`SurfaceStore`] never holds.
+    pub fn spoken_version(&self) -> A2uiVersion {
+        A2uiVersion::parse(&self.version).unwrap_or(A2uiVersion::DEFAULT)
+    }
+
+    /// The id of the catalog `component` is drawn from: the one the component
+    /// names, where the surface's version lets a component name one
+    /// (`@catalogId` in v1.0), and otherwise the surface's own.
+    ///
+    /// `None` when neither names one, which a renderer refuses to draw.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::message::{AgentMessage, AgentPayload, Component, CreateSurface};
+    /// use ag_ui_a2ui::{A2uiVersion, SurfaceStore};
+    /// use serde_json::json;
+    ///
+    /// let create = CreateSurface::new("dashboard")
+    ///     .with_catalog_id("basic")
+    ///     .with_components(vec![
+    ///         Component::new("root", "Column").with("children", json!(["chart"])),
+    ///         Component::new("chart", "LineChart").with("@catalogId", json!("charts")),
+    ///     ]);
+    /// let mut store = SurfaceStore::new();
+    /// store.apply(&AgentMessage::new(AgentPayload::CreateSurface(create)).with_version(A2uiVersion::V1_0))?;
+    ///
+    /// let surface = store.get("dashboard").unwrap();
+    /// assert_eq!(surface.catalog_of(&surface.components[0]), Some("basic"));
+    /// assert_eq!(surface.catalog_of(&surface.components[1]), Some("charts"));
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    pub fn catalog_of<'a>(&'a self, component: &'a Component) -> Option<&'a str> {
+        component
+            .catalog_id(self.spoken_version())
+            .or(self.catalog_id.as_deref())
+    }
+
     /// The messages that rebuild this surface on a renderer that holds
     /// nothing: its creation, every component, and its data.
     ///
@@ -114,11 +167,12 @@ impl SurfaceState {
             message.version.clone_from(&self.version);
             message
         };
-        let mut create = AgentMessage::create_surface(&self.surface_id, &self.catalog_id);
-        if let AgentPayload::CreateSurface(payload) = &mut create.payload {
-            payload.theme.clone_from(&self.theme);
-            payload.send_data_model = self.send_data_model;
-        }
+        let mut payload = CreateSurface::new(&self.surface_id);
+        payload.catalog_id.clone_from(&self.catalog_id);
+        payload.theme.clone_from(&self.theme);
+        payload.metadata.clone_from(&self.metadata);
+        payload.send_data_model = self.send_data_model;
+        let create = AgentMessage::new(AgentPayload::CreateSurface(payload));
         let mut messages = vec![versioned(create)];
         if !self.components.is_empty() {
             messages.push(versioned(AgentMessage::update_components(
@@ -154,6 +208,11 @@ impl SurfaceState {
     /// `data`, and the component it draws is placed in that item's scope, so
     /// its relative paths resolve. `data` is the data model as JSON
     /// ([`DataModel::to_json`]).
+    ///
+    /// Each scope reads a binding as the surface's version writes one
+    /// ([`SurfaceState::spoken_version`]). The walk follows the references
+    /// `catalog` knows: on a v1.0 surface that draws from several catalogs,
+    /// a component of another catalog is placed and its children are not.
     ///
     /// This is the walk a client makes before it can draw anything, and it
     /// draws nothing itself. A reference to a component that does not exist
@@ -209,7 +268,8 @@ impl SurfaceState {
                 catalog,
                 &by_id,
                 root,
-                Scope::root(data),
+                // Bindings are read as the surface's version writes them.
+                Scope::root(data).speaking(self.spoken_version()),
                 &mut above,
                 &mut placed,
             );
@@ -328,6 +388,8 @@ pub(crate) struct Origin {
     updated: Option<usize>,
     /// Each component's latest definition, as (message, position).
     components: BTreeMap<String, (usize, usize)>,
+    /// Whether the creation carried components itself, as a v1.0 one may.
+    inline: bool,
 }
 
 impl Origin {
@@ -337,6 +399,9 @@ impl Origin {
     pub(crate) fn list(&self) -> Option<String> {
         match (self.updated, self.created) {
             (Some(message), _) => Some(format!("messages[{message}].updateComponents.components")),
+            (None, Some(message)) if self.inline => {
+                Some(format!("messages[{message}].createSurface.components"))
+            }
             (None, Some(message)) => Some(format!("messages[{message}].createSurface")),
             (None, None) => None,
         }
@@ -347,9 +412,34 @@ impl Origin {
     /// state.
     pub(crate) fn component(&self, id: &str) -> Option<String> {
         self.components.get(id).map(|(message, position)| {
-            format!("messages[{message}].updateComponents.components[{position}]")
+            let operation = if self.created == Some(*message) && self.inline {
+                "createSurface"
+            } else {
+                "updateComponents"
+            };
+            format!("messages[{message}].{operation}.components[{position}]")
         })
     }
+}
+
+/// Folds one message's components into a surface's: a component whose id is
+/// already there takes its place, a new one goes to the end.
+fn fold_components(held: &mut Vec<Component>, incoming: &[Component]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for component in incoming {
+        if !seen.insert(&component.id) {
+            return Err(Error::parse(format!(
+                "duplicate component ID {:?} within one message",
+                component.id
+            )));
+        }
+        if let Some(existing) = held.iter_mut().find(|c| c.id == component.id) {
+            *existing = component.clone()
+        } else {
+            held.push(component.clone())
+        }
+    }
+    Ok(())
 }
 
 /// A single renderer/conversation context. Never share this across users.
@@ -514,19 +604,34 @@ impl SurfaceStore {
             if self.lifecycle(id) == Lifecycle::Live {
                 return Err(Error::parse(format!("surface {id:?} already exists")));
             }
-            self.surfaces.insert(
-                id.into(),
-                SurfaceState {
-                    version: message.version.clone(),
-                    surface_id: id.into(),
-                    catalog_id: create.catalog_id.clone(),
-                    theme: create.theme.clone(),
-                    send_data_model: create.send_data_model,
-                    components: vec![],
-                    data_model: DataModel::default(),
-                    deleted: false,
-                },
-            );
+            if create.catalog_id.is_none() && !version.mixes_catalogs() {
+                return Err(Error::parse(format!(
+                    "a {version} surface names its catalog; createSurface for {id:?} names none"
+                )));
+            }
+            let mut created = SurfaceState {
+                version: message.version.clone(),
+                surface_id: id.into(),
+                catalog_id: create.catalog_id.clone(),
+                theme: create.theme.clone().filter(|_| version.has_theme()),
+                metadata: None,
+                send_data_model: create.send_data_model,
+                components: vec![],
+                data_model: DataModel::default(),
+                deleted: false,
+            };
+            // What a v1.0 creation carries itself. The data comes first, so
+            // the components bind against it at once.
+            if version.creates_inline() {
+                created.metadata.clone_from(&create.metadata);
+                if let Some(data_model) = &create.data_model {
+                    created.data_model = DataModel::from(Value::Object(data_model.clone()));
+                }
+                if !create.components.is_empty() {
+                    fold_components(&mut created.components, &create.components)?;
+                }
+            }
+            self.surfaces.insert(id.into(), created);
             return Ok(());
         }
         let mut next = self.live(id)?.clone();
@@ -540,28 +645,18 @@ impl SurfaceStore {
             }
         }
         match &message.payload {
-            AgentPayload::UpdateComponents(update) => {
-                if update.components.is_empty() {
+            AgentPayload::UpdateComponents(UpdateComponents { components, .. }) => {
+                if components.is_empty() {
                     return Err(Error::parse("updateComponents must not be empty"));
                 }
-                let mut seen = BTreeSet::new();
-                for component in &update.components {
-                    if !seen.insert(&component.id) {
-                        return Err(Error::parse(format!(
-                            "duplicate component ID {:?} within one message",
-                            component.id
-                        )));
-                    }
-                    if let Some(existing) =
-                        next.components.iter_mut().find(|c| c.id == component.id)
-                    {
-                        *existing = component.clone()
-                    } else {
-                        next.components.push(component.clone())
-                    }
-                }
+                fold_components(&mut next.components, components)?;
             }
-            AgentPayload::UpdateDataModel(update) => update.apply_model(&mut next.data_model)?,
+            // A removal is applied as the surface's own version applies one.
+            AgentPayload::UpdateDataModel(update) => {
+                let created = next.spoken_version();
+                next.data_model
+                    .apply_as(created, &update.path, &update.value)?;
+            }
             AgentPayload::DeleteSurface(_) => {
                 next.deleted = true;
                 next.components.clear();
@@ -579,14 +674,26 @@ impl SurfaceStore {
             return;
         };
         match &message.payload {
-            AgentPayload::CreateSurface(_) => {
-                self.origins.insert(
-                    surface_id.to_string(),
-                    Origin {
-                        created: Some(index),
-                        ..Origin::default()
-                    },
-                );
+            AgentPayload::CreateSurface(create) => {
+                let mut origin = Origin {
+                    created: Some(index),
+                    ..Origin::default()
+                };
+                // The components a v1.0 creation carried, when it was read as
+                // one: they are located in the creation.
+                if self
+                    .surfaces
+                    .get(surface_id)
+                    .is_some_and(|surface| !surface.components.is_empty())
+                {
+                    origin.inline = true;
+                    for (position, component) in create.components.iter().enumerate() {
+                        origin
+                            .components
+                            .insert(component.id.clone(), (index, position));
+                    }
+                }
+                self.origins.insert(surface_id.to_string(), origin);
             }
             AgentPayload::UpdateComponents(update) => {
                 let origin = self.origins.entry(surface_id.to_string()).or_default();
@@ -676,7 +783,7 @@ mod tests {
     #[test]
     fn a_version_this_crate_does_not_speak_is_refused_everywhere() {
         let mut message = AgentMessage::create_surface("s", "c");
-        message.version = "1.0".into();
+        message.version = "v0.8".into();
         let mut store = SurfaceStore::new();
         assert!(matches!(
             store.apply(&message),
@@ -688,7 +795,7 @@ mod tests {
             .apply(&AgentMessage::create_surface("s", "c"))
             .unwrap();
         let mut prior = store.get("s").unwrap().clone();
-        prior.version = "1.0".into();
+        prior.version = "v0.8".into();
         assert!(SurfaceStore::from_surface(prior).is_err());
     }
 
