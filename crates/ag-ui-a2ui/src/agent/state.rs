@@ -297,10 +297,11 @@ impl RendererState {
             if surface.components.is_empty() {
                 continue;
             }
-            let Some(summary) = self.processor.catalog(&surface.catalog_id) else {
+            let catalog_id = surface.catalog_id.as_deref().unwrap_or_default();
+            let Some(summary) = self.processor.catalog(catalog_id) else {
                 return Err(inactive_catalog(
                     format!("surfaces[{surface_id:?}]"),
-                    &surface.catalog_id,
+                    catalog_id,
                     &self.catalogs,
                 ));
             };
@@ -423,7 +424,7 @@ impl RendererState {
                             .surface_id
                             .as_deref()
                             .and_then(|surface_id| self.store().get(surface_id))
-                            .map(|surface| surface.catalog_id.clone())
+                            .and_then(|surface| surface.catalog_id.clone())
                             .unwrap_or_default(),
                     ),
                 };

@@ -420,7 +420,7 @@ impl MessageProcessor {
     /// registered.
     pub fn report(&self, surface_id: &str) -> Option<ValidationReport> {
         let surface = self.store.get(surface_id).filter(|s| !s.deleted)?;
-        let catalog = self.catalogs.get(&surface.catalog_id)?;
+        let catalog = self.catalogs.get(surface.catalog_id.as_deref()?)?;
         Some(
             Validator::with_options(catalog, self.options.clone())
                 .validate_stored(&self.store, surface),
@@ -536,7 +536,7 @@ impl MessageProcessor {
                     .and_then(Value::as_str),
                 _ => store
                     .get(surface_id)
-                    .map(|surface| surface.catalog_id.as_str()),
+                    .and_then(|surface| surface.catalog_id.as_deref()),
             };
             let schema = catalog_id.and_then(|catalog_id| self.schemas.get(catalog_id));
             if let Some(Err(error)) = schema.map(|schema| schema.validate_message(message)) {
@@ -647,7 +647,7 @@ impl MessageProcessor {
     ) -> std::result::Result<&Catalog, Rejection> {
         let catalog_id = store
             .get(surface_id)
-            .map(|surface| surface.catalog_id.as_str())
+            .and_then(|surface| surface.catalog_id.as_deref())
             .unwrap_or_default();
         self.catalogs
             .get(catalog_id)

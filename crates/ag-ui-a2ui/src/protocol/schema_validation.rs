@@ -116,14 +116,14 @@ impl SchemaValidator {
         surface: &crate::protocol::surface::SurfaceState,
         catalog: &crate::Catalog,
     ) -> Result<()> {
+        let mut creation = crate::protocol::message::CreateSurface::new(&surface.surface_id);
+        creation.catalog_id.clone_from(&surface.catalog_id);
+        creation.theme.clone_from(&surface.theme);
+        creation.metadata.clone_from(&surface.metadata);
+        creation.send_data_model = surface.send_data_model;
         let create = crate::AgentMessage {
             version: surface.version.clone(),
-            payload: crate::AgentPayload::CreateSurface(crate::protocol::message::CreateSurface {
-                surface_id: surface.surface_id.clone(),
-                catalog_id: surface.catalog_id.clone(),
-                theme: surface.theme.clone(),
-                send_data_model: surface.send_data_model,
-            }),
+            payload: crate::AgentPayload::CreateSurface(creation),
         };
         self.validate_message(&serde_json::to_value(create)?)?;
         let components = crate::AgentMessage {
@@ -475,11 +475,12 @@ impl SurfaceValidator {
                         .and_then(Value::as_str)
                 })
                 .ok_or_else(|| Error::parse("expected a v0.9-family server message"))?;
-            &self
-                .state
+            self.state
                 .get(surface_id)
                 .ok_or_else(|| Error::parse("surface must be created before updating it"))?
                 .catalog_id
+                .as_deref()
+                .unwrap_or_default()
         };
         let (schema, catalog) = self
             .catalogs
@@ -510,9 +511,11 @@ impl SurfaceValidator {
     /// Failures are located the way [`SurfaceValidator::push`] locates them.
     pub fn finish(&self) -> Result<()> {
         for surface in self.state.surfaces().filter(|s| !s.deleted) {
-            let (schema, catalog) = self.catalogs.get(&surface.catalog_id).ok_or_else(|| {
-                Error::catalog(format!("unregistered catalog {}", surface.catalog_id))
-            })?;
+            let catalog_id = surface.catalog_id.as_deref().unwrap_or_default();
+            let (schema, catalog) = self
+                .catalogs
+                .get(catalog_id)
+                .ok_or_else(|| Error::catalog(format!("unregistered catalog {catalog_id}")))?;
             schema.validate_surface_in(Some(&self.state), surface, catalog)?;
         }
         Ok(())

@@ -68,7 +68,7 @@ impl ValidatedSurface {
     }
     /// Catalog fixed for the life of this surface.
     pub fn catalog_id(&self) -> &str {
-        &self.state.catalog_id
+        self.state.catalog_id.as_deref().unwrap_or_default()
     }
     /// Resulting components, including prior definitions for an edit.
     pub fn components(&self) -> &[crate::Component] {

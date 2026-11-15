@@ -2,6 +2,7 @@
 
 use crate::protocol::binding::MAX_VALUE_DEPTH;
 use crate::protocol::message::DataModelUpdate;
+use crate::protocol::version::A2uiVersion;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -192,8 +193,62 @@ impl DataModel {
     /// may add no more than [`DEFAULT_ARRAY_GROWTH_LIMIT`] slots in all; that
     /// is this model's own, and with the default it is reached only by a path
     /// that grows several lists at once.
+    ///
+    /// # Removing what is not there
+    ///
+    /// A removal is applied as the v0.9 family applies it: the containers on
+    /// the way to the path are created, and a list is padded out to the index
+    /// with undefined slots. [`DataModel::apply_as`] applies an update as the
+    /// surface's own version does.
     pub fn apply(&mut self, path: &str, value: &DataModelUpdate) -> Result<()> {
         self.apply_with_array_growth_limit(path, value, DEFAULT_ARRAY_GROWTH_LIMIT)
+    }
+    /// Applies an update as a surface of `version` takes it.
+    ///
+    /// What differs is a removal ([`A2uiVersion::removal_pads`]). From v1.0,
+    /// removing a path that holds nothing changes nothing, and removing the
+    /// root leaves an empty object. Before v1.0 this is [`DataModel::apply`].
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{A2uiVersion, DataModel, DataModelUpdate};
+    /// use serde_json::json;
+    ///
+    /// let mut model = DataModel::from(json!({"items": ["a", "b", "c"]}));
+    /// let remove = DataModelUpdate::Remove;
+    ///
+    /// // Past the end of the list, and under a key that is not there.
+    /// model.apply_as(A2uiVersion::V1_0, "/items/10", &remove)?;
+    /// model.apply_as(A2uiVersion::V1_0, "/absent/child", &remove)?;
+    /// assert_eq!(model, json!({"items": ["a", "b", "c"]}));
+    ///
+    /// // A slot that is there keeps its place, and the root is emptied.
+    /// model.apply_as(A2uiVersion::V1_0, "/items/1", &remove)?;
+    /// assert_eq!(model.lookup("/items/1")?, None);
+    /// assert_eq!(model.lookup("/items/2")?, Some(&json!("c").into()));
+    /// model.apply_as(A2uiVersion::V1_0, "/", &remove)?;
+    /// assert_eq!(model, json!({}));
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`DataModel::apply`].
+    pub fn apply_as(
+        &mut self,
+        version: A2uiVersion,
+        path: &str,
+        value: &DataModelUpdate,
+    ) -> Result<()> {
+        if !version.removal_pads() && matches!(value, DataModelUpdate::Remove) {
+            if tokens(path)?.is_empty() {
+                self.root = ModelValue::Object(BTreeMap::new());
+                return Ok(());
+            }
+            if lookup(&self.root, path)?.is_none() {
+                return Ok(());
+            }
+        }
+        self.apply(path, value)
     }
     /// Applies with an explicit allocation budget for newly created array slots.
     /// The budget covers all nested expansions in this update. An invalid path
@@ -435,6 +490,73 @@ mod tests {
 
     fn set(value: Value) -> DataModelUpdate {
         DataModelUpdate::Set(value)
+    }
+
+    #[test]
+    fn removing_what_is_not_there_pads_before_v1_0_and_does_nothing_from_it() {
+        let start = json!({"items": ["a", "b", "c"], "user": {"name": "Ada"}, "text": "x"});
+        for (path, padded) in [
+            ("/items/5", json!({"kind": "array"})),
+            ("/absent/child/path", json!({"kind": "object"})),
+        ] {
+            let mut v0_9 = DataModel::from(start.clone());
+            v0_9.apply_as(A2uiVersion::V0_9, path, &DataModelUpdate::Remove)
+                .unwrap();
+            assert_ne!(v0_9, DataModel::from(start.clone()), "{path}: {padded}");
+
+            let mut v1_0 = DataModel::from(start.clone());
+            v1_0.apply_as(A2uiVersion::V1_0, path, &DataModelUpdate::Remove)
+                .unwrap();
+            assert_eq!(v1_0, DataModel::from(start.clone()), "{path}");
+        }
+
+        // Under a scalar there is nothing to remove either, where a write
+        // there is an error in every version.
+        let mut model = DataModel::from(start.clone());
+        model
+            .apply_as(A2uiVersion::V1_0, "/text/inner", &DataModelUpdate::Remove)
+            .unwrap();
+        assert_eq!(model, DataModel::from(start.clone()));
+        assert!(
+            model
+                .apply_as(A2uiVersion::V1_0, "/text/inner", &set(json!(1)))
+                .is_err()
+        );
+        // A path that is not a pointer is refused before anything is looked up.
+        assert!(
+            model
+                .apply_as(A2uiVersion::V1_0, "items/0", &DataModelUpdate::Remove)
+                .is_err()
+        );
+
+        // What is there is removed the same way in both: a key goes, a slot
+        // keeps its place.
+        for version in [A2uiVersion::V0_9_1, A2uiVersion::V1_0] {
+            let mut model = DataModel::from(start.clone());
+            model
+                .apply_as(version, "/user/name", &DataModelUpdate::Remove)
+                .unwrap();
+            model
+                .apply_as(version, "/items/1", &DataModelUpdate::Remove)
+                .unwrap();
+            assert_eq!(model.lookup("/user").unwrap(), Some(&json!({}).into()));
+            assert_eq!(model.lookup("/items/1").unwrap(), None);
+            assert_eq!(
+                model.lookup("/items/2").unwrap(),
+                Some(&json!("c").into()),
+                "{version}"
+            );
+        }
+
+        // The root: undefined before v1.0, an empty object from it.
+        let mut v0_9 = DataModel::from(start.clone());
+        v0_9.apply_as(A2uiVersion::V0_9, "/", &DataModelUpdate::Remove)
+            .unwrap();
+        assert_eq!(v0_9.root(), &ModelValue::Undefined);
+        let mut v1_0 = DataModel::from(start);
+        v1_0.apply_as(A2uiVersion::V1_0, "/", &DataModelUpdate::Remove)
+            .unwrap();
+        assert_eq!(v1_0, json!({}));
     }
 
     #[test]

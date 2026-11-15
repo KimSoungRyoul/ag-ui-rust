@@ -140,6 +140,17 @@ impl CatalogDocument {
             }
         };
 
+        // The agent layer speaks the v0.9 family. A2UI 1.0 is in the protocol
+        // modules; its prompt, its reader and its capabilities are the next
+        // step of #42.
+        if !A2uiVersion::V0_9.accepts(version) {
+            return Err(Error::catalog(format!(
+                "catalog '{id}' targets protocol version '{}', which the agent layer does not \
+                 speak yet",
+                version.number()
+            )));
+        }
+
         if document
             .get("components")
             .is_some_and(|components| !components.is_object())
