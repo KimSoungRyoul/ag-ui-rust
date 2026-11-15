@@ -24,7 +24,7 @@ reqwest = { workspace = true, features = ["stream"] }
 # The library never names it: the `a2ui_wire` example, the A2UI tests and the
 # doctests compiled from the README, the website and the skills do.
 ag-ui-a2ui = { workspace = true, features = ["ag-ui-server"] }
-tokio ={ workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
 # The end-to-end tests mount the agent on a real router and bind a real port,
 # so they build the `axum::Router` and drive `axum::serve` themselves.
 axum.workspace = true
