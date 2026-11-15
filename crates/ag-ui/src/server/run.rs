@@ -346,7 +346,7 @@ impl<A: Agent> Runner<A> {
     /// driver's chain, so a transformer learns from it what a consumer was
     /// sent, and not what that chain kept back:
     /// [`FilterToolCalls`](crate::server::FilterToolCalls) lets this driver
-    /// finish and answer a call that was sent, and refuses an event of a call
+    /// finish and answer a call that was sent, and drops an event of a call
     /// it has no record of, which is what a call the earlier filter dropped
     /// looks like from here.
     ///

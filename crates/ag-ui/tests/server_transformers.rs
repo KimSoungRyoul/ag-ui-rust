@@ -426,59 +426,6 @@ async fn a_custom_transformer_can_stamp_every_event() {
     );
 }
 
-/// Dropping an event is silent. A transformer that has to say it did not send
-/// one refuses it, and the emit that produced the event fails.
-#[tokio::test]
-async fn a_transformer_can_refuse_an_event_and_the_emit_says_so() {
-    use ag_ui::server::Error;
-
-    struct NoCustomEvents;
-
-    impl StreamTransformer for NoCustomEvents {
-        fn transform(&mut self, event: Event) -> Vec<Event> {
-            self.try_transform(event).unwrap_or_default()
-        }
-
-        fn try_transform(&mut self, event: Event) -> Result<Vec<Event>> {
-            if matches!(event, Event::Custom(_)) {
-                return Err(Error::agent("custom events are not sent from here"));
-            }
-            Ok(vec![event])
-        }
-    }
-
-    struct Notes;
-
-    impl Agent for Notes {
-        type State = serde_json::Value;
-
-        async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
-            let refused = ctx
-                .emit(Event::custom("note", json!(1)))
-                .expect_err("the transformer refuses it");
-            assert_eq!(
-                refused.to_string(),
-                "agent error: custom events are not sent from here"
-            );
-            ctx.say("carried on")?;
-            Ok(RunOutcome::Success)
-        }
-    }
-
-    let events = collect(Runner::new(Notes).transformer(NoCustomEvents)).await;
-    let types: Vec<_> = events.iter().map(Event::event_type).collect();
-    assert_eq!(
-        types,
-        [
-            EventType::RunStarted,
-            EventType::TextMessageStart,
-            EventType::TextMessageContent,
-            EventType::TextMessageEnd,
-            EventType::RunFinished,
-        ]
-    );
-}
-
 // ---- a resumed run ----------------------------------------------------------
 
 /// The request a resumed run answers. The interrupted run left three calls
@@ -566,6 +513,60 @@ async fn the_filters_judge_an_earlier_runs_calls_the_same_with_and_without_the_e
             ),
             "SubagentVisibility::hidden, echo {echo}"
         );
+    }
+}
+
+/// The earlier run's filter removed a call, so the client never held it and
+/// the request does not carry it back. A resumed run that reports its result
+/// is told nothing went wrong, and the result goes the way the call went.
+#[tokio::test]
+async fn a_result_for_a_call_an_earlier_runs_filter_removed_is_dropped_and_the_emit_is_ok() {
+    use ag_ui::{AssistantMessage, Message, ToolCall};
+    use std::sync::{Arc, Mutex};
+
+    struct AnswersARemovedCall(Arc<Mutex<Vec<std::result::Result<(), String>>>>);
+
+    impl Agent for AnswersARemovedCall {
+        type State = serde_json::Value;
+
+        async fn run(&self, ctx: &mut RunContext<serde_json::Value>) -> Result<RunOutcome> {
+            let result = Event::tool_call_result("t2", "c-private", "everything");
+            let outcome = ctx.emit(result).map_err(|error| error.to_string());
+            self.0.lock().unwrap().push(outcome);
+            Ok(RunOutcome::Success)
+        }
+    }
+
+    for (list, filter) in [
+        ("deny", FilterToolCalls::deny(["internal_debug"])),
+        ("allow", FilterToolCalls::allow(["search"])),
+    ] {
+        // The conversation as the client holds it: the public call and its
+        // answer, and nothing of `c-private`.
+        let mut input = RunAgentInput::new("t", "r-2");
+        input.messages = vec![
+            Message::user("u1", "Go on."),
+            Message::Assistant(AssistantMessage {
+                id: "a1".into(),
+                tool_calls: Some(vec![ToolCall::new("c-public", "search", "{}")]),
+                ..Default::default()
+            }),
+            Message::tool("t1", "c-public", "1 hit"),
+        ];
+        let outcomes = Arc::new(Mutex::new(Vec::new()));
+        let agent = AnswersARemovedCall(Arc::clone(&outcomes));
+        let events: Vec<Event> = Runner::new(agent)
+            .transformer(filter)
+            .run(input)
+            .collect()
+            .await;
+        let types: Vec<_> = events.iter().map(Event::event_type).collect();
+        assert_eq!(
+            types,
+            [EventType::RunStarted, EventType::RunFinished],
+            "{list}: {events:?}"
+        );
+        assert_eq!(*outcomes.lock().unwrap(), [Ok(())], "{list}");
     }
 }
 

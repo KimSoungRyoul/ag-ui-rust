@@ -18,11 +18,9 @@
 //! ```
 
 use std::collections::{HashMap, HashSet};
-use std::convert::Infallible;
 
-use crate::server::error::{Result, Rule, VerificationError};
-use crate::streams::{ChunkError, Kind, Opener, Stream, Streams};
-use crate::{Event, EventType, Message, MessageId, PatchOperation, SubagentRunId, ToolCallId};
+use crate::streams::{Kind, Opener, Stream, Streams};
+use crate::{Event, Message, MessageId, PatchOperation, SubagentRunId, ToolCallId};
 use serde_json::Value;
 
 /// Rewrites events on their way from an agent to the transport.
@@ -35,32 +33,10 @@ use serde_json::Value;
 /// orphaned ID-less chunk after filtering. Normalize chunks first, or track
 /// the producer's open streams before deciding which chunks to drop.
 ///
-/// Dropping is silent: the emit that produced the event returns `Ok`. A
-/// transformer that cannot tell what to do with an event, and must not let
-/// it through, says so from [`try_transform`](Self::try_transform) instead.
+/// Dropping is silent: the emit that produced the event returns `Ok`.
 pub trait StreamTransformer: Send {
     /// Rewrites one event into zero or more events.
     fn transform(&mut self, event: Event) -> Vec<Event>;
-
-    /// Rewrites one event, or refuses it. This is the method a hosted run
-    /// calls.
-    ///
-    /// An `Err` fails the emit that produced the event with that error, and
-    /// nothing of the event is sent: the agent is told, where an empty `Vec`
-    /// drops the event without a word. The default never refuses: it is
-    /// [`transform`](Self::transform).
-    ///
-    /// Implement it for a transformer that can meet an event it is unable to
-    /// judge, and write `transform` as the same rewrite with such an event
-    /// dropped, for a caller that has nowhere to report a refusal.
-    ///
-    /// # Errors
-    ///
-    /// Whatever the transformer refuses the event with.
-    /// [`FilterToolCalls`] refuses an event of a call it never saw start.
-    fn try_transform(&mut self, event: Event) -> Result<Vec<Event>> {
-        Ok(self.transform(event))
-    }
 
     /// Learns the conversation the run continues — the request's `messages` —
     /// once, before the run's first event.
@@ -138,58 +114,26 @@ impl TransformerChain {
         self.transformers.is_empty()
     }
 
-    /// Runs `event` through every transformer in order. An event a
-    /// transformer would refuse is dropped: see
-    /// [`try_transform`](Self::try_transform).
+    /// Runs `event` through every transformer in order.
     pub fn transform(&mut self, event: Event) -> Vec<Event> {
-        let Ok(events) = self.pass(event, |transformer, event| {
-            Ok::<_, Infallible>(transformer.transform(event))
-        });
-        events
-    }
-
-    /// Runs `event` through every transformer in order, or fails with the
-    /// refusal of the first that refuses what it is given.
-    ///
-    /// Nothing comes out of a refused event. The transformers before the one
-    /// that refused have seen it all the same, and remember what they
-    /// remember of an event.
-    ///
-    /// # Errors
-    ///
-    /// The first refusal: see [`StreamTransformer::try_transform`].
-    pub fn try_transform(&mut self, event: Event) -> Result<Vec<Event>> {
-        self.pass(event, |transformer, event| transformer.try_transform(event))
-    }
-
-    /// Feeds each transformer what the one before it produced.
-    fn pass<E>(
-        &mut self,
-        event: Event,
-        mut step: impl FnMut(&mut dyn StreamTransformer, Event) -> Result<Vec<Event>, E>,
-    ) -> Result<Vec<Event>, E> {
         let mut current = vec![event];
         for transformer in &mut self.transformers {
             let mut next = Vec::with_capacity(current.len());
             for event in current.drain(..) {
-                next.extend(step(transformer.as_mut(), event)?);
+                next.extend(transformer.transform(event));
             }
             current = next;
             if current.is_empty() {
                 break;
             }
         }
-        Ok(current)
+        current
     }
 }
 
 impl StreamTransformer for TransformerChain {
     fn transform(&mut self, event: Event) -> Vec<Event> {
         Self::transform(self, event)
-    }
-
-    fn try_transform(&mut self, event: Event) -> Result<Vec<Event>> {
-        Self::try_transform(self, event)
     }
 
     /// Every transformer in the chain learns the history as the request
@@ -225,16 +169,23 @@ enum Verdict {
     Pass,
     /// The call is filtered: what belongs to it is dropped.
     Drop,
-    /// Nothing has named the tool this id calls.
+    /// Nothing has named the tool this id calls. What belongs to it is
+    /// dropped too: see the type docs.
     Unknown,
 }
 
 /// Drops whole tool calls by tool name.
 ///
-/// Both halves of a call are removed — `TOOL_CALL_START`, its `TOOL_CALL_ARGS`,
-/// the `TOOL_CALL_END`, the `TOOL_CALL_RESULT` and any encrypted reasoning blob
-/// attached to it — so what reaches the client is a stream that never mentions
-/// the tool.
+/// Both halves of a filtered call are removed — `TOOL_CALL_START`, its
+/// `TOOL_CALL_ARGS` or `TOOL_CALL_CHUNK`s, the `TOOL_CALL_END`, the
+/// `TOOL_CALL_RESULT` and the `REASONING_ENCRYPTED_VALUE` attached to the
+/// call — and so is the call where a conversation is restated: in a
+/// `MESSAGES_SNAPSHOT` and in the request echoed on `RUN_STARTED`.
+///
+/// That is what the filter covers. It does not look into `RAW` or `CUSTOM`
+/// events, into the `rawEvent` payload of an event it sends, or into an
+/// interrupt that names a filtered call's id. Keep the tool out of those
+/// where they are made.
 ///
 /// ```
 /// # use ag_ui::Event;
@@ -290,35 +241,36 @@ enum Verdict {
 /// assert_eq!(assistant.tool_calls.as_ref().unwrap().len(), 1);
 /// ```
 ///
-/// # A call the filter did not see start
+/// # How a call is named
 ///
-/// A call is judged by its name, and only what opens a call names it. The
-/// filter learns the names from the run's events, from the request's history
-/// ([`seed`](StreamTransformer::seed)), from a restated conversation, and in
-/// a run that another driver began from the events already sent
-/// ([`replay`](StreamTransformer::replay)).
+/// A call is judged by the name of its tool, and only what opens a call
+/// names it. The filter learns the names from four places:
 ///
-/// An event of a call none of these named cannot be judged: arguments, an
-/// end, a result, an encrypted value, a chunk that names no tool. The filter
-/// refuses it. [`try_transform`](StreamTransformer::try_transform), which a
-/// hosted run calls, fails with [`Rule::UnknownId`], or with
-/// [`Rule::MalformedChunk`] for a chunk, so the emit fails and the agent is
-/// told; [`transform`](StreamTransformer::transform) drops the event.
+/// - this run's events: a `TOOL_CALL_START`, or the `TOOL_CALL_CHUNK` that
+///   opens a call;
+/// - the request's messages ([`seed`](StreamTransformer::seed)), for a
+///   result a resumed run reports;
+/// - in a run that another driver began, the events already sent
+///   ([`replay`](StreamTransformer::replay)), for a call that driver left
+///   open;
+/// - a conversation restated in a `MESSAGES_SNAPSHOT` or the `RUN_STARTED`
+///   echo.
 ///
-/// It is not let through, because the filter exists to keep a tool off the
-/// wire and that cannot depend on the `verify` feature. One case is a call
-/// that was filtered where the filter cannot see it: by the filter of an
-/// earlier run, so that the client's history never held it, or by the
-/// earlier driver of this run, so that the events sent do not. With the
-/// ordering checks on, the arguments, the end and the result of such a call
-/// would be rejected after the filter in any case, as those of a call that
-/// never started. Without them they would be sent. And it is not dropped
-/// with an `Ok`, because the other case is a call the filter has nothing
-/// against, whose agent would go on as if the event had been sent.
+/// An event of a call none of these named is dropped, and the emit that
+/// produced it returns `Ok`: arguments, an end, a result, an encrypted
+/// value, a chunk that names no tool. The filter cannot tell such a call
+/// from one that was filtered where this filter could not see it: by the
+/// filter of an earlier run, so that the client never held the call and
+/// the request's messages do not either, or by the filter of the earlier
+/// driver of this run, so that the events sent do not. The result a resumed
+/// run reports for such a call, and the end a continuation gives it, go the
+/// way the call went.
 ///
-/// In a run that continues another driver's, name the call on every chunk:
-/// the filter knows the calls that were sent, not the chunk streams the
-/// earlier agent had open, so it refuses a chunk that names no id.
+/// In a run that another driver began, a chunk that names no id continues
+/// the chunk stream the events sent left open in its lane, as it does for a
+/// consumer, and is judged by that call's name. A call the earlier filter
+/// removed is not among those events, so a continuation that goes on
+/// streaming one by chunks has to name its id on each chunk.
 #[derive(Clone, Debug)]
 pub struct FilterToolCalls {
     mode: FilterMode,
@@ -328,7 +280,8 @@ pub struct FilterToolCalls {
     call_names: HashMap<ToolCallId, String>,
     /// The producer's open streams, including calls removed from the output.
     /// A bare chunk must be resolved here, before filtering can make it look
-    /// like a continuation of a different call to the consumer.
+    /// like a continuation of a different call to the consumer. In a run
+    /// another driver began, they start as the events sent left them.
     streams: Streams,
 }
 
@@ -440,34 +393,22 @@ impl FilterToolCalls {
         });
     }
 
-    /// Whether an event is dropped, or why it cannot be judged: it belongs
-    /// to a call nothing named.
-    fn judge_event(&mut self, event: &Event) -> Result<bool, VerificationError> {
-        let at = event.event_type();
-        let decided = |verdict: Verdict, id: &ToolCallId| match verdict {
-            Verdict::Pass => Ok(false),
-            Verdict::Drop => Ok(true),
-            Verdict::Unknown => Err(Self::unknown_call(at, id)),
-        };
+    /// Whether an event is dropped: it belongs to a call that is filtered,
+    /// or to one nothing named.
+    fn drops(&mut self, event: &Event) -> bool {
         match event {
             Event::ToolCallStart(e) => {
-                Ok(self.judge(&e.tool_call_id, &e.tool_call_name) == Verdict::Drop)
+                self.judge(&e.tool_call_id, &e.tool_call_name) != Verdict::Pass
             }
             Event::ToolCallChunk(e) => match (&e.tool_call_id, &e.tool_call_name) {
-                (Some(id), Some(name)) => Ok(self.judge(id, name) == Verdict::Drop),
+                (Some(id), Some(name)) => self.judge(id, name) != Verdict::Pass,
                 // It continues a call, or opens one without naming its tool.
-                (Some(id), None) => match self.verdict(id) {
-                    Verdict::Unknown => {
-                        let id = id.as_str().to_owned();
-                        Err(Self::unplaced_chunk(&ChunkError::Unnamed { id }))
-                    }
-                    verdict => decided(verdict, id),
-                },
+                (Some(id), None) => self.verdict(id) != Verdict::Pass,
                 (None, name) => {
-                    let stream = self
-                        .streams
-                        .continued(Kind::Tool, &e.subagent_run_id)
-                        .map_err(|error| Self::unplaced_chunk(&error))?;
+                    // A chunk that continues nothing belongs to no call.
+                    let Ok(stream) = self.streams.continued(Kind::Tool, &e.subagent_run_id) else {
+                        return true;
+                    };
                     let id = ToolCallId::new(&stream.id);
                     let renamed = name.as_ref().is_some_and(|name| {
                         self.call_names
@@ -477,72 +418,29 @@ impl FilterToolCalls {
                     if renamed {
                         self.dropped.insert(id.clone());
                     }
-                    decided(self.verdict(&id), &id)
+                    self.verdict(&id) != Verdict::Pass
                 }
             },
-            Event::ToolCallArgs(e) => decided(self.verdict(&e.tool_call_id), &e.tool_call_id),
-            Event::ToolCallEnd(e) => decided(self.verdict(&e.tool_call_id), &e.tool_call_id),
-            Event::ToolCallResult(e) => decided(self.verdict(&e.tool_call_id), &e.tool_call_id),
+            Event::ToolCallArgs(e) => self.verdict(&e.tool_call_id) != Verdict::Pass,
+            Event::ToolCallEnd(e) => self.verdict(&e.tool_call_id) != Verdict::Pass,
+            Event::ToolCallResult(e) => self.verdict(&e.tool_call_id) != Verdict::Pass,
             Event::ReasoningEncryptedValue(e)
                 if e.subtype == crate::ReasoningEncryptedValueSubtype::ToolCall =>
             {
-                let id = ToolCallId::new(&e.entity_id);
-                decided(self.verdict(&id), &id)
+                self.verdict(&ToolCallId::new(&e.entity_id)) != Verdict::Pass
             }
             Event::MessagesSnapshot(e) => {
                 self.learn(&e.messages);
-                Ok(false)
+                false
             }
             Event::RunStarted(e) => {
                 if let Some(input) = &e.input {
                     self.learn(&input.messages);
                 }
-                Ok(false)
+                false
             }
-            _ => Ok(false),
+            _ => false,
         }
-    }
-
-    /// Follows an event that was judged, and sends it on unless its call
-    /// is filtered.
-    fn forward(&mut self, mut event: Event, dropped: bool) -> Vec<Event> {
-        // Observe the unfiltered input. A removed start still changes where
-        // the producer's later ID-less chunks belong.
-        self.streams.track(&event);
-
-        if dropped {
-            return Vec::new();
-        }
-        match &mut event {
-            Event::MessagesSnapshot(snapshot) => self.prune(&mut snapshot.messages),
-            Event::RunStarted(started) => {
-                if let Some(input) = &mut started.input {
-                    self.prune(&mut input.messages);
-                }
-            }
-            _ => {}
-        }
-        vec![event]
-    }
-
-    /// The refusal of an event that names a call nothing named a tool for.
-    fn unknown_call(event: EventType, id: &ToolCallId) -> VerificationError {
-        let detail = format!(
-            "tool call {:?} was never started where `FilterToolCalls` could see it: not in this \
-             run, the events already sent or the request's history. Without the tool's name it \
-             cannot tell whether the call is filtered, so the event is not sent",
-            id.as_str()
-        );
-        VerificationError::new(event, Rule::UnknownId, detail)
-    }
-
-    /// The refusal of a chunk that belongs to no call the filter can name.
-    fn unplaced_chunk(error: &ChunkError) -> VerificationError {
-        let detail = format!(
-            "{error}. `FilterToolCalls` cannot tell which call the chunk belongs to, or whether \
-             that call is filtered, so the chunk is not sent"
-        );
-        VerificationError::new(EventType::ToolCallChunk, Rule::MalformedChunk, detail)
     }
 }
 
@@ -556,11 +454,10 @@ impl StreamTransformer for FilterToolCalls {
     /// A call the earlier driver of the run opened is judged by its name
     /// like a new one, so a continuation can finish and answer it.
     ///
-    /// The chunk streams the events sent left open are not taken as the
-    /// producer's: a call this filter's predecessor dropped may have been
-    /// streaming in the same lane, and it is not among the events sent. So
-    /// a chunk that names no id is refused until a chunk of this driver has
-    /// opened a stream for it to continue.
+    /// The chunk streams the events sent left open are followed from there,
+    /// as a consumer follows them: a chunk that names no id continues the
+    /// call a consumer has open in its lane, and goes the way that call
+    /// goes.
     fn replay(&mut self, sent: &[Event]) {
         for event in sent {
             match event {
@@ -580,28 +477,30 @@ impl StreamTransformer for FilterToolCalls {
                 }
                 _ => {}
             }
+            self.streams.track(event);
         }
     }
 
-    /// Drops what [`try_transform`](Self::try_transform) refuses: an event
-    /// of a call the filter never saw start.
-    fn transform(&mut self, event: Event) -> Vec<Event> {
-        match self.judge_event(&event) {
-            Ok(dropped) => self.forward(event, dropped),
-            // Nobody is told the event was not sent, so the producer goes on
-            // as if it had been, and its streams are followed that way.
-            Err(_) => {
-                self.streams.track(&event);
-                Vec::new()
+    fn transform(&mut self, mut event: Event) -> Vec<Event> {
+        let drop = self.drops(&event);
+
+        // Observe the unfiltered input. A removed start still changes where
+        // the producer's later ID-less chunks belong.
+        self.streams.track(&event);
+
+        if drop {
+            return Vec::new();
+        }
+        match &mut event {
+            Event::MessagesSnapshot(snapshot) => self.prune(&mut snapshot.messages),
+            Event::RunStarted(started) => {
+                if let Some(input) = &mut started.input {
+                    self.prune(&mut input.messages);
+                }
             }
+            _ => {}
         }
-    }
-
-    /// A refused event changes nothing here. It was not sent and its emit
-    /// said so, so the producer's streams are where they were.
-    fn try_transform(&mut self, event: Event) -> Result<Vec<Event>> {
-        let dropped = self.judge_event(&event)?;
-        Ok(self.forward(event, dropped))
+        vec![event]
     }
 }
 
@@ -1549,10 +1448,10 @@ mod tests {
         assert!(filter.transform(blob).is_empty());
     }
 
+    /// Nothing named the call, so the filter cannot tell it from one it
+    /// removed where it could not see: what belongs to it is dropped.
     #[test]
-    fn an_event_of_a_call_nothing_named_is_refused_and_transform_drops_it() {
-        use crate::server::error::Error;
-
+    fn an_event_of_a_call_nothing_named_is_dropped() {
         let blob = Event::reasoning_encrypted_value(
             ReasoningEncryptedValueSubtype::ToolCall,
             "c1",
@@ -1561,58 +1460,42 @@ mod tests {
         let chunk = |id: Option<&str>| {
             Event::tool_call_chunk(id.map(ToolCallId::new), None, Some("{}".to_owned()))
         };
-        let cases = [
-            (Event::tool_call_args("c1", "{}"), Rule::UnknownId),
-            (Event::tool_call_end("c1"), Rule::UnknownId),
-            (Event::tool_call_result("m1", "c1", "done"), Rule::UnknownId),
-            (blob, Rule::UnknownId),
-            (chunk(Some("c1")), Rule::MalformedChunk),
-            (chunk(None), Rule::MalformedChunk),
+        let unknown = [
+            Event::tool_call_args("c1", "{}"),
+            Event::tool_call_end("c1"),
+            Event::tool_call_result("m1", "c1", "done"),
+            blob,
+            chunk(Some("c1")),
+            chunk(None),
         ];
         for mut filter in [
             FilterToolCalls::deny(["nope"]),
             FilterToolCalls::allow(["search"]),
         ] {
-            for (event, rule) in &cases {
-                let refused = filter
-                    .try_transform(event.clone())
-                    .expect_err("the call was never named");
-                let Error::Verification(error) = refused else {
-                    panic!("{refused}");
-                };
-                assert_eq!((error.event, error.rule), (event.event_type(), *rule));
-                assert!(error.detail.contains("FilterToolCalls"), "{error}");
-                assert!(filter.transform(event.clone()).is_empty());
+            for event in &unknown {
+                assert_eq!(filter.transform(event.clone()), [], "{event:?}");
             }
             // Named, the same call is judged, and what follows goes with it.
             let start = Event::tool_call_start("c1", "search");
-            assert_eq!(filter.try_transform(start.clone()).unwrap(), [start]);
+            assert_eq!(filter.transform(start.clone()), [start]);
             let args = Event::tool_call_args("c1", "{}");
-            assert_eq!(filter.try_transform(args.clone()).unwrap(), [args]);
+            assert_eq!(filter.transform(args.clone()), [args]);
         }
     }
 
+    /// A dropped event is one its producer takes as sent, since the emit
+    /// returned `Ok`: one of a call nothing named still ends the chunk
+    /// stream in its lane.
     #[test]
-    fn a_refused_event_leaves_the_filter_as_it_was() {
+    fn an_event_dropped_for_an_unknown_call_ends_the_chunk_stream_in_its_lane() {
         let open = Event::tool_call_chunk(Some("c1".into()), Some("search".into()), None);
         let bare = || Event::tool_call_chunk(None, None, Some("{}".into()));
-        let unknown = Event::tool_call_args("c9", "{}");
 
-        // The emit failed and said so. The event is not on the wire, and the
-        // chunk stream of `c1` is where it was.
         let mut filter = FilterToolCalls::deny(["nope"]);
-        filter
-            .try_transform(open.clone())
-            .expect("a call that passes");
-        assert!(filter.try_transform(unknown.clone()).is_err());
-        assert_eq!(filter.try_transform(bare()).unwrap(), [bare()]);
-
-        // Dropped without a word, it is an event its producer takes as
-        // sent: one that ended the chunk stream in its lane.
-        let mut filter = FilterToolCalls::deny(["nope"]);
-        filter.transform(open);
-        assert!(filter.transform(unknown).is_empty());
-        assert!(filter.transform(bare()).is_empty());
+        assert_eq!(filter.transform(open.clone()), [open]);
+        assert_eq!(filter.transform(bare()), [bare()]);
+        assert_eq!(filter.transform(Event::tool_call_args("c9", "{}")), []);
+        assert_eq!(filter.transform(bare()), []);
     }
 
     #[test]
@@ -1671,41 +1554,41 @@ mod tests {
 
         // The calls the snapshot carried were judged as it passed.
         let answered = Event::tool_call_result("m1", "c-public", "again");
-        assert_eq!(filter.try_transform(answered.clone()).unwrap(), [answered]);
+        assert_eq!(filter.transform(answered.clone()), [answered]);
         let hidden = Event::tool_call_result("m2", "c-private", "again");
-        assert_eq!(filter.try_transform(hidden).unwrap(), []);
+        assert_eq!(filter.transform(hidden), []);
     }
 
+    /// What was sent names calls, and leaves a chunk stream open in a lane:
+    /// a chunk that names no id continues that stream, as it does for a
+    /// consumer, and goes the way its call goes.
     #[test]
-    fn a_filter_learns_the_calls_that_were_sent_and_not_their_chunk_streams() {
+    fn a_filter_learns_the_calls_that_were_sent_and_the_chunk_streams_left_open() {
         let sent = [
             Event::run_started("t", "r"),
             Event::tool_call_start("c1", "search"),
-            Event::tool_call_chunk(Some("c2".into()), Some("search".into()), None),
+            Event::tool_call_args("c1", "{"),
+            Event::tool_call_chunk(Some("c2".into()), Some("lookup".into()), Some("{".into())),
         ];
-        let mut filter = FilterToolCalls::allow(["search"]);
+        let bare = || Event::tool_call_chunk(None, None, Some("}".into()));
+        let named = || Event::tool_call_chunk(Some("c2".into()), None, Some("}".into()));
+        let args = || Event::tool_call_args("c1", "}");
+
+        let mut filter = FilterToolCalls::allow(["search", "lookup"]);
         filter.replay(&sent);
+        assert_eq!(filter.transform(bare()), [bare()]);
+        assert_eq!(filter.transform(named()), [named()]);
+        assert_eq!(filter.transform(args()), [args()]);
+        // The explicit event ended the chunk stream in its lane: a chunk
+        // that names no id has nothing left to continue.
+        assert_eq!(filter.transform(bare()), []);
 
-        let args = Event::tool_call_args("c1", "{}");
-        assert_eq!(filter.try_transform(args.clone()).unwrap(), [args]);
-        let named = Event::tool_call_chunk(Some("c2".into()), None, Some("{}".into()));
-        assert_eq!(filter.try_transform(named.clone()).unwrap(), [named]);
-        // A chunk that names no id would be placed by a stream the filter
-        // did not watch being opened.
-        let bare = Event::tool_call_chunk(None, None, Some("{}".into()));
-        assert!(filter.try_transform(bare).is_err());
-    }
-
-    #[test]
-    fn a_chain_stops_at_the_first_refusal() {
-        let mut chain = TransformerChain::new()
-            .with(ToolResultToState::snapshot("load"))
-            .with(FilterToolCalls::deny(["nope"]));
-        let unknown = Event::tool_call_args("c1", "{}");
-        assert!(chain.try_transform(unknown.clone()).is_err());
-        assert!(chain.transform(unknown).is_empty());
-        let text = Event::text_message_start("m1", TextMessageRole::Assistant);
-        assert_eq!(chain.try_transform(text.clone()).unwrap(), [text]);
+        // Each call is judged by its own name.
+        let mut filter = FilterToolCalls::deny(["lookup"]);
+        filter.replay(&sent);
+        assert_eq!(filter.transform(bare()), []);
+        assert_eq!(filter.transform(named()), []);
+        assert_eq!(filter.transform(args()), [args()]);
     }
 
     #[test]

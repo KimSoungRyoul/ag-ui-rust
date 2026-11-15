@@ -1121,31 +1121,26 @@ These are on `main` and not yet in a published version.
   left with neither content nor tool calls, and a tool message that answers a call
   nothing named. There is nothing to write; a call a client has to see does not belong on
   the filter's list.
-- `FilterToolCalls` refuses an event of a tool call it never saw start, where alpha.3
-  dropped it and the emit returned `Ok`. `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
-  `TOOL_CALL_RESULT` and a tool call's `REASONING_ENCRYPTED_VALUE` fail the emit with
-  `Rule::UnknownId`; a `TOOL_CALL_CHUNK` that names no tool for such a call, or names no
-  id with no chunk stream to continue, fails it with `Rule::MalformedChunk`. Nothing of
-  the event is sent. The filter now also learns calls from a `MESSAGES_SNAPSHOT`, so the
-  result of a call a snapshot introduced goes where the call went; alpha.3 dropped it.
-  The case to look for is an agent that reports the result of a call the filter of an
-  earlier run removed: the client's history does not hold that call, so the emit now
-  fails. Do not emit the result, or handle the error. Calling
-  `FilterToolCalls::transform` yourself still drops such an event.
-- `StreamTransformer` gains two provided methods, and existing implementations compile
-  unchanged. `try_transform(event)` is what a hosted run now calls: an `Err` fails the
-  emit that produced the event and sends nothing of it, where an empty `Vec` from
-  `transform` drops the event without a word. Its default is `transform`.
-  `replay(&mut self, sent: &[Event])` is called once by `Runner::continue_run`, after
-  `seed`, with the events the run already sent. `TransformerChain::try_transform` is
-  new; `TransformerChain::transform` drops what a transformer would refuse.
+- `FilterToolCalls` learns the calls a `MESSAGES_SNAPSHOT` carries, so the result of a
+  call a snapshot introduced goes where the call went. Alpha.3 dropped that result
+  whatever the tool, and the run finished with the call unanswered. An event of a call
+  nothing named is still dropped, and its emit returns `Ok` as in alpha.3: the filter
+  cannot tell such a call from one it removed in an earlier run. There is nothing to
+  write.
+- `StreamTransformer` gains a provided method, `replay(&mut self, sent: &[Event])`, and
+  existing implementations compile unchanged. `Runner::continue_run` calls it once, after
+  `seed` and before the first event, with the events the run already sent; the default
+  ignores them. Alpha.3 showed a continued run's transformers nothing of `sent`.
+  Implement it for a transformer that judges an event by the id it names.
 - In a run continued with `Runner::continue_run`, `FilterToolCalls` and
   `ToolResultToState` know the calls that `sent` opened. A continuation can finish and
   answer a call the earlier driver left open under `FilterToolCalls`, and a
   `ToolResultToState` promotes its result; before, the filter dropped those events and
-  the run ended in `RUN_ERROR` (`open-at-finish`). The filter does not take over the
-  chunk streams `sent` left open, so name the call on every `TOOL_CALL_CHUNK` of a
-  continuation.
+  the run ended in `RUN_ERROR` (`open-at-finish`). A `TOOL_CALL_CHUNK` that names no id
+  continues the chunk stream `sent` left open in its lane, as it does for a consumer, and
+  goes the way that call goes. A call the earlier driver's filter removed is not in
+  `sent`, so its events are dropped with `Ok`; a continuation that goes on streaming one
+  by chunks has to give its id on each chunk.
 - `ToolResultToState` promotes the result of a call the run did not open itself: one the
   request's history holds unanswered, and one a `MESSAGES_SNAPSHOT` introduced. Alpha.3
   promoted only the result of a call started in the same run, so a resumed run's result

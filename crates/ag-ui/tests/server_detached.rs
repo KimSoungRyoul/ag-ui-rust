@@ -653,10 +653,11 @@ impl Agent for Reports {
     }
 }
 
-/// A filter that never saw a call start cannot tell whether the call is
-/// filtered. It does not send the event, and it does not say it did.
+/// A filter that never saw a call start cannot tell it from a call that was
+/// filtered where it could not see. What belongs to the call is dropped, as
+/// the call was, and the emit returns `Ok`.
 #[tokio::test]
-async fn an_event_for_a_call_a_filter_never_saw_start_is_refused() {
+async fn an_event_for_a_call_a_filter_never_saw_start_is_dropped() {
     // The call is not among the events sent, and not in the history: what a
     // call the first driver's filter dropped looks like from here.
     let sent = [Event::run_started("t", "r")];
@@ -688,14 +689,105 @@ async fn an_event_for_a_call_a_filter_never_saw_start_is_refused() {
             [Event::run_finished_success("t", "r")],
             "nothing of the call is sent"
         );
-        let outcomes = outcomes.lock().unwrap();
-        assert_eq!(outcomes.len(), unknown.len());
-        for (event, outcome) in unknown.iter().zip(outcomes.iter()) {
-            let kind = event.event_type();
-            let error = outcome
-                .as_ref()
-                .expect_err(&format!("{kind} was thrown away, and the emit said Ok"));
-            assert!(error.starts_with(kind.as_str()), "{kind}: {error}");
+        assert_eq!(*outcomes.lock().unwrap(), vec![Ok(()); unknown.len()]);
+    }
+}
+
+/// The first driver's filter removed a call it started, and the run stopped
+/// before the call ended. The call is not among the events sent. The
+/// continuation finishes and answers it, is told nothing went wrong, and
+/// nothing of the call is sent.
+#[tokio::test]
+async fn a_continuation_finishes_a_call_the_first_driver_s_filter_removed() {
+    struct StartsADeniedCall;
+    impl Agent for StartsADeniedCall {
+        type State = ();
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            ctx.emit(Event::tool_call_start("c9", "internal_debug"))?;
+            ctx.emit(Event::tool_call_args("c9", r#"{"dump":"#))?;
+            std::future::pending().await
+        }
+    }
+    let finishing = vec![
+        Event::tool_call_args("c9", "true}"),
+        Event::tool_call_end("c9"),
+        Event::tool_call_result("m9", "c9", "everything"),
+    ];
+
+    for filter in [
+        FilterToolCalls::deny(["internal_debug"]),
+        FilterToolCalls::allow(["search"]),
+    ] {
+        let first = Runner::new(StartsADeniedCall).transformer(filter.clone());
+        let sent = stopped_mid_run(first, input());
+        assert_eq!(sent, [Event::run_started("t", "r")]);
+
+        let outcomes = Outcomes::default();
+        let agent = Reports {
+            events: finishing.clone(),
+            outcomes: Arc::clone(&outcomes),
+        };
+        let rest = continued(Runner::new(agent).transformer(filter), input(), &sent).await;
+        assert_eq!(rest, [Event::run_finished_success("t", "r")]);
+        assert_eq!(*outcomes.lock().unwrap(), vec![Ok(()); finishing.len()]);
+    }
+}
+
+/// The call the first driver left open, streamed by chunks: it opened the
+/// call with a chunk that names the call and the tool, and the continuation
+/// goes on with chunks that name neither, as the chunked form has it. They
+/// continue the chunk stream the events sent left open, as they do for a
+/// consumer, and go out with the call.
+#[tokio::test]
+async fn a_filter_lets_a_continuation_finish_a_chunked_call_with_chunks_that_name_no_id() {
+    let sent = [
+        Event::run_started("t", "r"),
+        Event::tool_call_chunk(
+            Some("c1".into()),
+            Some("search".into()),
+            Some(r#"{"q":"#.into()),
+        ),
+    ];
+    let finishing = vec![
+        Event::tool_call_chunk(None, None, Some(r#""rust""#.into())),
+        Event::tool_call_chunk(None, None, Some("}".into())),
+        Event::tool_call_result("m1", "c1", "1 hit"),
+    ];
+    let mut whole = finishing.clone();
+    whole.push(Event::run_finished_success("t", "r"));
+
+    for filter in [
+        None,
+        Some(FilterToolCalls::deny(["internal_debug"])),
+        Some(FilterToolCalls::allow(["search"])),
+    ] {
+        let outcomes = Outcomes::default();
+        let agent = Reports {
+            events: finishing.clone(),
+            outcomes: Arc::clone(&outcomes),
+        };
+        let mut runner = Runner::new(agent);
+        if let Some(filter) = filter {
+            runner = runner.transformer(filter);
+        }
+        let rest = continued(runner, input(), &sent).await;
+        assert_eq!(rest, whole);
+        assert_eq!(*outcomes.lock().unwrap(), vec![Ok(()); finishing.len()]);
+
+        // A client reads one call, assembled from both drivers' chunks.
+        #[cfg(feature = "client")]
+        {
+            let run = [sent.as_slice(), rest.as_slice()].concat();
+            ag_ui::client::verify_all(&run).expect("one well-formed run");
+            let expanded = ag_ui::client::normalize_all(run).expect("normalizes");
+            let args: String = expanded
+                .iter()
+                .filter_map(|event| match event {
+                    Event::ToolCallArgs(args) => Some(args.delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(args, r#"{"q":"rust"}"#);
         }
     }
 }

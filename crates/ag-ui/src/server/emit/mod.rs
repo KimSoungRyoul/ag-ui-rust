@@ -394,9 +394,7 @@ impl EventSink {
         if self.chain.is_empty() {
             self.send(event)?;
         } else {
-            // A transformer may refuse the event, which fails the emit with
-            // nothing of the event sent.
-            for event in self.chain.try_transform(event)? {
+            for event in self.chain.transform(event) {
                 self.send(event)?;
             }
         }
