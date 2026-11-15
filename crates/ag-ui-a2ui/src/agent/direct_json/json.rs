@@ -467,7 +467,15 @@ impl<'a> Reader<'a> {
                     buffer.push(char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER));
                     self.at += 4;
                 }
-                other => return self.fail(format!("invalid escape '\\{other}'")),
+                // What a model most often means by this is a backslash of
+                // its own, in LaTeX or a Windows path. Say so: the error is
+                // read by the model that has to write the answer again.
+                other => {
+                    return self.fail(format!(
+                        "invalid escape '\\{other}'. Unescaped backslash found: inside a JSON \
+                         string a backslash is written '\\\\', as in '\\\\{other}'"
+                    ));
+                }
             }
             self.at += 2;
         }
@@ -626,6 +634,10 @@ mod tests {
             ("[1] trailing", "unexpected text after the JSON value"),
             ("[1", "unexpected end of the JSON text"),
             ("\"a\\qb\"", "invalid escape '\\q'"),
+            (
+                r#"{"formula": "\approx \Delta x"}"#,
+                r"Unescaped backslash found: inside a JSON string a backslash is written '\\', as in '\\a'",
+            ),
             ("[01]", "invalid number '01'"),
             ("[1.]", "invalid number '1.'"),
             ("", "unexpected end of the JSON text"),

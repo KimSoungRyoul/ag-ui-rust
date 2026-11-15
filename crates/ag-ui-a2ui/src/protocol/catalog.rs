@@ -65,24 +65,6 @@ pub const BASIC_COMPONENTS: [&str; 18] = [
     "Slider",
 ];
 
-/// Function names of the basic catalog.
-pub const BASIC_FUNCTIONS: [&str; 14] = [
-    "required",
-    "regex",
-    "length",
-    "numeric",
-    "email",
-    "formatString",
-    "formatNumber",
-    "formatCurrency",
-    "formatDate",
-    "pluralize",
-    "openUrl",
-    "and",
-    "or",
-    "not",
-];
-
 /// Icon names the basic catalog's `Icon` component accepts.
 pub const BASIC_ICON_NAMES: [&str; 59] = [
     "accountCircle",
@@ -145,14 +127,6 @@ pub const BASIC_ICON_NAMES: [&str; 59] = [
     "volumeUp",
     "warning",
 ];
-
-/// Optional properties every component carries, whatever its type.
-///
-/// `id` and `component` live on [`Component`] itself. These two come from the
-/// shared `ComponentCommon` fragments rather than from any one component's
-/// definition, so a catalog does not redeclare them per type. (`checks` is not
-/// here: it belongs only to input components, and is declared on each.)
-pub const COMMON_PROPS: [&str; 2] = ["accessibility", "weight"];
 
 /// How a component property participates in the component graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -515,6 +489,13 @@ impl Catalog {
         self.document.as_deref()
     }
 
+    /// [`Catalog::document`], as the catalog holds it: for a caller in this
+    /// crate that keeps the document too and should not keep a second copy.
+    #[cfg(feature = "agent")]
+    pub(crate) fn shared_document(&self) -> Option<&Arc<Value>> {
+        self.document.as_ref()
+    }
+
     /// Looks up a component type.
     pub fn component(&self, name: &str) -> Option<&ComponentDef> {
         self.components.get(name)
@@ -736,75 +717,6 @@ impl Catalog {
         }
         out
     }
-
-    /// Renders the catalog as a compact summary for a generating model.
-    ///
-    /// One line per component with its required and optional properties, plus
-    /// the function list. This is the cheap alternative to pasting the whole
-    /// JSON Schema; when a model needs the exact document instead, use
-    /// [`SchemaBundle::render_llm_instructions`](crate::schema::SchemaBundle::render_llm_instructions).
-    pub fn render_summary(&self) -> String {
-        let mut out = String::new();
-        out.push_str("### Component catalog\n");
-        out.push_str(&format!("catalogId: {}\n", self.catalog_id));
-        if let Some(instructions) = &self.instructions {
-            out.push_str(instructions);
-            out.push('\n');
-        }
-        out.push_str(
-            "Every component object is `{\"id\": <unique id>, \"component\": <type>, ...props}`. \
-             Children are referenced by id; components are never nested inline.\n\n",
-        );
-        for def in self.components_in_order() {
-            out.push_str(&format!("- {}", def.name));
-            let required: Vec<String> = def
-                .props_in_order()
-                .filter(|p| p.required)
-                .map(describe_prop)
-                .collect();
-            let optional: Vec<String> = def
-                .props_in_order()
-                .filter(|p| !p.required)
-                .map(describe_prop)
-                .collect();
-            if !required.is_empty() {
-                out.push_str(&format!(" required: {}", required.join(", ")));
-            }
-            if !optional.is_empty() {
-                out.push_str(&format!("; optional: {}", optional.join(", ")));
-            }
-            if let Some(allowed) = &def.allowed_parents {
-                out.push_str(&format!("; allowedParents: [{}]", allowed.join(", ")));
-            }
-            if let Some(allowed) = &def.allowed_children {
-                out.push_str(&format!("; allowedChildren: [{}]", allowed.join(", ")));
-            }
-            out.push('\n');
-        }
-        if !self.functions.is_empty() {
-            let names: Vec<&str> = self.functions.keys().map(String::as_str).collect();
-            out.push_str(&format!("\nFunctions: {}\n", names.join(", ")));
-        }
-        out
-    }
-}
-
-fn describe_prop(prop: &PropDef) -> String {
-    let kind = match &prop.kind {
-        PropKind::Value if !prop.enum_values.is_empty() => {
-            format!("one of [{}]", prop.enum_values.join("|"))
-        }
-        PropKind::Value => "value".to_string(),
-        PropKind::ComponentRef => "component id".to_string(),
-        PropKind::ChildList => "component ids or {componentId, path}".to_string(),
-        PropKind::ObjectListRefs { ref_keys } => {
-            format!(
-                "array of objects with component id in {}",
-                ref_keys.join("/")
-            )
-        }
-    };
-    format!("{} ({kind})", prop.name)
 }
 
 /// A composition-constraint failure.
@@ -1928,14 +1840,5 @@ mod tests {
             Component::new("t", "Text").with("text", json!("hi")),
         ];
         assert!(catalog.composition_violations(&components).is_empty());
-    }
-
-    #[test]
-    fn the_summary_mentions_every_component() {
-        let rendered = Catalog::basic().render_summary();
-        for name in BASIC_COMPONENTS {
-            assert!(rendered.contains(name), "instructions omit {name}");
-        }
-        assert!(rendered.contains("children (component ids or {componentId, path})"));
     }
 }

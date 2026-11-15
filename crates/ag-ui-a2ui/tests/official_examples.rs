@@ -1,7 +1,7 @@
 #![cfg(feature = "schema-validation")]
 
+use ag_ui_a2ui::schema::SchemaBundle;
 use ag_ui_a2ui::schema_validation::SurfaceValidator;
-use ag_ui_a2ui::toolkit::schema::SchemaBundle;
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
 

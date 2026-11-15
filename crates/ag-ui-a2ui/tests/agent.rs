@@ -328,7 +328,196 @@ fn a_surface_that_names_another_catalog_is_the_models_to_fix() {
     );
 }
 
+/// A tool call's argument is the block itself, and is judged like an answer.
+#[test]
+fn a_block_without_tags_is_judged_like_an_answer() {
+    let processor = processor();
+    let mut state = processor.create_state();
+    let mut retry = RetryDriver::new(&processor, 2);
+    let block = |text: &str| {
+        surface("s", text)
+            .trim_start_matches("<a2ui-json>")
+            .trim_end_matches("</a2ui-json>")
+            .to_string()
+    };
+
+    let Verdict::Retry(feedback) = retry.judge_block("not JSON at all", &mut state) else {
+        panic!("a block that cannot be read asks again");
+    };
+    assert_eq!(feedback.attempt(), 1);
+    assert_eq!(feedback.errors()[0].path, "response");
+    assert_eq!(state, processor.create_state());
+
+    let Verdict::Done(parts) = retry.judge_block(&block("Hi"), &mut state) else {
+        panic!("the block is valid");
+    };
+    assert!(matches!(parts.as_slice(), [ResponsePart::A2ui(messages)] if messages.len() == 2));
+    assert_eq!(retry.attempts(), 2);
+    assert!(state.surface("s").is_some());
+
+    // The same text judged as an answer has no block in it, only text.
+    let Verdict::Done(parts) = RetryDriver::new(&processor, 1).judge(&block("Hi"), &mut state)
+    else {
+        panic!("text alone is an answer");
+    };
+    assert!(matches!(parts.as_slice(), [ResponsePart::Text(_)]));
+}
+
+/// An answer can be valid A2UI and still not what the caller asked for. The
+/// caller says so, and gets what the driver gives for its own rejections.
+#[test]
+fn an_answer_that_stands_can_be_turned_down_for_the_callers_own_reasons() {
+    let processor = processor();
+    let start = processor.create_state();
+    let mut retry = RetryDriver::new(&processor, 2);
+    let wrong_surface = || {
+        vec![ag_ui_a2ui::ValidationError::new(
+            ErrorCode::InvalidValue,
+            "messages[0].createSurface.surfaceId",
+            "The request is for surface \"cart\".",
+        )]
+    };
+
+    // Judged into a copy, so that turning the answer down leaves nothing.
+    let mut attempt = start.clone();
+    assert!(matches!(
+        retry.judge(&surface("other", "Hi"), &mut attempt),
+        Verdict::Done(_)
+    ));
+    let feedback = retry.reject(wrong_surface()).unwrap();
+    assert_eq!(feedback.attempt(), 1, "the answer is not counted twice");
+    assert_eq!(retry.attempts(), 1);
+    assert!(
+        feedback
+            .prompt("Show the cart.")
+            .contains("[invalid_value] at messages[0].createSurface.surfaceId")
+    );
+
+    // On the last attempt there is nothing left to ask.
+    let mut attempt = start.clone();
+    assert!(matches!(
+        retry.judge(&surface("other", "Hi"), &mut attempt),
+        Verdict::Done(_)
+    ));
+    let Err(Error::RecoveryExhausted { attempts, last }) = retry.reject(wrong_surface()) else {
+        panic!("the attempts are used up");
+    };
+    assert_eq!(attempts, 2);
+    assert_eq!(last.as_slice(), wrong_surface());
+}
+
 // --- a streamed answer --------------------------------------------------------------------------
+
+/// Where an answer is cut must not matter to what it leaves. Each answer here
+/// is one a cut could tempt a reader to misread: an id that begins like
+/// another id, opaque data that carries protocol words, text outside ASCII,
+/// a close tag inside a string.
+#[test]
+fn an_answer_cut_anywhere_leaves_what_the_answer_read_whole_leaves() {
+    let block = |components: &str, data: &str| {
+        format!(
+            r#"Here you go.
+<a2ui-json>[
+  {{"version": "v0.9", "createSurface": {{"surfaceId": "s", "catalogId": "{BASIC}"}}}},
+  {{"version": "v0.9", "updateComponents": {{"surfaceId": "s", "components": {components}}}}},
+  {{"version": "v0.9", "updateDataModel": {{"surfaceId": "s", "path": "/", "value": {data}}}}}
+]</a2ui-json>
+Anything else?"#
+        )
+    };
+    let answers = [
+        // A child whose id begins with its parent's: cut after `root`, it
+        // must not read as the root naming itself.
+        block(
+            r#"[{"id": "root", "component": "Column", "children": ["root-child"]},
+                {"id": "root-child", "component": "Text", "text": "Complete child"}]"#,
+            "{}",
+        ),
+        // A modal, with text a byte-wise cut would split inside a character.
+        block(
+            r#"[{"id": "root", "component": "Modal", "trigger": "trigger", "content": "content"},
+                {"id": "trigger", "component": "Button", "child": "label",
+                 "action": {"event": {"name": "open", "context": {
+                    "component": "Text", "id": "root", "updateComponents": {"surfaceId": "other"},
+                    "note": "</a2ui-json> is only text here"}}}},
+                {"id": "label", "component": "Text", "text": "Open"},
+                {"id": "content", "component": "Text", "text": "Body “본문” 🚀"}]"#,
+            r#"{"path": "/not/a/binding", "items": [{"id": "root"}, {"children": ["root"]}]}"#,
+        ),
+    ];
+    let generator = A2uiGenerator::new(vec![CatalogConfig::basic(A2uiVersion::V0_9).unwrap()]);
+    let renderer = RendererCapabilities::supporting(A2uiVersion::V0_9, [BASIC]);
+    let formats = [
+        DirectJson::new(),
+        DirectJson::new().with_progressive_keys(ag_ui_a2ui::schema::DEFAULT_CUTTABLE_KEYS),
+        DirectJson::new().holding_components_until_closed(true),
+    ];
+    for format in formats {
+        let processor = generator
+            .create_processor_with(Some(&renderer), Arc::new(format.clone()))
+            .unwrap();
+        for answer in &answers {
+            let mut whole = processor.create_state();
+            let read = processor.parse_response_in(answer, &mut whole).unwrap();
+            let ResponsePart::A2ui(last) = &read[1] else {
+                panic!("the block is the second part");
+            };
+
+            // Fed in `chunks`, the answer leaves the same state and ends on
+            // the same messages, and nothing on the way is rejected.
+            let streamed = |chunks: Vec<&str>| {
+                let mut state = processor.create_state();
+                let mut stream = processor
+                    .open_stream(&state, StreamOptions::default())
+                    .unwrap();
+                let mut text = String::new();
+                let mut latest: Vec<Option<AgentMessage>> = vec![None; 3];
+                let mut take = |parts: Vec<StreamPart>| {
+                    for part in parts {
+                        match part {
+                            StreamPart::Text(piece) => text.push_str(&piece),
+                            StreamPart::A2ui(messages) => {
+                                for message in messages {
+                                    let slot = match &message.payload {
+                                        ag_ui_a2ui::AgentPayload::CreateSurface(_) => 0,
+                                        ag_ui_a2ui::AgentPayload::UpdateComponents(_) => 1,
+                                        _ => 2,
+                                    };
+                                    latest[slot] = Some(message);
+                                }
+                            }
+                            StreamPart::Rejected(error) => panic!("{format:?}: {error}"),
+                        }
+                    }
+                };
+                for chunk in chunks {
+                    take(stream.feed(chunk, &mut state).unwrap_or_else(|rejected| {
+                        panic!("{format:?}, after {chunk:?}: {}", rejected.error)
+                    }));
+                }
+                take(stream.close(&mut state).unwrap());
+                assert_eq!(state, whole, "{format:?}");
+                let latest: Vec<AgentMessage> = latest.into_iter().flatten().collect();
+                assert_eq!(&latest, last, "{format:?}");
+                assert_eq!(text, "Here you go.Anything else?", "{format:?}");
+            };
+
+            // Every way of cutting it in two.
+            for at in (1..answer.len()).filter(|at| answer.is_char_boundary(*at)) {
+                streamed(vec![&answer[..at], &answer[at..]]);
+            }
+            // And a character at a time.
+            let mut characters = Vec::new();
+            let mut rest = answer.as_str();
+            while let Some(first) = rest.chars().next() {
+                let (character, tail) = rest.split_at(first.len_utf8());
+                characters.push(character);
+                rest = tail;
+            }
+            streamed(characters);
+        }
+    }
+}
 
 #[test]
 fn the_state_holds_exactly_what_a_stream_emitted() {

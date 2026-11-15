@@ -280,13 +280,6 @@ impl ValidateOptions {
         }
     }
 
-    /// Overrides the root component id.
-    #[must_use]
-    pub fn with_root_id(mut self, root_id: impl Into<String>) -> Self {
-        self.root_id = root_id.into();
-        self
-    }
-
     /// Overrides the maximum nesting depth.
     #[must_use]
     pub fn with_max_depth(mut self, max_depth: usize) -> Self {
@@ -306,6 +299,12 @@ pub struct ValidationReport {
     /// until their parent shows up, so an unreachable component is usually a
     /// half-streamed tree rather than a broken one. It is still worth telling a
     /// generating model about, so it is reported separately.
+    ///
+    /// The component itself is checked like any other: its type, its
+    /// properties, its ids. Its bindings are not resolved. What a relative
+    /// path means depends on where a component sits, and this one sits
+    /// nowhere; and nothing draws it, so nothing reads the data it names. A
+    /// path that is not a JSON Pointer is still an error, wherever it is.
     pub unreachable: Vec<String>,
 }
 
@@ -1078,9 +1077,20 @@ impl<'a> Validator<'a> {
             has_parent[edge.target] = true;
         }
         let root_scope = model.map(ModelScope::root);
+        // With a root in hand, the tree is what the root reaches, and that is
+        // where bindings are resolved. Without one this is a fragment of an
+        // update, and every component nothing in it points at is a way in.
+        let is_root = |node: &Node<'_>| node.id == Some(self.options.root_id.as_str());
+        let rooted = nodes.iter().any(is_root);
         let mut queue: Vec<_> = nodes
             .iter()
-            .filter(|node| !has_parent[node.index] || node.id == Some(&self.options.root_id))
+            .filter(|node| {
+                if rooted {
+                    is_root(node)
+                } else {
+                    !has_parent[node.index]
+                }
+            })
             .map(|node| (node.index, root_scope.clone(), false))
             .collect();
         let mut visited = BTreeSet::new();
@@ -1169,8 +1179,7 @@ impl<'a> Validator<'a> {
 /// Renders a loop the graph walk closed.
 ///
 /// `name` gives a node's component id, and `locator` is the path to the
-/// reference that closes the loop. The validator and the streaming parser both
-/// report a loop through here, so it reads the same wherever it is found.
+/// reference that closes the loop.
 pub(crate) fn cycle_error<'a>(
     cycle: &Cycle,
     name: impl Fn(usize) -> &'a str,
@@ -1422,9 +1431,10 @@ fn template_path(component: &Component, location: &str) -> Option<String> {
 /// path into a schema the caller never saw. The codes match the ones the
 /// schema-driven toolkits report, because callers route on them.
 ///
-/// This is the one envelope check: the validator, the stateful
-/// [`SurfaceValidator`](crate::schema_validation::SurfaceValidator) path
-/// and the streaming parser all report what it finds.
+/// This is the one envelope check: the validator and the
+/// [`MessageProcessor`](crate::processor::MessageProcessor), and through it
+/// the agent layer's reading of an answer, whole or streamed, all report what
+/// it finds.
 ///
 /// Only agent → renderer messages belong here: a renderer's reply is not agent
 /// output and is not part of a payload this validator is asked about.
@@ -2074,6 +2084,45 @@ mod tests {
         ]);
         assert!(report.is_valid(), "{:?}", report.errors);
         assert_eq!(report.unreachable, vec!["orphan".to_string()]);
+    }
+
+    /// A component the root cannot reach has no place in the tree, so its
+    /// bindings have no scope to be held to and no data anything reads.
+    #[test]
+    fn the_bindings_of_an_unreachable_component_are_not_resolved() {
+        let catalog = basic();
+        let components = [
+            Component::new("root", "Text").with("text", json!("root")),
+            // A row whose list was replaced: its relative path had a scope.
+            Component::new("row", "Text").with("text", json!({"path": "name"})),
+            // A list left behind, over data that is a map by now.
+            Component::new("old", "List")
+                .with("children", json!({"componentId": "row", "path": "/items"})),
+        ];
+        let data = json!({"items": {"not": "a list"}});
+        let report = Validator::new(&catalog).validate_surface(&components, Some(&data));
+        assert!(report.is_valid(), "{:?}", report.errors);
+        assert_eq!(report.unreachable, ["row", "old"]);
+
+        // Reached, the same two are held to the tree and to the data.
+        let mut reached = components.to_vec();
+        reached[0] = Component::new("root", "Column").with("children", json!(["old"]));
+        let report = Validator::new(&catalog).validate_surface(&reached, Some(&data));
+        assert_eq!(codes(&report), [ErrorCode::UnresolvedBinding]);
+        assert!(report.errors[0].message.contains("must point at an array"));
+
+        // A path that is no JSON Pointer is wrong wherever it is written.
+        let mut broken = components.to_vec();
+        broken[1] = Component::new("row", "Text").with("text", json!({"path": "/a~2b"}));
+        let report = Validator::new(&catalog).validate_surface(&broken, Some(&data));
+        assert_eq!(codes(&report), [ErrorCode::UnresolvedBinding]);
+
+        // Without a root this is a fragment, and what nothing in it points at
+        // is a way in, as before.
+        let fragment = [Component::new("row", "Text").with("text", json!({"path": "name"}))];
+        let report = Validator::with_options(&catalog, ValidateOptions::incremental_update())
+            .validate_surface(&fragment, Some(&data));
+        assert_eq!(codes(&report), [ErrorCode::UnresolvedBinding]);
     }
 
     #[test]

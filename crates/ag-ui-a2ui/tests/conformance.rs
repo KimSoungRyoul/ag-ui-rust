@@ -37,9 +37,8 @@
 
 // The standing of every suite is one table, so the harness needs every layer
 // the table speaks of. The catalog and common-types suites validate against
-// the published schema documents, so that is the JSON Schema engine
-// (`schema-validation` brings `toolkit` with it) and, for the suites under
-// `agent/`, the agent layer.
+// the published schema documents, so that is the JSON Schema engine and, for
+// the suites under `agent/`, the agent layer.
 #![cfg(all(feature = "schema-validation", feature = "agent"))]
 
 #[path = "conformance_agent/mod.rs"]
@@ -51,13 +50,9 @@ use std::path::{Path, PathBuf};
 use ag_ui_a2ui::binding::{Scope, absolute_path, parse_template};
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::processor::{MessageProcessor, Rejection, RejectionKind};
+use ag_ui_a2ui::schema::SchemaBundle;
 use ag_ui_a2ui::schema_validation::{SchemaValidator, validate_common_type};
 use ag_ui_a2ui::surface::{Lifecycle, SurfaceStore};
-use ag_ui_a2ui::toolkit::negotiate::{CatalogRegistry, ClientCapabilities, select_catalog_schema};
-use ag_ui_a2ui::toolkit::parser::{has_a2ui_parts, parse_and_fix, parse_response};
-use ag_ui_a2ui::toolkit::prompt::{GENERATION_GUIDELINES, PromptSpec, build_subagent_prompt};
-use ag_ui_a2ui::toolkit::schema::{SchemaBundle, load_examples, remove_strict_validation};
-use ag_ui_a2ui::toolkit::streaming::StreamParser;
 use ag_ui_a2ui::validate::{ErrorCode, ValidateOptions, ValidationReport, Validator};
 use ag_ui_a2ui::version::A2uiVersion;
 use ag_ui_a2ui::{DataModel, DataModelUpdate, Error, ModelValue};
@@ -80,6 +75,12 @@ enum Why {
     /// direct JSON stream linear and runs the timing cases in a job of their
     /// own.
     Timing,
+    /// It tests the SDK design upstream had before its agent layer: a tag
+    /// parser, a streaming parser that drew placeholders, a schema manager.
+    /// Upstream keeps those suites under `legacy/` and wrote the agent-tier
+    /// ones in their place; this crate had ports of that design and removed
+    /// them when its agent layer took over (#41).
+    Superseded,
     /// It tests a transport adapter, which #43 builds.
     Adapters,
     /// It tests A2UI v1.0, which #42 adds.
@@ -98,6 +99,7 @@ impl Why {
         match self {
             Why::Formats => agent_tier::NEEDS_FORMAT,
             Why::Timing => "later: timing (#75)",
+            Why::Superseded => "superseded: the SDK design before the agent layer",
             Why::Adapters => "later: adapters (#43)",
             Why::V1_0 => "later: A2UI v1.0 (#42)",
             Why::V0_8 => "out of scope: v0.8",
@@ -116,10 +118,10 @@ enum Plan {
     /// A case written against v1.0 runs lowered to v0.9; one that v0.9 cannot
     /// state is skipped, with the reason.
     Agent,
-    /// A suite as it stood at [`RETIRED_COMMIT`], before upstream deleted it or
-    /// rewrote its cases under other names. It is kept, and executed whole,
-    /// because the code it covers is still here: what passed at that pin goes
-    /// on being checked until that code is replaced.
+    /// A suite as it stood at [`RETIRED_COMMIT`], before upstream rewrote its
+    /// cases under other names. It is kept, and executed whole, because the
+    /// code it covers is still here: what passed at that pin goes on being
+    /// checked until the suite that replaced it is judged to cover it.
     Retired,
     /// Nothing in it is executed. The sentence says what it tests.
     Skip(Why, &'static str),
@@ -173,18 +175,13 @@ const fn skip(path: &'static str, cases: usize, why: Why, what: &'static str) ->
 const SUITES: &[Suite] = &[
     // --- executed --------------------------------------------------------------------------
     run("core/validator_v0_9.yaml", [39, 3, 5, 0]),
-    run("agent/legacy/parser.yaml", [22, 0, 0, 1]),
-    run("agent/legacy/inference_format.yaml", [12, 0, 10, 0]),
-    run("agent/legacy/streaming_parser.yaml", [33, 8, 45, 2]),
     run("core/data_context.yaml", [9, 2, 0, 0]),
     run("core/data_model.yaml", [45, 4, 1, 2]),
     run("core/expressions.yaml", [92, 0, 6, 0]),
-    run("core/message_processor_v0_9.yaml", [40, 2, 4, 2]),
+    run("core/message_processor_v0_9.yaml", [42, 2, 4, 0]),
     run("core/catalog.yaml", [14, 3, 54, 2]),
     run("core/common_types.yaml", [8, 0, 14, 0]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
-    retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
-    retired("retired/agent/inference_format.yaml", [13, 0, 6, 0]),
 
     // --- core tier: A2UI v1.0 ------------------------------------------------------------------
     skip("core/validator_v1_0.yaml", 49, Why::V1_0, "envelope, schema and topology validation of v1.0 messages"),
@@ -236,6 +233,9 @@ const SUITES: &[Suite] = &[
     skip("agent/elemental/compiler.yaml", 8, Why::Formats, "the Elemental format"),
     skip("agent/builder/builder.yaml", 22, Why::Formats, "the typesafe builder API"),
     skip("agent/macros/macros.yaml", 70, Why::Formats, "builder macros"),
+    skip("agent/legacy/parser.yaml", 23, Why::Superseded, "the tag parser; `agent/direct_json/response_parser.yaml` is the suite of the parser that reads the same tags now"),
+    skip("agent/legacy/inference_format.yaml", 22, Why::Superseded, "catalog selection and prompt assembly; `agent/catalog_resolution.yaml`, `agent/request_processor.yaml` and `agent/direct_json/prompt_generator.yaml` are the suites of what does that now"),
+    skip("agent/legacy/streaming_parser.yaml", 88, Why::Superseded, "the streaming parser, with placeholders for components still to arrive; `agent/direct_json/response_streaming.yaml` is the suite of the stream that replaced it"),
     skip("agent/multi_catalog_formats.yaml", 35, Why::V1_0, "components and function calls resolved across several active catalogs"),
     skip("agent/agent_functions.yaml", 64, Why::V1_0, "agent functions and the agent's side of renderer messages"),
     skip("agent/renderer_function_calls.yaml", 30, Why::V1_0, "the agent calling renderer functions"),
@@ -463,22 +463,6 @@ impl Tally {
 /// A check listed here must fail: one that starts passing fails the suite
 /// until it is taken off the list, so the list cannot outlive its entries.
 const KNOWN_FAILURES: &[(&str, &str)] = &[
-    // Three cases upstream added after the old pin. All three are about the
-    // toolkit's parsers, which the agent layer replaces.
-    (
-        "agent/legacy/parser.yaml::test_fix_payload_unescaped_latex_backslashes_diagnostic_hint",
-        "an invalid escape is rejected with the JSON parser's message, without the hint \
-         'Unescaped backslash found'",
-    ),
-    (
-        "agent/legacy/streaming_parser.yaml::test_no_placeholders_without_placeholder_component_v09",
-        "with validation off, a `Row` placeholder is emitted for a catalog that defines no `Row`",
-    ),
-    (
-        "agent/legacy/streaming_parser.yaml::test_cut_escape_sequences_v09",
-        "a second `<a2ui-json>` inside a block that is still open is read as JSON, and the \
-         messages after it are not dispatched",
-    ),
     // Removing a path that is not there. Upstream's newer cases want nothing
     // to happen. `tests/protocol_091.rs` and `examples/review-desk/interop`,
     // which runs the official renderer core 0.11.0, assert what this crate
@@ -493,26 +477,6 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
         "core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]",
         "removing a path that does not exist creates the containers on the way to it (#42)",
     ),
-    // Two refusals a JSON Schema engine makes. The check is not missing:
-    // `SchemaValidator`, behind `schema-validation`, refuses both messages,
-    // and `the_schema_engine_makes_the_two_refusals_a_processor_does_not` in
-    // `tests/schema_diagnostics.rs` shows it. The wiring is missing: a
-    // `MessageProcessor` checks what the semantic validator checks and runs no
-    // `SchemaValidator`, with the feature on or off.
-    (
-        "core/message_processor_v0_9.yaml::test_create_surface_strict_theme_validation_failure",
-        "a processor does not check a theme against the catalog's theme schema. Missing \
-         wiring, not a missing check: SchemaValidator refuses such a theme. A wired processor \
-         would also have to build a schema document from this case's catalog, which is a \
-         fragment with the theme at its top level",
-    ),
-    (
-        "core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys",
-        "a processor accepts a property the component does not declare, here `@metadata`. \
-         Missing wiring, not a missing check: SchemaValidator refuses the message with the \
-         published catalog",
-    ),
-    // The catalog this crate builds in is a summary written in Rust.
     (
         "core/catalog.yaml::test_v09_basic_catalog_from_json",
         "Catalog::basic() is not the published v0.9 catalog read back: it has its own id, \
@@ -975,37 +939,9 @@ const CORE_ACTIONS: [&str; 13] = [
     "validate_common_type",
 ];
 
-/// Actions on a model's output, which is in one wire format or another in
-/// either layout.
-const STREAM_ACTIONS: [&str; 4] = ["process_chunk", "parse_full", "fix_payload", "has_parts"];
-
 fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
-    let name = case_name(case);
     let action = case.get("action").and_then(Value::as_str).unwrap_or("");
 
-    // These legacy toolkit-policy cases require implicit fallback or cross-ID
-    // merging. The reviewed v0.9.1 contract deliberately rejects those choices;
-    // named replacement regressions live in toolkit::negotiate and author.rs.
-    if matches!(
-        name,
-        "test_select_catalog_default"
-            | "test_select_catalog_inline"
-            | "test_select_catalog_multiple_inline"
-            | "test_select_catalog_no_match_with_inline"
-    ) {
-        tally.record(
-            check,
-            Outcome::Skipped(
-                "superseded toolkit policy: no implicit catalog fallback or cross-ID inline merge"
-                    .into(),
-            ),
-        );
-        return;
-    }
-
-    // Wire-format actions are gated on the version a case targets. Schema
-    // surgery and prompt assembly work on the shape of documents rather than
-    // on the protocol, and gate themselves where a version matters.
     // Asked of every version alike, and of none of them here.
     if action == "common_types_schema" {
         tally.record(
@@ -1019,11 +955,9 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
         return;
     }
 
-    let wire_format = match format {
-        Format::Current => CORE_ACTIONS.contains(&action) || STREAM_ACTIONS.contains(&action),
-        Format::Retired => STREAM_ACTIONS.contains(&action),
-    };
-    if wire_format {
+    // An action of the core tier is about one protocol version, and is run
+    // only at a version this crate speaks.
+    if format == Format::Current && CORE_ACTIONS.contains(&action) {
         if let CaseVersion::Unsupported(reason) = case_version(case) {
             tally.record(check, Outcome::Skipped(reason));
             return;
@@ -1033,18 +967,6 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     match (action, format) {
         ("validate", Format::Retired) => run_validate_case(check, case, tally),
         ("validate", Format::Current) => run_validate_steps(check, case, tally),
-        ("process_chunk", _) => tally.record(check, run_process_chunk(name, case)),
-        ("parse_full", _) => tally.record(check, run_parse_full(case)),
-        ("fix_payload", _) => tally.record(check, run_fix_payload(case)),
-        ("has_parts", _) => tally.record(check, run_has_parts(case)),
-        ("prune", _) => tally.record(check, run_prune(case)),
-        ("render", _) => tally.record(check, run_render(case)),
-        ("load", _) => tally.record(check, run_load(case)),
-        ("remove_strict_validation", _) => tally.record(check, run_remove_strict(case)),
-        ("verify_cuttable_keys", _) => tally.record(check, run_verify_cuttable_keys(case)),
-        ("select_catalog", _) => tally.record(check, run_select_catalog(case)),
-        ("load_catalog", _) => tally.record(check, run_load_catalog(case)),
-        ("generate_prompt", _) => tally.record(check, run_generate_prompt(case)),
         ("resolve_path", Format::Current) => settle(check, run_resolve_path(case), tally),
         (
             "from_json" | "to_json" | "round_trip" | "validation_schema" | "derive",
@@ -1065,7 +987,7 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
             check,
             Outcome::Skipped(
                 "advertises a renderer's capabilities: this crate reads them \
-                 (toolkit::negotiate) and has nothing that writes them"
+                 (agent::RendererCapabilities) and no renderer here writes them"
                     .to_string(),
             ),
         ),
@@ -1130,34 +1052,6 @@ fn case_version(case: &Value) -> CaseVersion {
     }
 }
 
-// --- catalog schema operations ---------------------------------------------
-
-/// Builds the three schema documents a case configures.
-///
-/// Schema surgery is version-independent — it works on the shape of the
-/// documents, not on the wire format — so unlike `validate` and `process_chunk`
-/// these actions run for v0.8 cases too.
-fn schema_bundle(case: &Value) -> Result<SchemaBundle, String> {
-    let config = case.get("catalog");
-    let load = |key: &str| -> Result<Value, String> {
-        Ok(load_catalog_schema(config.and_then(|c| field(c, key)))?.unwrap_or(Value::Null))
-    };
-    Ok(SchemaBundle {
-        s2c: load("s2c_schema")?,
-        common_types: load("common_types_schema")?,
-        catalog: load("catalog_schema")?,
-        custom_cuttable_keys: config
-            .and_then(|c| field(c, "custom_cuttable_keys"))
-            .and_then(Value::as_array)
-            .map(|keys| {
-                keys.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            }),
-    })
-}
-
 fn string_list(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
@@ -1171,356 +1065,7 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn run_prune(case: &Value) -> Outcome {
-    let bundle = match schema_bundle(case) {
-        Ok(bundle) => bundle,
-        Err(reason) => return Outcome::Skipped(reason),
-    };
-    let args = case.get("args");
-    let pruned = bundle.prune(
-        &string_list(args.and_then(|a| field(a, "allowed_components"))),
-        &string_list(args.and_then(|a| field(a, "allowed_messages"))),
-    );
-
-    let Some(expect) = case.get("expect").and_then(Value::as_object) else {
-        return Outcome::Skipped("case has no 'expect'".to_string());
-    };
-    for (key, want) in expect {
-        let actual = match key.as_str() {
-            "catalog_schema" => &pruned.catalog,
-            "s2c_schema" => &pruned.s2c,
-            "common_types_schema" => &pruned.common_types,
-            other => return Outcome::Skipped(format!("unexpected expectation key '{other}'")),
-        };
-        if actual != want {
-            return Outcome::Failed(format!("{key}: expected {want}, got {actual}"));
-        }
-    }
-    Outcome::Passed
-}
-
-fn run_render(case: &Value) -> Outcome {
-    let bundle = match schema_bundle(case) {
-        Ok(bundle) => bundle,
-        Err(reason) => return Outcome::Skipped(reason),
-    };
-    let Some(expected) = field(case, "expect_output").and_then(Value::as_str) else {
-        return Outcome::Skipped("case has no 'expect_output'".to_string());
-    };
-    let actual = bundle.render_llm_instructions();
-    if actual.trim() == expected.trim() {
-        Outcome::Passed
-    } else {
-        Outcome::Failed(format!("expected {expected:?}, got {actual:?}"))
-    }
-}
-
-fn run_load(case: &Value) -> Outcome {
-    let args = case.get("args");
-    let validate = args
-        .and_then(|a| a.get("validate"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let path = args.and_then(|a| a.get("path")).and_then(Value::as_str);
-    // Upstream validates each example against the catalog schema; this crate
-    // only checks that it parses, so schema-driven failures stay out of scope.
-    if validate && field(case, "expect_error").is_some() {
-        let wants_schema_failure = path.is_some_and(|p| p.contains("schema_error"));
-        if wants_schema_failure {
-            return Outcome::Skipped(
-                "expects JSON Schema validation of an example (no JSON Schema validator here)"
-                    .to_string(),
-            );
-        }
-    }
-
-    let resolved = path.map(|p| {
-        if p.starts_with('/') {
-            PathBuf::from(p)
-        } else {
-            conformance_dir().join(p)
-        }
-    });
-    let result = load_examples(resolved.as_deref(), validate);
-
-    if let Some(expect_error) = field(case, "expect_error") {
-        let wanted = expected_message(expect_error);
-        return match result {
-            Ok(output) => Outcome::Failed(format!(
-                "expected an error matching {wanted:?}, got {output:?}"
-            )),
-            Err(error) => {
-                let text = error.to_string();
-                if wanted.is_empty() || text.contains(&wanted) {
-                    Outcome::Passed
-                } else {
-                    Outcome::Failed(format!("expected {wanted:?} in error, got {text:?}"))
-                }
-            }
-        };
-    }
-
-    let Some(expected) = field(case, "expect_output").and_then(Value::as_str) else {
-        return Outcome::Skipped("case has no 'expect_output'".to_string());
-    };
-    match result {
-        Ok(actual) if actual.trim() == expected.trim() => Outcome::Passed,
-        Ok(actual) => Outcome::Failed(format!("expected {expected:?}, got {actual:?}")),
-        Err(error) => Outcome::Failed(format!("unexpected error: {error}")),
-    }
-}
-
-fn run_remove_strict(case: &Value) -> Outcome {
-    let Some(mut schema) = case.get("args").and_then(|a| a.get("schema")).cloned() else {
-        return Outcome::Skipped("case has no 'args.schema'".to_string());
-    };
-    let Some(expected) = case.get("expect").and_then(|e| e.get("schema")) else {
-        return Outcome::Skipped("case has no 'expect.schema'".to_string());
-    };
-    remove_strict_validation(&mut schema);
-    if &schema == expected {
-        Outcome::Passed
-    } else {
-        Outcome::Failed(format!("expected {expected}, got {schema}"))
-    }
-}
-
-fn run_verify_cuttable_keys(case: &Value) -> Outcome {
-    let bundle = match schema_bundle(case) {
-        Ok(bundle) => bundle,
-        Err(reason) => return Outcome::Skipped(reason),
-    };
-    let expected: BTreeSet<String> = string_list(
-        case.get("expect")
-            .and_then(|e| field(e, "custom_cuttable_keys")),
-    )
-    .into_iter()
-    .collect();
-    let actual: BTreeSet<String> = bundle.cuttable_keys().into_iter().collect();
-    if actual == expected {
-        Outcome::Passed
-    } else {
-        Outcome::Failed(format!("expected {expected:?}, got {actual:?}"))
-    }
-}
-
 // --- catalog negotiation and prompt generation -----------------------------
-
-fn client_capabilities(value: Option<&Value>) -> ClientCapabilities {
-    let Some(value) = value else {
-        return ClientCapabilities::default();
-    };
-    ClientCapabilities {
-        supported_catalog_ids: string_list(value.get("supportedCatalogIds")),
-        inline_catalogs: value
-            .get("inlineCatalogs")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-        ..ClientCapabilities::default()
-    }
-}
-
-fn run_select_catalog(case: &Value) -> Outcome {
-    let args = case.get("args");
-    let supported = args
-        .and_then(|a| field(a, "supported_catalogs"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let capabilities = client_capabilities(args.and_then(|a| field(a, "client_capabilities")));
-    let accepts_inline = args
-        .and_then(|a| field(a, "accepts_inline_catalogs"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    let result = select_catalog_schema(&supported, &capabilities, accepts_inline);
-
-    if let Some(expect_error) = field(case, "expect_error") {
-        let wanted = expected_message(expect_error);
-        return match result {
-            Ok(schema) => Outcome::Failed(format!(
-                "expected an error matching {wanted:?}, got {schema}"
-            )),
-            Err(error) => {
-                let text = error.to_string();
-                if wanted.is_empty() || text.contains(&wanted) {
-                    Outcome::Passed
-                } else {
-                    Outcome::Failed(format!("expected {wanted:?} in error, got {text:?}"))
-                }
-            }
-        };
-    }
-
-    let selected = match result {
-        Ok(selected) => selected,
-        Err(error) => return Outcome::Failed(format!("unexpected error: {error}")),
-    };
-    if let Some(expected) = field(case, "expect_selected").and_then(Value::as_str) {
-        let actual = selected.get("catalogId").and_then(Value::as_str);
-        if actual != Some(expected) {
-            return Outcome::Failed(format!("expected catalogId {expected:?}, got {actual:?}"));
-        }
-    }
-    if let Some(expected) = field(case, "expect_catalog_schema") {
-        if &selected != expected {
-            return Outcome::Failed(format!("expected {expected}, got {selected}"));
-        }
-    }
-    Outcome::Passed
-}
-
-fn run_load_catalog(case: &Value) -> Outcome {
-    let Some(configs) = field(case, "catalog_configs").and_then(Value::as_array) else {
-        return Outcome::Skipped("case has no 'catalog_configs'".to_string());
-    };
-    let mut registry = CatalogRegistry::new();
-    for config in configs {
-        let name = config
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let Some(path) = config.get("path").and_then(Value::as_str) else {
-            return Outcome::Skipped("catalog config has no path".to_string());
-        };
-        if let Err(error) = registry.load(name, fixture(path)) {
-            return Outcome::Failed(format!("cannot load {path}: {error}"));
-        }
-    }
-    for modifier in string_list(case.get("modifiers")) {
-        match modifier.as_str() {
-            "remove_strict_validation" => registry.relax_strict_validation(),
-            other => return Outcome::Skipped(format!("unknown modifier '{other}'")),
-        }
-    }
-
-    let Some(expect) = case.get("expect").filter(|expect| expect.is_object()) else {
-        return Outcome::Skipped("case has no 'expect'".to_string());
-    };
-    if let Some(expected) = field(expect, "catalog_schema") {
-        let Some(entry) = registry.entries().first() else {
-            return Outcome::Failed("registry is empty".to_string());
-        };
-        if &entry.schema != expected {
-            return Outcome::Failed(format!("expected {expected}, got {}", entry.schema));
-        }
-    }
-    if let Some(expected) = field(expect, "supported_catalog_ids") {
-        let actual = Value::from(registry.supported_catalog_ids());
-        if &actual != expected {
-            return Outcome::Failed(format!("expected {expected}, got {actual}"));
-        }
-    }
-    Outcome::Passed
-}
-
-fn run_generate_prompt(case: &Value) -> Outcome {
-    let args = case.get("args");
-    let version = args
-        .and_then(|a| a.get("version"))
-        .map(render_version)
-        .unwrap_or_default();
-    let include_schema = args
-        .and_then(|a| field(a, "include_schema"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    // The prompt scaffolding is version-independent, but the schema block
-    // embeds the protocol's own schema documents, and this crate ships v0.9.
-    if include_schema && !version.starts_with("0.9") && !version.starts_with("v0.9") {
-        return Outcome::Skipped(format!(
-            "prompt embeds the v{version} schema bundle; this crate targets v0.9"
-        ));
-    }
-
-    let role = args
-        .and_then(|a| field(a, "role_description"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let catalog = Catalog::empty("conformance");
-    let mut spec = PromptSpec::new(role, "", &catalog);
-    spec.include_response_format = false;
-
-    let workflow = args
-        .and_then(|a| field(a, "workflow_description"))
-        .and_then(Value::as_str);
-    let ui = args
-        .and_then(|a| field(a, "ui_description"))
-        .and_then(Value::as_str);
-    spec.ui_description = ui;
-
-    // Upstream appends a custom workflow description to the standard rules.
-    let rules;
-    if let Some(workflow) = workflow {
-        rules = format!("{}\n{workflow}", GENERATION_GUIDELINES);
-        spec.workflow_rules = Some(&rules);
-    }
-
-    let bundle;
-    if include_schema {
-        let mut capabilities =
-            client_capabilities(args.and_then(|a| field(a, "client_ui_capabilities")));
-        let accepts_inline = args
-            .and_then(|a| field(a, "accepts_inline_catalogs"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        // The suite does not carry the protocol's own schema documents, so the
-        // harness supplies the vendored v0.9 ones; the assertions are on the
-        // block structure, not on their contents.
-        let base = match load_catalog_schema(Some(&Value::String(
-            "test_data/catalogs/simplified_catalog_v09.json".to_string(),
-        ))) {
-            Ok(Some(schema)) => schema,
-            _ => return Outcome::Failed("vendored v0.9 catalog is missing".to_string()),
-        };
-        // Prompt-only vectors supply no renderer metadata. Explicitly configure
-        // the fixture's known catalog; do not exercise negotiation fallback.
-        if args
-            .and_then(|a| field(a, "client_ui_capabilities"))
-            .is_none()
-        {
-            capabilities = ClientCapabilities::supporting([base["catalogId"].as_str().unwrap()]);
-        }
-        let catalog_schema = match select_catalog_schema(&[base], &capabilities, accepts_inline) {
-            Ok(schema) => schema,
-            Err(error) => return Outcome::Failed(format!("catalog negotiation failed: {error}")),
-        };
-        let allowed = string_list(args.and_then(|a| field(a, "allowed_components")));
-        bundle = SchemaBundle {
-            s2c: load_vendored("test_data/simplified_s2c_v09.json"),
-            common_types: load_vendored("test_data/simplified_common_types_v09.json"),
-            catalog: catalog_schema,
-            custom_cuttable_keys: None,
-        }
-        .prune(&allowed, &[]);
-        spec.schemas = Some(&bundle);
-    }
-
-    let examples;
-    if args
-        .and_then(|a| field(a, "include_examples"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        let path = args
-            .and_then(|a| field(a, "examples_path"))
-            .and_then(Value::as_str)
-            .map(|p| conformance_dir().join(p));
-        examples = match load_examples(path.as_deref(), false) {
-            Ok(examples) => examples,
-            Err(error) => return Outcome::Failed(format!("cannot load examples: {error}")),
-        };
-        spec.examples = Some(&examples);
-    }
-
-    let prompt = build_subagent_prompt(&spec);
-    for wanted in string_list(field(case, "expect_contains")).iter() {
-        if !prompt.contains(wanted) {
-            return Outcome::Failed(format!("prompt does not contain {wanted:?}"));
-        }
-    }
-    Outcome::Passed
-}
 
 // --- resolve_path ----------------------------------------------------------
 
@@ -1925,8 +1470,38 @@ fn lenient_options() -> ValidateOptions {
     }
 }
 
+/// The schemas a strict case's processor holds the surfaces of one catalog
+/// to, or `None` when the document states nothing a schema engine would add.
+///
+/// A published document is a schema document, and compiles as it is. An
+/// inline catalog of a case is a fragment: its components are definitions for
+/// the semantic validator, and they stay with it. What a fragment can state
+/// that only a schema engine reads is a `theme`, which is the schema of the
+/// theme a surface may be created with; the fragment is completed into a
+/// document around it.
+fn strict_schema(document: &Value) -> Result<Option<SchemaValidator>, String> {
+    if document.get("$id").is_some() {
+        return catalog_validator(document).map(Some);
+    }
+    let Some(theme) = document.get("theme") else {
+        return Ok(None);
+    };
+    let id = document
+        .get("catalogId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let completed = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": format!("https://a2ui.invalid/conformance/{id}.json"),
+        "catalogId": id,
+        "$defs": {"theme": theme, "anyComponent": true, "anyFunction": true},
+    });
+    catalog_validator(&completed).map(Some)
+}
+
 /// The processor a case describes: its catalogs registered, and held strictly
-/// when the case says `strictMode: true`.
+/// when the case says `strictMode: true`. A strict processor is also given the
+/// schemas of its catalogs ([`strict_schema`]).
 ///
 /// A catalog named by `catalogPaths` is a published one, and the suite's
 /// messages create their surfaces under ids of their own (`test-catalog`). As
@@ -1935,12 +1510,28 @@ fn lenient_options() -> ValidateOptions {
 /// an unregistered id is the point.
 fn case_processor(case: &Value) -> Result<MessageProcessor, Miss> {
     let setup = |what: String| Miss::new(what, "a processor for the case");
-    let options = if case.get("strictMode") == Some(&Value::Bool(true)) {
+    let strict = case.get("strictMode") == Some(&Value::Bool(true));
+    let options = if strict {
         conformance_options()
     } else {
         lenient_options()
     };
     let mut processor = MessageProcessor::with_options(options);
+    // Registers the schemas of `document` for the surfaces of catalog `id`.
+    let with_schema = |processor: &mut MessageProcessor, id: &str, document: &Value| {
+        if !strict {
+            return Ok(());
+        }
+        match strict_schema(document) {
+            Ok(Some(schema)) => processor
+                .register_schema(id, schema)
+                .map_err(|error| setup(error.to_string())),
+            Ok(None) => Ok(()),
+            Err(error) => Err(setup(format!(
+                "the schemas of {id:?} do not compile: {error}"
+            ))),
+        }
+    };
     for document in case
         .get("catalogs")
         .and_then(Value::as_array)
@@ -1949,9 +1540,11 @@ fn case_processor(case: &Value) -> Result<MessageProcessor, Miss> {
     {
         let catalog = Catalog::from_schema(document)
             .map_err(|error| setup(format!("an inline catalog was rejected: {error}")))?;
+        let id = catalog.catalog_id.clone();
         processor
             .register(catalog)
             .map_err(|error| setup(error.to_string()))?;
+        with_schema(&mut processor, &id, document)?;
     }
     let mut published = Vec::new();
     for path in string_list(case.get("catalogPaths")) {
@@ -1964,13 +1557,14 @@ fn case_processor(case: &Value) -> Result<MessageProcessor, Miss> {
         processor
             .register(catalog.clone())
             .map_err(|error| setup(error.to_string()))?;
-        published.push(catalog);
+        with_schema(&mut processor, &catalog.catalog_id, &document)?;
+        published.push((catalog, document));
     }
     let expects_catalog_error = case
         .pointer("/expectError/category")
         .and_then(Value::as_str)
         == Some("CatalogError");
-    if let (Some(catalog), false) = (published.first(), expects_catalog_error) {
+    if let (Some((catalog, document)), false) = (published.first(), expects_catalog_error) {
         let steps = case.get("steps").and_then(Value::as_array);
         let batches = std::iter::once(case.get("messages"))
             .chain(steps.into_iter().flatten().map(|step| step.get("messages")));
@@ -1984,6 +1578,7 @@ fn case_processor(case: &Value) -> Result<MessageProcessor, Miss> {
                 processor
                     .register(alias)
                     .map_err(|error| setup(error.to_string()))?;
+                with_schema(&mut processor, id, document)?;
             }
         }
     }
@@ -2058,6 +1653,10 @@ fn refusal_says(phrase: &str, rejection: &Rejection) -> Option<bool> {
                         | ErrorCode::MissingRequiredProp
                         | ErrorCode::InvalidValue
                 ) && e.message.starts_with(kind)
+            })
+        } else if phrase.starts_with("Validation failed for theme on surface ") {
+            errors.iter().any(|e| {
+                e.code == ErrorCode::InvalidValue && e.path.contains(".createSurface.theme")
             })
         } else if phrase == "Message contains multiple conflicting update actions" {
             errors.iter().any(|e| {
@@ -2834,13 +2433,6 @@ fn the_shipped_common_types_are_the_published_ones() {
     }
 }
 
-fn load_vendored(relative: &str) -> Value {
-    load_catalog_schema(Some(&Value::String(relative.to_string())))
-        .ok()
-        .flatten()
-        .unwrap_or(Value::Null)
-}
-
 // --- validate, current layout ---------------------------------------------
 
 /// The scope the `validate` cases are compared at.
@@ -3609,334 +3201,6 @@ fn truncate(text: &str) -> String {
         return text.to_string();
     }
     text.chars().take(57).collect::<String>() + "..."
-}
-
-// --- streaming parser ------------------------------------------------------
-
-fn run_process_chunk(name: &str, case: &Value) -> Outcome {
-    let catalog_config = case.get("catalog");
-    let catalog = match load_catalog_schema(catalog_config.and_then(|c| field(c, "catalog_schema")))
-    {
-        Ok(Some(schema)) => match Catalog::from_schema(&schema) {
-            Ok(catalog) => catalog,
-            Err(error) => return Outcome::Failed(format!("catalog rejected: {error}")),
-        },
-        Ok(None) => Catalog::empty("conformance"),
-        Err(reason) => return Outcome::Skipped(reason),
-    };
-
-    let mut parser = StreamParser::new(catalog);
-    if let Some(keys) = catalog_config
-        .and_then(|c| field(c, "custom_cuttable_keys"))
-        .and_then(Value::as_array)
-    {
-        parser = parser.with_cuttable_keys(keys.iter().filter_map(Value::as_str));
-    }
-    if field(case, "disable_validation").and_then(Value::as_bool) == Some(true) {
-        parser = parser.without_validation();
-    }
-
-    let Some(steps) = case.get("steps").and_then(Value::as_array) else {
-        return Outcome::Skipped("case has no steps".to_string());
-    };
-    let divergence = streaming_divergence(name);
-    let mut saw_safe_alternative = false;
-
-    for (index, step) in steps.iter().enumerate() {
-        let input = step
-            .get("input")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let result = parser.process_chunk(input);
-
-        if let Some(expect_error) = field(step, "expect_error") {
-            let wanted = expected_message(expect_error);
-            return match result {
-                Ok(parts) => Outcome::Failed(format!(
-                    "step {index}: expected an error matching {wanted:?}, got {parts:?}"
-                )),
-                Err(error) => {
-                    let text = error.to_string();
-                    if wanted.is_empty() || text.contains(&wanted) {
-                        Outcome::Passed
-                    } else {
-                        Outcome::Failed(format!(
-                            "step {index}: expected {wanted:?} in error, got {text:?}"
-                        ))
-                    }
-                }
-            };
-        }
-
-        let parts = match result {
-            Ok(parts) => parts,
-            Err(error) => {
-                return Outcome::Failed(format!("step {index}: unexpected error: {error}"));
-            }
-        };
-        let upstream_expected = step
-            .get("expect")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let expected = match safe_streaming_expectation(name, index, steps, &upstream_expected) {
-            Ok(Some(expected)) => {
-                saw_safe_alternative = true;
-                expected
-            }
-            Ok(None) => upstream_expected,
-            Err(error) => return Outcome::Failed(format!("step {index}: {error}")),
-        };
-        if parts.len() != expected.len() {
-            return Outcome::Failed(format!(
-                "step {index}: expected {} part(s), got {}: {}",
-                expected.len(),
-                parts.len(),
-                describe_parts(&parts)
-            ));
-        }
-        for (part, want) in parts.iter().zip(&expected) {
-            let want_text = want.get("text").and_then(Value::as_str).unwrap_or("");
-            if part.text != want_text {
-                return Outcome::Failed(format!(
-                    "step {index}: expected text {want_text:?}, got {:?}",
-                    part.text
-                ));
-            }
-            let want_a2ui = want.get("a2ui").and_then(Value::as_array);
-            match (&part.a2ui, want_a2ui) {
-                (Some(actual), Some(expected)) if actual == expected => {}
-                (None, None) => {}
-                (actual, expected) => {
-                    return Outcome::Failed(format!(
-                        "step {index}: expected a2ui {}, got {}",
-                        serde_json::to_string(&expected).unwrap_or_default(),
-                        serde_json::to_string(&actual).unwrap_or_default()
-                    ));
-                }
-            }
-        }
-    }
-    match divergence {
-        Some(reason) if saw_safe_alternative => Outcome::ExpectedDivergence(reason.into()),
-        Some(_) => Outcome::Failed("pinned reference difference was not exercised".into()),
-        None => Outcome::Passed,
-    }
-}
-
-/// Pins differences in partial-message timing and catalog reference semantics.
-fn streaming_divergence(name: &str) -> Option<&'static str> {
-    match name {
-        "test_delta_streaming_correctness_v09" => Some("partial message has no required version"),
-        "test_incremental_data_model_streaming_v09"
-        | "test_sniff_partial_invalid_datamodel_fails_gracefully_v09"
-        | "test_sniff_partial_datamodel_with_cut_key_v09"
-        | "test_sniff_partial_datamodel_cumulative_unmodified_keys_v09"
-        | "test_sniff_partial_datamodel_prunes_empty_keys_v09"
-        | "test_sniff_partial_datamodel_prunes_empty_trailing_dict_v09" => {
-            Some("partial root update has no settled path")
-        }
-        "test_cut_unicode_multibyte_emoji_v09" => Some(
-            "half a surrogate pair is not a string in Rust; nothing is emitted until it is whole",
-        ),
-        _ => None,
-    }
-}
-
-fn safe_streaming_expectation(
-    name: &str,
-    index: usize,
-    steps: &[Value],
-    upstream: &[Value],
-) -> Result<Option<Vec<Value>>, String> {
-    if name == "test_cut_unicode_multibyte_emoji_v09" && index == 1 {
-        // Upstream emits the text cut after the first half of the pair. The
-        // suite loader reads that half as U+FFFD; see `readable`.
-        let text = upstream
-            .first()
-            .and_then(|part| part.pointer("/a2ui/0/updateComponents/components/0/text"));
-        if upstream.len() != 1 || text != Some(&serde_json::json!("Rocket \u{FFFD}")) {
-            return Err("pinned upstream surrogate expectation changed".into());
-        }
-        return Ok(Some(Vec::new()));
-    }
-    let suppress = match name {
-        "test_delta_streaming_correctness_v09" => matches!(index, 5 | 6),
-        "test_incremental_data_model_streaming_v09" => matches!(index, 3 | 4),
-        "test_sniff_partial_invalid_datamodel_fails_gracefully_v09" => index == 0,
-        "test_sniff_partial_datamodel_with_cut_key_v09" => matches!(index, 0 | 1),
-        "test_sniff_partial_datamodel_cumulative_unmodified_keys_v09" => {
-            matches!(index, 1 | 2)
-        }
-        "test_sniff_partial_datamodel_prunes_empty_keys_v09"
-        | "test_sniff_partial_datamodel_prunes_empty_trailing_dict_v09" => index == 0,
-        _ => false,
-    };
-    if suppress {
-        let key = if name == "test_delta_streaming_correctness_v09" {
-            "updateComponents"
-        } else {
-            "updateDataModel"
-        };
-        if upstream.len() != 1
-            || upstream[0]["a2ui"]
-                .as_array()
-                .is_none_or(|ops| ops.len() != 1)
-            || upstream[0]["a2ui"][0].get(key).is_none()
-        {
-            return Err("pinned upstream partial expectation changed".into());
-        }
-        return Ok(Some(Vec::new()));
-    }
-    if name == "test_sniff_partial_datamodel_with_cut_key_v09" && index == 3 {
-        if upstream.len() != 1 || upstream[0]["a2ui"][0].get("updateDataModel").is_none() {
-            return Err("pinned upstream completion expectation changed".into());
-        }
-        let mut source = String::new();
-        for step in steps.iter().take(index + 1) {
-            source.push_str(
-                step.get("input")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            );
-        }
-        let inner = source
-            .strip_prefix("<a2ui-json>")
-            .and_then(|text| text.strip_suffix("</a2ui-json>"))
-            .ok_or("pinned upstream block delimiters changed")?;
-        if serde_json::from_str::<Value>(inner).is_ok() {
-            return Err("pinned upstream final block became valid JSON".into());
-        }
-        return Ok(Some(Vec::new()));
-    }
-    Ok(None)
-}
-
-fn describe_parts(parts: &[ag_ui_a2ui::toolkit::parser::ResponsePart]) -> String {
-    parts
-        .iter()
-        .map(|part| {
-            format!(
-                "{{text: {:?}, a2ui: {}}}",
-                part.text,
-                serde_json::to_string(&part.a2ui).unwrap_or_default()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-// --- parser ---------------------------------------------------------------
-
-fn run_parse_full(case: &Value) -> Outcome {
-    let input = case
-        .get("input")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let result = parse_response(input);
-
-    if let Some(expect_error) = field(case, "expect_error") {
-        let wanted = expected_message(expect_error);
-        return match result {
-            Ok(_) => Outcome::Failed(format!("expected an error matching {wanted:?}, got parts")),
-            Err(error) => {
-                let text = error.to_string();
-                if wanted.is_empty() || text.contains(&wanted) {
-                    Outcome::Passed
-                } else {
-                    Outcome::Failed(format!("expected {wanted:?} in error, got {text:?}"))
-                }
-            }
-        };
-    }
-
-    let Some(expected) = case.get("expect").and_then(Value::as_array) else {
-        return Outcome::Skipped("case has neither 'expect' nor 'expect_error'".to_string());
-    };
-    let parts = match result {
-        Ok(parts) => parts,
-        Err(error) => return Outcome::Failed(format!("unexpected parse error: {error}")),
-    };
-    if parts.len() != expected.len() {
-        return Outcome::Failed(format!(
-            "expected {} part(s), got {}",
-            expected.len(),
-            parts.len()
-        ));
-    }
-    for (part, want) in parts.iter().zip(expected) {
-        let want_text = want.get("text").and_then(Value::as_str).unwrap_or("");
-        if part.text != want_text {
-            return Outcome::Failed(format!("expected text {want_text:?}, got {:?}", part.text));
-        }
-        let want_a2ui = want.get("a2ui").and_then(Value::as_array);
-        match (&part.a2ui, want_a2ui) {
-            (Some(actual), Some(expected)) if actual == expected => {}
-            (None, None) => {}
-            (actual, expected) => {
-                return Outcome::Failed(format!("expected a2ui {expected:?}, got {actual:?}"));
-            }
-        }
-    }
-    Outcome::Passed
-}
-
-fn run_fix_payload(case: &Value) -> Outcome {
-    let input = case
-        .get("input")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if let Some(expect_error) = field(case, "expect_error") {
-        let wanted = expected_message(expect_error);
-        return match parse_and_fix(input) {
-            Ok(fixed) => Outcome::Failed(format!(
-                "expected an error matching {wanted:?}, got {fixed:?}"
-            )),
-            Err(error) if error.to_string().contains(&wanted) => Outcome::Passed,
-            Err(error) => Outcome::Failed(format!("expected {wanted:?} in error, got {error}")),
-        };
-    }
-    let Some(expected) = case.get("expect").and_then(Value::as_array) else {
-        return Outcome::Skipped("case has no array 'expect'".to_string());
-    };
-    match parse_and_fix(input) {
-        Ok(actual) if &actual == expected => Outcome::Passed,
-        Ok(actual) => Outcome::Failed(format!("expected {expected:?}, got {actual:?}")),
-        Err(error) => Outcome::Failed(format!("unexpected error: {error}")),
-    }
-}
-
-fn run_has_parts(case: &Value) -> Outcome {
-    let input = case
-        .get("input")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let Some(expected) = case.get("expect").and_then(Value::as_bool) else {
-        return Outcome::Skipped("case has no boolean 'expect'".to_string());
-    };
-    let actual = has_a2ui_parts(input);
-    if actual == expected {
-        Outcome::Passed
-    } else {
-        Outcome::Failed(format!("expected {expected}, got {actual}"))
-    }
-}
-
-/// The message text an `expect_error` wants matched.
-///
-/// Upstream treats these as regexes; every one used by the suites this harness
-/// executes is a plain substring, so a substring check is exact here and avoids
-/// pulling in a regex dependency. A pattern with regex metacharacters would be
-/// reported as a mismatch rather than passing by accident.
-fn expected_message(expect_error: &Value) -> String {
-    match expect_error {
-        Value::String(s) => s.clone(),
-        other => other
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-    }
 }
 
 #[test]

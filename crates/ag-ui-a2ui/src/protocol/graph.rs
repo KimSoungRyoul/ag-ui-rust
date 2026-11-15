@@ -3,10 +3,10 @@
 //! Components are a flat list; the tree is what their child references say.
 //! Three questions are asked of that graph — which components can the root
 //! reach, does following references ever come back to where it started, and
-//! how deep does it go — and they are asked both by the validator, over a
-//! finished surface, and by the streaming parser, over a surface that is still
-//! arriving. [`Graph::walk`] answers all three in one depth-first pass, so the
-//! two cannot disagree about what a cycle is or which components are attached.
+//! how deep does it go — and they are asked of a finished surface and of one
+//! that is still arriving alike. [`Graph::walk`] answers all three in one
+//! depth-first pass, so there is one answer to what a cycle is and to which
+//! components are attached.
 //!
 //! # Depth
 //!

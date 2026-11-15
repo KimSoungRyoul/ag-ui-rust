@@ -1,4 +1,5 @@
-//! A2UI protocol types, semantic validator, and agent-side authoring toolkit.
+//! A2UI protocol types, semantic validator, and the agent layer a framework
+//! delegates A2UI to.
 //!
 //! [A2UI](https://a2ui.org) is a declarative, agent-driven UI protocol: an agent
 //! streams JSON describing a surface, and a renderer draws it. This crate is the
@@ -40,25 +41,30 @@
 //!
 //! One further piece is internal: the child-reference graph of a component
 //! list, and the single depth-first walk over it that answers reachability,
-//! cycles and depth for the validator and for the streaming parser alike.
+//! cycles and depth for every surface the validator is shown, finished or
+//! still arriving.
 //!
 //! ## What depends on what
 //!
-//! The protocol modules reach into nothing above them. The `schema-validation`
-//! feature still turns `toolkit` on, for the callers that came to rely on it;
-//! nothing in the validator needs it.
+//! The protocol modules reach into nothing above them, and neither does the
+//! `schema-validation` feature.
 //!
 //! With default features off, the protocol modules are all there is, and they
 //! need only `serde`, `serde_json`, `thiserror`, `jsonptr` and `unicode-ident`.
 //!
 //! # Around the protocol
 //!
+//! There is one generation path: the agent layer. Its prompt snippet, its
+//! reader for each output format and its retry decision are the only ones in
+//! the crate, and everything else that generates is a use of it.
+//!
 #![cfg_attr(
     feature = "agent",
-    doc = "- [`agent`] (feature `agent`) — what an agent framework delegates A2UI to:",
-    doc = "  catalog negotiation, the prompt snippet, reading a model's answer whole or",
-    doc = "  streamed, the mirror of the renderer's state, and the retry decision. The",
-    doc = "  framework makes the model call; nothing in the layer does I/O."
+    doc = "- [`agent`] (feature `agent`, on by default) — what an agent framework",
+    doc = "  delegates A2UI to: catalog negotiation, the prompt snippet, reading a",
+    doc = "  model's answer whole or streamed, the mirror of the renderer's state, and",
+    doc = "  the retry decision. The framework makes the model call; nothing in the",
+    doc = "  layer does I/O."
 )]
 #![cfg_attr(
     not(feature = "agent"),
@@ -67,16 +73,27 @@
     doc = "  state and the retry decision, with no model call and no I/O."
 )]
 #![cfg_attr(
+    feature = "author",
+    doc = "- [`author`] (feature `author`) — one surface created or edited by a model,",
+    doc = "  with a fixed target, version and catalog, held to the JSON Schemas: the",
+    doc = "  agent layer for the case where that is all an application wants."
+)]
+#![cfg_attr(
+    not(feature = "author"),
+    doc = "- `author` (feature `author`, off in this build) — one surface created or",
+    doc = "  edited by a model, held to the JSON Schemas, on the agent layer."
+)]
+#![cfg_attr(
     feature = "toolkit",
-    doc = "- [`toolkit`] (feature `toolkit`) — building ops, negotiating a catalog,",
-    doc = "  assembling prompts, parsing a model's output as it streams, recovering a",
-    doc = "  surface from conversation history, and the validate-and-retry loop around",
-    doc = "  a generating model."
+    doc = "- [`toolkit`] (feature `toolkit`) — the conventions of an agent hosted on",
+    doc = "  AG-UI: the operations envelope, building the operations of a surface, the",
+    doc = "  generate and render tools, and recovering a surface from conversation",
+    doc = "  history."
 )]
 #![cfg_attr(
     not(feature = "toolkit"),
-    doc = "- `toolkit` (feature `toolkit`, off in this build) — building ops, prompts,",
-    doc = "  parsing a model's output, and the validate-and-retry loop."
+    doc = "- `toolkit` (feature `toolkit`, off in this build) — the conventions of an",
+    doc = "  agent hosted on AG-UI: the operations envelope, op builders, tools, history."
 )]
 #![cfg_attr(
     feature = "ag-ui",
@@ -196,7 +213,7 @@ pub use crate::protocol::version::A2uiVersion;
 pub use error::{Error, Result, ValidationErrors};
 
 #[cfg(feature = "toolkit")]
-pub use toolkit::{StreamParser, wrap_as_operations_envelope, wrap_error_envelope};
+pub use toolkit::{wrap_as_operations_envelope, wrap_error_envelope};
 
 #[cfg(feature = "ag-ui")]
 pub use agui::find_prior_surface_in;

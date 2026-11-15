@@ -34,14 +34,9 @@ pub const GENERATE_A2UI_TOOL_NAME: &str = "generate_a2ui";
 /// Inner structured-output tool name the generating model calls to emit a surface.
 pub const RENDER_A2UI_TOOL_NAME: &str = "render_a2ui";
 
-/// Total generation attempts before the recovery loop gives up.
+/// How many answers an author judges before it gives up, unless told
+/// otherwise. A retry driver is told its number when it is made.
 pub const MAX_A2UI_ATTEMPTS: u32 = 3;
-
-/// Activity type used to report recovery-loop progress to the caller.
-pub const A2UI_RECOVERY_ACTIVITY_TYPE: &str = "a2ui_recovery";
-
-/// MIME type for a standalone A2UI payload (A2A parts, MCP resources, HTTP bodies).
-pub const MIME_TYPE: &str = "application/a2ui+json";
 
 /// The `id` the root of a surface's component tree must have.
 ///

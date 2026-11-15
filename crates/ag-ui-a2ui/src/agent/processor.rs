@@ -10,10 +10,11 @@ use super::capabilities::{RendererCapabilities, resolve_catalogs};
 use super::catalog::{CatalogConfig, CatalogDocument, check_catalogs};
 use super::direct_json::DirectJson;
 use super::format::{OutputFormat, RawPart, ResponseError, ResponsePart};
-use super::state::{ActiveCatalog, RendererState, validate_payload};
+use super::state::{RendererState, session_processor, validate_payload};
 use super::stream::{ResponseStream, StreamOptions};
 use crate::error::{Error, Result};
 use crate::protocol::message::AgentMessage;
+use crate::protocol::processor::MessageProcessor;
 use crate::protocol::version::A2uiVersion;
 
 /// What an agent knows about A2UI for its whole life: the catalogs it
@@ -163,8 +164,11 @@ pub struct A2uiRequestProcessor {
 
 #[derive(Debug)]
 struct Inner {
-    documents: Vec<CatalogDocument>,
-    catalogs: Arc<[ActiveCatalog]>,
+    documents: Arc<[CatalogDocument]>,
+    /// How a state of this request takes a message in: the active catalogs
+    /// registered, with their schemas when the session checks them. It holds
+    /// no surfaces; every state starts as a copy of it.
+    session: MessageProcessor,
     version: A2uiVersion,
     examples: Vec<Vec<AgentMessage>>,
     format: Arc<dyn OutputFormat>,
@@ -199,8 +203,8 @@ impl A2uiRequestProcessor {
         let prompt_snippet = format.prompt_snippet(&catalogs, &examples)?;
         Ok(Self {
             inner: Arc::new(Inner {
-                catalogs: catalogs.iter().cloned().map(ActiveCatalog::new).collect(),
-                documents: catalogs,
+                session: session_processor(&catalogs, version)?,
+                documents: catalogs.into(),
                 version,
                 examples,
                 format,
@@ -231,7 +235,7 @@ impl A2uiRequestProcessor {
         use crate::protocol::schema::SchemaBundle;
         use crate::protocol::schema_validation::SchemaValidator;
 
-        let catalogs = self
+        let schemas = self
             .inner
             .documents
             .iter()
@@ -240,16 +244,30 @@ impl A2uiRequestProcessor {
                     catalog: document.document().clone(),
                     ..SchemaBundle::basic()?
                 };
-                Ok(ActiveCatalog {
-                    document: document.clone(),
-                    schema: Some(Arc::new(SchemaValidator::new(&bundle, resources)?)),
-                })
+                Ok((
+                    document.catalog_id().to_string(),
+                    SchemaValidator::new(&bundle, resources)?,
+                ))
             })
-            .collect::<Result<Arc<[ActiveCatalog]>>>()?;
+            .collect::<Result<Vec<_>>>()?;
+        self.with_schemas(schemas)
+    }
+
+    /// A processor that holds the messages of each named catalog's surfaces
+    /// to the schemas compiled for it.
+    #[cfg(feature = "schema-validation")]
+    pub(crate) fn with_schemas(
+        &self,
+        schemas: Vec<(String, crate::protocol::schema_validation::SchemaValidator)>,
+    ) -> Result<Self> {
+        let mut session = self.inner.session.clone();
+        for (catalog_id, schema) in schemas {
+            session.register_schema(&catalog_id, schema)?;
+        }
         Ok(Self {
             inner: Arc::new(Inner {
                 documents: self.inner.documents.clone(),
-                catalogs,
+                session,
                 version: self.inner.version,
                 examples: self.inner.examples.clone(),
                 format: self.inner.format.clone(),
@@ -286,7 +304,11 @@ impl A2uiRequestProcessor {
     /// agent keeps one for the whole conversation and reads every turn into
     /// it, so each turn is checked against the surfaces earlier turns built.
     pub fn create_state(&self) -> RendererState {
-        RendererState::from_parts(self.inner.catalogs.clone(), self.inner.version)
+        RendererState::from_parts(
+            self.inner.documents.clone(),
+            self.inner.version,
+            &self.inner.session,
+        )
     }
 
     /// Whether answers can be read into `state`: it holds the processor's
@@ -390,7 +412,7 @@ impl A2uiRequestProcessor {
             ))
         })?;
         let mut opened = state.clone();
-        opened.bind(&self.inner.catalogs);
+        opened.bind(&self.inner.session);
         Ok(ResponseStream::new(
             reader,
             opened,
@@ -420,7 +442,7 @@ impl A2uiRequestProcessor {
         state: &mut RendererState,
     ) -> std::result::Result<Vec<ResponsePart>, ResponseError> {
         self.check_state(state).map_err(ResponseError::new)?;
-        state.bind(&self.inner.catalogs);
+        state.bind(&self.inner.session);
 
         let mut parts: Vec<ResponsePart> = Vec::new();
         let mut touched: Vec<String> = Vec::new();
