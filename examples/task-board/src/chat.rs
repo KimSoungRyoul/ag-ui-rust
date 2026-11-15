@@ -169,8 +169,10 @@ async fn drive<T: Transport>(
                     .map(|subagent| subagent.name.clone());
                 // A result that carries a surface is drawn as the surface it
                 // leaves, which for an update is more than the result holds.
+                // One whose operations do not apply to the conversation so
+                // far is reported as that.
                 let surface = operations_in(&message.message)
-                    .and_then(|_| surface_after(run.thread().messages(), &message.message));
+                    .map(|_| surface_after(run.thread().messages(), &message.message));
                 open_line = print_message(
                     output,
                     &message,
@@ -250,7 +252,7 @@ fn print_message(
     update: &MessageUpdate,
     open_line: bool,
     speaker: Option<&str>,
-    surface: Option<&SurfaceState>,
+    surface: Option<&Replayed>,
 ) -> io::Result<bool> {
     match &update.change {
         MessageChangeKind::Started => {
@@ -299,20 +301,29 @@ fn print_message(
     }
 }
 
+/// What replaying a conversation gave for a result that carries operations:
+/// the surface on screen, none, or why the conversation does not replay.
+type Replayed = ag_ui_a2ui::Result<Option<SurfaceState>>;
+
 /// The surface the conversation shows once `message` is part of it.
-fn surface_after(messages: &[Message], message: &Message) -> Option<SurfaceState> {
+///
+/// An `Err` is a conversation whose operations do not apply in order: a
+/// surface created twice, say. That is a defect in whatever produced them,
+/// and it is not the same as a conversation with no surface, so it is kept
+/// apart from one.
+fn surface_after(messages: &[Message], message: &Message) -> Replayed {
     let mut conversation = messages.to_vec();
     if !conversation.iter().any(|known| known.id() == message.id()) {
         conversation.push(message.clone());
     }
-    latest_surface(&conversation).ok().flatten()
+    latest_surface(&conversation)
 }
 
 /// Prints a tool result — as a surface when it is one, as JSON otherwise.
 fn print_result(
     output: &mut impl Write,
     message: &Message,
-    surface: Option<&SurfaceState>,
+    surface: Option<&Replayed>,
 ) -> io::Result<()> {
     let Message::Tool(tool) = message else {
         return Ok(());
@@ -328,7 +339,19 @@ fn print_result(
         };
     }
 
-    match surface.and_then(surface_lines) {
+    let drawn = match surface {
+        // Said the way every other failure is, so it cannot pass for a turn
+        // that had nothing to draw.
+        Some(Err(error)) => {
+            return writeln!(
+                output,
+                "  !! this result's surface does not replay: {error}"
+            );
+        }
+        Some(Ok(surface)) => surface.as_ref().and_then(surface_lines),
+        None => None,
+    };
+    match drawn {
         Some(lines) => {
             writeln!(output, "    ┌ a2ui surface")?;
             for line in lines {
@@ -410,4 +433,46 @@ fn approved(
     };
     let answer = answer.trim();
     Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ag_ui_a2ui::AgentMessage;
+    use ag_ui_a2ui::adapters::agui::wrap_as_operations_envelope;
+
+    fn printed(message: &Message, surface: Option<&Replayed>) -> String {
+        let mut output = Vec::new();
+        print_result(&mut output, message, surface).expect("a Vec is written to");
+        String::from_utf8(output).expect("the client prints UTF-8")
+    }
+
+    /// A result whose operations do not apply to the conversation is a
+    /// failure, printed as one. It used to be folded into "an A2UI envelope
+    /// this client cannot draw", which is what a surface with no components
+    /// prints as too.
+    #[test]
+    fn a_result_that_does_not_replay_is_printed_as_a_failure() {
+        let created =
+            wrap_as_operations_envelope(&[AgentMessage::create_surface("board", "basic")])
+                .expect("an envelope");
+        let first = Message::tool("m-1", "call-1", created.clone());
+        let again = Message::tool("m-2", "call-2", created);
+
+        let replayed = surface_after(std::slice::from_ref(&first), &again);
+        assert!(replayed.is_err());
+        let line = printed(&again, Some(&replayed));
+        assert!(
+            line.starts_with("  !! this result's surface does not replay: ")
+                && line.contains("already exists"),
+            "{line}"
+        );
+
+        // The first one replays, and has nothing to draw yet.
+        let replayed = surface_after(&[], &first);
+        assert_eq!(
+            printed(&first, Some(&replayed)),
+            "    → an A2UI envelope this client cannot draw\n"
+        );
+    }
 }

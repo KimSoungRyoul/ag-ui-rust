@@ -83,14 +83,19 @@ pub fn data_part(message: &Value, version: Option<&str>) -> Value {
     })
 }
 
+/// Whether an A2A part is a data part: its `kind` says so, or, written
+/// without a `kind` as some serializers leave it, it has `data`.
+fn is_data_part(part: &Value) -> bool {
+    match part.get("kind").and_then(Value::as_str) {
+        Some(kind) => kind == "data",
+        None => part.get("data").is_some(),
+    }
+}
+
 /// Whether an A2A part is a data part that carries A2UI: its metadata names
 /// [`MIME_TYPE`] or [`DEPRECATED_MIME_TYPE`].
 pub fn is_a2ui_part(part: &Value) -> bool {
-    let is_data = match part.get("kind").and_then(Value::as_str) {
-        Some(kind) => kind == "data",
-        None => part.get("data").is_some(),
-    };
-    is_data
+    is_data_part(part)
         && part
             .pointer("/metadata/mimeType")
             .and_then(Value::as_str)
@@ -206,11 +211,22 @@ where
 /// `metadata` inside the data of each data part, which is where older clients
 /// wrote them. The first that has them wins. `None` when none does.
 ///
+/// Only data parts are read: a part whose `kind` is `data`, or one written
+/// without a `kind` that has `data`. A text or file part is passed over
+/// whatever else it carries.
+///
+/// What is inside a part's data is the application's, and `metadata` there
+/// may be a key of its own. So in that third place a `metadata` that is not
+/// an object is not capabilities and is passed over, with the part, as the
+/// reference does (`_capabilities_from_legacy_data` in `a2ui.a2a`); the
+/// parts after it are still read.
+///
 /// # Errors
 ///
 /// Returns [`Error::Catalog`](crate::Error::Catalog) when the capabilities
 /// are there and malformed, as
-/// [`RendererCapabilities::from_metadata`] does.
+/// [`RendererCapabilities::from_metadata`] does, and when the `metadata` of
+/// the message or of a data part is not an object.
 pub fn renderer_capabilities(
     message: &Value,
     version: A2uiVersion,
@@ -223,7 +239,7 @@ pub fn renderer_capabilities(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|part| part.get("data").is_some())
+        .filter(|part| is_data_part(part))
         .collect();
     for part in &data_parts {
         if let Some(found) = RendererCapabilities::from_metadata(part.get("metadata"), version)? {
@@ -231,7 +247,9 @@ pub fn renderer_capabilities(
         }
     }
     for part in &data_parts {
-        let legacy = part.pointer("/data/metadata");
+        let legacy = part
+            .pointer("/data/metadata")
+            .filter(|metadata| metadata.is_object());
         if let Some(found) = RendererCapabilities::from_metadata(legacy, version)? {
             return Ok(Some(found));
         }
@@ -367,5 +385,68 @@ mod tests {
         let malformed =
             json!({"metadata": {CLIENT_CAPABILITIES_KEY: {"v0.9": {"supportedCatalogIds": "x"}}}});
         assert!(renderer_capabilities(&malformed, A2uiVersion::V0_9).is_err());
+    }
+
+    /// What a data part holds is the application's, and it may have a
+    /// `metadata` of its own that has nothing to do with capabilities.
+    #[test]
+    fn a_data_part_whose_own_metadata_is_not_an_object_is_passed_over() {
+        let capabilities =
+            json!({CLIENT_CAPABILITIES_KEY: {"v0.9": {"supportedCatalogIds": ["c"]}}});
+        let supports = |message: &Value| {
+            renderer_capabilities(message, A2uiVersion::V0_9)
+                .unwrap_or_else(|error| panic!("{message}: {error}"))
+                .map(|found| found.to_json()["v0.9"]["supportedCatalogIds"][0].clone())
+        };
+
+        // The part after it is still read.
+        let behind = json!({"parts": [
+            {"kind": "data", "data": {"metadata": "build 42", "rows": [1, 2]}},
+            {"kind": "data", "data": {"metadata": capabilities}},
+        ]});
+        assert_eq!(supports(&behind), Some(json!("c")));
+        for own in [
+            json!("build 42"),
+            json!(7),
+            json!([1]),
+            json!(true),
+            json!(null),
+        ] {
+            let alone = json!({"parts": [{"kind": "data", "data": {"metadata": own}}]});
+            assert_eq!(supports(&alone), None, "{alone}");
+        }
+        // Data that is not an object has no metadata at all.
+        let listed = json!({"parts": [{"kind": "data", "data": [1, 2]}]});
+        assert_eq!(supports(&listed), None);
+
+        // An object there is read, and one that is malformed is still an error.
+        let malformed = json!({"parts": [{"kind": "data", "data": {"metadata": {
+            CLIENT_CAPABILITIES_KEY: {"v0.9": {"supportedCatalogIds": "x"}}
+        }}}]});
+        assert!(renderer_capabilities(&malformed, A2uiVersion::V0_9).is_err());
+    }
+
+    /// A part that says what it is is taken at its word.
+    #[test]
+    fn only_data_parts_are_read_for_capabilities() {
+        let capabilities =
+            json!({CLIENT_CAPABILITIES_KEY: {"v0.9": {"supportedCatalogIds": ["c"]}}});
+        let read = |message: &Value| {
+            renderer_capabilities(message, A2uiVersion::V0_9)
+                .unwrap_or_else(|error| panic!("{message}: {error}"))
+        };
+
+        // A text part with a `data` key is a text part.
+        for part in [
+            json!({"kind": "text", "text": "hi", "data": {"metadata": 7}}),
+            json!({"kind": "text", "text": "hi", "data": {"metadata": capabilities}}),
+            json!({"kind": "text", "text": "hi", "data": {}, "metadata": capabilities}),
+            json!({"kind": "file", "file": {}, "data": {}, "metadata": "not an object"}),
+        ] {
+            assert!(read(&json!({"parts": [part]})).is_none(), "{part}");
+        }
+        // One that states no kind is a data part when it has data.
+        let kindless = json!({"parts": [{"data": {}, "metadata": capabilities}]});
+        assert!(read(&kindless).is_some());
     }
 }

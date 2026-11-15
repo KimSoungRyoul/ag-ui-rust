@@ -20,7 +20,7 @@ use ag_ui::{Message, RunOutcome};
 use ag_ui_a2ui::adapters::agui::{
     Attempt, Intent, RECOVERY_EXHAUSTED_CODE, RenderArgs, SURFACE_ACTIVITY_TYPE, SurfacePainter,
     SurfaceSpec, SurfaceStatus, assemble_ops, is_operations_envelope, operations_in,
-    recovery_exhausted_envelope, surface_activity_id, surface_status, surfaces_in,
+    recovery_exhausted_envelope, surface_activity_id, surfaces_in,
 };
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::constants::{
@@ -102,18 +102,18 @@ impl Agent for Butterfingers {
         let broken = vec![Component::new("root", "Card").with("child", json!("gone"))];
         let report = Validator::new(&Catalog::basic()).validate(&broken);
         assert!(!report.is_valid(), "this surface is meant to be invalid");
-        let attempts = vec![Attempt {
-            attempt: 1,
-            ok: false,
-            errors: report.errors,
-        }];
+        let attempts = vec![Attempt::failed(1, report.errors)];
         let envelope = recovery_exhausted_envelope(&attempts).map_err(Error::agent)?;
 
+        // The painter that would have painted the surface shows where it is:
+        // a skeleton while it is made, and the failure in the skeleton's place.
+        let mut painter = SurfacePainter::from_history(ctx.messages()).map_err(Error::agent)?;
         let id = ctx.new_tool_call_id();
+        ctx.emit(painter.status(id.as_str(), &SurfaceStatus::Building))?;
         let mut call = ctx.tool_call_with_id(id.clone(), GENERATE_A2UI_TOOL_NAME)?;
         call.args_json(&json!({"intent": "create"}))?;
         call.result(envelope)?;
-        ctx.emit(surface_status(
+        ctx.emit(painter.status(
             id.as_str(),
             &SurfaceStatus::Failed {
                 error: "Failed to generate valid A2UI after 1 attempt(s)".into(),
@@ -121,6 +121,52 @@ impl Agent for Butterfingers {
                 max_attempts: 1,
             },
         ))?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// Shows a skeleton for each of two tool calls in one run, and paints the cart
+/// with the first and an update of it with the second.
+struct Sketcher;
+
+impl Sketcher {
+    /// One tool call: a skeleton, then the batch as the call's result and the
+    /// surface in the skeleton's place.
+    fn call(
+        ctx: &mut RunContext<()>,
+        painter: &mut SurfacePainter,
+        operations: &[AgentMessage],
+    ) -> Result<()> {
+        let id = ctx.new_tool_call_id();
+        ctx.emit(painter.status(id.as_str(), &SurfaceStatus::Building))?;
+        let painted = painter
+            .settle(id.as_str(), operations)
+            .map_err(Error::agent)?;
+        let mut call = ctx.tool_call_with_id(id, GENERATE_A2UI_TOOL_NAME)?;
+        call.args_json(&json!({"intent": "create"}))?;
+        call.result(painted.envelope)?;
+        for activity in painted.activities {
+            ctx.emit(activity)?;
+        }
+        Ok(())
+    }
+}
+
+impl Agent for Sketcher {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        let mut painter = SurfacePainter::from_history(ctx.messages()).map_err(Error::agent)?;
+        Self::call(
+            ctx,
+            &mut painter,
+            &assemble_ops(Intent::Create, &spec(&FIRST)),
+        )?;
+        Self::call(
+            ctx,
+            &mut painter,
+            &assemble_ops(Intent::Update, &spec(&SECOND)),
+        )?;
         Ok(RunOutcome::Success)
     }
 }
@@ -391,6 +437,72 @@ async fn a_later_run_is_sent_the_tool_results_and_not_the_activities() {
     assert_eq!(&painted_alone(&whole), cart);
     assert_eq!(
         cart.data_model.to_json().expect("data")["items"]
+            .as_array()
+            .map(Vec::len),
+        Some(SECOND.len())
+    );
+}
+
+/// A skeleton is one activity message a client holds, and only an event under
+/// the same message id replaces it. An update of a surface that another call
+/// painted would go under that call's activity, and the updating call's
+/// skeleton would be on screen for good.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skeleton_gives_way_to_the_surface_its_call_paints() {
+    let client = ship(Sketcher).await;
+
+    let shown = activities(&client);
+    assert_eq!(shown.len(), 2, "one activity for each call: {shown:?}");
+    assert!(
+        shown
+            .iter()
+            .all(|activity| !activity.content.contains_key("status")),
+        "no call is left showing a skeleton: {shown:?}"
+    );
+    // Each call's activity is the cart whole, as that call left it.
+    let calls: Vec<&str> = client
+        .iter()
+        .filter_map(|message| match message {
+            Message::Tool(tool) => Some(tool.tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2);
+    let items = |activity: &ag_ui::ActivityMessage| {
+        let operations =
+            operations_in(&Message::Activity(activity.clone())).expect("a painted activity");
+        painted_alone(&operations)
+            .data_model
+            .to_json()
+            .expect("data")["items"]
+            .as_array()
+            .map(Vec::len)
+    };
+    for (activity, (call, held)) in shown
+        .iter()
+        .zip(calls.iter().zip([&FIRST[..], &SECOND[..]]))
+    {
+        assert_eq!(activity.id, surface_activity_id(call));
+        assert_eq!(items(activity), Some(held.len()));
+    }
+
+    // The client's list and the one a server is sent still read the same cart.
+    let server: Vec<Message> = client
+        .iter()
+        .filter(|message| !matches!(message, Message::Activity(_)))
+        .cloned()
+        .collect();
+    let seen = surfaces_in(&client).expect("the client's list replays");
+    assert_eq!(
+        seen,
+        surfaces_in(&server).expect("the server's list replays")
+    );
+    assert_eq!(
+        seen.get(SURFACE_ID)
+            .expect("the cart")
+            .data_model
+            .to_json()
+            .expect("data")["items"]
             .as_array()
             .map(Vec::len),
         Some(SECOND.len())

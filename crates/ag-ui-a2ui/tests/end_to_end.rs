@@ -13,8 +13,8 @@
 use ag_ui::{Event, Message};
 use ag_ui_a2ui::A2uiVersion;
 use ag_ui_a2ui::adapters::agui::{
-    Attempt, Intent, SurfacePainter, SurfaceSpec, SurfaceStatus, assemble_ops, operations_in,
-    recovery_exhausted_envelope, surface_status, surfaces_in,
+    Attempt, Intent, SurfacePainter, SurfaceSpec, SurfaceStatus, assemble_ops, latest_surface,
+    operations_in, recovery_exhausted_envelope, surfaces_in, wrap_as_operations_envelope,
 };
 use ag_ui_a2ui::agent::{
     A2uiGenerator, A2uiRequestProcessor, CatalogConfig, CatalogDocument, RendererCapabilities,
@@ -204,14 +204,24 @@ fn a_surface_that_cannot_be_fixed_ships_as_an_error_envelope() {
         r#"{"id": "root", "component": "Card", "child": "never-defined"}"#,
     );
 
+    // The frontend is shown where the surface is from the start: the painter
+    // that would paint it puts the call's activity in each state.
+    let mut painter = SurfacePainter::new();
+    let mut shown = vec![painter.status("call-1", &SurfaceStatus::Building)];
+    let mut attempts: Vec<Attempt> = Vec::new();
+
     let mut state = processor.create_state();
     let mut retry = RetryDriver::new(&processor, 3);
     let mut prompt = "Show my coffee order.".to_string();
     let error = loop {
         match retry.judge(&broken, &mut state) {
-            Verdict::Retry(feedback) => prompt = feedback.prompt("Show my coffee order."),
+            Verdict::Retry(feedback) => {
+                attempts.push(Attempt::rejected(&feedback));
+                shown.push(painter.status("call-1", &SurfaceStatus::retrying(&feedback, 3)));
+                prompt = feedback.prompt("Show my coffee order.");
+            }
             Verdict::GiveUp(error) => break error,
-            Verdict::Done(_) => panic!("the answer names a child that does not exist"),
+            other => panic!("the answer names a child that does not exist: {other:?}"),
         }
     };
     assert_eq!(
@@ -231,13 +241,13 @@ fn a_surface_that_cannot_be_fixed_ships_as_an_error_envelope() {
     // The frontend receives the reason, and nothing that looks like a surface:
     // the tool result says the attempts are used up, and the surface activity
     // says it failed.
-    let attempts: Vec<Attempt> = (1..=3)
-        .map(|attempt| Attempt {
-            attempt,
-            ok: false,
-            errors: last.as_slice().to_vec(),
-        })
-        .collect();
+    attempts.push(Attempt::failed(3, last.as_slice().to_vec()));
+    assert_eq!(
+        attempts,
+        (1..=3)
+            .map(|attempt| Attempt::failed(attempt, last.as_slice().to_vec()))
+            .collect::<Vec<_>>()
+    );
     let envelope = recovery_exhausted_envelope(&attempts).unwrap();
     let value: Value = serde_json::from_str(&envelope).unwrap();
     assert!(value.get(A2UI_OPERATIONS_KEY).is_none(), "{value}");
@@ -250,22 +260,149 @@ fn a_surface_that_cannot_be_fixed_ships_as_an_error_envelope() {
         value["attempts"][2]["errors"][0]["path"],
         "messages[1].updateComponents.components[0].child"
     );
-    let Event::ActivitySnapshot(failed) = surface_status(
+    shown.push(painter.status(
         "call-1",
         &SurfaceStatus::Failed {
             error: value["error"].as_str().unwrap().to_string(),
             attempts,
             max_attempts: 3,
         },
-    ) else {
-        panic!("a status is an activity snapshot");
-    };
-    assert_eq!(failed.content["status"], "failed");
+    ));
+    // One activity, replaced in place: building, the attempt after each
+    // rejected one, then failed.
+    let states: Vec<(&str, String)> = shown
+        .iter()
+        .map(|event| {
+            let Event::ActivitySnapshot(status) = event else {
+                panic!("a status is an activity snapshot");
+            };
+            let attempt = status.content.get("attempt").map(Value::to_string);
+            (
+                status.message_id.as_str(),
+                format!(
+                    "{} {}",
+                    status.content["status"].as_str().unwrap(),
+                    attempt.unwrap_or_default()
+                ),
+            )
+        })
+        .collect();
+    assert_eq!(
+        states,
+        [
+            ("a2ui-surface-call-1", "building ".to_string()),
+            ("a2ui-surface-call-1", "retrying 2".to_string()),
+            ("a2ui-surface-call-1", "retrying 3".to_string()),
+            ("a2ui-surface-call-1", "failed ".to_string()),
+        ]
+    );
 
     // So the next turn does not offer the surface that was never built as the
     // one the user is looking at.
     let history = [Message::tool("m-1", "call-1", envelope)];
     assert!(surfaces_in(&history).unwrap().get("order").is_none());
+}
+
+/// A model that tidies up before it draws deletes a surface that was never
+/// there. Every layer makes the same thing of that: nothing. The answer
+/// stands, the batch is painted, and the conversation that holds the batch
+/// replays.
+#[test]
+fn a_delete_of_a_surface_that_is_not_there_does_nothing_from_the_answer_to_the_replay() {
+    let processor = processor();
+    let answer = format!(
+        r#"<a2ui-json>[
+  {{"version": "v0.9", "deleteSurface": {{"surfaceId": "old"}}}},
+  {{"version": "v0.9", "createSurface": {{"surfaceId": "s", "catalogId": "{OFFICIAL_BASIC_CATALOG_ID}"}}}},
+  {{"version": "v0.9", "updateComponents": {{"surfaceId": "s", "components": [
+    {{"id": "root", "component": "Text", "text": "Hello"}}]}}}}
+]</a2ui-json>"#
+    );
+
+    // The agent layer: the answer stands, and the delete is among the
+    // messages to send, since a renderer is told and does nothing.
+    let mut state = processor.create_state();
+    let Verdict::Done(parts) = RetryDriver::new(&processor, 3).judge(&answer, &mut state) else {
+        panic!("the answer is valid A2UI");
+    };
+    let sent = messages(parts);
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[0], AgentMessage::delete_surface("old"));
+    assert!(state.surface("old").is_none() && state.surface("s").is_some());
+
+    // The painter: the batch is not refused for it. The tool result is the
+    // batch as sent; the one activity is the surface the batch drew, under
+    // the call's own id, where a skeleton for the call would be.
+    let mut painter = SurfacePainter::new();
+    let building = painter.status("call-1", &SurfaceStatus::Building);
+    let painted = painter.settle("call-1", &sent).unwrap();
+    assert_eq!(
+        painted.envelope,
+        wrap_as_operations_envelope(&sent).unwrap()
+    );
+    let [Event::ActivitySnapshot(activity)] = painted.activities.as_slice() else {
+        panic!(
+            "one surface changed, so one activity: {:?}",
+            painted.activities
+        );
+    };
+    let Event::ActivitySnapshot(building) = building else {
+        panic!("a status is an activity snapshot");
+    };
+    assert_eq!(activity.message_id, building.message_id);
+    let drawn: Vec<AgentMessage> =
+        serde_json::from_value(activity.content[A2UI_OPERATIONS_KEY].clone()).unwrap();
+    // The activity carries surface `s` whole, and nothing of `old`.
+    assert_eq!(drawn, painter.surfaces().get("s").unwrap().replay());
+    assert_eq!(drawn[..2], sent[1..]);
+    assert!(
+        drawn
+            .iter()
+            .all(|message| message.surface_id() == Some("s"))
+    );
+    assert_eq!(painter.surfaces(), state.store());
+
+    // The conversation that holds the envelope replays, as the server of the
+    // next run is sent it and as a client holds it.
+    let server = vec![
+        Message::user("m-1", "Start over and say hello."),
+        Message::tool("m-2", "call-1", painted.envelope.clone()),
+    ];
+    let mut client = server.clone();
+    client.push(Message::Activity(ag_ui::ActivityMessage {
+        id: activity.message_id.clone(),
+        activity_type: activity.activity_type.clone(),
+        content: activity.content.clone(),
+        ..ag_ui::ActivityMessage::default()
+    }));
+    for conversation in [&server, &client] {
+        assert_eq!(&surfaces_in(conversation).unwrap(), painter.surfaces());
+        assert_eq!(operations_in(&conversation[1]), Some(sent.clone()));
+        // What the user is looking at is the surface that was drawn, not the
+        // one the first operation names.
+        let latest = latest_surface(conversation).unwrap().unwrap();
+        assert_eq!(latest.surface_id, "s");
+        assert_eq!(
+            SurfacePainter::from_history(conversation)
+                .unwrap()
+                .surfaces(),
+            painter.surfaces()
+        );
+    }
+
+    // And so does one that ends with such a delete: the surface is still the
+    // last one the conversation changed.
+    let mut later = server.clone();
+    later.push(Message::tool(
+        "m-3",
+        "call-2",
+        wrap_as_operations_envelope(&[AgentMessage::delete_surface("old")]).unwrap(),
+    ));
+    assert_eq!(&surfaces_in(&later).unwrap(), painter.surfaces());
+    assert_eq!(latest_surface(&later).unwrap().unwrap().surface_id, "s");
+    let lone = [later[2].clone()];
+    assert_eq!(surfaces_in(&lone).unwrap().surfaces().count(), 0);
+    assert!(latest_surface(&lone).unwrap().is_none());
 }
 
 #[test]
@@ -343,6 +480,7 @@ fn a_surface_renders_progressively_while_it_is_generated() {
                 StreamPart::Rejected(error) => {
                     panic!("the canned response streams cleanly: {error}")
                 }
+                other => panic!("a part this test does not know: {other:?}"),
             }
         }
     };

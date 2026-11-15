@@ -25,10 +25,10 @@ fn sent(events: Vec<Event>) -> AppResult<Painted> {
             _ => {}
         }
     }
-    Ok(Painted {
-        envelope: envelope.ok_or("a paint without a tool result")?,
+    Ok(Painted::new(
+        envelope.ok_or("a paint without a tool result")?,
         activities,
-    })
+    ))
 }
 
 /// Serializes what the AG-UI adapter sends for authored and typed low-level

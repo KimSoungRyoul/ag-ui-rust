@@ -238,3 +238,90 @@ pub use crate::protocol::validate::{
 };
 pub use crate::protocol::version::A2uiVersion;
 pub use error::{Error, Result, ValidationErrors};
+
+// What `#[non_exhaustive]` holds a caller to, outside this crate: a type that
+// later work extends cannot be written out field by field or matched without a
+// wildcard arm. Each block compiled before the types were marked (#95) and
+// must not now. A stable rustdoc does not check the error code, only that the
+// block fails, so a block is kept to code that compiles without the mark.
+#[cfg(all(doctest, feature = "ag-ui"))]
+/// ```compile_fail,E0639
+/// use ag_ui_a2ui::agent::{AfterRejectedBlock, StreamOptions};
+/// let _ = StreamOptions { wrapped: false, after_rejected_block: AfterRejectedBlock::End };
+/// ```
+///
+/// ```compile_fail,E0639
+/// let _ = ag_ui_a2ui::adapters::agui::Attempt { attempt: 1, ok: false, errors: Vec::new() };
+/// ```
+///
+/// ```compile_fail,E0639
+/// let _ = ag_ui_a2ui::adapters::agui::Painted { envelope: String::new(), activities: Vec::new() };
+/// ```
+///
+/// ```compile_fail,E0639
+/// let _ = ag_ui_a2ui::agent::Candidate { message: serde_json::json!({}), closed: true };
+/// ```
+///
+/// ```compile_fail,E0639
+/// use ag_ui_a2ui::adapters::agui::UserAction;
+/// let _ = UserAction { name: Some("checkout".into()), ..UserAction::default() };
+/// ```
+///
+/// ```compile_fail,E0639
+/// let _ = ag_ui_a2ui::adapters::agui::CatalogContext { catalog_id: None, schema: serde_json::json!({}) };
+/// ```
+///
+/// ```compile_fail,E0004
+/// use ag_ui_a2ui::agent::Verdict;
+/// fn act(verdict: Verdict) {
+///     match verdict {
+///         Verdict::Done(_) => {}
+///         Verdict::Retry(_) => {}
+///         Verdict::GiveUp(_) => {}
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail,E0004
+/// use ag_ui_a2ui::agent::StreamPart;
+/// fn show(part: StreamPart) {
+///     match part {
+///         StreamPart::Text(_) => {}
+///         StreamPart::A2ui(_) => {}
+///         StreamPart::Rejected(_) => {}
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail,E0004
+/// use ag_ui_a2ui::agent::ReaderEvent;
+/// fn read(event: ReaderEvent) {
+///     match event {
+///         ReaderEvent::Text(_) => {}
+///         ReaderEvent::Block(_) => {}
+///         ReaderEvent::BlockEnd(_) => {}
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail,E0004
+/// use ag_ui_a2ui::agent::AfterRejectedBlock;
+/// fn go_on(after: AfterRejectedBlock) -> bool {
+///     match after {
+///         AfterRejectedBlock::End => false,
+///         AfterRejectedBlock::Continue => true,
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail,E0004
+/// use ag_ui_a2ui::adapters::agui::SurfaceStatus;
+/// fn name(status: &SurfaceStatus) -> &'static str {
+///     match status {
+///         SurfaceStatus::Building => "building",
+///         SurfaceStatus::Retrying { .. } => "retrying",
+///         SurfaceStatus::Failed { .. } => "failed",
+///     }
+/// }
+/// ```
+mod non_exhaustive {}

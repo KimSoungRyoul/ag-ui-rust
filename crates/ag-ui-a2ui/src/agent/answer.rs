@@ -52,10 +52,7 @@ impl StreamedAnswer {
     pub fn open(processor: &A2uiRequestProcessor, state: &RendererState) -> Result<Self> {
         let stream = processor.open_stream(
             state,
-            StreamOptions {
-                after_rejected_block: AfterRejectedBlock::Continue,
-                ..StreamOptions::default()
-            },
+            StreamOptions::new().with_after_rejected_block(AfterRejectedBlock::Continue),
         )?;
         Ok(Self {
             stream,

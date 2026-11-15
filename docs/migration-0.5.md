@@ -799,7 +799,7 @@ These are on `main` and not yet in a published version.
 
 | Removed | Write instead |
 |---|---|
-| `toolkit::recovery::generate_with_recovery`, `generate_with_recovery_async` | `loop { match retry.judge(&call_model(&prompt).await?, &mut state) { Verdict::Done(parts) => break parts, Verdict::Retry(feedback) => prompt = feedback.prompt(&request), Verdict::GiveUp(error) => return Err(error) } }`, or `author.create(id, request).generate(call).await` for one surface |
+| `toolkit::recovery::generate_with_recovery`, `generate_with_recovery_async` | `loop { match retry.judge(&call_model(&prompt).await?, &mut state) { Verdict::Done(parts) => break parts, Verdict::Retry(feedback) => prompt = feedback.prompt(&request), Verdict::GiveUp(error) => return Err(error), _ => return Err(Error::parse("a verdict this agent does not know")) } }`, or `author.create(id, request).generate(call).await` for one surface |
 | `RecoveryOptions::max_attempts` | `RetryDriver::new(&processor, max_attempts)` |
 | `RecoveryOptions::prior` | The `RendererState` given to `judge`, kept for the conversation |
 | `RecoveryOptions::validate`, `RecoveryOptions::for_update()` | Nothing: an answer is checked against the state it is read into, so an update needs no other options |
@@ -839,7 +839,7 @@ These are on `main` and not yet in a published version.
 | `constants::MIME_TYPE` | `adapters::a2a::MIME_TYPE` (feature `a2a`) |
 | `toolkit::ops::{Intent, SurfaceSpec, assemble_ops, create_surface, update_components, update_data_model}` | The same names in `adapters::agui` |
 | `toolkit::envelope::{wrap_as_operations_envelope, operations_envelope, is_operations_envelope, unwrap_operations_envelope}`, `ag_ui_a2ui::wrap_as_operations_envelope` | The same names in `adapters::agui` |
-| `toolkit::envelope::wrap_error_envelope(surface_id, message, &errors)`, `ag_ui_a2ui::wrap_error_envelope` | `adapters::agui::error_envelope(message)`, or `recovery_exhausted_envelope(&[Attempt { attempt, ok: false, errors }])?` when the attempts are used up |
+| `toolkit::envelope::wrap_error_envelope(surface_id, message, &errors)`, `ag_ui_a2ui::wrap_error_envelope` | `adapters::agui::error_envelope(message)`, or `recovery_exhausted_envelope(&[Attempt::failed(attempt, errors)])?` when the attempts are used up |
 | `toolkit::tools::render_a2ui_tool(Some(&catalog))`, `generate_a2ui_tool()`, `tool_definitions(catalog)` | `adapters::agui::render_a2ui_tool()` and `generate_a2ui_tool()`, each an `ag_ui::Tool` |
 | `ToolDefinition`, `Tool::from(definition)` | Nothing: the functions return the `ag_ui::Tool` a run carries |
 | `ToolDefinition::to_anthropic_value()` | `json!({"name": tool.name, "description": tool.description, "input_schema": tool.parameters})` |
@@ -930,8 +930,9 @@ These are on `main` and not yet in a published version.
 - A surface that could not be made is reported in AG-UI's shapes. The tool result is
   `error_envelope(message)`, `{"error": …}`, or `recovery_exhausted_envelope(&attempts)`,
   `{"error": "Failed to generate valid A2UI after N attempt(s)", "code":
-  "a2ui_recovery_exhausted", "attempts": […]}`. `surface_status(tool_call_id, &status)`
-  puts the call's surface activity in `SurfaceStatus::Building`, `Retrying` or `Failed`.
+  "a2ui_recovery_exhausted", "attempts": […]}`. `painter.status(tool_call_id, &status)`,
+  on the `SurfacePainter` that paints for the call, gives the event that puts the
+  call's surface activity in `SurfaceStatus::Building`, `Retrying` or `Failed`.
   alpha.3's `wrap_error_envelope` wrote `{"error", "code": "VALIDATION_FAILED",
   "surfaceId", "path", "details"}`, which no AG-UI frontend reads.
 - Reading a conversation: `operations_in(&message)` gives the operations a message
@@ -1113,6 +1114,60 @@ These are on `main` and not yet in a published version.
   refers to it by. It returned `Error::Catalog` for one. A `SchemaValidator` is one
   catalog's: a v1.0 message that names another catalog fails it, and a
   `MessageProcessor` does not put such a message to a schema.
+- A `ResponseStream` emits an `updateDataModel` that is still arriving only once it
+  holds its `path`, and again each time a chunk adds to its `value`. One whose `path`
+  is written after its `value`, and one that states no path and so means the whole
+  data model, is emitted once, when its text has closed. alpha.3's `StreamParser` held
+  an update without a path the same way. To see a data model fill in while it is
+  written, have the model write `path` before `value`.
+- A `deleteSurface` for a surface that is not live, one never created or one already
+  deleted, does nothing on any layer. `MessageProcessor` accepts it and changes
+  nothing; `parse_response_in`, `RetryDriver::judge` and a `ResponseStream` return it
+  among an answer's messages, since a renderer is told and does nothing; and
+  `SurfacePainter::settle` and `paint`, `surfaces_in` and `latest_surface` pass it
+  over: it is not applied, no activity is sent for it, and it is not what a
+  conversation touched last. The tool result still carries the batch as sent, and a
+  batch of nothing else gives a tool result and no activity. The `render_a2ui`
+  arguments that `paint` sends name the first surface the batch changed. alpha.3's
+  `find_prior_surface_in` replayed the one surface the last operation named, and gave
+  `None` when that operation was such a delete. `SurfaceStore::apply` on its own still
+  refuses one.
+- A call that shows a state first is painted in its own activity. After
+  `painter.status(tool_call_id, &SurfaceStatus::Building)`, `painter.settle` for the
+  same call puts the first surface of the batch that the painter has not painted
+  under `a2ui-surface-<tool call id>`, or moves the first one there when it has
+  painted them all, so the skeleton gives way to a surface. A batch of a call that
+  showed no state is painted as before: in place for a surface painted earlier in the
+  run, and under `a2ui-surface-<surface id>-<tool call id>` for each surface of a
+  batch of several. alpha.3 sent no activity. A state stays until something is painted
+  in its place, so a call that ends without a surface says so with
+  `SurfaceStatus::Failed`. `SurfacePainter::from_history` notes a state that an
+  activity in the messages shows; only a client's list holds activities, so a
+  painter made from a server's request notes none.
+- `adapters::a2a::renderer_capabilities` reads data parts only, a part whose `kind` is
+  `data` or one written without a `kind` that has `data`, and passes over a data part
+  whose `data.metadata` is not an object: what is inside a part's data is the
+  application's. It returned `Error::Catalog` for such a message. alpha.3 had no A2A
+  helpers.
+- Eleven types added after alpha.3 are `#[non_exhaustive]`, because later work adds
+  fields and variants to them. A struct expression for `StreamOptions`, `Attempt`,
+  `Painted`, `Candidate`, `UserAction` or `CatalogContext` no longer compiles outside
+  the crate, and a `match` on `Verdict`, `StreamPart`, `ReaderEvent`,
+  `AfterRejectedBlock` or `SurfaceStatus` needs a wildcard arm. Reading a field and
+  building a variant are unchanged. Write:
+
+  | Instead of | Write |
+  |---|---|
+  | `StreamOptions { wrapped: false, ..StreamOptions::default() }` | `StreamOptions::new().with_wrapped(false)` |
+  | `StreamOptions { after_rejected_block: AfterRejectedBlock::Continue, ..StreamOptions::default() }` | `StreamOptions::new().with_after_rejected_block(AfterRejectedBlock::Continue)` |
+  | `Attempt { attempt, ok: false, errors }` | `Attempt::failed(attempt, errors)`, or `Attempt::rejected(&feedback)` from a `Verdict::Retry` |
+  | `Attempt { attempt, ok: true, errors: Vec::new() }` | `Attempt::stood(attempt)` |
+  | `Painted { envelope, activities }` | `Painted::new(envelope, activities)` |
+  | `Candidate { message, closed }` | `Candidate::new(message, closed)` |
+  | `UserAction { name: Some(name), ..UserAction::default() }` | `let mut action = UserAction::default(); action.name = Some(name);` |
+  | `CatalogContext { catalog_id, schema }` | `CatalogContext::new(schema)`, which takes the id from the schema's `catalogId` |
+  | `match retry.judge(..) { Verdict::Done(..) => .., Verdict::Retry(..) => .., Verdict::GiveUp(error) => return Err(error) }` | The same with `_ => return Err(Error::parse("a verdict this agent does not know"))`: a verdict a later version adds is one the loop cannot act on |
+  | `match part { StreamPart::Text(..) => .., StreamPart::A2ui(..) => .., StreamPart::Rejected(..) => .. }` | The same with `_ => {}` |
 
 ## Verify the upgrade
 

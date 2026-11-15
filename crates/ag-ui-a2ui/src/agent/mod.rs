@@ -53,6 +53,8 @@
 //!         Verdict::Done(parts) => break parts,
 //!         Verdict::Retry(feedback) => prompt = feedback.prompt(request),
 //!         Verdict::GiveUp(error) => return Err(error),
+//!         // A verdict a later version adds is one this loop cannot act on.
+//!         _ => return Err(Error::parse("a verdict this agent does not know")),
 //!     }
 //! };
 //! // `parts` is the text and the A2UI messages to send; `state` is what the renderer now holds.
@@ -89,6 +91,7 @@
 //!             StreamPart::Text(text) => print!("{text}"),
 //!             StreamPart::A2ui(messages) => { /* send them: the state already holds them */ }
 //!             StreamPart::Rejected(error) => { /* only with AfterRejectedBlock::Continue */ }
+//!             _ => { /* a kind of part a later version adds */ }
 //!         }
 //!     }
 //! }

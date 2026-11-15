@@ -415,6 +415,104 @@ async fn the_client_drives_an_agent_it_did_not_write() {
     );
 }
 
+/// Two well-behaved turns in one thread against the awkward agent itself.
+///
+/// The second turn is the one that tells an agent that reads the conversation
+/// from one that does not: the surface is on screen by then, so it has to be
+/// updated. An agent that creates it again sends a batch no renderer applies,
+/// and the conversation holding two creations does not replay from then on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_turn_updates_the_surface_the_first_turn_drew() {
+    use ag_ui_a2ui::AgentPayload;
+    use ag_ui_a2ui::adapters::agui::{latest_surface, operations_in};
+
+    let url = serve_fake().await;
+    let mut thread = new_thread(&format!("{url}{}", fake::ROUTE), "two-turns");
+
+    let printed = transcript(&mut thread, Watch::default(), "hello\nhello again\n").await;
+    assert!(!printed.contains("  error"), "{printed}");
+    assert_eq!(printed.matches("  done   success").count(), 2, "{printed}");
+
+    // Both turns draw the surface, and neither prints its envelope raw.
+    assert_eq!(printed.matches("\n  surface\n").count(), 2, "{printed}");
+    assert_eq!(
+        printed.matches("    [ ] #1 draft the agenda").count(),
+        2,
+        "{printed}"
+    );
+    assert!(!printed.contains("a2ui_operations"), "{printed}");
+    // And the panel after each names the surface the conversation carries.
+    assert_eq!(
+        printed.matches("· surface board-watch (4)").count(),
+        2,
+        "{printed}"
+    );
+
+    // The conversation replays, after two turns as after one.
+    let surface = latest_surface(thread.messages())
+        .expect("a conversation that replays")
+        .expect("the surface both turns drew");
+    assert_eq!(surface.surface_id, fake::SURFACE_ID);
+    assert!(!surface.deleted);
+
+    // Because the second batch is an update, as the first run's result in the
+    // request told the agent it had to be.
+    let batches: Vec<_> = thread
+        .messages()
+        .iter()
+        .filter(|message| matches!(message, Message::Tool(_)))
+        .filter_map(operations_in)
+        .collect();
+    let [first, second] = batches.as_slice() else {
+        panic!("two turns, two batches: {batches:?}");
+    };
+    assert!(matches!(first[0].payload, AgentPayload::CreateSurface(_)));
+    assert!(
+        second
+            .iter()
+            .all(|operation| !matches!(operation.payload, AgentPayload::CreateSurface(_))),
+        "a surface that is on screen is not created again: {second:?}"
+    );
+}
+
+/// A conversation that does not replay reaches the user as an error, from the
+/// agent and from the watcher, and never as a turn that drew nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_conversation_that_does_not_replay_is_an_error_and_not_an_empty_screen() {
+    use ag_ui_a2ui::AgentMessage;
+    use ag_ui_a2ui::adapters::agui::wrap_as_operations_envelope;
+
+    // What an agent that created its surface on every turn left behind.
+    let created =
+        wrap_as_operations_envelope(&[AgentMessage::create_surface(fake::SURFACE_ID, "basic")])
+            .expect("an envelope");
+    let broken = vec![
+        Message::user("u-1", "hello"),
+        Message::tool("m-1", "call-1", created.clone()),
+        Message::user("u-2", "hello again"),
+        Message::tool("m-2", "call-2", created),
+    ];
+
+    let url = serve_fake().await;
+    let mut thread: Thread<HttpTransport, Board> = HttpAgent::new(format!("{url}{}", fake::ROUTE))
+        .expect("a valid endpoint URL")
+        .thread_builder("broken")
+        .messages(broken)
+        .build()
+        .expect("valid initial board");
+
+    let printed = transcript(&mut thread, Watch::default(), "hello once more\n").await;
+    // The agent refuses to paint over a screen it cannot read…
+    assert!(
+        printed.contains("the conversation's A2UI surfaces do not replay")
+            && printed.contains("already exists"),
+        "{printed}"
+    );
+    assert!(!printed.contains("  done   success"), "{printed}");
+    // …and the panel says the same of the conversation it holds.
+    assert!(printed.contains("· surfaces do not replay ("), "{printed}");
+}
+
 /// The conversation and the board carry from one run to the next.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_second_run_in_the_same_thread_carries_what_the_first_established() {
