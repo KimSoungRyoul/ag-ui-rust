@@ -24,7 +24,10 @@ pub(crate) fn event(mut value: Value) -> Result<Option<Value>> {
     if value.get("type").and_then(Value::as_str).is_none() {
         return Err(protocol_error("event /type must be a string"));
     }
-    Ok(enforce(&mut value, schema())?.then_some(value))
+    let shape = schema()
+        .pointer("/$defs/Event")
+        .expect("event schema exists");
+    Ok(enforce(&mut value, shape)?.then_some(value))
 }
 
 #[cfg(feature = "axum")]
@@ -73,12 +76,8 @@ fn normalize(
         }
         // JSON Schema combines `$ref` with adjacent keywords. In particular,
         // RunAgentInput.state references open State while forbidding null here.
-        let mut adjacent = shape.clone();
-        adjacent
-            .as_object_mut()
-            .expect("schema reference is an object")
-            .remove("$ref");
-        return normalize(value, &adjacent, path, warnings);
+        // Nothing below reads `$ref`, so the adjacent keywords are checked in
+        // place rather than on a copy of the shape without it.
     }
 
     if let Some(branches) = shape.get("oneOf").and_then(Value::as_array) {
@@ -181,18 +180,28 @@ fn normalize(
 
     if let Some(items) = value.as_array_mut() {
         if let Some(item_schema) = shape.get("items") {
+            // One pass, so pruning stays linear. `index` counts kept members:
+            // a path names a member's position in the pruned list.
             let mut index = 0;
-            while index < items.len() {
-                if normalize(
-                    &mut items[index],
-                    item_schema,
-                    &format!("{path}/{index}"),
-                    warnings,
-                )? {
-                    index += 1;
-                } else {
-                    items.remove(index);
+            let mut failure = None;
+            items.retain_mut(|item| {
+                if failure.is_some() {
+                    return true;
                 }
+                match normalize(item, item_schema, &format!("{path}/{index}"), warnings) {
+                    Ok(true) => {
+                        index += 1;
+                        true
+                    }
+                    Ok(false) => false,
+                    Err(error) => {
+                        failure = Some(error);
+                        true
+                    }
+                }
+            });
+            if let Some(error) = failure {
+                return Err(error);
             }
         }
         if let Some(minimum) = shape.get("minItems").and_then(Value::as_u64) {
@@ -361,4 +370,31 @@ fn type_matches(value: &Value, expected: &str) -> bool {
 
 fn display_path(path: &str) -> &str {
     if path.is_empty() { "/" } else { path }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn pruning_is_linear_in_the_array_length() {
+        // Removing 300,000 rejected members one at a time shifts the rest of
+        // the list each time, about 1.4 TB of moves; one pass takes a fraction
+        // of a second even in a debug build.
+        let members = 300_000;
+        let shape = json!({"type": "array", "items": {"enum": ["known"]}});
+        let mut value = Value::Array(vec![Value::Null; members]);
+        let mut warnings = Vec::new();
+        let started = Instant::now();
+        assert!(normalize(&mut value, &shape, "", &mut warnings).unwrap());
+        let elapsed = started.elapsed();
+        assert_eq!(value, json!([]));
+        assert_eq!(warnings.len(), members);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "pruning {members} members took {elapsed:?}"
+        );
+    }
 }
