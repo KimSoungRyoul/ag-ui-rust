@@ -72,6 +72,8 @@ where
 struct Legacy {
     reasoning_id: Option<String>,
     message_id: Option<String>,
+    /// Registered optional nulls already reported in this run.
+    noticed: crate::protocol::Noticed,
 }
 
 impl Legacy {
@@ -82,6 +84,14 @@ impl Legacy {
         if tag == "RUN_STARTED" {
             self.reasoning_id = None;
             self.message_id = None;
+            self.noticed = Default::default();
+        }
+        // Before the retired shapes below, so a translation sees the event
+        // without them, as a 1.0 producer would have written it.
+        let mut warnings = Vec::new();
+        crate::protocol::omit_event_nulls(&mut value, &tag, &mut self.noticed, &mut warnings);
+        for warning in warnings {
+            eprintln!("ag-ui: {warning}");
         }
         if !is_legacy_reasoning_tag(&tag) {
             return Ok(vec![value]);

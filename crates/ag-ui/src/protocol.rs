@@ -32,6 +32,13 @@ pub(crate) fn event(mut value: Value) -> Result<Option<Value>> {
 
 #[cfg(feature = "axum")]
 pub(crate) fn input(mut value: Value) -> Result<Value> {
+    // An older client's request may carry the registered nulls too; nothing
+    // ahead of this function reads them as omitted.
+    let mut warnings = Vec::new();
+    omit_input_nulls(&mut value, &mut Noticed::default(), &mut warnings);
+    for warning in warnings {
+        eprintln!("ag-ui: {warning}");
+    }
     let shape = schema()
         .pointer("/$defs/RunAgentInput")
         .expect("input schema exists");
@@ -54,6 +61,163 @@ fn enforce(value: &mut Value, shape: &Value) -> Result<bool> {
 
 fn protocol_error(message: impl Into<String>) -> String {
     message.into()
+}
+
+/// The AG-UI 1.0 optional-null registry: whole optional fields that pre-1.0
+/// producers wrote as `null`, which a consumer reads as omitted. Each row is a
+/// field and where it sits, in the order of the "`X: null` → omit the field"
+/// rows of upstream `DEPRECATIONS.md`, read at ag-ui-protocol/ag-ui
+/// 2330368a2a74573902858867072406638ba3073d. A location in capitals is an event
+/// type. A `null` in any other optional field is left for enforcement to
+/// reject, and a `null` inside application data is never touched.
+const OPTIONAL_NULLS: [(&str, &str); 23] = [
+    ("parentMessageId", "TOOL_CALL_START"),
+    ("parentMessageId", "TOOL_CALL_CHUNK"),
+    ("outcome", "RUN_FINISHED"),
+    ("rawEvent", "an event"),
+    ("result", "RUN_FINISHED"),
+    ("result", "SUBAGENT_FINISHED"),
+    ("payload", "a resume entry"),
+    ("metadata", "an image content part"),
+    ("metadata", "an audio content part"),
+    ("metadata", "a video content part"),
+    ("metadata", "a document content part"),
+    ("parameters", "a tool"),
+    ("forwardedProps", "RunAgentInput"),
+    ("subagentRunId", "an event"),
+    ("parentRunId", "RUN_STARTED"),
+    ("input", "RUN_STARTED"),
+    ("role", "TOOL_CALL_RESULT"),
+    ("pendingToolCallIds", "a RUN_FINISHED outcome"),
+    ("provider", "a RUN_FINISHED usage entry"),
+    ("reasoningTokens", "a RUN_FINISHED usage entry"),
+    ("cachedInputTokens", "a RUN_FINISHED usage entry"),
+    ("cacheWriteInputTokens", "a RUN_FINISHED usage entry"),
+    ("usage", "RUN_ERROR"),
+];
+
+/// Which registry rows have been reported, one bit per row. A producer that
+/// writes one of these nulls writes it on every event, so, as in the reference
+/// client, each row is reported once per run, or once per request.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Noticed(u32);
+
+const _: () = assert!(OPTIONAL_NULLS.len() <= u32::BITS as usize);
+
+/// Reads the registered `null`s on one wire event, whose type is `tag`, as
+/// omitted fields. This runs before enforcement, which would reject them.
+#[cfg(feature = "client")]
+pub(crate) fn omit_event_nulls(
+    event: &mut Value,
+    tag: &str,
+    noticed: &mut Noticed,
+    warnings: &mut Vec<String>,
+) {
+    omit_nulls(event, "an event", noticed, warnings);
+    if tag
+        .bytes()
+        .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
+    {
+        omit_nulls(event, tag, noticed, warnings);
+    }
+    match tag {
+        "RUN_STARTED" => {
+            if let Some(input) = event.get_mut("input") {
+                omit_input_nulls(input, noticed, warnings);
+            }
+        }
+        "RUN_FINISHED" => {
+            if let Some(outcome) = event.get_mut("outcome") {
+                omit_nulls(outcome, "a RUN_FINISHED outcome", noticed, warnings);
+            }
+            for entry in event
+                .get_mut("usage")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                omit_nulls(entry, "a RUN_FINISHED usage entry", noticed, warnings);
+            }
+        }
+        "MESSAGES_SNAPSHOT" => {
+            for message in event
+                .get_mut("messages")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                omit_message_nulls(message, noticed, warnings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The registry rows inside a `RunAgentInput`: on a request, and on the copy
+/// `RUN_STARTED.input` carries.
+fn omit_input_nulls(input: &mut Value, noticed: &mut Noticed, warnings: &mut Vec<String>) {
+    omit_nulls(input, "RunAgentInput", noticed, warnings);
+    for (list, location) in [("tools", "a tool"), ("resume", "a resume entry")] {
+        for entry in input
+            .get_mut(list)
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            omit_nulls(entry, location, noticed, warnings);
+        }
+    }
+    for message in input
+        .get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        omit_message_nulls(message, noticed, warnings);
+    }
+}
+
+fn omit_message_nulls(message: &mut Value, noticed: &mut Noticed, warnings: &mut Vec<String>) {
+    for part in message
+        .get_mut("content")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        let location = match part.get("type").and_then(Value::as_str) {
+            Some("image") => "an image content part",
+            Some("audio") => "an audio content part",
+            Some("video") => "a video content part",
+            Some("document") => "a document content part",
+            _ => continue,
+        };
+        omit_nulls(part, location, noticed, warnings);
+    }
+}
+
+/// Removes each field the registry lists for `location` whose value is `null`.
+fn omit_nulls(
+    value: &mut Value,
+    location: &str,
+    noticed: &mut Noticed,
+    warnings: &mut Vec<String>,
+) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    for (row, (field, at)) in OPTIONAL_NULLS.iter().enumerate() {
+        if *at != location || !object.get(*field).is_some_and(Value::is_null) {
+            continue;
+        }
+        object.remove(*field);
+        let bit = 1 << row;
+        if noticed.0 & bit == 0 {
+            noticed.0 |= bit;
+            warnings.push(format!(
+                "deprecated {field}: null on {at} read as an omitted field"
+            ));
+        }
+    }
 }
 
 /// Returns `false` for an unknown union member, which the parent removes from

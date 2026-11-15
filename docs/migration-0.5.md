@@ -220,6 +220,13 @@ These are on `main` and not yet in a published version.
   The documentation no longer presents the check as a CSRF defence: a required JSON media
   type means a browser must preflight a cross-origin run request, which leaves the decision
   to your CORS policy, and it is not authentication.
+- An explicit `null` in one of the 23 optional fields AG-UI 1.0 registers in its
+  deprecations list (`parentRunId` on `RUN_STARTED`, `rawEvent` on any event,
+  `outcome` on `RUN_FINISHED`, a tool's `parameters`, …) reads as the omitted field
+  instead of failing the run. The hosted endpoint does the same for the four that sit
+  in a request: `forwardedProps`, a tool's `parameters`, a resume entry's `payload`
+  and a media part's `metadata`. A `null` in any other optional field is still
+  rejected. `ResumeEntry::resolved(id, Value::Null)` is now written without `payload`.
 
 ## Verify the upgrade
 

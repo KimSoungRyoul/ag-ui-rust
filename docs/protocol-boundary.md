@@ -31,7 +31,10 @@ JSON object member order is not a protocol contract; array order remains intact.
 ## Compatibility corrections
 
 `TEXT_MESSAGE_START.role = null` is rejected instead of being treated as omitted;
-only a missing role defaults to `assistant`. Run and subagent outcomes reject
+only a missing role defaults to `assistant`. The exceptions are the optional nulls
+AG-UI 1.0 registers in upstream `DEPRECATIONS.md`, which the client boundary and the
+hosted request decoder read as omitted (`OPTIONAL_NULLS` in
+`crates/ag-ui/src/protocol.rs`). Run and subagent outcomes reject
 unknown fields, including the success variant. Null or absent input state is
 serialized as omitted, matching the reference SDK. Empty text/reasoning deltas
 remain valid; applications may choose to suppress them at their publication layer.
