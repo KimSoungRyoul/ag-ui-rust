@@ -749,7 +749,7 @@ async fn restored_ids_are_never_reused_and_malformed_snapshots_are_rejected() {
     assert!(restored.send("collision").is_err());
     assert_eq!(restored.messages(), thread.messages());
     let mut bad = snapshot.clone();
-    bad.version = 2;
+    bad.version = 3;
     assert!(Thread::<_>::restore(script([]), bad).is_err());
     let mut bad = snapshot.clone();
     bad.messages.push(bad.messages[0].clone());
@@ -829,10 +829,11 @@ async fn restored_legacy_reasoning_ids_do_not_overwrite_saved_reasoning() {
     ]);
     let mut restored = Thread::<_>::restore(transport, thread.snapshot()).unwrap();
     restored.run().unwrap().collect_report().await;
-    assert_eq!(restored.reasoning().len(), 2);
-    assert_ne!(restored.reasoning()[0].id, restored.reasoning()[1].id);
-    assert_eq!(restored.reasoning()[0].content, "original");
-    assert_eq!(restored.reasoning()[1].content, "next");
+    let reasoning: Vec<_> = restored.reasoning().collect();
+    assert_eq!(reasoning.len(), 2);
+    assert_ne!(reasoning[0].id, reasoning[1].id);
+    assert_eq!(reasoning[0].content, "original");
+    assert_eq!(reasoning[1].content, "next");
 }
 
 #[tokio::test]
@@ -870,7 +871,7 @@ async fn dropping_a_run_clears_open_text_and_reasoning_even_without_subagents() 
     let transport = script([
         Event::run_started("t", "r"),
         Event::text_message_start("partial-text", TextMessageRole::Assistant),
-        Event::reasoning_start("partial-reason"),
+        Event::reasoning_message_start("partial-reason"),
     ]);
     let mut thread = Thread::new(transport, "t");
     let mut run = thread.send("go").unwrap();

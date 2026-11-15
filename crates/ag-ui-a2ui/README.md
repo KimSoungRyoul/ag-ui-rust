@@ -198,12 +198,15 @@ async generation, catalog negotiation, and multi-surface transitions.
 The official conformance suite is vendored whole, and every suite in it is
 accounted for by name: executed, or skipped with the reason. The executed
 suites are the seven of the v0.9 core (validator, data context, data model,
-expressions, message processor, catalog, common types) and the three toolkit
-suites, and they report **376 passed, 22 expected divergences, 9 failing**;
+expressions, message processor, catalog, common types), the three toolkit
+suites, and the twelve of the agent tier that do not need another output format
+than direct JSON, with the four v0.9.1 transcripts; they report **617 passed,
+25 expected divergences, 9 failing**, and
 the per-suite counts are asserted by the test. The divergences are executed
 with pinned expectations: partial messages wait for a supported version or an
-explicit data path, an unreachable component is a warning, and an empty path
-segment is the empty key. The failures are listed by name with what each case
+explicit data path, an unreachable component is a warning, an empty path
+segment is the empty key, and a binding that cannot resolve is an error. The
+failures are listed by name with what each case
 wants: three upstream added for the toolkit's parsers, and six the core suites
 found. Four named policies requiring implicit catalog
 fallback/cross-ID merging are explicitly superseded and covered by replacement

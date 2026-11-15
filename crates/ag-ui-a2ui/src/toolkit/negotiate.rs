@@ -239,7 +239,7 @@ impl CatalogRegistry {
     /// this is usually applied at load time when the catalogs feed one.
     pub fn relax_strict_validation(&mut self) {
         for entry in &mut self.entries {
-            crate::toolkit::schema::remove_strict_validation(&mut entry.schema);
+            crate::protocol::schema::remove_strict_validation(&mut entry.schema);
         }
     }
 

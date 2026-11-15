@@ -4,6 +4,7 @@ The A2UI project ships its conformance tests as language-agnostic YAML and asks
 every SDK to run them: read the YAML, feed the inputs to that language's
 implementation, assert the outputs. The suite is vendored here whole, at
 upstream's current layout, and driven by `crates/ag-ui-a2ui/tests/conformance.rs`.
+The runners for the agent tier are beside it, in `tests/conformance_agent/`.
 
 - **Upstream:** <https://github.com/a2ui-project/a2ui> (also reachable as `google/A2UI`)
 - **Commit:** `3ed9601862ecc78027e20ac80ad8b1b98a5d9079` (2026-11-14)
@@ -49,12 +50,13 @@ differs from the report. A check is in one of four states:
   is listed by name in `KNOWN_FAILURES` with the reason, and must go on failing:
   one that starts passing fails the suite until it is taken off the list.
 
-A case with `steps` counts one check per step in the validator suites. Every
-other suite counts one check per case and verifies its steps in order; a case
-that stops at a step is reported under that step, `suite::case[step 2]`, and
-that is the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
+A case with `steps` counts one check per step in the validator suites, and a
+transcript under `e2e/` counts one check per format it declares. Every other
+suite counts one check per case and verifies its steps in order; a case that
+stops at a step is reported under that step, `suite::case[step 2]`, and that is
+the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 376 passed, 22 expected divergence, 1640 skipped, 9 failing.
+Totals: 617 passed, 25 expected divergence, 1400 skipped, 9 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -92,37 +94,37 @@ Totals: 376 passed, 22 expected divergence, 1640 skipped, 9 failing.
 | `core/node_resolution.yaml` | 31 | 0 | 0 | 31 | 0 | out of scope: renderer: materialising the reactive component node tree |
 | `core/accessibility.yaml` | 7 | 0 | 0 | 7 | 0 | out of scope: renderer: accessibility attributes of rendered components |
 | `core/adapter_conformance.yaml` | 22 | 0 | 0 | 22 | 0 | out of scope: renderer: rendered view hierarchies in the UI framework adapters |
-| `agent/request_processor.yaml` | 29 | 0 | 0 | 29 | 0 | later: agent layer (#41): building an inference format and a per-request processor |
-| `agent/catalog_resolution.yaml` | 23 | 0 | 0 | 23 | 0 | later: agent layer (#41): negotiating renderer capabilities against registered catalogs |
-| `agent/catalog_provider.yaml` | 10 | 0 | 0 | 10 | 0 | later: agent layer (#41): loading catalog documents from the filesystem |
-| `agent/catalog_transformer.yaml` | 15 | 0 | 0 | 15 | 0 | later: agent layer (#41): pruning a catalog before it reaches a prompt or a validator |
-| `agent/renderer_capabilities.yaml` | 24 | 0 | 0 | 24 | 0 | later: agent layer (#41): reading renderer capabilities from transport metadata |
-| `agent/renderer_state.yaml` | 9 | 0 | 0 | 9 | 0 | later: agent layer (#41): renderer state across turns |
-| `agent/skill.yaml` | 12 | 0 | 0 | 12 | 0 | later: agent layer (#41): skill documents generated from a format and its catalogs |
-| `agent/streamed_answer.yaml` | 6 | 0 | 0 | 6 | 0 | later: agent layer (#41): reading a streamed answer into a message processor |
-| `agent/direct_json/prompt_generator.yaml` | 15 | 0 | 0 | 15 | 0 | later: agent layer (#41): the direct JSON format: system prompt snippet |
-| `agent/direct_json/response_parser.yaml` | 36 | 0 | 0 | 36 | 0 | later: agent layer (#41): the direct JSON format: unwrapping and parsing a response |
-| `agent/direct_json/response_streaming.yaml` | 139 | 0 | 0 | 139 | 0 | later: agent layer (#41): the direct JSON format: parsing a response chunk by chunk |
-| `agent/direct_json/compiler.yaml` | 38 | 0 | 0 | 38 | 0 | later: agent layer (#41): the direct JSON format: compiling a block into messages |
-| `agent/direct_json/decompiler.yaml` | 11 | 0 | 0 | 11 | 0 | later: agent layer (#41): the direct JSON format: writing messages back as notation |
-| `agent/direct_json/scaling.yaml` | 7 | 0 | 0 | 7 | 0 | later: agent layer (#41): the direct JSON format: parse time against payload size |
-| `agent/express/prompt_generator.yaml` | 23 | 0 | 0 | 23 | 0 | later: agent layer (#41): the Express format: system prompt snippet |
-| `agent/express/response_parser.yaml` | 38 | 0 | 0 | 38 | 0 | later: agent layer (#41): the Express format: unwrapping and parsing a response |
-| `agent/express/response_streaming.yaml` | 41 | 0 | 0 | 41 | 0 | later: agent layer (#41): the Express format: parsing a response chunk by chunk |
-| `agent/express/compiler.yaml` | 135 | 0 | 0 | 135 | 0 | later: agent layer (#41): the Express format: compiling a block into messages |
-| `agent/express/decompiler.yaml` | 49 | 0 | 0 | 49 | 0 | later: agent layer (#41): the Express format: writing messages back as notation |
-| `agent/express/scaling.yaml` | 1 | 0 | 0 | 1 | 0 | later: agent layer (#41): the Express format: compile time against payload size |
-| `agent/atom/compiler.yaml` | 7 | 0 | 0 | 7 | 0 | later: agent layer (#41): the Atom format |
-| `agent/elemental/compiler.yaml` | 8 | 0 | 0 | 8 | 0 | later: agent layer (#41): the Elemental format |
-| `agent/builder/builder.yaml` | 22 | 0 | 0 | 22 | 0 | later: agent layer (#41): the typesafe builder API |
-| `agent/macros/macros.yaml` | 70 | 0 | 0 | 70 | 0 | later: agent layer (#41): builder macros |
+| `agent/request_processor.yaml` | 29 | 20 | 0 | 9 | 0 | executed |
+| `agent/catalog_resolution.yaml` | 23 | 23 | 0 | 0 | 0 | executed |
+| `agent/catalog_provider.yaml` | 10 | 9 | 0 | 1 | 0 | executed |
+| `agent/catalog_transformer.yaml` | 15 | 15 | 0 | 0 | 0 | executed |
+| `agent/renderer_capabilities.yaml` | 24 | 5 | 0 | 19 | 0 | executed |
+| `agent/renderer_state.yaml` | 9 | 5 | 0 | 4 | 0 | executed |
+| `agent/streamed_answer.yaml` | 6 | 6 | 0 | 0 | 0 | executed |
+| `agent/direct_json/prompt_generator.yaml` | 15 | 1 | 0 | 14 | 0 | executed |
+| `agent/direct_json/response_parser.yaml` | 36 | 35 | 0 | 1 | 0 | executed |
+| `agent/direct_json/response_streaming.yaml` | 139 | 91 | 3 | 45 | 0 | executed |
+| `agent/direct_json/compiler.yaml` | 38 | 18 | 0 | 20 | 0 | executed |
+| `agent/direct_json/decompiler.yaml` | 11 | 9 | 0 | 2 | 0 | executed |
+| `agent/direct_json/scaling.yaml` | 7 | 0 | 0 | 7 | 0 | later: timing (#75): the direct JSON format: parse time against payload size |
+| `agent/skill.yaml` | 12 | 0 | 0 | 12 | 0 | later: other formats (#74): skill documents generated from a format and its catalogs; the goldens are Express |
+| `agent/express/prompt_generator.yaml` | 23 | 0 | 0 | 23 | 0 | later: other formats (#74): the Express format: system prompt snippet |
+| `agent/express/response_parser.yaml` | 38 | 0 | 0 | 38 | 0 | later: other formats (#74): the Express format: unwrapping and parsing a response |
+| `agent/express/response_streaming.yaml` | 41 | 0 | 0 | 41 | 0 | later: other formats (#74): the Express format: parsing a response chunk by chunk |
+| `agent/express/compiler.yaml` | 135 | 0 | 0 | 135 | 0 | later: other formats (#74): the Express format: compiling a block into messages |
+| `agent/express/decompiler.yaml` | 49 | 0 | 0 | 49 | 0 | later: other formats (#74): the Express format: writing messages back as notation |
+| `agent/express/scaling.yaml` | 1 | 0 | 0 | 1 | 0 | later: other formats (#74): the Express format: compile time against payload size |
+| `agent/atom/compiler.yaml` | 7 | 0 | 0 | 7 | 0 | later: other formats (#74): the Atom format |
+| `agent/elemental/compiler.yaml` | 8 | 0 | 0 | 8 | 0 | later: other formats (#74): the Elemental format |
+| `agent/builder/builder.yaml` | 22 | 0 | 0 | 22 | 0 | later: other formats (#74): the typesafe builder API |
+| `agent/macros/macros.yaml` | 70 | 0 | 0 | 70 | 0 | later: other formats (#74): builder macros |
 | `agent/multi_catalog_formats.yaml` | 35 | 0 | 0 | 35 | 0 | later: A2UI v1.0 (#42): components and function calls resolved across several active catalogs |
 | `agent/agent_functions.yaml` | 64 | 0 | 0 | 64 | 0 | later: A2UI v1.0 (#42): agent functions and the agent's side of renderer messages |
 | `agent/renderer_function_calls.yaml` | 30 | 0 | 0 | 30 | 0 | later: A2UI v1.0 (#42): the agent calling renderer functions |
-| `e2e/v0_9_1/login_form_action.yaml` | 1 | 0 | 0 | 1 | 0 | later: agent layer (#41): a v0.9.1 transcript through the agent layer's response parser |
-| `e2e/v0_9_1/missing_surface_error.yaml` | 1 | 0 | 0 | 1 | 0 | later: agent layer (#41): a v0.9.1 transcript through the agent layer's response parser |
-| `e2e/v0_9_1/newsletter_signup.yaml` | 1 | 0 | 0 | 1 | 0 | later: agent layer (#41): a v0.9.1 transcript through the agent layer's response parser |
-| `e2e/v0_9_1/restaurant_list_booking.yaml` | 1 | 0 | 0 | 1 | 0 | later: agent layer (#41): a v0.9.1 transcript through the agent layer's response parser |
+| `e2e/v0_9_1/login_form_action.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
+| `e2e/v0_9_1/missing_surface_error.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
+| `e2e/v0_9_1/newsletter_signup.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
+| `e2e/v0_9_1/restaurant_list_booking.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
 | `e2e/login_form_action.yaml` | 1 | 0 | 0 | 1 | 0 | later: A2UI v1.0 (#42): a v1.0 transcript |
 | `e2e/missing_surface_error.yaml` | 1 | 0 | 0 | 1 | 0 | later: A2UI v1.0 (#42): a v1.0 transcript |
 | `e2e/newsletter_signup.yaml` | 1 | 0 | 0 | 1 | 0 | later: A2UI v1.0 (#42): a v1.0 transcript |
@@ -141,11 +143,99 @@ cargo test -p ag-ui-a2ui --all-features --test conformance -- --nocapture
 to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list every check by
 name.
 
+## The agent tier
+
+The suites under `agent/` test the layer an agent framework delegates A2UI to
+(`ag_ui_a2ui::agent`): catalog negotiation, the prompt snippet, reading a
+model's answer whole or chunk by chunk, renderer state. Upstream writes them
+once, against A2UI v1.0, and asks an SDK that speaks an older version to lower
+what a case hands it and lift what it hands back, rather than keep a second copy
+of the suites (`conformance_harness_implementation_guide.md`, "Patterns and
+pitfalls in Inference harnesses"). This crate speaks v0.9 and v0.9.1, so that is
+what its runners do.
+
+Every rule is in one test-only module, `tests/conformance_agent/lowering.rs`,
+and a case is lowered only when its catalogs declare v1.0. A case whose catalog
+declares v0.9 runs as written.
+
+| # | v1.0, as the suites write it | v0.9, as this crate reads it |
+|---|---|---|
+| 1 | `"version": "1.0"` | `"version": "v0.9"`. A case that writes `v0.9` means "a version other than the catalog's", and becomes `1.0`. |
+| 2 | A catalog document's `"protocolVersion": "1.0"` | `"0.9"` |
+| 3 | `common_types.json#/$defs/Child` in a catalog | `…#/$defs/ComponentId`, which v1.0's `Child` is a reference to |
+| 4 | Capabilities keyed `"1.0"` | Keyed `"v0.9"`, with inline catalogs lowered by rules 2 and 3 |
+| 5 | A binding `{"@path": …}` and a call `{"@call": …}` in a component | `{"path": …}` and `{"call": …}`. A `ChildList` template (`componentId` beside `path`) keeps its keys in both versions. |
+| 6 | `"@checks"` and `"@accessibility"` on a component | `"checks"` and `"accessibility"` |
+| 7 | A `createSurface` that names no catalog, in a case that never names one | The first catalog of the case is named, and removed again from what comes back |
+| 8 | A `createSurface` carrying `components` and `dataModel`, in decoded messages | `createSurface`, then the `updateComponents` and the `updateDataModel` at `/` that fill it |
+
+Lifting applies rules 1, 5, 6 and 7 backwards to the messages the crate emits.
+Two things are compared as equal that are written differently: a `createSurface`
+that states `sendDataModel: false` and one that leaves it out, and an
+`updateDataModel` that states the path `/` and one that states none. A typed
+message states both defaults.
+
+A rule rewrites how a case is spelled. A case whose meaning v0.9 cannot state is
+skipped, not bent: a `callRendererFunction` message, a component that names a
+catalog of its own, a `createSurface` that carries its components in text a
+model wrote, a prompt snippet compared byte for byte with a file that embeds the
+v1.0 schemas, a provider told a version of another protocol family than its
+document's. Those are the "v1.0" column below, and what #42 takes off the list.
+
+Three more things about how the cases run:
+
+- **Holding components until they close.** From v1.0 a stream emits a component
+  only once its JSON object has closed, and the cases written against v1.0 fix
+  that timing. A lowered case therefore runs with
+  `DirectJson::holding_components_until_closed(true)`; a case written against
+  v0.9 runs with the default, where a component is emitted while it arrives.
+- **Validation is the semantic validator's.** The processors are built without
+  the JSON Schema check (`checking_schemas`), so the counts do not depend on a
+  schema engine.
+- **Transcripts.** `e2e/v0_9_1/*.yaml` are stated in v0.9 and run as written:
+  each turn's chunks through a stream, and joined through one parse, against a
+  state that lives across the turns. Only the agent half is run, and only for
+  direct JSON. The catalog path names the published basic catalog, which is the
+  copy this crate pins.
+
+How each executed agent-tier suite ran. "Lowered" and "as written" count
+executed checks; a case that hands the crate nothing a rule would rewrite, such
+as text to unwrap, counts as written.
+
+| Suite | Cases | Lowered from v1.0 | As written | Skipped: v1.0 | Skipped: v0.8 | Skipped: another format |
+|---|---:|---:|---:|---:|---:|---:|
+| `agent/request_processor.yaml` | 29 | 19 | 1 | 0 | 0 | 9 |
+| `agent/catalog_resolution.yaml` | 23 | 22 | 1 | 0 | 0 | 0 |
+| `agent/catalog_provider.yaml` | 10 | 6 | 3 | 1 | 0 | 0 |
+| `agent/catalog_transformer.yaml` | 15 | 15 | 0 | 0 | 0 | 0 |
+| `agent/renderer_capabilities.yaml` | 24 | 0 | 5 | 17 | 2 | 0 |
+| `agent/renderer_state.yaml` | 9 | 5 | 0 | 0 | 0 | 4 |
+| `agent/streamed_answer.yaml` | 6 | 6 | 0 | 0 | 0 | 0 |
+| `agent/direct_json/prompt_generator.yaml` | 15 | 0 | 1 | 14 | 0 | 0 |
+| `agent/direct_json/response_parser.yaml` | 36 | 5 | 30 | 1 | 0 | 0 |
+| `agent/direct_json/response_streaming.yaml` | 139 | 51 | 43 | 6 | 39 | 0 |
+| `agent/direct_json/compiler.yaml` | 38 | 18 | 0 | 20 | 0 | 0 |
+| `agent/direct_json/decompiler.yaml` | 11 | 9 | 0 | 2 | 0 | 0 |
+| `e2e/v0_9_1/login_form_action.yaml` | 1 | 0 | 1 | 0 | 0 | 1 |
+| `e2e/v0_9_1/missing_surface_error.yaml` | 1 | 0 | 1 | 0 | 0 | 1 |
+| `e2e/v0_9_1/newsletter_signup.yaml` | 1 | 0 | 1 | 0 | 0 | 1 |
+| `e2e/v0_9_1/restaurant_list_booking.yaml` | 1 | 0 | 1 | 0 | 0 | 1 |
+
+In all: 156 checks ran lowered from v1.0 and 88 as written.
+
+`agent/renderer_capabilities.yaml` states a version in every case, so each runs
+as written or not at all; its seventeen v1.0 cases hold most of the rules about
+a malformed entry. Those rules do not vary by version, and the crate's own tests
+state them for v0.9 (`agent::capabilities`). The same goes for the prompt
+snippet: fourteen of its fifteen cases compare a v1.0 golden, and the v0.9
+snippet is tested in `agent::direct_json::prompt`.
+
 ## Why suites are skipped
 
 | Label | Suites | Cases | What it means |
 |---|---:|---:|---|
-| later: agent layer (#41) | 28 | 772 | The suite tests the agent layer: inference formats, the per-request processor, catalog resolution, renderer capabilities and state. The next pull request of #41 builds it. |
+| later: other formats (#74) | 11 | 406 | The suite tests an output format other than direct JSON (Express, Atom, Elemental), or something built on one: the typesafe builder, its macros, skill documents. |
+| later: timing (#75) | 1 | 7 | The suite times the direct JSON stream instead of checking its result. The stream is not yet linear in the size of one message, and timing cases need a job of their own. |
 | later: A2UI v1.0 (#42) | 19 | 397 | The suite tests A2UI v1.0. |
 | later: adapters (#43) | 1 | 11 | The suite tests the A2A transport adapter. |
 | out of scope: renderer | 8 | 241 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. |
@@ -158,15 +248,25 @@ under `extensions/`.
 
 ## Expected divergences
 
-Twenty-two checks: three in `core/validator_v0_9.yaml`, eight in
+Twenty-five checks: three in `core/validator_v0_9.yaml`, eight in
 `agent/legacy/streaming_parser.yaml`, two in `core/data_context.yaml`, four in
-`core/data_model.yaml`, two in `core/message_processor_v0_9.yaml` and three in
-`core/catalog.yaml`. Those of the suites run one check per case are listed in
-`DIVERGENCES` in the harness with what this crate gives, and the harness holds
-it to exactly that.
+`core/data_model.yaml`, two in `core/message_processor_v0_9.yaml`, three in
+`core/catalog.yaml` and three in `agent/direct_json/response_streaming.yaml`.
+Those of the core suites run one check per case are listed in `DIVERGENCES` in
+the harness with what this crate gives, and the harness holds it to exactly
+that.
+
+The three agent-tier ones are listed in `AGENT_DIVERGENCES` in the harness, each
+with what its failure has to say, so that an entry cannot go on covering a case
+that started failing for another reason. All three follow from what
+`ag_ui_a2ui::validate` holds a finished surface to, which the agent layer does
+not relax.
 
 | Checks | Reference expectation | Checked behaviour |
 |---:|---|---|
+| 1 (`test_stream_orphan_component_fails_v09`) | A block that leaves a component the root cannot reach is rejected. | The block is emitted. An unreachable component is a warning, for the reason the next row gives. |
+| 1 (`test_stream_relative_path_kept_v09`) | A binding with a relative path on the root component is emitted as written. | It is rejected as `unresolved_binding`: a relative path has no scope outside a list template. The reference does not look at bindings. |
+| 1 (`test_stream_data_model_grows_v09`) | A list template whose path holds a map is emitted, with the data model growing under it. | It is rejected as `unresolved_binding` once the data model arrives: a template iterates an array. The reference does not look at the data model. |
 | 2 + 1 (`test_v09_topology_orphaned_component_error`, `test_v09_topology_plain_string_property_not_treated_as_child_ref`; `test_topology_orphaned_component_error` in the processor suite) | A component the root cannot reach is an error. | It is reported in `ValidationReport::unreachable`, as a warning. The specification tells renderers to buffer a component until its parent arrives, so an unreachable component is usually a half-streamed tree. The processor accepts the message, and `MessageProcessor::report` names the component. |
 | 1 (`test_custom_catalog_0_9`, step 2) | `children: 123` is `invalid_value`. | It is `type_mismatch`, at the same place. |
 | 1 (`test_delta_streaming_correctness_v09`) | Emit components from a message that has not declared the required `version`. | Emit nothing until a supported version is known. |
@@ -190,11 +290,12 @@ to declare `children` as a `ChildList`, and both now pass as written.
 ## Failing
 
 Nine checks. Three are in cases upstream added after the previous pin, all
-about the toolkit's parsers; the agent layer replaces those parsers, and these
-cases are for it to pass. Two are about removing a path that is not there,
-where upstream's rule and the renderer this workspace tests against disagree
-(#42). Two are refusals a JSON Schema engine makes: the engine is in the
-crate and `MessageProcessor` is not wired to it. Two ask the catalog this
+about the toolkit's parsers. The agent layer's readers stand beside those
+parsers for now; the pull request that puts the toolkit on the agent layer fixes
+these or retires them with the parsers. Two are about removing a path that is
+not there, where upstream's rule and the renderer this workspace tests against
+disagree (#42). Two are refusals a JSON Schema engine makes: the engine is in
+the crate and `MessageProcessor` is not wired to it. Two ask the catalog this
 crate builds in to be the published document.
 
 | Check | What happens |
@@ -210,6 +311,10 @@ crate builds in to be the published document.
 | `core/catalog.yaml::test_v09_basic_catalog_to_json` | The case wants the document of the SDK's own basic catalog to be the published file. `Catalog::basic()` is written in Rust and has no document. The published v0.9.1 one ships with the crate, as `SchemaBundle::basic()`. |
 
 ## Skips inside the executed suites
+
+The agent-tier suites are in the table under "The agent tier", by suite and by
+label: 61 checks for v1.0 (#42), 41 for v0.8, 13 cases for another format and
+the Express half of the four transcripts (#74). The rest:
 
 | Count | Reason |
 |---:|---|
@@ -336,11 +441,12 @@ that was understood.
 The version of a catalog case is the one it states, or the one its document
 states: 21 cases about a v1.0 catalog say so only in the document.
 
-The harness is compiled only with the `schema-validation` feature, because
-these cases and the common-types ones run a JSON Schema engine. Without it,
-`cargo test -p ag-ui-a2ui` lists one ignored test in the suite's place,
-`conformance_suite` in `tests/conformance_needs_schema_validation.rs`, whose
-reason says which feature to turn on.
+The harness is compiled only with the `schema-validation` and `agent` features:
+these cases and the common-types ones run a JSON Schema engine, and the suites
+under `agent/` run the agent layer. Without both, `cargo test -p ag-ui-a2ui`
+lists one ignored test in the suite's place, `conformance_suite` in
+`tests/conformance_needs_schema_validation.rs`, whose reason says which features
+to turn on.
 
 The v0.9 suite has no case that deletes a surface that does not exist.
 `core/message_processor_v1_0.yaml` has one, and its rule is that such a delete

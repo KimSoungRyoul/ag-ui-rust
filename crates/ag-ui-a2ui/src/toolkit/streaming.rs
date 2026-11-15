@@ -114,20 +114,7 @@ struct JsonFrame {
     component_type: Option<String>,
 }
 
-/// Keys whose string values may be closed early when a chunk cuts them.
-///
-/// Everything absent from this list is structural or atomic: healing `"id"` or
-/// `"path"` mid-token would fabricate an identifier or a data binding that the
-/// model never wrote, so those fragments wait for more input instead.
-pub const DEFAULT_CUTTABLE_KEYS: [&str; 7] = [
-    "literalString",
-    "valueString",
-    "label",
-    "hint",
-    "caption",
-    "altText",
-    "text",
-];
+pub use crate::protocol::schema::DEFAULT_CUTTABLE_KEYS;
 
 /// Parses a model's A2UI output incrementally, one chunk at a time.
 #[derive(Clone, Debug)]

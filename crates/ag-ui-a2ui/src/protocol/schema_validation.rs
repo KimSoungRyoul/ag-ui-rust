@@ -1,7 +1,7 @@
 //! Full Draft 2020-12 validation with an explicitly local resource registry.
 
 use super::operation::Operation;
-use crate::toolkit::schema::SchemaBundle;
+use super::schema::SchemaBundle;
 use crate::{Error, ErrorCode, Result, ValidationError};
 use jsonschema::Evaluation;
 use jsonschema::error::ValidationErrorKind;

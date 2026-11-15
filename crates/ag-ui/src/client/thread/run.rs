@@ -10,7 +10,10 @@ use std::sync::{
 use std::task::{Context as TaskContext, Poll};
 
 use crate::client::{
-    apply::{Changed, MessageChangeKind, ReasoningChangeKind, Subagent, SubagentChangeKind},
+    apply::{
+        Changed, MessageChangeKind, ReasoningChange, ReasoningChangeKind, Subagent,
+        SubagentChangeKind,
+    },
     chunks::ChunkNormalizer,
     enforce::{Checked, CheckedStream},
     error::{Error, Result},
@@ -47,7 +50,15 @@ pub enum Update<S = Value> {
     /// in the stream is the only nesting there is; see the [module
     /// docs](super).
     State(S),
-    /// Reasoning text arrived. Kept separate from the reply.
+    /// A reasoning message was created, appended to, or completed. It is in
+    /// [`Thread::messages`] like any other message, and is announced here and
+    /// not as an [`Update::Message`], so a view can draw reasoning apart
+    /// from the reply, or leave it out.
+    ///
+    /// The span around reasoning messages, `REASONING_START` to
+    /// `REASONING_END`, opens no message and yields no update. An application
+    /// that needs to know one is open reads those two events in
+    /// [`Thread::on_event`].
     Reasoning(ReasoningUpdate),
     /// A subagent was announced, resumed, finished, suspended or failed.
     ///
@@ -123,6 +134,8 @@ pub struct MessageUpdate {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct ReasoningUpdate {
+    /// Index into [`Thread::messages`], where the reasoning message is.
+    pub index: usize,
     /// The reasoning message's id.
     pub id: MessageId,
     /// What this event did to it.
@@ -226,7 +239,8 @@ pub struct RunReport {
     /// run began.
     pub runs: Vec<RunSummary>,
     /// Messages whose IDs were absent when this request was prepared,
-    /// whichever run on the stream produced them.
+    /// reasoning messages among them, whichever run on the stream produced
+    /// them.
     pub new_messages: Vec<Message>,
     /// Retained diagnostics, in observation order.
     pub diagnostics: Vec<RunDiagnostic>,
@@ -251,6 +265,8 @@ impl<T: Transport, S> Thread<T, S> {
             .collect();
         // Activity messages describe local renderer state. Like the reference
         // client, retain them in the thread but omit them from agent requests.
+        // Nothing else is left out: a reasoning message goes back as it
+        // stands, which is what returns its `encryptedValue` to the agent.
         let messages = self
             .messages()
             .iter()
@@ -463,6 +479,22 @@ impl<T, S> RunStream<'_, T, S> {
         self.end = Some(end.clone());
         self.ready.push_back(Update::Done(end));
     }
+    /// Queues the update for a change to a reasoning message, with the text
+    /// the message now holds.
+    fn reasoning_changed(&mut self, change: ReasoningChange) {
+        let text = self
+            .thread
+            .applier
+            .text_of(change.id.clone())
+            .unwrap_or_default()
+            .to_owned();
+        self.ready.push_back(Update::Reasoning(ReasoningUpdate {
+            index: change.index,
+            id: change.id,
+            change: change.kind,
+            text,
+        }));
+    }
     /// Reports what a run that stopped short left open as aborted: its
     /// messages, its reasoning, its running subagents.
     fn stop_subagents(&mut self) {
@@ -478,17 +510,7 @@ impl<T, S> RunStream<'_, T, S> {
             }
         }
         for change in reasoning {
-            let text = self
-                .thread
-                .applier
-                .reasoning_text(&change.id)
-                .unwrap_or_default()
-                .to_owned();
-            self.ready.push_back(Update::Reasoning(ReasoningUpdate {
-                id: change.id,
-                change: change.kind,
-                text,
-            }));
+            self.reasoning_changed(change);
         }
         for change in self.thread.applier.abort_subagents() {
             let subagent = self.thread.applier.subagents()[change.index].clone();
@@ -854,19 +876,7 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
                     self.diagnostic(error);
                 }
             },
-            Changed::Reasoning(change) => {
-                let text = self
-                    .thread
-                    .applier
-                    .reasoning_text(&change.id)
-                    .unwrap_or_default()
-                    .to_owned();
-                self.ready.push_back(Update::Reasoning(ReasoningUpdate {
-                    id: change.id,
-                    change: change.kind,
-                    text,
-                }));
-            }
+            Changed::Reasoning(change) => self.reasoning_changed(change),
             Changed::Subagent(change) => {
                 if let Some(subagent) = self.thread.applier.subagents().get(change.index) {
                     self.ready.push_back(Update::Subagent(SubagentUpdate {
