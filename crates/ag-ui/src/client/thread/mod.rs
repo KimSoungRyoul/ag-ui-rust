@@ -2,7 +2,39 @@
 //!
 //! [`Thread`] owns its transport handle; dropping the agent that created it is safe.
 //! It does not automatically fetch server history or synchronize other local copies.
-//! Each run borrows the thread until dropped. Requests are dispatched on first poll.
+//! Each request borrows the thread until dropped. Requests are dispatched on first poll.
+//!
+//! # Several runs on one stream
+//!
+//! A request asks for one run, and AG-UI 1.0 lets the stream that answers it
+//! carry several in sequence: the runs the producer replays, then the
+//! requested one, which echoes the request's run id. A [`RunStream`] reads
+//! to the end of the stream. Messages accumulate and state persists across
+//! the runs; each run yields one [`Update::RunEnded`], and is listed in
+//! [`RunReport::runs`]; one [`Update::Done`] ends the stream.
+//!
+//! What a run's end means for the thread depends on where the run stands:
+//!
+//! | Run | Ends | The thread |
+//! | --- | --- | --- |
+//! | replayed, before the requested run | any way | keeps what it delivered and reports it; owes nothing new |
+//! | requested | success, interrupt | confirms a resume [submission](Thread::submission); pending [interrupts](Thread::interrupts) cleared, or set |
+//! | requested | cancelled, `RUN_ERROR`, cut short | leaves a submission unconfirmed, and the interrupts as they were |
+//! | after the requested run | success, cancelled | pending interrupts cleared |
+//! | after the requested run | interrupt | pending interrupts set |
+//! | after the requested run | `RUN_ERROR`, cut short | pending interrupts left |
+//! | after the requested run, a submission unconfirmed | any `RUN_FINISHED` | pending interrupts left, with an [`Update::Warning`] |
+//!
+//! The request went the way the last run from the requested one on ended:
+//! that is [`Update::Done`], [`RunReport::end`] and [`Thread::last_run_end`].
+//! 1.0 makes the requested run the last of its stream, so on a conforming
+//! stream it is the requested run's end. A producer that keeps the stream
+//! open may send a run after it all the same, and the agent then stands
+//! where that run left it. A stream that ends without the requested run does
+//! not answer the request, and fails it.
+//!
+//! [`Thread::unanswered_tool_calls`] reads the conversation, so a call any
+//! run left without a result is owed.
 
 mod pending;
 mod run;
@@ -11,7 +43,7 @@ mod snapshot;
 pub use pending::{ResumeSubmission, SubmissionStatus};
 pub use run::{
     AbortHandle, MessageUpdate, ReasoningUpdate, RunDiagnostic, RunEnd, RunReport, RunStream,
-    SubagentUpdate, Update,
+    RunSummary, SubagentUpdate, Update,
 };
 pub use snapshot::ThreadSnapshot;
 
@@ -154,7 +186,10 @@ impl<T, S> Thread<T, S> {
     pub fn agent(&self) -> &RemoteAgent<Arc<T>> {
         &self.agent
     }
-    /// The last observed termination. Dropping a dispatched run records `Aborted`.
+    /// How the last request went: what its stream's [`Update::Done`] carried.
+    /// Dropping a dispatched request before its stream ends records `Aborted`,
+    /// unless the last run from the requested one on had already ended: that
+    /// ending stays.
     pub fn last_run_end(&self) -> Option<&RunEnd> {
         self.last_run_end.as_ref()
     }
@@ -190,7 +225,7 @@ impl<T, S> Thread<T, S> {
     pub fn set_verify(&mut self, verify: bool) {
         self.verify = verify;
     }
-    /// Retained diagnostics per run. Excess errors are still yielded as updates.
+    /// Retained diagnostics per request. Excess errors are still yielded as updates.
     pub fn set_diagnostic_limit(&mut self, limit: usize) {
         self.diagnostic_limit = limit;
     }

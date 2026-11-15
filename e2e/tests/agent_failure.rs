@@ -143,6 +143,13 @@ async fn the_client_surfaces_the_failure_as_an_error_and_a_failed_ending() {
         other => panic!("the run must end as Failed, not {other:?}"),
     }
     match tail.next() {
+        Some(Update::RunEnded(run)) => {
+            assert!(run.requested, "{run:?}");
+            assert!(matches!(run.end, RunEnd::Failed { .. }), "{run:?}");
+        }
+        other => panic!("the failed run must be reported as ended, not {other:?}"),
+    }
+    match tail.next() {
         Some(Update::Error(ClientError::Run { message, code })) => {
             assert!(message.contains("the weather service is down"), "{message}");
             assert_eq!(code.as_deref(), Some("AGENT_ERROR"));

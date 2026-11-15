@@ -60,9 +60,7 @@ pub enum Error {
     #[error("protocol violation: {0}")]
     Protocol(String),
 
-    /// The stream is valid, but uses something this client does not handle —
-    /// a later run on the same stream, which it leaves unread — or an
-    /// [`Applier`](crate::client::Applier) was handed a `*_CHUNK` or
+    /// An [`Applier`](crate::client::Applier) was handed a `*_CHUNK` or
     /// `THINKING_*` event, which it applies only in their explicit form.
     #[error("not supported by this client: {0}")]
     Unsupported(String),
