@@ -21,9 +21,13 @@
 //!
 //! Run with `cargo test -p ag-ui-a2ui --all-features --test conformance --
 //! --nocapture` to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list
-//! every check by name.
+//! every check by name. The harness is compiled only with the
+//! `schema-validation` feature, which `--all-features` turns on.
 
-#![cfg(feature = "toolkit")]
+// The catalog and common-types suites validate against the published schema
+// documents, so the harness needs the JSON Schema engine; `schema-validation`
+// brings `toolkit` with it.
+#![cfg(feature = "schema-validation")]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -31,6 +35,7 @@ use std::path::{Path, PathBuf};
 use ag_ui_a2ui::binding::{Scope, absolute_path, parse_template};
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::processor::{MessageProcessor, Rejection, RejectionKind};
+use ag_ui_a2ui::schema_validation::SchemaValidator;
 use ag_ui_a2ui::surface::{Lifecycle, SurfaceStore};
 use ag_ui_a2ui::toolkit::negotiate::{CatalogRegistry, ClientCapabilities, select_catalog_schema};
 use ag_ui_a2ui::toolkit::parser::{has_a2ui_parts, parse_and_fix, parse_response};
@@ -145,12 +150,12 @@ const SUITES: &[Suite] = &[
     run("core/data_model.yaml", [43, 4, 1, 4]),
     run("core/expressions.yaml", [92, 0, 6, 0]),
     run("core/message_processor_v0_9.yaml", [40, 2, 4, 2]),
+    run("core/catalog.yaml", [14, 2, 54, 3]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
     retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
     retired("retired/agent/inference_format.yaml", [13, 0, 6, 0]),
 
     // --- core tier, pre-1.0: in scope, no runner in this harness yet (#72) ---------------------
-    skip("core/catalog.yaml", 73, Why::Unharnessed, "the reference catalog API: fromJson, toJson, round trip, validationSchema, derive"),
     skip("core/common_types.yaml", 22, Why::Unharnessed, "values against the published common types; 3 cases compare a schema generated from an SDK's own types"),
 
     // --- core tier: A2UI v1.0 ------------------------------------------------------------------
@@ -453,6 +458,22 @@ const KNOWN_FAILURES: &[(&str, &str)] = &[
         "core/message_processor_v0_9.yaml::test_v09_rejects_at_prefixed_component_envelope_keys",
         "a property the component does not declare, here `@metadata`, is accepted",
     ),
+    // The catalog this crate builds in is a summary written in Rust.
+    (
+        "core/catalog.yaml::test_v09_basic_catalog_from_json",
+        "Catalog::basic() is not the published v0.9 catalog read back: it has its own id, \
+         declares `checks` itself where the document takes it from the Checkable mixin, and \
+         has no List.listStyle",
+    ),
+    (
+        "core/catalog.yaml::test_v09_basic_catalog_to_json",
+        "Catalog::basic() was not read from a document and has none to give",
+    ),
+    (
+        "core/catalog.yaml::test_v09_published_vegachart_catalog_is_self_contained",
+        "no SchemaValidator can be built for a catalog that declares no `$defs/theme`, which \
+         the envelope schema refers to",
+    ),
 ];
 
 /// Set `A2UI_CONFORMANCE_VERBOSE=1` to list every executed check by name.
@@ -507,6 +528,16 @@ const DIVERGENCES: &[(&str, &str, &str)] = &[
         r#""/bar//foo""#,
         TRAILING_SLASH,
     ),
+    (
+        "core/catalog.yaml::test_v09_published_minimal_catalog_is_self_contained",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
+    (
+        "core/catalog.yaml::test_v091_published_basic_catalog_is_self_contained",
+        NOT_BUNDLED,
+        REGISTRY,
+    ),
     // The same difference as in `core/validator_v0_9.yaml`: the component is
     // found and reported, and the message is not refused for it.
     (
@@ -518,6 +549,9 @@ const DIVERGENCES: &[(&str, &str, &str)] = &[
 
 const TRAILING_SLASH: &str =
     "an empty path segment is the empty key here, as RFC 6901 reads it; the reference drops it";
+
+const REGISTRY: &str = "this crate bundles no schema: a catalog's references resolve through the \
+                        validator's registry of local documents";
 
 const NOT_AN_INDEX: &str = "reading a list at a segment that is not an index is an error here, as the \
      specification says of a path; the reference reads no value";
@@ -768,6 +802,27 @@ fn conformance_suite() {
     );
 }
 
+/// Actions of the core tier in the current layout. Each case is about one
+/// protocol version, and is run only at a version this crate speaks.
+const CORE_ACTIONS: [&str; 12] = [
+    "validate",
+    "resolve_path",
+    "data_model",
+    "parse_expression_template",
+    "process_messages",
+    "get_renderer_data_model",
+    "get_renderer_capabilities",
+    "from_json",
+    "to_json",
+    "round_trip",
+    "validation_schema",
+    "derive",
+];
+
+/// Actions on a model's output, which is in one wire format or another in
+/// either layout.
+const STREAM_ACTIONS: [&str; 4] = ["process_chunk", "parse_full", "fix_payload", "has_parts"];
+
 fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     let name = case_name(case);
     let action = case.get("action").and_then(Value::as_str).unwrap_or("");
@@ -795,22 +850,10 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     // Wire-format actions are gated on the version a case targets. Schema
     // surgery and prompt assembly work on the shape of documents rather than
     // on the protocol, and gate themselves where a version matters.
-    let wire_format = matches!(
-        (action, format),
-        (
-            "validate"
-                | "resolve_path"
-                | "data_model"
-                | "parse_expression_template"
-                | "process_messages"
-                | "get_renderer_data_model"
-                | "get_renderer_capabilities",
-            Format::Current,
-        ) | (
-            "process_chunk" | "parse_full" | "fix_payload" | "has_parts",
-            _
-        )
-    );
+    let wire_format = match format {
+        Format::Current => CORE_ACTIONS.contains(&action) || STREAM_ACTIONS.contains(&action),
+        Format::Retired => STREAM_ACTIONS.contains(&action),
+    };
     if wire_format {
         if let CaseVersion::Unsupported(reason) = case_version(case) {
             tally.record(check, Outcome::Skipped(reason));
@@ -834,6 +877,12 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
         ("load_catalog", _) => tally.record(check, run_load_catalog(case)),
         ("generate_prompt", _) => tally.record(check, run_generate_prompt(case)),
         ("resolve_path", Format::Current) => settle(check, run_resolve_path(case), tally),
+        (
+            "from_json" | "to_json" | "round_trip" | "validation_schema" | "derive",
+            Format::Current,
+        ) => {
+            run_catalog_case(check, action, case, tally);
+        }
         ("process_messages", Format::Current) => {
             settle(check, run_process_messages(case), tally);
         }
@@ -2150,6 +2199,396 @@ fn run_renderer_data_model(case: &Value) -> Result<(), Miss> {
         Ok(())
     } else {
         Err(Miss::new(actual.to_string(), wanted.to_string()))
+    }
+}
+
+// --- catalog: from_json, to_json, round_trip, validation_schema, derive -----
+
+/// A document a core case names by repository path.
+///
+/// The tree mirrors upstream's repository root, with `conformance/` itself at
+/// the top of it.
+fn repository_document(path: &str) -> Result<Value, String> {
+    let relative = path.strip_prefix("conformance/").unwrap_or(path);
+    let text = std::fs::read_to_string(fixture(relative))
+        .map_err(|_| format!("{path} is not vendored under tests/conformance/"))?;
+    serde_json::from_str(&text).map_err(|error| format!("{path} is not JSON: {error}"))
+}
+
+/// The catalog document a case is about: inline, or named by path. `None` for
+/// a case about the SDK's own catalog.
+fn catalog_document(case: &Value) -> Result<Option<Value>, String> {
+    match (
+        case.get("catalog"),
+        case.get("catalogPath").and_then(Value::as_str),
+    ) {
+        (Some(inline), _) => Ok(Some(inline.clone())),
+        (None, Some(path)) => repository_document(path).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+/// One case of `core/catalog.yaml`. The version is the case's, or the one its
+/// document states: a case about a v1.0 catalog often says so only there.
+fn run_catalog_case(check: &str, action: &str, case: &Value, tally: &mut Tally) {
+    let document = match catalog_document(case) {
+        Ok(document) => document,
+        Err(reason) => {
+            tally.record(check, Outcome::Failed(reason));
+            return;
+        }
+    };
+    let stated = document
+        .as_ref()
+        .and_then(|document| document.get("protocolVersion"))
+        .map(|version| serde_json::json!({ "protocolVersion": version }));
+    if let Some(CaseVersion::Unsupported(reason)) = stated.as_ref().map(case_version) {
+        tally.record(check, Outcome::Skipped(reason));
+        return;
+    }
+    match action {
+        "from_json" => settle(check, run_from_json(case, document), tally),
+        "round_trip" => settle(check, run_round_trip(case, document), tally),
+        "to_json" => settle(check, run_to_json(case), tally),
+        "validation_schema" => tally.record(
+            check,
+            Outcome::Skipped(
+                "validationSchema is the reference's bundled, flattened schema: this crate \
+                 validates against the documents as published and bundles nothing"
+                    .to_string(),
+            ),
+        ),
+        _ => tally.record(
+            check,
+            Outcome::Skipped(
+                "Catalog has no derive; 7 of the 8 derive cases are on a v1.0 catalog (#42)"
+                    .to_string(),
+            ),
+        ),
+    }
+}
+
+/// The version a catalog case runs under: the one it or its document states,
+/// or v0.9, which is the reference's reading of a document that states none.
+fn catalog_version(case: &Value, document: Option<&Value>) -> String {
+    case.get("protocolVersion")
+        .or_else(|| document.and_then(|document| document.get("protocolVersion")))
+        .map_or_else(|| A2uiVersion::DEFAULT.as_str().to_string(), render_version)
+}
+
+/// A validator for messages on a surface of this catalog, built from the
+/// documents the crate ships and this one, and from nothing else.
+fn catalog_validator(document: &Value) -> Result<SchemaValidator, String> {
+    let mut bundle = SchemaBundle::basic().map_err(|error| error.to_string())?;
+    bundle.catalog = document.clone();
+    SchemaValidator::new(&bundle, &BTreeMap::new()).map_err(|error| error.to_string())
+}
+
+/// What makes a catalog read from the published document differ from the one
+/// this crate builds in: its id, its component and function names, each
+/// component's properties and required properties, each function's return
+/// type.
+fn differences_from_builtin(loaded: &Catalog) -> Vec<String> {
+    let builtin = Catalog::basic();
+    let mut out = Vec::new();
+    if loaded.catalog_id != builtin.catalog_id {
+        out.push(format!(
+            "id {:?}, built in as {:?}",
+            loaded.catalog_id, builtin.catalog_id
+        ));
+    }
+    let names = |catalog: &Catalog| catalog.components.keys().cloned().collect::<Vec<_>>();
+    if names(loaded) != names(&builtin) {
+        out.push(format!("components {:?}", names(loaded)));
+    }
+    for (name, published) in &loaded.components {
+        let Some(own) = builtin.component(name) else {
+            continue;
+        };
+        let props = |def: &ag_ui_a2ui::catalog::ComponentDef| {
+            def.props.keys().cloned().collect::<BTreeSet<_>>()
+        };
+        let (published_props, own_props) = (props(published), props(own));
+        if published_props != own_props {
+            out.push(format!(
+                "{name} properties: published only {:?}, built in only {:?}",
+                published_props.difference(&own_props).collect::<Vec<_>>(),
+                own_props.difference(&published_props).collect::<Vec<_>>()
+            ));
+        }
+        let required = |def: &ag_ui_a2ui::catalog::ComponentDef| {
+            def.required.iter().cloned().collect::<BTreeSet<_>>()
+        };
+        if required(published) != required(own) {
+            out.push(format!(
+                "{name} requires {:?}, built in {:?}",
+                required(published),
+                required(own)
+            ));
+        }
+    }
+    let functions = |catalog: &Catalog| {
+        catalog
+            .functions
+            .iter()
+            .map(|(name, def)| (name.clone(), def.return_type.clone()))
+            .collect::<Vec<_>>()
+    };
+    if functions(loaded) != functions(&builtin) {
+        out.push(format!("functions {:?}", functions(loaded)));
+    }
+    out
+}
+
+/// The entries a case lists against the ones a catalog defines: by name when
+/// the case gives a list, and by name and schema when it gives a map. Either
+/// way the names are all of them.
+fn check_entries(
+    kind: &str,
+    wanted: &Value,
+    defined: Vec<&String>,
+    document: &Value,
+) -> Result<(), Miss> {
+    let names: Vec<&str> = match wanted {
+        Value::Array(names) => names.iter().filter_map(Value::as_str).collect(),
+        Value::Object(entries) => entries.keys().map(String::as_str).collect(),
+        _ => Vec::new(),
+    };
+    let listed: BTreeSet<&str> = names.into_iter().collect();
+    let defined: BTreeSet<&str> = defined.into_iter().map(String::as_str).collect();
+    if listed != defined {
+        return Err(Miss::new(
+            format!("{kind} {defined:?}"),
+            format!("{kind} {listed:?}"),
+        ));
+    }
+    for (name, schema) in wanted.as_object().into_iter().flatten() {
+        let held = document.get(kind).and_then(|entries| entries.get(name));
+        if !held.is_some_and(|held| same_json(held, schema)) {
+            return Err(Miss::new(
+                format!("{kind}.{name} is {}", held.unwrap_or(&Value::Null)),
+                format!("{kind}.{name} to be {schema}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The fault a phrase of the reference's `CatalogError` names, as this crate's
+/// reason for it starts.
+fn catalog_fault(phrase: &str) -> Option<&'static str> {
+    match phrase {
+        "catalog_id must be provided or exist in catalog schema" => {
+            Some("catalog document is missing 'catalogId'")
+        }
+        _ => None,
+    }
+}
+
+/// `from_json`: [`Catalog::from_schema`], and what the case expects of the
+/// catalog it gives.
+fn run_from_json(case: &Value, document: Option<Value>) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[
+            &CASE_KEYS[..],
+            &["catalogId", "catalogPath", "expect", "expectError"],
+        ]
+        .concat(),
+        "case",
+    )?;
+    let document = document.ok_or_else(|| Miss::new("the case names no catalog", "one"))?;
+    let loaded = Catalog::from_schema(&document);
+
+    if let Some(wanted) = case.get("expectError") {
+        unknown_key(wanted, &["category", "message"], "expectError")?;
+        let phrase = wanted
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let fault = catalog_fault(phrase);
+        return match loaded {
+            Ok(_) => Err(Miss::new("loaded", format!("a refusal: {wanted}"))),
+            Err(Error::Catalog(reason))
+                if wanted.get("category").and_then(Value::as_str) == Some("CatalogError")
+                    && (phrase.is_empty()
+                        || fault.is_some_and(|fault| reason.starts_with(fault))) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(Miss::new(format!("error: {error}"), wanted.to_string())),
+        };
+    }
+    let mut catalog =
+        loaded.map_err(|error| Miss::new(format!("error: {error}"), "the catalog to load"))?;
+    // The case's own `catalogId` is the id to load the catalog under.
+    if let Some(id) = case.get("catalogId").and_then(Value::as_str) {
+        catalog.catalog_id = id.to_string();
+    }
+    let expect = case.get("expect").unwrap_or(&Value::Null);
+    unknown_key(
+        expect,
+        &[
+            "catalogId",
+            "protocolVersion",
+            "components",
+            "functions",
+            "matchesBuiltinCatalog",
+            "selfContained",
+            "validComponents",
+            "invalidComponents",
+        ],
+        "expect",
+    )?;
+    if let Some(id) = expect.get("catalogId").and_then(Value::as_str) {
+        if catalog.catalog_id != id {
+            return Err(Miss::new(
+                format!("catalogId {:?}", catalog.catalog_id),
+                format!("catalogId {id:?}"),
+            ));
+        }
+    }
+    // A catalog has no version of its own here. The expectation is held to
+    // the version the case runs under.
+    let version = catalog_version(case, Some(&document));
+    if let Some(wanted) = expect.get("protocolVersion").map(render_version) {
+        if wanted != version {
+            return Err(Miss::new(
+                format!("version {version}"),
+                format!("version {wanted}"),
+            ));
+        }
+    }
+    if let Some(wanted) = expect.get("components") {
+        check_entries(
+            "components",
+            wanted,
+            catalog.components.keys().collect(),
+            &document,
+        )?;
+    }
+    if let Some(wanted) = expect.get("functions") {
+        check_entries(
+            "functions",
+            wanted,
+            catalog.functions.keys().collect(),
+            &document,
+        )?;
+    }
+    if expect.get("matchesBuiltinCatalog") == Some(&Value::Bool(true)) {
+        let differences = differences_from_builtin(&catalog);
+        if !differences.is_empty() {
+            return Err(Miss::new(
+                format!("differs from Catalog::basic(): {}", differences.join("; ")),
+                "the catalog this crate builds in",
+            ));
+        }
+    }
+
+    let samples = |key: &str| {
+        expect
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (valid, invalid) = (samples("validComponents"), samples("invalidComponents"));
+    let self_contained = expect.get("selfContained") == Some(&Value::Bool(true));
+    if valid.is_empty() && invalid.is_empty() && !self_contained {
+        return Ok(());
+    }
+    let validator = catalog_validator(&document)
+        .map_err(|error| Miss::new(format!("no validator compiles: {error}"), "one"))?;
+    for (component, wanted_valid) in valid
+        .iter()
+        .map(|component| (component, true))
+        .chain(invalid.iter().map(|component| (component, false)))
+    {
+        let message = serde_json::json!({
+            "version": version,
+            "updateComponents": {"surfaceId": "s", "components": [component]},
+        });
+        let verdict = validator.validate_message(&message);
+        if verdict.is_ok() != wanted_valid {
+            return Err(Miss::new(
+                match verdict {
+                    Ok(()) => format!("{component} is accepted"),
+                    Err(error) => format!("{component} is refused: {error}"),
+                },
+                if wanted_valid {
+                    "it accepted"
+                } else {
+                    "it refused"
+                },
+            ));
+        }
+    }
+    if self_contained {
+        // Every other expectation of the case held. This one is about a
+        // schema this crate does not make.
+        return Err(Miss::new(
+            NOT_BUNDLED,
+            "a resolved catalog schema whose every $ref is inside it",
+        ));
+    }
+    Ok(())
+}
+
+/// What this crate does where a case wants a self-contained resolved schema.
+const NOT_BUNDLED: &str = "no bundled schema; a validator compiles from this document and the \
+                           ones the crate ships, with retrieval off";
+
+/// `round_trip`: a catalog read from a document gives that document back, and
+/// reading what it gave back changes nothing.
+fn run_round_trip(case: &Value, document: Option<Value>) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["catalogId", "catalogPath"]].concat(),
+        "case",
+    )?;
+    let document = document.ok_or_else(|| Miss::new("the case names no catalog", "one"))?;
+    let mut read = document.clone();
+    for pass in ["first", "second"] {
+        let catalog = Catalog::from_schema(&read)
+            .map_err(|error| Miss::new(format!("error: {error}"), "the catalog to load"))?;
+        let Some(written) = catalog.document() else {
+            return Err(Miss::new("no document", "the document back"));
+        };
+        if *written != document {
+            return Err(Miss::new(
+                format!("another document on the {pass} pass"),
+                "the document it was read from",
+            ));
+        }
+        read = written.clone();
+    }
+    Ok(())
+}
+
+/// `to_json`: the document of the catalog an SDK builds in, against the
+/// published one.
+fn run_to_json(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["builtinCatalog", "expectFile"]].concat(),
+        "case",
+    )?;
+    let builtin = case.get("builtinCatalog").and_then(Value::as_str);
+    if builtin != Some("basic") {
+        return Err(Miss::new(
+            format!("the runner does not know the built-in catalog {builtin:?}"),
+            "basic",
+        ));
+    }
+    let path = case
+        .get("expectFile")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let published = repository_document(path).map_err(|reason| Miss::new(reason, "a file"))?;
+    match Catalog::basic().document() {
+        Some(document) if *document == published => Ok(()),
+        Some(_) => Err(Miss::new("another document", path)),
+        None => Err(Miss::new("Catalog::basic() has no document", path)),
     }
 }
 

@@ -507,6 +507,12 @@ These are on `main` and not yet in a published version.
   it.
 - `SurfaceStore::client_data_model` is new: the `a2uiClientDataModel` metadata for the
   surfaces created with `sendDataModel: true`.
+- `Catalog::document` is new: the document a catalog was read from with
+  `Catalog::from_schema`, unchanged. Two catalogs are equal when their documents are
+  too, so two documents that summarize alike are no longer equal catalogs.
+- `Catalog::from_schema` reads a function's return type from the schema of its call,
+  `properties.returnType.const`, which is how the specification's catalogs state it.
+  `FunctionDef::return_type` was `None` for every function of a published catalog.
 
 ## Verify the upgrade
 
