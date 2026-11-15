@@ -28,10 +28,8 @@
 use ag_ui::axum::RouterExt;
 use ag_ui::server::{Agent, CancellationToken, Error, Result, RunContext};
 use ag_ui::{Event, Interrupt, MessageId, ResumeStatus, RunOutcome, TextMessageRole, ToolCallId};
-use ag_ui_a2ui::constants::RENDER_A2UI_TOOL_NAME;
+use ag_ui_a2ui::adapters::agui::{Intent, SurfacePainter, SurfaceSpec, assemble_ops};
 use ag_ui_a2ui::message::Component;
-use ag_ui_a2ui::toolkit::envelope::wrap_as_operations_envelope;
-use ag_ui_a2ui::toolkit::ops::{Intent, SurfaceSpec, assemble_ops};
 use axum::Router;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -353,7 +351,8 @@ fn board_turn(ctx: &mut RunContext<Board>) -> Result<()> {
     surface(&mut step)
 }
 
-/// Ships the board as an A2UI surface in a tool result envelope.
+/// Paints the board as an A2UI surface: a `render_a2ui` tool call whose result
+/// is the operations, then the `a2ui-surface` activity a frontend draws from.
 fn surface(ctx: &mut RunContext<Board>) -> Result<()> {
     let spec = SurfaceSpec::new("board-watch")
         .with_components(vec![
@@ -375,11 +374,7 @@ fn surface(ctx: &mut RunContext<Board>) -> Result<()> {
                 .collect::<Vec<_>>(),
         }));
 
-    let envelope =
-        wrap_as_operations_envelope(&assemble_ops(Intent::Create, &spec)).map_err(Error::agent)?;
-    let mut call = ctx.tool_call(RENDER_A2UI_TOOL_NAME)?;
-    call.args_json(&json!({"surfaceId": "board-watch"}))?;
-    call.result(envelope)?;
+    SurfacePainter::new().paint(ctx, &assemble_ops(Intent::Create, &spec))?;
     Ok(())
 }
 

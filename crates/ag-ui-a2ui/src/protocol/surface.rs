@@ -28,10 +28,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use super::binding::Scope;
+use super::catalog::Catalog;
 use super::message::{AgentMessage, AgentPayload, ClientDataModel, Component};
-use super::model::DataModel;
+use super::model::{DataModel, ModelValue};
+use super::validate::MAX_DEPTH;
 use super::version::A2uiVersion;
+use crate::constants::ROOT_ID;
 use crate::error::{Error, Result};
 
 /// The observed state of one live or deleted surface.
@@ -53,6 +58,253 @@ pub struct SurfaceState {
     pub data_model: DataModel,
     /// A delete was observed; only a new create can make it live.
     pub deleted: bool,
+}
+
+/// One component, where a renderer would draw it.
+///
+/// What [`SurfaceState::outline`] yields. Nothing here draws: it says which
+/// components the root reaches, in what order and how deep, and which scope
+/// each one's bindings resolve in.
+#[derive(Debug, Clone)]
+pub struct Placed<'a> {
+    /// How far below the root the component sits. The root is at `0`.
+    pub depth: usize,
+    /// The component.
+    pub component: &'a Component,
+    /// The scope its bindings resolve in: the root of the data model, or the
+    /// item a list template is drawing it for.
+    pub scope: Scope<'a>,
+}
+
+impl SurfaceState {
+    /// The messages that rebuild this surface on a renderer that holds
+    /// nothing: its creation, every component, and its data.
+    ///
+    /// That is what a transport sends when one message has to stand on its
+    /// own, such as a snapshot. The data model is written at the root; a slot
+    /// of a list that was removed is written as `null` and then removed again,
+    /// since a JSON array cannot leave it out. A surface that was deleted ends
+    /// in its `deleteSurface`.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{AgentMessage, Component, SurfaceStore};
+    /// use serde_json::json;
+    ///
+    /// let mut store = SurfaceStore::new();
+    /// for message in [
+    ///     AgentMessage::create_surface("cart", "basic"),
+    ///     AgentMessage::update_components("cart", vec![Component::new("root", "Text")]),
+    ///     AgentMessage::update_data_model("cart", "/total", json!(12)),
+    ///     AgentMessage::update_data_model("cart", "/total", json!(15)),
+    /// ] {
+    ///     store.apply(&message)?;
+    /// }
+    ///
+    /// let replay = store.get("cart").unwrap().replay();
+    /// assert_eq!(replay.len(), 3, "one creation, one component list, one data model");
+    /// let mut again = SurfaceStore::new();
+    /// for message in &replay {
+    ///     again.apply(message)?;
+    /// }
+    /// assert_eq!(again.get("cart"), store.get("cart"));
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    pub fn replay(&self) -> Vec<AgentMessage> {
+        let versioned = |mut message: AgentMessage| {
+            message.version.clone_from(&self.version);
+            message
+        };
+        let mut create = AgentMessage::create_surface(&self.surface_id, &self.catalog_id);
+        if let AgentPayload::CreateSurface(payload) = &mut create.payload {
+            payload.theme.clone_from(&self.theme);
+            payload.send_data_model = self.send_data_model;
+        }
+        let mut messages = vec![versioned(create)];
+        if !self.components.is_empty() {
+            messages.push(versioned(AgentMessage::update_components(
+                &self.surface_id,
+                self.components.clone(),
+            )));
+        }
+        let mut holes = Vec::new();
+        if let Some(data) = as_json(self.data_model.root(), "", &mut holes) {
+            messages.push(versioned(AgentMessage::update_data_model(
+                &self.surface_id,
+                "/",
+                data,
+            )));
+        }
+        for hole in holes {
+            messages.push(versioned(AgentMessage::remove_data_model_value(
+                &self.surface_id,
+                hole,
+            )));
+        }
+        if self.deleted {
+            messages.push(versioned(AgentMessage::delete_surface(&self.surface_id)));
+        }
+        messages
+    }
+
+    /// The components the root reaches, in the order a renderer draws them:
+    /// a parent, then each of its children in turn.
+    ///
+    /// `catalog` says which properties of a component name children. A list
+    /// template is followed once for each item of the list it names in
+    /// `data`, and the component it draws is placed in that item's scope, so
+    /// its relative paths resolve. `data` is the data model as JSON
+    /// ([`DataModel::to_json`]).
+    ///
+    /// This is the walk a client makes before it can draw anything, and it
+    /// draws nothing itself. A reference to a component that does not exist
+    /// is skipped, and so is one that would loop or nest deeper than
+    /// [`MAX_DEPTH`]: an outline is of what is there. Whether a surface is
+    /// whole is the validator's to say.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{AgentMessage, Catalog, Component, SurfaceStore};
+    /// use serde_json::json;
+    ///
+    /// let mut store = SurfaceStore::new();
+    /// for message in [
+    ///     AgentMessage::create_surface("tasks", "basic"),
+    ///     AgentMessage::update_components("tasks", vec![
+    ///         Component::new("root", "Column").with("children", json!(["title", "list"])),
+    ///         Component::new("title", "Text").with("text", json!("Today")),
+    ///         Component::new("list", "List")
+    ///             .with("children", json!({"componentId": "row", "path": "/tasks"})),
+    ///         Component::new("row", "Text").with("text", json!({"path": "name"})),
+    ///     ]),
+    ///     AgentMessage::update_data_model("tasks", "/", json!({
+    ///         "tasks": [{"name": "Write"}, {"name": "Review"}]
+    ///     })),
+    /// ] {
+    ///     store.apply(&message)?;
+    /// }
+    /// let surface = store.get("tasks").unwrap();
+    /// let data = surface.data_model.to_json()?;
+    ///
+    /// let lines: Vec<String> = surface
+    ///     .outline(&Catalog::basic(), &data)
+    ///     .iter()
+    ///     .filter(|placed| placed.component.component == "Text")
+    ///     .map(|placed| {
+    ///         let text = placed.component.prop("text").unwrap();
+    ///         format!("{}{}", "  ".repeat(placed.depth), placed.scope.resolve_dynamic(text).unwrap())
+    ///     })
+    ///     .collect();
+    /// assert_eq!(lines, ["  \"Today\"", "    \"Write\"", "    \"Review\""]);
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    pub fn outline<'a>(&'a self, catalog: &Catalog, data: &'a Value) -> Vec<Placed<'a>> {
+        let by_id: BTreeMap<&str, &Component> = self
+            .components
+            .iter()
+            .map(|component| (component.id.as_str(), component))
+            .collect();
+        let mut placed = Vec::new();
+        if let Some(root) = by_id.get(ROOT_ID) {
+            let mut above = Vec::new();
+            place(
+                catalog,
+                &by_id,
+                root,
+                Scope::root(data),
+                &mut above,
+                &mut placed,
+            );
+        }
+        placed
+    }
+}
+
+/// Places `component` and what it reaches. `above` is the ids from the root
+/// down to it, which is both its depth and what it may not reach again.
+fn place<'a>(
+    catalog: &Catalog,
+    by_id: &BTreeMap<&str, &'a Component>,
+    component: &'a Component,
+    scope: Scope<'a>,
+    above: &mut Vec<&'a str>,
+    placed: &mut Vec<Placed<'a>>,
+) {
+    placed.push(Placed {
+        depth: above.len(),
+        component,
+        scope: scope.clone(),
+    });
+    if above.len() >= MAX_DEPTH {
+        return;
+    }
+    above.push(component.id.as_str());
+    for reference in catalog.references(component) {
+        let Some(child) = by_id.get(reference.id.as_str()) else {
+            continue;
+        };
+        if above.contains(&child.id.as_str()) {
+            continue;
+        }
+        // A template names its child once and draws it for every item.
+        let template = reference
+            .location
+            .strip_suffix(".componentId")
+            .and_then(|property| component.props.get(property)?.get("path")?.as_str());
+        match template {
+            None => place(catalog, by_id, child, scope.clone(), above, placed),
+            Some(path) => {
+                let items = scope
+                    .resolve(path)
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                for index in 0..items {
+                    place(
+                        catalog,
+                        by_id,
+                        child,
+                        scope.item(path, index),
+                        above,
+                        placed,
+                    );
+                }
+            }
+        }
+    }
+    above.pop();
+}
+
+/// A model value as JSON. A removed slot of a list becomes `null` and its
+/// path is added to `holes`; a removed field is left out; an absent value is
+/// `None`.
+fn as_json(value: &ModelValue, path: &str, holes: &mut Vec<String>) -> Option<Value> {
+    Some(match value {
+        ModelValue::Undefined => return None,
+        ModelValue::Null => Value::Null,
+        ModelValue::Bool(flag) => Value::Bool(*flag),
+        ModelValue::Number(number) => Value::Number(number.clone()),
+        ModelValue::String(text) => Value::String(text.clone()),
+        ModelValue::Array(slots) => Value::Array(
+            slots
+                .iter()
+                .enumerate()
+                .map(|(index, slot)| {
+                    let at = format!("{path}/{index}");
+                    as_json(slot, &at, holes).unwrap_or_else(|| {
+                        holes.push(at);
+                        Value::Null
+                    })
+                })
+                .collect(),
+        ),
+        ModelValue::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .filter_map(|(key, field)| {
+                    let at = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+                    Some((key.clone(), as_json(field, &at, holes)?))
+                })
+                .collect(),
+        ),
+    })
 }
 
 /// Where a surface id is in its life, as the messages applied so far leave it.
@@ -215,6 +467,14 @@ impl SurfaceStore {
             ))
         })
     }
+    /// Drops everything known of a surface, tombstone included, so that a
+    /// snapshot of it can take its place.
+    #[cfg(feature = "ag-ui")]
+    pub(crate) fn forget(&mut self, surface_id: &str) {
+        self.surfaces.remove(surface_id);
+        self.origins.remove(surface_id);
+    }
+
     /// Atomically applies one operation. Prior messages are never rolled back.
     pub fn apply(&mut self, message: &AgentMessage) -> Result<()> {
         self.apply_at(self.applied, message)

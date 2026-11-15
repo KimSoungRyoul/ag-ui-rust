@@ -31,15 +31,15 @@
 //! Run with `cargo test -p ag-ui-a2ui --all-features --test conformance --
 //! --nocapture` to see the report, and set `A2UI_CONFORMANCE_VERBOSE=1` to list
 //! every check by name. The harness is compiled only with the
-//! `schema-validation` and `agent` features, which `--all-features` turns on.
-//! Without both, `tests/conformance_needs_schema_validation.rs` puts one
-//! ignored test in a run, which says so.
+//! `schema-validation`, `agent` and `a2a` features, which `--all-features`
+//! turns on. Without them, `tests/conformance_needs_schema_validation.rs` puts
+//! one ignored test in a run, which says so.
 
 // The standing of every suite is one table, so the harness needs every layer
 // the table speaks of. The catalog and common-types suites validate against
-// the published schema documents, so that is the JSON Schema engine and, for
-// the suites under `agent/`, the agent layer.
-#![cfg(all(feature = "schema-validation", feature = "agent"))]
+// the published schema documents, so that is the JSON Schema engine, for the
+// suites under `agent/` the agent layer, and for the A2A suite its adapter.
+#![cfg(all(feature = "schema-validation", feature = "agent", feature = "a2a"))]
 
 #[path = "conformance_agent/mod.rs"]
 mod agent_tier;
@@ -47,6 +47,7 @@ mod agent_tier;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use ag_ui_a2ui::adapters::a2a;
 use ag_ui_a2ui::binding::{Scope, absolute_path, parse_template};
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::processor::{MessageProcessor, Rejection, RejectionKind};
@@ -81,8 +82,6 @@ enum Why {
     /// ones in their place; this crate had ports of that design and removed
     /// them when its agent layer took over (#41).
     Superseded,
-    /// It tests a transport adapter, which #43 builds.
-    Adapters,
     /// It tests A2UI v1.0, which #42 adds.
     V1_0,
     /// It tests the v0.8 wire format, which this crate does not speak.
@@ -100,7 +99,6 @@ impl Why {
             Why::Formats => agent_tier::NEEDS_FORMAT,
             Why::Timing => "later: timing (#75)",
             Why::Superseded => "superseded: the SDK design before the agent layer",
-            Why::Adapters => "later: adapters (#43)",
             Why::V1_0 => "later: A2UI v1.0 (#42)",
             Why::V0_8 => "out of scope: v0.8",
             Why::Renderer => "out of scope: renderer",
@@ -255,7 +253,7 @@ const SUITES: &[Suite] = &[
     skip("adapter/markdown_subset.yaml", 7, Why::Renderer, "rendering the Markdown subset"),
 
     // --- extensions: transport and framework integrations ---------------------------------------
-    skip("extensions/a2a/a2a_integration.yaml", 11, Why::Adapters, "A2A events and parts"),
+    run("extensions/a2a/a2a_integration.yaml", [9, 0, 2, 0]),
     skip("extensions/adk/adk_extensions.yaml", 8, Why::NotApplicable, "integration with Google's ADK, which this workspace does not target"),
 ];
 
@@ -998,7 +996,139 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
             Some(reason) => tally.record(check, Outcome::Skipped(reason.to_string())),
             None => settle(check, run_data_model(case), tally),
         },
+        (
+            "create_a2ui_part"
+            | "is_a2ui_part"
+            | "get_extension"
+            | "select_newest"
+            | "try_activate"
+            | "try_activate_extension",
+            Format::Current,
+        ) => match a2a_skip(action, case) {
+            Some(reason) => tally.record(check, Outcome::Skipped(reason.to_string())),
+            None => settle(check, run_a2a(action, case), tally),
+        },
         (other, _) => tally.record(check, Outcome::Skipped(unsupported_action(other))),
+    }
+}
+
+// --- extensions/a2a ---------------------------------------------------------------------------
+
+/// The extension URIs the reference harness advertises in a
+/// `try_activate_extension` case, less the versions this crate does not
+/// speak: it puts v0.8, v0.9 and v1.0 on the agent card.
+fn advertised_by_this_crate() -> Vec<String> {
+    A2uiVersion::ALL
+        .iter()
+        .map(|version| a2a::extension_uri(version.as_str()))
+        .collect()
+}
+
+/// An activation case that can only succeed for an agent that speaks v0.8.
+fn a2a_skip(action: &str, case: &Value) -> Option<&'static str> {
+    let v0_8 = a2a::extension_uri("0.8");
+    let wants_v0_8 = match action {
+        "try_activate_extension" => {
+            case.get("expect") == Some(&Value::Bool(true))
+                && string_list(case.pointer("/args/uris")) == [v0_8]
+        }
+        "try_activate" => case.pointer("/expect/activated").and_then(Value::as_str) == Some(&v0_8),
+        _ => false,
+    };
+    wants_v0_8.then_some(
+        "out of scope: v0.8: activates the v0.8 extension, and this crate speaks v0.9 and v0.9.1",
+    )
+}
+
+/// The cases of `extensions/a2a/a2a_integration.yaml`, against
+/// `adapters::a2a`.
+fn run_a2a(action: &str, case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["args", "expect"]].concat(),
+        "case",
+    )?;
+    let args = case.get("args").unwrap_or(&Value::Null);
+    let expect = case.get("expect").unwrap_or(&Value::Null);
+    let text = |key: &str| args.get(key).and_then(Value::as_str);
+    let held = |actual: Value| {
+        if &actual == expect {
+            Ok(())
+        } else {
+            Err(Miss::new(actual.to_string(), expect.to_string()))
+        }
+    };
+    match action {
+        "create_a2ui_part" => {
+            unknown_key(args, &["data", "version"], "args")?;
+            unknown_key(expect, &["mimeType"], "expect")?;
+            let part = a2a::data_part(args.get("data").unwrap_or(&Value::Null), text("version"));
+            if !a2a::is_a2ui_part(&part) || a2a::a2ui_messages([&part]).len() != 1 {
+                return Err(Miss::new(part.to_string(), "an A2UI data part"));
+            }
+            held(serde_json::json!({"mimeType": part["metadata"]["mimeType"]}))
+        }
+        "is_a2ui_part" => {
+            unknown_key(args, &["mimeType"], "args")?;
+            let part = serde_json::json!({
+                "kind": "data", "data": {}, "metadata": {"mimeType": args["mimeType"]}
+            });
+            held(Value::Bool(a2a::is_a2ui_part(&part)))
+        }
+        "get_extension" => {
+            unknown_key(
+                args,
+                &["version", "acceptsInlineCatalogs", "supportedCatalogIds"],
+                "args",
+            )?;
+            unknown_key(expect, &["uri", "params"], "expect")?;
+            let ids = string_list(args.get("supportedCatalogIds"));
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let extension = a2a::agent_extension(
+                text("version").unwrap_or_default(),
+                args.get("acceptsInlineCatalogs") == Some(&Value::Bool(true)),
+                &ids,
+            );
+            held(serde_json::json!({
+                "uri": extension["uri"],
+                "params": extension.get("params").cloned().unwrap_or(Value::Null),
+            }))
+        }
+        "select_newest" => {
+            unknown_key(args, &["requested", "advertised"], "args")?;
+            unknown_key(expect, &["newest"], "expect")?;
+            let requested = string_list(args.get("requested"));
+            let advertised = string_list(args.get("advertised"));
+            held(serde_json::json!({"newest": a2a::select_newest(&requested, &advertised)}))
+        }
+        "try_activate" => {
+            unknown_key(args, &["requested", "advertised"], "args")?;
+            unknown_key(expect, &["activated", "version"], "expect")?;
+            let requested = string_list(args.get("requested"));
+            let advertised = string_list(args.get("advertised"));
+            let mut actual = serde_json::Map::new();
+            match a2a::activate(&requested, &advertised) {
+                Some((uri, version)) => {
+                    actual.insert("activated".into(), uri.into());
+                    let number = version.as_str().trim_start_matches('v');
+                    actual.insert("version".into(), number.into());
+                }
+                None => {
+                    actual.insert("activated".into(), Value::Null);
+                }
+            }
+            held(Value::Object(actual))
+        }
+        "try_activate_extension" => {
+            unknown_key(args, &["uris"], "args")?;
+            let requested = string_list(args.get("uris"));
+            let activated = a2a::activate(&requested, &advertised_by_this_crate());
+            held(Value::Bool(activated.is_some()))
+        }
+        other => Err(Miss::new(
+            unsupported_action(other),
+            "an action of the A2A suite",
+        )),
     }
 }
 

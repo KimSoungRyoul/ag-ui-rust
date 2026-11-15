@@ -592,12 +592,10 @@ These are on `main` and not yet in a published version.
   and says whether to ask again. alpha.3 had three loops, three parsers and two prompt
   builders in `toolkit` and `author`; they are removed (the table below) or, for
   `A2uiAuthor`, rebuilt on the layer.
-- The default feature of `ag-ui-a2ui` is `agent`; in alpha.3 it was `toolkit`. A
+- The default feature of `ag-ui-a2ui` is `agent`; in alpha.3 it was `toolkit`, which
+  is gone (the bullet after the table below says what each use of it maps to). A
   dependency with no features named gets the protocol modules and the agent layer.
-  `toolkit` is now the conventions of an agent hosted on AG-UI only (`ops`, `envelope`,
-  `tools`, `history`), and code that uses them without the `ag-ui` or `ag-ui-server`
-  feature writes `features = ["toolkit"]`. `toolkit` turns `agent` on.
-  `schema-validation` no longer turns `toolkit` on, and `author` is `agent` plus
+  `schema-validation` turns no other feature on, and `author` is `agent` plus
   `schema-validation`.
 - `SchemaBundle`, `SCHEMA_BLOCK_START`, `SCHEMA_BLOCK_END` and `DEFAULT_CUTTABLE_KEYS`
   are in the module `ag_ui_a2ui::schema`, which needs no feature. alpha.3 had them in
@@ -793,9 +791,6 @@ These are on `main` and not yet in a published version.
 - `RetryDriver::judge_block` judges an answer that is one block with no tags, such as a
   tool call argument, and `RetryDriver::reject` turns down an answer that stood for a
   reason of the caller's own.
-- `toolkit::history` finds `<a2ui-json>` blocks with the agent layer's scanner. A block
-  in a transcript is still read strictly, as JSON as it stands, and an unterminated one
-  is still an error.
 - A block of direct JSON with an invalid escape (`"\approx"`) is rejected with
   "Unescaped backslash found" and how to write one, so that the model reading the
   retry prompt can fix it.
@@ -841,7 +836,21 @@ These are on `main` and not yet in a published version.
 | `ValidateOptions::with_root_id(id)` | `ValidateOptions { root_id: id.into(), ..options }` |
 | `catalog::BASIC_FUNCTIONS` | `Catalog::basic().functions.keys()` |
 | `catalog::COMMON_PROPS` | Nothing |
-| `constants::MIME_TYPE` | `"application/a2ui+json"` |
+| `constants::MIME_TYPE` | `adapters::a2a::MIME_TYPE` (feature `a2a`) |
+| `toolkit::ops::{Intent, SurfaceSpec, assemble_ops, create_surface, update_components, update_data_model}` | The same names in `adapters::agui` |
+| `toolkit::envelope::{wrap_as_operations_envelope, operations_envelope, is_operations_envelope, unwrap_operations_envelope}`, `ag_ui_a2ui::wrap_as_operations_envelope` | The same names in `adapters::agui` |
+| `toolkit::envelope::wrap_error_envelope(surface_id, message, &errors)`, `ag_ui_a2ui::wrap_error_envelope` | `adapters::agui::error_envelope(message)`, or `recovery_exhausted_envelope(&[Attempt { attempt, ok: false, errors }])?` when the attempts are used up |
+| `toolkit::tools::render_a2ui_tool(Some(&catalog))`, `generate_a2ui_tool()`, `tool_definitions(catalog)` | `adapters::agui::render_a2ui_tool()` and `generate_a2ui_tool()`, each an `ag_ui::Tool` |
+| `ToolDefinition`, `Tool::from(definition)` | Nothing: the functions return the `ag_ui::Tool` a run carries |
+| `ToolDefinition::to_anthropic_value()` | `json!({"name": tool.name, "description": tool.description, "input_schema": tool.parameters})` |
+| `agui::find_prior_surface_in(messages)`, `ag_ui_a2ui::find_prior_surface_in`, `toolkit::history::find_prior_surface(&history)` | `adapters::agui::latest_surface(messages).ok().flatten()` |
+| `toolkit::history::try_find_prior_surface(&history, None)` | `adapters::agui::latest_surface(messages)?` |
+| `find_prior_surface_by_id(&history, Some(id))`, `try_find_prior_surface_by_id(&history, id)` | `adapters::agui::surfaces_in(messages)?.get(id)` |
+| `toolkit::history::PriorSurface` | `SurfaceState`, with the same `surface_id`, `components`, `data_model` and `deleted`; `catalog_id` is a `String` |
+| `toolkit::history::HistoryMessage`, `HistoryMessage::from(&message)` | Nothing: the readers take `&[ag_ui::Message]` |
+| `toolkit::history::next_surface_id(&history, base)` | `let surfaces = surfaces_in(messages)?;`, then the first of `base`, `base-2`, … for which `surfaces.get(id)` is `None` |
+| `agui::A2uiRunContextExt`, `ctx.send_a2ui(&surface)?` | `let mut painter = SurfacePainter::from_history(ctx.messages()).map_err(Error::agent)?;` once in the run, then `painter.paint(ctx, surface.operations())?` |
+| A tool result unwrapped by hand: `serde_json::from_str`, `is_operations_envelope`, `unwrap_operations_envelope` | `adapters::agui::operations_in(&message)` |
 
 - New: `Runner::into_parts(input)` returns a run as its two halves, the future that
   drives the agent and the `EventReceiver` of what it emits. Alpha.3 had only
@@ -879,6 +888,83 @@ These are on `main` and not yet in a published version.
   `client::merge_messages(ours, theirs)` applies the same rules to two lists, for a
   view of both while a run is still open. The `client::thread` module docs have the
   example, and `docs/DESIGN.md` the reasons.
+- The `toolkit` feature and the `toolkit` module of `ag-ui-a2ui` are gone, so a
+  manifest that names `features = ["toolkit"]` stops resolving. What alpha.3's
+  `toolkit` held maps to:
+
+  | Used from `toolkit` | Feature to name | Where it is |
+  |---|---|---|
+  | `ops`, `envelope`, `tools`, `history` | `ag-ui` | `adapters::agui`; they are AG-UI's conventions and take `ag_ui::Message` and `ag_ui::Tool` |
+  | Sending a surface in a run (`ctx.send_a2ui`) | `ag-ui-server` | `adapters::agui::SurfacePainter::paint` |
+  | A2UI over A2A (`constants::MIME_TYPE`) | `a2a` | `adapters::a2a` |
+  | `parser`, `prompt`, `recovery`, `streaming`, `negotiate`, `schema` | None: `agent` is the default | `agent` and `schema`, as the table above gives them |
+
+  `ag-ui` and `a2a` turn `agent` on. `ag-ui-server` is `ag-ui` plus `ag-ui/server`
+  and no longer turns `author` on, so sending operations does not bring in the JSON
+  Schema engine. A crate that uses `A2uiAuthor` and named only `ag-ui-server` adds
+  `author`: `features = ["ag-ui-server", "author"]`.
+- The module `agui` is `adapters::agui` (feature `ag-ui`). It follows AG-UI's own A2UI
+  middleware, read at `ag-ui-protocol/ag-ui` commit `2330368a`, so a frontend that
+  paints behind that middleware paints from a Rust agent with nothing in front.
+- A surface reaches a frontend as an `ACTIVITY_SNAPSHOT` with `activityType`
+  `"a2ui-surface"`, `replace: true` and content `{"a2ui_operations": […]}`, after the
+  tool result. alpha.3 sent the `render_a2ui` call and its result and no activity, so a
+  frontend painted only with the TypeScript middleware in front. `SurfacePainter::paint`
+  sends all three; `SurfacePainter::settle` gives the tool result and the events
+  without a run. A client receives one more event for a paint and holds one more
+  message, an `ActivityMessage` whose id is `a2ui-surface-<tool call id>`.
+- The activity carries the surface whole (its creation, every component, its data),
+  whatever the batch sent, because a frontend replays an activity on its own. The tool
+  result still carries the batch as sent. Within one `SurfacePainter`, which is one
+  run, a later batch replaces the surface's activity in place. A painter made in a
+  later run (`SurfacePainter::from_history(ctx.messages())`) paints under that run's
+  tool call, so an update in a later run is a second activity that carries the whole
+  surface.
+- `render_a2ui_tool()` and `generate_a2ui_tool()` take the arguments AG-UI's toolkit
+  gives them: `{surfaceId, components, data}` with the first two required, and
+  `{intent?, target_surface_id?, changes?}`. alpha.3 had `{components, data_model,
+  message}` and `{intent, surface_id, request, design_notes}`. `RenderArgs` and
+  `GenerateArgs` decode a call's arguments; `RenderArgs::into_spec(catalog_id)` gives
+  the `SurfaceSpec`. The `render_a2ui` call that `paint` makes carries `surfaceId`, and
+  `components` and `data` when the batch has them; `send_a2ui` wrote `surfaceId` alone.
+- A surface that could not be made is reported in AG-UI's shapes. The tool result is
+  `error_envelope(message)`, `{"error": …}`, or `recovery_exhausted_envelope(&attempts)`,
+  `{"error": "Failed to generate valid A2UI after N attempt(s)", "code":
+  "a2ui_recovery_exhausted", "attempts": […]}`. `surface_status(tool_call_id, &status)`
+  puts the call's surface activity in `SurfaceStatus::Building`, `Retrying` or `Failed`.
+  alpha.3's `wrap_error_envelope` wrote `{"error", "code": "VALIDATION_FAILED",
+  "surfaceId", "path", "details"}`, which no AG-UI frontend reads.
+- Reading a conversation: `operations_in(&message)` gives the operations a message
+  carries, `surfaces_in(messages)` every surface as a `SurfaceStore`, and
+  `latest_surface(messages)` the one touched last. They read a tool result whose
+  content is an operations envelope and an `a2ui-surface` activity, and nothing else.
+  alpha.3's `find_prior_surface_in` read the text of every role, so an assistant,
+  user or reasoning message that quoted an envelope or an `<a2ui-json>` block was
+  replayed as a surface; those are no longer read. A conversation that does not replay
+  is an `Err` from `surfaces_in` and `latest_surface`, where `find_prior_surface_in`
+  gave `None`.
+- A client leaves activity messages out of a request, so a server's
+  `ctx.messages()` holds the tool results and a client's `thread.messages()` holds
+  the activities too. `surfaces_in` gives the same surfaces for both: where a tool
+  call's result carries operations, the activity that call owns is not read.
+- `user_action(ctx.input())` reads the action a frontend sends in
+  `forwardedProps.a2uiAction.userAction`, and `UserAction::as_user_text()` is the text
+  AG-UI's middleware hands a model for it. `catalog_context(ctx.input())` reads the
+  catalog a frontend sends as a `context` entry, and
+  `CatalogContext::capabilities(version)` gives the `RendererCapabilities` for
+  `A2uiGenerator::create_processor`. alpha.3 read neither.
+- `SurfaceState::replay()` gives the messages that rebuild a surface on a renderer
+  that holds nothing, and `SurfaceState::outline(&catalog, &data)` the components the
+  root reaches, in drawing order, each as a `Placed` with its depth and the scope its
+  bindings resolve in, a list template once for each item. A client that walked the
+  component tree by hand calls `outline`. `Placed` is exported at the crate root.
+- `adapters::a2a` (feature `a2a`) builds and reads A2UI over A2A as JSON, with no A2A
+  library: `data_part(&message, version)` and `is_a2ui_part(&part)` for the data part
+  and its `mimeType`, `agent_extension(version, accepts_inline_catalogs, &catalog_ids)`
+  for the agent card, `select_newest` and `activate` to agree on a version, and
+  `renderer_capabilities(&message, version)` for what a client's message says it
+  draws. alpha.3 had none of these.
+
 - A continuation `*_CHUNK` without a `delta` that carries `metadata`, such as a final
   chunk reporting a finish reason, expands to a content event with an empty delta
   (`TEXT_MESSAGE_CONTENT`, `TOOL_CALL_ARGS` or `REASONING_MESSAGE_CONTENT`) that carries

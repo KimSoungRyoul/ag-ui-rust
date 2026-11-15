@@ -26,17 +26,47 @@ function modelValue(value) {
   return {kind: typeof value === "boolean" ? "bool" : typeof value, value};
 }
 
-for (const { name, messages, sdkData } of fixture.steps) {
+// What a surface is to a renderer: its components, by id.
+function components(surface) {
+  if (!surface) return null;
+  return [...surface.componentsModel.entries]
+    .map(([id, component]) => [id, component.type, component.properties])
+    .sort(([a], [b]) => a.localeCompare(b));
+}
+
+function snapshot(surface) {
+  return surface
+    ? {snapshot_version: 1, root: modelValue(surface.dataModel.get("/"))}
+    : null;
+}
+
+for (const { name, messages, activity, sdkData } of fixture.steps) {
   assert(messages.every(message => message.version === fixture.version));
+
+  // What an AG-UI frontend paints from is the surface activity, and it paints
+  // each one on its own. So the activity alone, on a processor that holds
+  // nothing, has to leave what every batch so far left.
+  assert.equal(activity.activityType, "a2ui-surface");
+  assert.equal(activity.replace, true);
+  assert.equal(activity.messageId, fixture.steps[0].activity.messageId,
+    `${name}: one run replaces one activity in place`);
+  const alone = new MessageProcessor([basicCatalog]);
+  alone.processMessages(activity.content.a2ui_operations);
+  const painted = alone.model.getSurface(fixture.surfaceId);
+  assert.deepEqual(snapshot(painted), sdkData,
+    `${name}: the activity alone must paint the data the SDK holds`);
+
   // Pass the Rust SDK's emitted messages directly to the official processor.
   processor.processMessages(messages);
   const surface = processor.model.getSurface(fixture.surfaceId);
   const data = surface?.dataModel;
   assert.deepEqual(
-    surface ? {snapshot_version: 1, root: modelValue(data.get("/"))} : null,
+    snapshot(surface),
     sdkData,
     `${name}: SDK and official core must agree before later steps overwrite state`,
   );
+  assert.deepEqual(components(painted), components(surface),
+    `${name}: the activity alone must paint the components the batches left`);
 
   switch (name) {
     case "create":
@@ -115,3 +145,4 @@ for (const { name, messages, sdkData } of fixture.steps) {
 }
 assert.equal(fixture.steps.length, 13);
 console.log("PASS @a2ui/web_core@0.11.0 consumed unmodified Rust A2UI v0.9.1 messages");
+console.log("PASS each a2ui-surface activity painted the same surface on its own");

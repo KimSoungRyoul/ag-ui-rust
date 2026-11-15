@@ -56,7 +56,7 @@ suite counts one check per case and verifies its steps in order; a case that
 stops at a step is reported under that step, `suite::case[step 2]`, and that is
 the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 516 passed, 17 expected divergence, 1471 skipped, 4 failing.
+Totals: 525 passed, 17 expected divergence, 1462 skipped, 4 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -129,7 +129,7 @@ Totals: 516 passed, 17 expected divergence, 1471 skipped, 4 failing.
 | `e2e/restaurant_list_booking.yaml` | 1 | 0 | 0 | 1 | 0 | later: A2UI v1.0 (#42): a v1.0 transcript |
 | `adapter/adapter_conformance_v0_9.yaml` | 16 | 0 | 0 | 16 | 0 | out of scope: renderer: rendered view hierarchies in the UI framework adapters |
 | `adapter/markdown_subset.yaml` | 7 | 0 | 0 | 7 | 0 | out of scope: renderer: rendering the Markdown subset |
-| `extensions/a2a/a2a_integration.yaml` | 11 | 0 | 0 | 11 | 0 | later: adapters (#43): A2A events and parts |
+| `extensions/a2a/a2a_integration.yaml` | 11 | 9 | 0 | 2 | 0 | executed |
 | `extensions/adk/adk_extensions.yaml` | 8 | 0 | 0 | 8 | 0 | not applicable: integration with Google's ADK, which this workspace does not target |
 
 Run
@@ -235,7 +235,6 @@ snippet is tested in `agent::direct_json::prompt`.
 | later: other formats (#74) | 11 | 406 | The suite tests an output format other than direct JSON (Express, Atom, Elemental), or something built on one: the typesafe builder, its macros, skill documents. |
 | later: timing (#75) | 1 | 7 | The suite times the direct JSON stream instead of checking its result. The stream is not yet linear in the size of one message, and timing cases need a job of their own. |
 | later: A2UI v1.0 (#42) | 19 | 397 | The suite tests A2UI v1.0. |
-| later: adapters (#43) | 1 | 11 | The suite tests the A2A transport adapter. |
 | superseded: the SDK design before the agent layer | 3 | 133 | The suite tests the design upstream's SDK had before its agent layer: a tag parser, a streaming parser that drew placeholders for components still to arrive, a schema manager that selected a catalog and assembled a prompt. Upstream keeps those suites under `agent/legacy/` and wrote the agent-tier suites in their place. This crate had ports of that design in `toolkit` and removed them when the agent layer took over (#41); see "The legacy suites". |
 | out of scope: renderer | 8 | 241 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. |
 | out of scope: v0.8 | 2 | 36 | The suite tests the v0.8 wire format. This crate speaks v0.9 and v0.9.1. |
@@ -325,7 +324,7 @@ the Express half of the four transcripts (#74). The rest:
 
 | Count | Reason |
 |---:|---|
-| 25 + 4 | **v0.8 wire format.** v0.8 nests component properties under the type name and uses different message names. 25 checks of `retired/core/validator.yaml`, 4 cases of `core/catalog.yaml` on the v0.8 catalog. |
+| 25 + 4 + 2 | **v0.8.** v0.8 nests component properties under the type name and uses different message names. 25 checks of `retired/core/validator.yaml`, 4 cases of `core/catalog.yaml` on the v0.8 catalog, and the 2 cases of `extensions/a2a/a2a_integration.yaml` that activate the v0.8 extension. |
 | 6 + 47 + 11 | **A2UI v1.0** (#42). The 6 `validate` cases of `core/expressions.yaml`, which evaluate a template on a v1.0 surface, 47 cases of `core/catalog.yaml` (26 that state the version and 21 whose catalog document does), and 11 of `core/common_types.yaml`. |
 | 5 | **A JSON Schema failure** in `core/validator_v0_9.yaml`: an undeclared property, an undeclared function, a function argument of the wrong type, and two theme values. The semantic validator the harness runs does not evaluate these; `SchemaValidator`, behind the `schema-validation` feature, does. They are listed by name in `SCHEMA_ONLY`, because their fixtures are also invalid in ways the semantic validator does report, and would otherwise pass for the wrong reason. |
 | 1 | **Detaching observers.** `test_data_model_stops_notifying_after_dispose`, in `core/data_model.yaml`. Registering observers on a data model is a renderer's; `DataModel` has none to detach. |
@@ -458,17 +457,43 @@ that was understood.
 The version of a catalog case is the one it states, or the one its document
 states: 21 cases about a v1.0 catalog say so only in the document.
 
-The harness is compiled only with the `schema-validation` and `agent` features:
-these cases and the common-types ones run a JSON Schema engine, and the suites
-under `agent/` run the agent layer. Without both, `cargo test -p ag-ui-a2ui`
-lists one ignored test in the suite's place, `conformance_suite` in
-`tests/conformance_needs_schema_validation.rs`, whose reason says which features
-to turn on.
+The harness is compiled only with the `schema-validation`, `agent` and `a2a`
+features: these cases and the common-types ones run a JSON Schema engine, the
+suites under `agent/` run the agent layer, and the A2A suite runs its adapter.
+Without them, `cargo test -p ag-ui-a2ui` lists one ignored test in the suite's
+place, `conformance_suite` in `tests/conformance_needs_schema_validation.rs`,
+whose reason says which features to turn on.
 
 The v0.9 suite has no case that deletes a surface that does not exist.
 `core/message_processor_v1_0.yaml` has one, and its rule is that such a delete
 does nothing. `MessageProcessor` follows it; `SurfaceStore::apply` refuses the
 delete, as before.
+
+## How the A2A suite is run
+
+`extensions/a2a/a2a_integration.yaml` runs against `ag_ui_a2ui::adapters::a2a`,
+which builds and reads A2A's JSON shapes and depends on no A2A library. Each
+case is one check.
+
+- **`create_a2ui_part`.** `a2a::data_part(data, version)`; the part has to be
+  an A2UI part (`is_a2ui_part`) that carries the data, with the `mimeType` the
+  case names.
+- **`is_a2ui_part`.** A data part with the case's `mimeType`.
+- **`get_extension`.** `a2a::agent_extension(version, acceptsInlineCatalogs,
+  supportedCatalogIds)`; its `uri` and its `params`, which are absent where the
+  case says `null`. The version is a string here, so the three cases that ask
+  for the v0.8 extension's URI run.
+- **`select_newest`.** `a2a::select_newest(requested, advertised)`.
+- **`try_activate`.** `a2a::activate(requested, advertised)`: the URI
+  activated and the version it names.
+- **`try_activate_extension`.** `a2a::activate` against an agent card that
+  advertises every version this crate speaks. The reference harness advertises
+  v0.8, v0.9 and v1.0.
+
+`activate` only considers an extension that names a version the crate speaks,
+as the reference does for its own versions. So the two cases whose expected
+activation is the v0.8 extension are skipped as v0.8, not bent to another
+version.
 
 ## Retired suites
 

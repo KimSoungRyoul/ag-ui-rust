@@ -15,6 +15,8 @@ use ag_ui::client::{
     SubagentChangeKind, Thread, Update,
 };
 use ag_ui::{Interrupt, Message, MessageId, ResumeEntry, ToolCallId};
+use ag_ui_a2ui::SurfaceState;
+use ag_ui_a2ui::adapters::agui::operations_in;
 use futures_util::StreamExt as _;
 use serde_json::json;
 
@@ -200,7 +202,13 @@ async fn drive<T: Transport>(
         }
 
         match update {
-            Update::Message(message) => open.print(out, &message, settings)?,
+            Update::Message(message) => {
+                // A result that carries a surface is drawn as the surface it
+                // leaves, which for an update is more than the result holds.
+                let surface = operations_in(&message.message)
+                    .and_then(|_| view::surface_after(run.thread().messages(), &message.message));
+                open.print(out, &message, settings, surface.as_ref())?;
+            }
 
             // Once per thought. The protocol brackets one twice — the block and
             // the message inside it — and the client reports the lifecycle
@@ -346,6 +354,7 @@ impl Open {
         out: &mut impl Write,
         update: &MessageUpdate,
         settings: Watch,
+        surface: Option<&SurfaceState>,
     ) -> io::Result<()> {
         match &update.change {
             MessageChangeKind::Started => self.open_text(out, &update.id),
@@ -418,7 +427,7 @@ impl Open {
 
             MessageChangeKind::ToolResult { .. } => {
                 self.close_text(out)?;
-                print_result(out, &update.message)
+                print_result(out, &update.message, surface)
             }
 
             _ => Ok(()),
@@ -466,13 +475,17 @@ fn mark(delta: &str, settings: Watch) -> String {
 }
 
 /// Prints a tool result — as a drawn surface when it is one, clipped otherwise.
-fn print_result(out: &mut impl Write, message: &Message) -> io::Result<()> {
+fn print_result(
+    out: &mut impl Write,
+    message: &Message,
+    surface: Option<&SurfaceState>,
+) -> io::Result<()> {
     let Message::Tool(tool) = message else {
         return Ok(());
     };
 
     let content = tool.content.to_text();
-    match view::surface_lines(&content) {
+    match surface.and_then(view::surface_lines) {
         Some(lines) => {
             writeln!(out, "  surface")?;
             for line in lines {
