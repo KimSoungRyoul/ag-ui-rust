@@ -11,7 +11,7 @@ publish = false
 # and the tests. The client itself needs neither, which is the point: `watch`
 # talks to whatever is on the far end of a URL.
 ag-ui = { workspace = true, features = ["client", "http", "server", "axum"] }
-ag-ui-a2ui.workspace = true
+ag-ui-a2ui = { workspace = true, features = ["ag-ui"] }
 serde.workspace = true
 serde_json.workspace = true
 futures-util.workspace = true
