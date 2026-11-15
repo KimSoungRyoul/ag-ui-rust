@@ -755,6 +755,14 @@ These are on `main` and not yet in a published version.
   `timestamp`, `rawEvent` and `metadata` onto the start and onto the content event. Read
   a chunk's `timestamp` from the chunk, which `Thread::on_event` observes before
   expansion, and its `rawEvent` from the content event.
+- A `Thread` yields an `Update::Warning` for a `REASONING_ENCRYPTED_VALUE` it drops
+  because no message or tool call it holds by that `entityId` can store the value, an
+  activity message included, as AG-UI 1.0 says a consumer should:
+  "REASONING_ENCRYPTED_VALUE for message "m-9" was dropped: the thread holds no message
+  with that id that can store it". Each text comes once per run, and
+  `RunReport::diagnostics` keeps it with kind `warning`. Alpha.3 dropped the value
+  without a word. The run is unaffected, and `Applier::apply` still returns
+  `Changed::Nothing` for such an event.
 
 ## Verify the upgrade
 

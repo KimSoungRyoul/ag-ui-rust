@@ -15,13 +15,14 @@ use crate::client::{
         SubagentChangeKind,
     },
     chunks::ChunkNormalizer,
-    enforce::{Checked, CheckedStream},
+    enforce::{Checked, CheckedStream, REMEMBERED},
     error::{Error, Result},
     transport::Transport,
     verify::{Verifier, nested_run_started},
 };
 use crate::{
-    Event, Interrupt, Message, MessageId, ResumeEntry, RunAgentInput, RunId, RunOutcome, ToolCallId,
+    Event, Interrupt, Message, MessageId, ReasoningEncryptedValueEvent,
+    ReasoningEncryptedValueSubtype, ResumeEntry, RunAgentInput, RunId, RunOutcome, ToolCallId,
 };
 use futures_core::Stream;
 use futures_util::{StreamExt, task::AtomicWaker};
@@ -88,9 +89,11 @@ pub enum Update<S = Value> {
     /// the application may want to log. An unrecognised field, enum member or
     /// event was dropped, a retired `THINKING_*` event was translated, a
     /// deprecated `null` was read as omitted, or the producer declared a newer
-    /// protocol version. The run is unaffected. So is one more case: a run
-    /// after the requested one finished, and the pending interrupts were not
-    /// replaced because a resume submission is still unconfirmed.
+    /// protocol version. The run is unaffected. So is it in two more cases: a
+    /// run after the requested one finished, and the pending interrupts were
+    /// not replaced because a resume submission is still unconfirmed; or a
+    /// `REASONING_ENCRYPTED_VALUE` was dropped because the thread holds no
+    /// message or tool call by its `entityId` that can store it.
     ///
     /// Each text is delivered once per run and repeats at most 64 characters
     /// of input, with control characters escaped. [`RunReport::diagnostics`]
@@ -333,6 +336,9 @@ struct OpenRun {
     finished: Option<(RunOutcome, Option<Value>)>,
     /// The tool calls this run started.
     started_tool_calls: HashSet<ToolCallId>,
+    /// The warnings this run gave about encrypted values it dropped, up to
+    /// [`REMEMBERED`] of them.
+    dropped: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -808,6 +814,11 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
         };
         match self.thread.applier.apply(&event) {
             Ok(changed) => {
+                if let (Event::ReasoningEncryptedValue(value), Changed::Nothing) =
+                    (&event, &changed)
+                {
+                    self.dropped(value);
+                }
                 if let Some(id) = started_tool_call {
                     self.thread.decided_interrupt_tool_call_ids.remove(&id);
                     if let Some(run) = &mut self.run {
@@ -843,7 +854,33 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
             place,
             finished: None,
             started_tool_calls: HashSet::new(),
+            dropped: HashSet::new(),
         });
+    }
+    /// Warns that an encrypted value was dropped, once per text per run:
+    /// AG-UI 1.0 (`events/reasoning`, "Error Handling") says a consumer
+    /// SHOULD warn about one whose entity it does not hold, and MAY drop it.
+    /// The applier stores it nowhere when no message or tool call it holds
+    /// can take it, an activity message included.
+    fn dropped(&mut self, event: &ReasoningEncryptedValueEvent) {
+        let noun = match event.subtype {
+            ReasoningEncryptedValueSubtype::Message => "message",
+            ReasoningEncryptedValueSubtype::ToolCall => "tool call",
+        };
+        let warning = format!(
+            "REASONING_ENCRYPTED_VALUE for {noun} \"{}\" was dropped: the thread holds no \
+             {noun} with that id that can store it",
+            crate::protocol::excerpt(&event.entity_id, false)
+        );
+        if let Some(run) = &mut self.run {
+            if run.dropped.contains(&warning) {
+                return;
+            }
+            if run.dropped.len() < REMEMBERED {
+                run.dropped.insert(warning.clone());
+            }
+        }
+        self.warning(warning);
     }
     fn emit(&mut self, changed: Changed) {
         match changed {
