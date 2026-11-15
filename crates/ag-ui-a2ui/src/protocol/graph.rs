@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::catalog::{Catalog, ComponentRef};
+use super::catalog::ComponentRef;
 use super::message::Component;
 
 /// One child reference that resolved to a component in the list.
@@ -76,7 +76,10 @@ pub(crate) struct Walk {
 }
 
 impl Graph {
-    /// Reads every component's child references from `catalog`.
+    /// Reads every component's child references with `references`, which is
+    /// given the node and its component: the catalog a component is drawn
+    /// from says which of its properties name children, and a surface may mix
+    /// catalogs.
     ///
     /// `components` yields one entry per node, `None` for a node that is not a
     /// usable component (no id or type) and so refers to nothing. `ids` maps a
@@ -84,7 +87,7 @@ impl Graph {
     /// becomes no edge; it is handed to `dangling` instead, with the node that
     /// made it.
     pub(crate) fn build<'a>(
-        catalog: &Catalog,
+        references: impl Fn(usize, &Component) -> Vec<ComponentRef>,
         components: impl IntoIterator<Item = Option<&'a Component>>,
         ids: &BTreeMap<&str, usize>,
         mut dangling: impl FnMut(usize, &Component, ComponentRef),
@@ -97,7 +100,7 @@ impl Graph {
                     return Vec::new();
                 };
                 let mut edges = Vec::new();
-                for reference in catalog.references(component) {
+                for reference in references(node, component) {
                     match ids.get(reference.id.as_str()) {
                         Some(&target) => edges.push(Edge {
                             target,
@@ -222,6 +225,7 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::catalog::Catalog;
     use serde_json::json;
 
     /// Builds a graph of `Card`s, each naming the next by id.
@@ -238,7 +242,7 @@ mod tests {
             .collect();
         let mut dangling = Vec::new();
         let graph = Graph::build(
-            &catalog,
+            |_, component| catalog.references(component),
             components.iter().map(Some),
             &ids,
             |_, _, reference| dangling.push(reference.id),

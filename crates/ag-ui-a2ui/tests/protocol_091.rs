@@ -192,7 +192,10 @@ fn surface_store_handles_replacement_separate_ids_and_lifecycle() {
     store
         .apply(&AgentMessage::create_surface("one", "new-catalog"))
         .unwrap();
-    assert_eq!(store.get("one").unwrap().catalog_id, "new-catalog");
+    assert_eq!(
+        store.get("one").unwrap().catalog_id.as_deref(),
+        Some("new-catalog")
+    );
 }
 
 #[test]

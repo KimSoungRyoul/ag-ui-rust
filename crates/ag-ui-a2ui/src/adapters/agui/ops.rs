@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn a_spec_creates_its_surface_under_the_catalog_it_names() {
         let created = |spec: &SurfaceSpec| match &assemble_ops(Intent::Create, spec)[0].payload {
-            AgentPayload::CreateSurface(create) => create.catalog_id.clone(),
+            AgentPayload::CreateSurface(create) => create.catalog_id.clone().unwrap_or_default(),
             other => panic!("expected createSurface first, got {other:?}"),
         };
         assert_eq!(created(&SurfaceSpec::new("s")), BASIC_CATALOG_ID);

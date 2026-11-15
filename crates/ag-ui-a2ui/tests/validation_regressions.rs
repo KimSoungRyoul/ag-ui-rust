@@ -547,34 +547,34 @@ fn a_custom_catalog_checks_an_enum_nested_in_a_one_of() {
     }
 }
 
-/// The same check through the specification's own catalog document, parsed
-/// rather than built in.
+/// The same check through the specification's own catalog documents, which
+/// is what the basic catalog of each version is read from.
 #[test]
-fn the_parsed_specification_catalog_rejects_an_icon_it_does_not_list() {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/spec_v0_9/basic_catalog.json");
-    let document: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let catalog = Catalog::from_schema(&document).unwrap();
-    let options = ValidateOptions {
-        check_required_props: false,
-        ..ValidateOptions::full_surface()
-    };
-    let validator = Validator::with_options(&catalog, options);
+fn the_published_basic_catalogs_reject_an_icon_they_do_not_list() {
+    for &version in ag_ui_a2ui::A2uiVersion::ALL {
+        let catalog = Catalog::basic_for(version);
+        let options = ValidateOptions {
+            check_required_props: false,
+            ..ValidateOptions::full_surface()
+        };
+        let validator = Validator::with_options(&catalog, options).speaking(version);
 
-    let report =
-        validator.validate(&[Component::new("root", "Icon").with("name", json!("rocket"))]);
-    assert_eq!(
-        report
-            .errors
-            .iter()
-            .map(|error| (error.code, error.path.as_str()))
-            .collect::<Vec<_>>(),
-        vec![(ErrorCode::InvalidValue, "components[0].name")]
-    );
-    for accepted in [json!("accountCircle"), json!({"svgPath": "M0 0"})] {
-        let report = validator.validate(&[Component::new("root", "Icon").with("name", accepted)]);
-        assert!(report.is_valid(), "{:?}", report.errors);
+        let report =
+            validator.validate(&[Component::new("root", "Icon").with("name", json!("rocket"))]);
+        assert_eq!(
+            report
+                .errors
+                .iter()
+                .map(|error| (error.code, error.path.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(ErrorCode::InvalidValue, "components[0].name")],
+            "{version}"
+        );
+        for accepted in [json!("accountCircle"), json!({"svgPath": "M0 0"})] {
+            let report =
+                validator.validate(&[Component::new("root", "Icon").with("name", accepted)]);
+            assert!(report.is_valid(), "{version}: {:?}", report.errors);
+        }
     }
 }
 

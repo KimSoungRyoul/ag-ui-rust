@@ -24,8 +24,8 @@
 //! |---|---|
 //! | [`version`] | Which protocol versions exist, how each is spelled, and what differs between them. |
 //! | [`operation`] | The names of the agent → renderer operations. |
-//! | [`message`] | The v0.9-family wire types, in both directions. |
-//! | [`catalog`] | What a surface may contain: components, their properties, functions. Includes the standard 18-component basic catalog. |
+//! | [`message`] | The wire types, in both directions. A message is written and read as its `version` spells it. |
+//! | [`catalog`] | What a surface may contain: components, their properties, functions. Includes the basic catalog of each version, read from the published document. |
 //! | [`binding`] | JSON Pointer resolution, template scopes and the `formatString` interpolation grammar, so an agent can check its own bindings before shipping them. |
 //! | [`model`] | The data model, including the undefined slots JSON cannot express. |
 //! | [`surface`] | The surface state machine: lifecycle, and folding a stream of operations. Every stream is folded through it. |
@@ -124,11 +124,18 @@
 //!
 //! # Version
 //!
-//! Supports `v0.9` and `v0.9.1`. Low-level constructors retain `v0.9` as
-//! their default; use [`A2uiVersion`] to select a discriminator. It is the one
-//! place a version is parsed or named, and what differs between versions is a
-//! method on it. Candidate RPC payloads are not accepted or serialized as
-//! v0.9-family messages.
+//! The protocol modules speak `v0.9`, `v0.9.1` and `1.0`. [`A2uiVersion`] is
+//! the one place a version is parsed or named, and what differs between
+//! versions is a method on it. There is one set of types: a message is
+//! written and read as its `version` spells it, a surface speaks the version
+//! it was created in, and nothing is translated from one family to the
+//! other.
+//!
+//! A constructor stamps `v0.9` ([`A2uiVersion::DEFAULT`]) unless it is told
+//! otherwise, so nothing changes for a caller that never names
+//! [`A2uiVersion::V1_0`]. The agent layer and the adapters speak the v0.9
+//! family. The function-call messages of v1.0 (`callRendererFunction`,
+//! `callAgentFunction` and their responses) are not accepted or serialized.
 //!
 //! # Example
 //!
@@ -144,6 +151,38 @@
 //!
 //! let report = Validator::new(&catalog).validate(&components);
 //! assert!(report.is_valid());
+//! ```
+//!
+//! The same surface in v1.0, taken in as the message an agent sends. The
+//! creation carries its components and its data, and a binding is written
+//! `@path`:
+//!
+//! ```
+//! use ag_ui_a2ui::{A2uiVersion, Catalog, MessageProcessor};
+//! use serde_json::json;
+//!
+//! let catalog = Catalog::basic_for(A2uiVersion::V1_0);
+//! let mut processor = MessageProcessor::new();
+//! processor.register(catalog.clone())?;
+//! processor
+//!     .process(&json!({
+//!         "version": "1.0",
+//!         "createSurface": {
+//!             "surfaceId": "hello",
+//!             "catalogId": catalog.catalog_id,
+//!             "dataModel": {"name": "Ada"},
+//!             "components": [
+//!                 {"id": "root", "component": "Card", "child": "greeting"},
+//!                 {"id": "greeting", "component": "Text", "text": {"@path": "/name"}}
+//!             ]
+//!         }
+//!     }))
+//!     .map_err(|rejection| rejection.error)?;
+//!
+//! let surface = processor.surfaces().get("hello").unwrap();
+//! assert_eq!(surface.spoken_version(), A2uiVersion::V1_0);
+//! assert_eq!(surface.components.len(), 2);
+//! # Ok::<(), ag_ui_a2ui::Error>(())
 //! ```
 
 #![forbid(unsafe_code)]

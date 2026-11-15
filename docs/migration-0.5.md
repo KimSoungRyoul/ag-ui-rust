@@ -846,7 +846,7 @@ These are on `main` and not yet in a published version.
 | `agui::find_prior_surface_in(messages)`, `ag_ui_a2ui::find_prior_surface_in`, `toolkit::history::find_prior_surface(&history)` | `adapters::agui::latest_surface(messages).ok().flatten()` |
 | `toolkit::history::try_find_prior_surface(&history, None)` | `adapters::agui::latest_surface(messages)?` |
 | `find_prior_surface_by_id(&history, Some(id))`, `try_find_prior_surface_by_id(&history, id)` | `adapters::agui::surfaces_in(messages)?.get(id)` |
-| `toolkit::history::PriorSurface` | `SurfaceState`, with the same `surface_id`, `components`, `data_model` and `deleted`; `catalog_id` is a `String` |
+| `toolkit::history::PriorSurface` | `SurfaceState`, with the same `surface_id`, `components`, `data_model` and `deleted`; `catalog_id` is an `Option<String>` |
 | `toolkit::history::HistoryMessage`, `HistoryMessage::from(&message)` | Nothing: the readers take `&[ag_ui::Message]` |
 | `toolkit::history::next_surface_id(&history, base)` | `let surfaces = surfaces_in(messages)?;`, then the first of `base`, `base-2`, … for which `surfaces.get(id)` is `None` |
 | `agui::A2uiRunContextExt`, `ctx.send_a2ui(&surface)?` | `let mut painter = SurfacePainter::from_history(ctx.messages()).map_err(Error::agent)?;` once in the run, then `painter.paint(ctx, surface.operations())?` |
@@ -964,7 +964,6 @@ These are on `main` and not yet in a published version.
   for the agent card, `select_newest` and `activate` to agree on a version, and
   `renderer_capabilities(&message, version)` for what a client's message says it
   draws. alpha.3 had none of these.
-
 - A continuation `*_CHUNK` without a `delta` that carries `metadata`, such as a final
   chunk reporting a finish reason, expands to a content event with an empty delta
   (`TEXT_MESSAGE_CONTENT`, `TOOL_CALL_ARGS` or `REASONING_MESSAGE_CONTENT`) that carries
@@ -989,6 +988,131 @@ These are on `main` and not yet in a published version.
   `RunReport::diagnostics` keeps it with kind `warning`. Alpha.3 dropped the value
   without a word. The run is unaffected, and `Applier::apply` still returns
   `Changed::Nothing` for such an event.
+- The protocol modules speak A2UI v1.0 (`A2uiVersion::V1_0`, written `"1.0"`).
+  Nothing changes unless you name `V1_0`: a constructor still stamps `v0.9`
+  (`A2uiVersion::DEFAULT`), and `A2uiVersion::LATEST` is the name for the newest.
+  There is one set of types. A message is written and read as its `version` spells it,
+  a surface speaks the version it was created in (`SurfaceState::spoken_version()`),
+  and nothing is translated from one family to the other: a `v0.9` message for a
+  `1.0` surface is refused, and the reverse. `MessageProcessor`, `Validator`,
+  `SurfaceStore`, `DataModel`, `binding`, `Catalog`, `SchemaBundle` and the schema
+  validators speak v1.0. The agent layer, `A2uiAuthor` and the adapters speak the
+  v0.9 family, and `CatalogDocument::load` refuses a v1.0 catalog.
+  `callRendererFunction`, `callAgentFunction` and their responses are not read or
+  written.
+- What v1.0 spells differently is asked of the version, so code that writes for a
+  surface of any version asks it too. `version.path("/name")` and
+  `version.call("formatString", args)` write a binding and a call (`{"@path": …}`,
+  `{"@call": …}` in v1.0); `path_key()` and `call_key()` give the keys.
+  `version.component_keys()` gives the keys of a component's envelope (`@catalogId`,
+  `@accessibility`, `@checks`, `@metadata` in v1.0; `accessibility` and `checks`
+  before), and `Component::catalog_id(version)`, `checks(version)`,
+  `accessibility(version)` and `metadata(version)` read them. To read values written
+  for another version than v0.9: `Scope::root(&data).speaking(version)`,
+  `collect_bindings_in(version, &value)`, `TemplatePart::to_json_in(version)`,
+  `Validator::new(&catalog).speaking(version)`. `Scope::root`, `collect_bindings`,
+  `TemplatePart::to_json` and a `Validator` given bare components read v0.9, as
+  before. What is asked of a surface is read in the surface's version:
+  `SurfaceState::outline` gives each component a scope that speaks it, and
+  `SurfaceState::replay` writes its messages in it.
+- A v1.0 `createSurface` may leave out `catalogId` and may carry `components`,
+  `dataModel` and `metadata`; it has no `theme`. So `CreateSurface::catalog_id` and
+  `SurfaceState::catalog_id` are `Option<String>`, both structs are
+  `#[non_exhaustive]`, and both have `metadata`. Write
+  `CreateSurface::new(id).with_catalog_id(catalog)` where you wrote the struct, with
+  `with_components`, `with_data_model`, `with_metadata`, `with_theme` and
+  `with_send_data_model` for the rest; `AgentMessage::create_surface(id, catalog)` is
+  unchanged. A `SurfaceState` comes out of a `SurfaceStore`: apply the messages and
+  take `store.get(id)`. Where you read `surface.catalog_id` as a `String`, read
+  `surface.catalog_id.as_deref()`. A `v0.9` creation still needs its catalog, and one
+  written without it does not serialize.
+- A v1.0 `updateDataModel` requires `value`, and `"value": null` removes what is at
+  the path; `AgentMessage::remove_data_model_value(id, path).with_version(V1_0)`
+  writes that. On a v1.0 surface, removing what is not there does nothing, and
+  removing the root leaves `{}`. `DataModel::apply_as(version, path, &value)` applies
+  an update as a version does; `DataModel::apply` is unchanged, and so is every v0.9
+  surface: `null` is stored, and a removal past the end of a list still pads it.
+- From v1.0 a key that starts with one `@` is the protocol's. On a v1.0 surface, a
+  `@` key that is no directive is refused wherever it sits in a component
+  (`ErrorCode::ReservedKey`, `reserved_key`), and a literal key is written doubled:
+  `{"@@type": "x"}` is read back as `{"@type": "x"}`. Component ids and types are
+  identifiers there (`user_card`, not `user-card`). A v0.9 surface has neither rule.
+- One v1.0 surface draws from several catalogs. A component names its catalog with
+  `@catalogId`, a function call with `catalogId`, and either falls back to the
+  surface's own; `SurfaceState::catalog_of(&component)` says which.
+  `Validator::over(catalogs, options)` validates against several, and a
+  `MessageProcessor` uses every catalog registered with it. A catalog that is not
+  held, or one written for another version than the surface, is
+  `RejectionKind::Catalog` (`ErrorCode::UnknownCatalog`, `unknown_catalog`, from a
+  `Validator`). On a v1.0 surface a call's function has to be one its catalog
+  declares, and one the catalog marks `allowedCallers: "agentOnly"` cannot be bound
+  to a property; `@index` is the protocol's own function and is accepted only in a
+  component a list template draws.
+- On a v1.0 surface, `Validator` and `MessageProcessor` refuse a component that sits
+  where its catalog's `allowedParents` or `allowedChildren` do not let it:
+  `ErrorCode::UnallowedParent` and `UnallowedChild`, sent to a renderer as
+  `UNALLOWED_PARENT` and `UNALLOWED_CHILD`. The root's parent is `Surface`. A v0.9
+  surface is not refused for it; `Catalog::composition_violations` still answers a
+  caller that asks.
+- `ErrorCode` has four more codes (`UnknownCatalog`, `ReservedKey`, `UnallowedParent`,
+  `UnallowedChild`). It was already non-exhaustive; a `match` on it keeps its wildcard
+  arm.
+- `Catalog::basic()` is the published v0.9 basic catalog, read from the document the
+  crate ships, and no longer a transcription of it. Three things differ. Its id is
+  `OFFICIAL_BASIC_CATALOG_ID`: write
+  `Catalog::basic().with_catalog_id(BASIC_CATALOG_ID)` where a surface is created
+  under the id AG-UI's toolkit uses, which is what `SurfaceSpec` still defaults to.
+  `List` declares `listStyle`, which upstream restored to the v0.9 document. The six
+  input components take their check rules from the common `Checkable` type, so
+  `checks` is not among `ComponentDef::props`: ask `ComponentDef::is_checkable()`.
+  `Catalog::basic().document()` is now `Some`. `Catalog::basic_for(version)` gives the
+  basic catalog of any version; the three are three documents.
+- `BASIC_COMPONENTS` lists the eighteen components in the order the published
+  documents declare them (`Text`, `Image`, `Icon`, `Video`, `AudioPlayer`, `Row`, …),
+  which is also the order `Catalog::components_in_order` gives. Code that indexed the
+  array by position reads the name instead.
+- `Catalog::from_schema` reads `protocolVersion`: `Catalog::version()` is the version
+  a catalog is written for, `v0.9` for a document that states none, and
+  `Catalog::with_version(version)` sets it. A document that states a version this
+  crate does not speak (`"0.8"`) is now `Error::Catalog`, where it was read as v0.9;
+  remove the field or correct it. A v1.0 document is held to the rules of v1.0 when
+  it is read: component, property, function and argument names are identifiers,
+  `Surface` cannot be defined, a `$ref` stays in the catalog or points at
+  `common_types.json`, and `requiresUserActivation` is for a `rendererOnly` function.
+  A v0.9 or v0.9.1 document is read as before.
+- `FunctionDef` is `#[non_exhaustive]` and has `allowed_callers` (`AllowedCallers`)
+  and `requires_user_activation`. Write `FunctionDef::new(name)` and set the fields
+  where you wrote the struct. `ComponentDef` has `is_checkable()`, `metadata()` and
+  `declares(name)`.
+- A `Validator` refuses `@catalogId`, `@accessibility`, `@checks` and `@metadata` on
+  a component of a v0.9 surface, as `invalid_value` at that key, unless the
+  component's catalog declares a property by that name. A `MessageProcessor` already
+  did; the rule is now the validator's, so `validate`, `validate_json` and
+  `validate_updates` have it too. A model that has seen v1.0 writes these keys.
+- The envelope check refuses a field of another version's `createSurface`:
+  `components`, `dataModel` or `metadata` in a `v0.9` message, `theme` in a `1.0`
+  one, as `invalid_value` at the field. Such a field was dropped without a word.
+  Send the message as the version that has the field, or leave it out.
+- A `MessageProcessor` refuses a component id used twice as
+  `RejectionKind::Integrity`, with the reply code `INTEGRITY_ERROR`. It was
+  `RejectionKind::Validation` and `VALIDATION_FAILED`.
+  `rejection.kind.is("ValidationError")` holds for both, and the error is still
+  `ErrorCode::DuplicateId`.
+- The schemas the crate ships are one set per version, all from upstream commit
+  `3ed9601`: `SchemaBundle::for_version(version)`. `SchemaBundle::basic()` is still
+  the v0.9.1 set, which accepts both discriminators of the family; the v0.9 set
+  accepts `"v0.9"` alone and its basic catalog has `List.listStyle`.
+  `A2uiAuthor::basic(version)` and `CatalogDocument::basic(version)` now use the set
+  of their version, so a `v0.9` author accepts `listStyle` and shows it in its
+  prompt, and a `v0.9.1` author refuses it, as upstream's documents do.
+  `ClientSchemaValidator::for_version(version)`, `validate_common_type_in(version, …)`
+  and `validate_capabilities_in(version, …)` read another version's documents than
+  v0.9.1's.
+- `SchemaValidator::new` compiles a catalog that declares no `$id`: the catalog is
+  registered as the envelope's sibling `catalog.json`, which is the name the envelope
+  refers to it by. It returned `Error::Catalog` for one. A `SchemaValidator` is one
+  catalog's: a v1.0 message that names another catalog fails it, and a
+  `MessageProcessor` does not put such a message to a schema.
 - `FilterToolCalls` filters a conversation the stream restates by the same names as the
   tool-call events. A `MESSAGES_SNAPSHOT`, and the request echoed on `RUN_STARTED`, go out
   without a filtered call, without the encrypted value that call carries and without the

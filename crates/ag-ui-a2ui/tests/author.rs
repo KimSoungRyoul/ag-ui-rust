@@ -52,6 +52,28 @@ fn official_schema_resolves_locally_and_rejects_invalid_raw_documents() {
     bundle.s2c["$ref"] = json!("https://unregistered.invalid/schema.json");
     assert!(SchemaValidator::new(&bundle, &BTreeMap::new()).is_err());
 }
+/// The basic catalogs of v0.9 and v0.9.1 are two documents: upstream restored
+/// `List.listStyle` to the v0.9 one and left the v0.9.1 one without it. An
+/// author is held to the document of its own version.
+#[test]
+fn a_basic_author_holds_a_list_style_to_the_catalog_of_its_version() {
+    let ordered = |version: &str| {
+        vec![
+            json!({"version": version, "createSurface": {"surfaceId": "s", "catalogId": ag_ui_a2ui::constants::OFFICIAL_BASIC_CATALOG_ID}}),
+            json!({"version": version, "updateComponents": {"surfaceId": "s", "components": [
+                {"id": "root", "component": "List", "children": ["item"], "listStyle": "ordered"},
+                {"id": "item", "component": "Text", "text": "One"}
+            ]}}),
+        ]
+    };
+    let v0_9 = A2uiAuthor::basic(A2uiVersion::V0_9).unwrap();
+    v0_9.validate_create("s", &ordered("v0.9")).unwrap();
+
+    let v0_9_1 = A2uiAuthor::basic(A2uiVersion::V0_9_1).unwrap();
+    let refused = v0_9_1.validate_create("s", &ordered("v0.9.1")).unwrap_err();
+    assert!(refused.to_string().contains("listStyle"), "{refused}");
+}
+
 #[test]
 fn create_and_edit_pin_target_version_catalog_and_lifecycle() {
     let author = A2uiAuthor::basic(A2uiVersion::V0_9_1).unwrap();

@@ -140,6 +140,17 @@ impl CatalogDocument {
             }
         };
 
+        // The agent layer speaks the v0.9 family. A2UI 1.0 is in the protocol
+        // modules; its prompt, its reader and its capabilities are the next
+        // step of #42.
+        if !A2uiVersion::V0_9.accepts(version) {
+            return Err(Error::catalog(format!(
+                "catalog '{id}' targets protocol version '{}', which the agent layer does not \
+                 speak yet",
+                version.number()
+            )));
+        }
+
         if document
             .get("components")
             .is_some_and(|components| !components.is_object())
@@ -212,14 +223,21 @@ impl CatalogDocument {
         Self::load(document, catalog_id, version)
     }
 
-    /// The official basic catalog, as pinned in this crate, for messages of
-    /// `version`. No network or filesystem access is performed.
+    /// The official basic catalog of `version`, as pinned in this crate. No
+    /// network or filesystem access is performed.
+    ///
+    /// Each version has a document of its own: the v0.9 one declares
+    /// `List.listStyle`, which the v0.9.1 one does not.
     ///
     /// # Errors
     ///
     /// Returns an error only if the embedded document does not parse.
     pub fn basic(version: A2uiVersion) -> Result<Self> {
-        Self::load(SchemaBundle::basic()?.catalog, None, Some(version))
+        Self::load(
+            SchemaBundle::for_version(version)?.catalog,
+            None,
+            Some(version),
+        )
     }
 
     /// The id agent and renderer negotiate on.

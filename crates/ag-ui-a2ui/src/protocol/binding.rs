@@ -24,6 +24,33 @@
 //! [`absolute_path`] is the rule on its own, for a caller that holds a scope's
 //! path and no data.
 //!
+//! # How a binding is written
+//!
+//! Paths resolve the same way in every protocol version. What differs is the
+//! object that carries one. Before v1.0 a binding is `{"path": …}` and a
+//! function call `{"call": …, "args": …}`. In v1.0 they are `{"@path": …}`
+//! and `{"@call": …, "args": …}`, a plain `{"path": …}` is a literal map, and
+//! a key that starts with one `@` is reserved: a literal one is written
+//! doubled, `@@type`. A list template, `{"componentId": …, "path": …}`, is
+//! the same in both. [`Scope::speaking`] and [`collect_bindings_in`] take the
+//! version; [`Scope::root`] and [`collect_bindings`] read the v0.9 family.
+//!
+//! ```
+//! use ag_ui_a2ui::A2uiVersion;
+//! use ag_ui_a2ui::binding::Scope;
+//! use serde_json::json;
+//!
+//! let data = json!({"user": {"name": "Ada"}});
+//! let v1_0 = Scope::root(&data).speaking(A2uiVersion::V1_0);
+//! assert_eq!(v1_0.resolve_dynamic(&json!({"@path": "/user/name"}))?, json!("Ada"));
+//! // A literal map, with an escaped key.
+//! assert_eq!(
+//!     v1_0.resolve_dynamic(&json!({"path": "/var/log", "@@type": "File"}))?,
+//!     json!({"path": "/var/log", "@type": "File"})
+//! );
+//! # Ok::<(), ag_ui_a2ui::Error>(())
+//! ```
+//!
 //! # Stringification
 //!
 //! Whenever a non-string is interpolated into text, the conversion is fixed by
@@ -74,6 +101,7 @@ use serde_json::{Map, Value};
 pub use super::template::{
     MAX_TEMPLATE_CHARS, MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_PARTS, TemplatePart, parse_template,
 };
+use super::version::A2uiVersion;
 use crate::error::{Error, Result};
 
 /// Deepest nesting these walks will descend into a value, and the most
@@ -217,16 +245,34 @@ pub struct Scope<'a> {
     data: &'a Value,
     base: String,
     index: Option<usize>,
+    version: A2uiVersion,
 }
 
 impl<'a> Scope<'a> {
-    /// The root scope of a data model.
+    /// The root scope of a data model, reading dynamic values as the v0.9
+    /// family writes them ([`A2uiVersion::DEFAULT`]). For a surface of
+    /// another version, say so with [`Scope::speaking`].
     pub fn root(data: &'a Value) -> Self {
         Self {
             data,
             base: String::new(),
             index: None,
+            version: A2uiVersion::DEFAULT,
         }
+    }
+
+    /// The same scope, reading dynamic values as `version` writes them: which
+    /// key makes an object a binding or a call, and whether `@` is reserved.
+    /// Scopes entered from it with [`Scope::item`] speak the same version.
+    #[must_use]
+    pub fn speaking(mut self, version: A2uiVersion) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// The version this scope reads dynamic values in.
+    pub fn version(&self) -> A2uiVersion {
+        self.version
     }
 
     /// The data model this scope reads from.
@@ -255,6 +301,7 @@ impl<'a> Scope<'a> {
             data: self.data,
             base: format!("{base}/{index}"),
             index: Some(index),
+            version: self.version,
         }
     }
 
@@ -283,16 +330,19 @@ impl<'a> Scope<'a> {
         stringify(self.resolve(path))
     }
 
-    /// Resolves a `DynamicValue`: a literal, a `{"path": ...}` binding, or a
-    /// `{"call": ..., "args": ...}` function call.
+    /// Resolves a `DynamicValue`: a literal, a binding or a function call, as
+    /// this scope's version writes them (`{"path": …}` and `{"call": …}`, or
+    /// `{"@path": …}` and `{"@call": …}` from v1.0).
     ///
     /// Objects and arrays are walked recursively so nested bindings inside an
-    /// action `context` resolve too.
+    /// action `context` resolve too. Where `@` is reserved, a doubled `@@` at
+    /// the start of a literal key is unescaped to one.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Binding`] if a `formatString` template is malformed or
-    /// names a function this crate cannot evaluate.
+    /// names a function this crate cannot evaluate, and, where `@` is
+    /// reserved, for a key that starts with one `@` and is not a directive.
     pub fn resolve_dynamic(&self, value: &Value) -> Result<Value> {
         self.resolve_dynamic_with(value, &NoFunctions)
     }
@@ -324,13 +374,13 @@ impl<'a> Scope<'a> {
         }
         match value {
             Value::Object(map) => {
-                if let Some(Value::String(path)) = map.get("path") {
+                if let Some(Value::String(path)) = map.get(self.version.path_key()) {
                     // `{componentId, path}` is a child template, not a binding.
                     if !map.contains_key("componentId") {
                         return Ok(self.resolve(path).cloned().unwrap_or(Value::Null));
                     }
                 }
-                if let Some(Value::String(name)) = map.get("call") {
+                if let Some(Value::String(name)) = map.get(self.version.call_key()) {
                     let mut args = Map::new();
                     if let Some(Value::Object(raw)) = map.get("args") {
                         for (key, raw_value) in raw {
@@ -344,8 +394,18 @@ impl<'a> Scope<'a> {
                 }
                 let mut out = Map::new();
                 for (key, raw_value) in map {
+                    let literal = match literal_key(self.version, key) {
+                        Some(literal) => literal,
+                        None => {
+                            return Err(Error::binding(
+                                key,
+                                "a key that starts with one '@' is reserved; write a literal \
+                                 one doubled, as '@@'",
+                            ));
+                        }
+                    };
                     out.insert(
-                        key.clone(),
+                        literal.to_string(),
                         self.resolve_dynamic_at(raw_value, functions, depth + 1)?,
                     );
                 }
@@ -451,17 +511,59 @@ impl<'a> Scope<'a> {
     }
 }
 
-/// Every data-model path referenced anywhere inside a JSON value.
+/// The key of a literal map as it is meant, or `None` for one the version
+/// reserves.
 ///
-/// Walks the value looking for `{"path": "..."}` bindings, skipping
-/// `{"componentId", "path"}` child templates, whose `path` points at a
-/// collection rather than at a bound value. Paths are returned in encounter
-/// order with duplicates removed, keyed by the property path they were found
-/// at so a validator can report a precise locator.
+/// Where `@` is reserved ([`A2uiVersion::reserves_at_keys`]), `@@type` is the
+/// literal `@type`, and a key that starts with one `@` is a directive and no
+/// literal at all. Elsewhere every key is itself.
+pub(crate) fn literal_key(version: A2uiVersion, key: &str) -> Option<&str> {
+    if !version.reserves_at_keys() {
+        return Some(key);
+    }
+    match key.strip_prefix('@') {
+        None => Some(key),
+        Some(rest) if rest.starts_with('@') => Some(rest),
+        Some(_) => None,
+    }
+}
+
+/// Every data-model path referenced anywhere inside a JSON value, read as the
+/// v0.9 family writes a binding: [`collect_bindings_in`] for
+/// [`A2uiVersion::DEFAULT`].
 pub fn collect_bindings(value: &Value) -> Vec<Binding> {
+    collect_bindings_in(A2uiVersion::DEFAULT, value)
+}
+
+/// Every data-model path referenced anywhere inside a JSON value, read as
+/// `version` writes a binding.
+///
+/// Walks the value looking for bindings (`{"path": "..."}`, or
+/// `{"@path": "..."}` from v1.0) and for `{"componentId", "path"}` child
+/// templates, whose `path` points at a collection rather than at a bound
+/// value. Paths are returned in encounter order with duplicates removed, keyed
+/// by the property path they were found at so a validator can report a precise
+/// locator.
+///
+/// ```
+/// use ag_ui_a2ui::A2uiVersion;
+/// use ag_ui_a2ui::binding::collect_bindings_in;
+/// use serde_json::json;
+///
+/// let component = json!({
+///     "text": {"@path": "/user/name"},
+///     "children": {"componentId": "row", "path": "/items"},
+///     "details": {"path": "/var/log"}
+/// });
+/// let found = collect_bindings_in(A2uiVersion::V1_0, &component);
+/// let paths: Vec<(&str, bool)> = found.iter().map(|b| (b.path.as_str(), b.is_collection)).collect();
+/// // The literal map under `details` is not a binding in v1.0.
+/// assert_eq!(paths, [("/items", true), ("/user/name", false)]);
+/// ```
+pub fn collect_bindings_in(version: A2uiVersion, value: &Value) -> Vec<Binding> {
     let mut out = Vec::new();
     let mut seen = BTreeMap::new();
-    walk_bindings(value, String::new(), 0, &mut out, &mut seen);
+    walk_bindings(version, value, String::new(), 0, &mut out, &mut seen);
     out
 }
 
@@ -478,6 +580,7 @@ pub struct Binding {
 }
 
 fn walk_bindings(
+    version: A2uiVersion,
     value: &Value,
     location: String,
     depth: usize,
@@ -491,8 +594,15 @@ fn walk_bindings(
     }
     match value {
         Value::Object(map) => {
-            if let Some(Value::String(path)) = map.get("path") {
-                let is_collection = map.contains_key("componentId");
+            // A template is written with a bare `path` in every version; a
+            // binding with the version's own key, which may be the same one.
+            let is_collection = map.contains_key("componentId");
+            let path_key = if is_collection {
+                "path"
+            } else {
+                version.path_key()
+            };
+            if let Some(Value::String(path)) = map.get(path_key) {
                 let key = (location.clone(), path.clone());
                 if seen.insert(key, ()).is_none() {
                     out.push(Binding {
@@ -506,7 +616,7 @@ fn walk_bindings(
                 }
             }
             for (key, child) in map {
-                if key == "path" {
+                if key == path_key {
                     continue;
                 }
                 let next = if location.is_empty() {
@@ -514,12 +624,19 @@ fn walk_bindings(
                 } else {
                     format!("{location}.{key}")
                 };
-                walk_bindings(child, next, depth + 1, out, seen);
+                walk_bindings(version, child, next, depth + 1, out, seen);
             }
         }
         Value::Array(items) => {
             for (index, item) in items.iter().enumerate() {
-                walk_bindings(item, format!("{location}[{index}]"), depth + 1, out, seen);
+                walk_bindings(
+                    version,
+                    item,
+                    format!("{location}[{index}]"),
+                    depth + 1,
+                    out,
+                    seen,
+                );
             }
         }
         _ => {}
@@ -577,6 +694,101 @@ mod tests {
                 {"name": "Bob", "role": "Designer"}
             ]
         })
+    }
+
+    #[test]
+    fn a_v1_0_scope_reads_at_keys_and_leaves_bare_ones_as_data() {
+        let data = model();
+        let v0_9 = Scope::root(&data);
+        let v1_0 = Scope::root(&data).speaking(A2uiVersion::V1_0);
+        assert_eq!(v1_0.version(), A2uiVersion::V1_0);
+        assert_eq!(v1_0.item("/employees", 0).version(), A2uiVersion::V1_0);
+
+        // The same binding, each in its own spelling.
+        assert_eq!(
+            v0_9.resolve_dynamic(&json!({"path": "/company"})).unwrap(),
+            json!("Acme Corp")
+        );
+        assert_eq!(
+            v1_0.resolve_dynamic(&json!({"@path": "/company"})).unwrap(),
+            json!("Acme Corp")
+        );
+        // And each reads the other's as a map.
+        assert_eq!(
+            v1_0.resolve_dynamic(&json!({"path": "/company", "call": "audit"}))
+                .unwrap(),
+            json!({"path": "/company", "call": "audit"})
+        );
+        assert_eq!(
+            v0_9.resolve_dynamic(&json!({"@path": "/company"})).unwrap(),
+            json!({"@path": "/company"})
+        );
+
+        // A call, with its arguments resolved in the same spelling.
+        let item = v1_0.item("/employees", 1);
+        assert_eq!(
+            item.resolve_dynamic(&json!({"@call": "@index", "args": {"offset": 1}}))
+                .unwrap(),
+            json!(2)
+        );
+        assert_eq!(
+            item.resolve_dynamic(&json!({
+                "@call": "formatString",
+                "args": {"value": "${name} @ ${/company}"}
+            }))
+            .unwrap(),
+            json!("Bob @ Acme Corp")
+        );
+
+        // `@@` is the literal `@`; one `@` that is no directive is reserved.
+        assert_eq!(
+            v1_0.resolve_dynamic(&json!({"@@path": "/static", "@@": 1, "nested": {"@@type": "x"}}))
+                .unwrap(),
+            json!({"@path": "/static", "@": 1, "nested": {"@type": "x"}})
+        );
+        for reserved in [
+            json!({"@if": true}),
+            json!({"@": 1}),
+            json!({"a": {"@metadata": {}}}),
+        ] {
+            assert!(v1_0.resolve_dynamic(&reserved).is_err(), "{reserved}");
+            assert!(v0_9.resolve_dynamic(&reserved).is_ok(), "{reserved}");
+        }
+    }
+
+    #[test]
+    fn bindings_are_collected_in_the_spelling_of_the_version() {
+        let component = json!({
+            "text": {"@path": "/user/name"},
+            "label": {"path": "/user/label"},
+            "children": {"componentId": "tpl", "path": "/items"},
+            "action": {"event": {"context": {"email": {"@path": "/form/email"}}}}
+        });
+        let paths = |version: A2uiVersion| -> Vec<(String, bool)> {
+            collect_bindings_in(version, &component)
+                .into_iter()
+                .map(|binding| (binding.path, binding.is_collection))
+                .collect()
+        };
+        assert_eq!(
+            paths(A2uiVersion::V1_0),
+            [
+                ("/form/email".to_string(), false),
+                ("/items".to_string(), true),
+                ("/user/name".to_string(), false)
+            ]
+        );
+        assert_eq!(
+            paths(A2uiVersion::V0_9),
+            [
+                ("/items".to_string(), true),
+                ("/user/label".to_string(), false)
+            ]
+        );
+        assert_eq!(
+            collect_bindings(&component),
+            collect_bindings_in(A2uiVersion::V0_9_1, &component)
+        );
     }
 
     #[test]
