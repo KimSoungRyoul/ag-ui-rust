@@ -8,12 +8,15 @@
 
 #![cfg(feature = "agent")]
 
+use std::time::Duration;
+
 use ag_ui_a2ui::agent::{
-    A2uiGenerator, A2uiRequestProcessor, CatalogConfig, CatalogDocument, DirectJson,
-    RendererCapabilities, ResponsePart, RetryDriver, StreamOptions, StreamPart, Verdict,
-    validate_payload,
+    A2uiGenerator, A2uiRequestProcessor, AgentFunction, CatalogConfig, CatalogDocument, DirectJson,
+    RendererCall, RendererCapabilities, ResponsePart, RetryDriver, Routed, StreamOptions,
+    StreamPart, Verdict, validate_payload,
 };
-use ag_ui_a2ui::{A2uiVersion, Error, ErrorCode};
+use ag_ui_a2ui::rpc::{RpcError, code};
+use ag_ui_a2ui::{A2uiVersion, AgentMessage, Error, ErrorCode};
 use serde_json::{Value, json};
 
 const BASIC: &str = "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json";
@@ -472,5 +475,189 @@ fn a_payload_is_checked_on_its_own_in_v1_0_too() {
             ErrorCode::UnknownCatalog,
             "messages[0].updateComponents.components[0].@catalogId"
         )]
+    );
+}
+
+/// A catalog with a function the agent may call on the renderer, and one the
+/// agent runs for it.
+fn device() -> CatalogConfig {
+    let catalog = CatalogDocument::parse(
+        r#"{
+          "catalogId": "example.com:device",
+          "protocolVersion": "1.0",
+          "components": {},
+          "functions": {
+            "getLocale": {"returnType": "string", "allowedCallers": "rendererOrAgent"},
+            "formatLocal": {"returnType": "string"}
+          }
+        }"#,
+        None,
+        None,
+    )
+    .unwrap()
+    .with_agent_functions([AgentFunction::new(
+        "fetchFxRate",
+        json!({
+            "type": "object",
+            "properties": {"base": {"type": "string"}, "target": {"type": "string", "default": "USD"}},
+            "required": ["base"],
+            "additionalProperties": false
+        }),
+    )
+    .returning("number")
+    .described("Current exchange rate from base to target.")])
+    .unwrap();
+    CatalogConfig::new(catalog)
+}
+
+fn device_processor() -> A2uiRequestProcessor {
+    let renderer = RendererCapabilities::supporting(A2uiVersion::V1_0, ["example.com:device"]);
+    A2uiGenerator::new(vec![device()])
+        .create_processor(Some(&renderer))
+        .unwrap()
+}
+
+/// In a v1.0 session the prompt shows `callRendererFunction`, so an answer may
+/// carry one under an id of the model's choosing. It is checked like the rest
+/// of the answer, and the table that waits on the agent's own calls waits on
+/// it too, so that its response has somewhere to land.
+#[test]
+fn a_call_the_model_wrote_is_checked_sent_and_waited_on() {
+    let processor = device_processor();
+    assert!(processor.prompt_snippet().contains("callRendererFunction"));
+    let answer = r#"One moment.
+<a2ui-json>[{"version": "1.0", "callRendererFunction": {
+  "functionCallId": "locale-from-the-model",
+  "callFunction": {"@call": "getLocale", "catalogId": "example.com:device", "args": {}}
+}}]</a2ui-json>"#;
+    let messages: Vec<AgentMessage> = processor
+        .parse_response(answer)
+        .unwrap()
+        .into_iter()
+        .flat_map(|part| match part {
+            ResponsePart::A2ui(messages) => messages,
+            ResponsePart::Text(_) => Vec::new(),
+        })
+        .collect();
+    assert_eq!(messages.len(), 1);
+
+    let mut calls = processor.renderer_calls().unwrap();
+    let now = Duration::from_secs(5);
+    // Every message of the answer is offered; the calls among them are kept.
+    for message in &messages {
+        assert!(calls.track(message, now).unwrap());
+    }
+    assert!(calls.is_pending("locale-from-the-model"));
+    // The same rule as for a call the agent makes: one id, one call.
+    assert_eq!(
+        calls.track(&messages[0], now).unwrap_err().code,
+        code::DUPLICATE
+    );
+    let own = calls
+        .call(RendererCall::new("example.com:device", "getLocale"), now)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&own).unwrap()["callRendererFunction"]["functionCallId"],
+        "call-1"
+    );
+
+    // The renderer answers the model's call; the router reads the answer and
+    // the table settles it.
+    let router = processor.renderer_messages().unwrap();
+    let Routed::FunctionResponse(response) = router
+        .route(&json!({"version": "1.0", "rendererFunctionResponse": {
+            "functionCallId": "locale-from-the-model", "value": "fr-FR"
+        }}))
+        .unwrap()
+    else {
+        panic!("a response");
+    };
+    let settled = calls.resolve(&response).unwrap();
+    assert_eq!(settled.outcome.value(), Some(&json!("fr-FR")));
+    assert!(
+        calls.resolve(&response).is_none(),
+        "a second answer lands nowhere"
+    );
+    // The agent's own call waits its thirty seconds and no longer.
+    let late = calls.expire(now + Duration::from_secs(30));
+    assert_eq!(late[0].outcome.error().unwrap().code, code::TIMEOUT);
+
+    // A call the model may not make is refused with the rest of the answer.
+    let refused = processor
+        .parse_response(
+            r#"<a2ui-json>[{"version": "1.0", "callRendererFunction": {
+              "functionCallId": "c", "callFunction": {"@call": "formatLocal", "catalogId": "example.com:device"}
+            }}]</a2ui-json>"#,
+        )
+        .unwrap_err();
+    assert!(
+        refused.error.to_string().contains("rendererOnly"),
+        "{}",
+        refused.error
+    );
+}
+
+/// A function the agent declared is in the prompt and in what validates, and
+/// a renderer's call to it comes back as a value for the application to run.
+#[test]
+fn a_function_the_agent_runs_is_declared_called_and_answered() {
+    let processor = device_processor();
+    assert!(processor.prompt_snippet().contains("fetchFxRate"));
+    // The agent runs it, so the agent does not ask the renderer to.
+    let mut calls = processor.renderer_calls().unwrap();
+    let asked = calls
+        .call(
+            RendererCall::new("example.com:device", "fetchFxRate"),
+            Duration::ZERO,
+        )
+        .unwrap_err();
+    assert_eq!(asked.code, code::UNKNOWN_FUNCTION);
+
+    let router = processor.renderer_messages().unwrap();
+    let call = |args: serde_json::Value| {
+        json!({"version": "1.0", "callAgentFunction": {
+            "surfaceId": "checkout",
+            "functionCallId": "fx-1",
+            "callFunction": {"@call": "fetchFxRate", "catalogId": "example.com:device", "args": args}
+        }})
+    };
+    let Routed::Call(handed) = router.route(&call(json!({"base": "EUR"}))).unwrap() else {
+        panic!("a call to run");
+    };
+    assert_eq!(
+        (
+            handed.name.as_str(),
+            handed.surface_id.as_str(),
+            handed.catalog_id.as_str()
+        ),
+        ("fetchFxRate", "checkout", "example.com:device")
+    );
+    // The application runs whatever it likes, and says how it went.
+    let answered = serde_json::to_value(handed.value(json!(1.08))).unwrap();
+    assert_eq!(
+        answered,
+        json!({"version": "1.0", "agentFunctionResponse": {"functionCallId": "fx-1", "value": 1.08}})
+    );
+    let failed =
+        serde_json::to_value(handed.error(RpcError::new("PROVIDER_NOT_FOUND", "no rate"))).unwrap();
+    assert_eq!(
+        failed["agentFunctionResponse"]["error"]["code"],
+        "PROVIDER_NOT_FOUND"
+    );
+
+    // What the agent does not run it answers for itself, without running
+    // anything.
+    let Routed::Reply(reply) = router
+        .route(&json!({"version": "1.0", "callAgentFunction": {
+            "surfaceId": "checkout", "functionCallId": "x-1",
+            "callFunction": {"@call": "getLocale", "catalogId": "example.com:device"}
+        }}))
+        .unwrap()
+    else {
+        panic!("an answer");
+    };
+    assert_eq!(
+        serde_json::to_value(reply).unwrap()["agentFunctionResponse"]["error"]["code"],
+        code::UNKNOWN_FUNCTION
     );
 }

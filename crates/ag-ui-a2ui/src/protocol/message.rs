@@ -85,6 +85,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::operation::Operation;
+use super::rpc::{FunctionOutcome, RpcError};
 pub use super::version::A2uiVersion;
 use crate::error::Result;
 
@@ -161,10 +162,11 @@ impl Serialize for AgentMessage {
             AgentPayload::DeleteSurface(delete) => {
                 message.serialize_entry(Operation::DeleteSurface.as_str(), delete)?;
             }
-            AgentPayload::CallRendererFunction(_) | AgentPayload::AgentFunctionResponse(_) => {
-                return Err(S::Error::custom(
-                    "function-call messages are not part of the wire this crate writes",
-                ));
+            AgentPayload::CallRendererFunction(call) => {
+                message.serialize_entry(Operation::CallRendererFunction.as_str(), call)?;
+            }
+            AgentPayload::AgentFunctionResponse(response) => {
+                message.serialize_entry(Operation::AgentFunctionResponse.as_str(), response)?;
             }
         }
         message.end()
@@ -291,6 +293,36 @@ impl AgentMessage {
         }))
     }
 
+    /// `callRendererFunction`: ask the renderer to run a function. The
+    /// message is a v1.0 one, the first version that has it.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::AgentMessage;
+    /// use ag_ui_a2ui::message::{CallRendererFunction, FunctionCall};
+    /// use serde_json::json;
+    ///
+    /// let call = FunctionCall::new("getLocale").with_catalog_id("example.com:device");
+    /// let message = AgentMessage::call_renderer_function(CallRendererFunction::new("call-1", call));
+    /// assert_eq!(
+    ///     serde_json::to_value(&message)?,
+    ///     json!({"version": "1.0", "callRendererFunction": {
+    ///         "functionCallId": "call-1",
+    ///         "callFunction": {"@call": "getLocale", "catalogId": "example.com:device"}
+    ///     }})
+    /// );
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
+    pub fn call_renderer_function(call: CallRendererFunction) -> Self {
+        Self::new(AgentPayload::CallRendererFunction(call)).with_version(A2uiVersion::V1_0)
+    }
+
+    /// `agentFunctionResponse`: the answer to a renderer's
+    /// `callAgentFunction`. The message is a v1.0 one, the first version that
+    /// has it.
+    pub fn agent_function_response(response: FunctionResponse) -> Self {
+        Self::new(AgentPayload::AgentFunctionResponse(response)).with_version(A2uiVersion::V1_0)
+    }
+
     /// The `surfaceId` this message targets, if it targets one.
     ///
     /// Function-call messages are addressed by `functionCallId` rather than by
@@ -325,33 +357,43 @@ pub enum AgentPayload {
     UpdateDataModel(UpdateDataModel),
     /// Remove a surface entirely.
     DeleteSurface(DeleteSurface),
-    /// Candidate RPC shape, excluded from v0.9-family serialization/deserialization.
+    /// Ask the renderer to run a function. From v1.0, so a payload on its own,
+    /// which is spelled as the v0.9 family spells it, does not carry one: the
+    /// [`AgentMessage`] does.
     #[serde(skip)]
     CallRendererFunction(CallRendererFunction),
-    /// Candidate RPC response, excluded from v0.9-family serialization/deserialization.
+    /// Answer a renderer's `callAgentFunction`. From v1.0, as
+    /// [`AgentPayload::CallRendererFunction`] is.
     #[serde(skip)]
     AgentFunctionResponse(FunctionResponse),
 }
 
 impl AgentPayload {
     /// The operation this payload is, by name.
-    ///
-    /// `None` for the candidate RPC shapes, which are not operations of the
-    /// v0.9 family and never reach the wire.
-    pub fn operation(&self) -> Option<Operation> {
+    pub fn operation(&self) -> Operation {
         match self {
-            Self::CreateSurface(_) => Some(Operation::CreateSurface),
-            Self::UpdateComponents(_) => Some(Operation::UpdateComponents),
-            Self::UpdateDataModel(_) => Some(Operation::UpdateDataModel),
-            Self::DeleteSurface(_) => Some(Operation::DeleteSurface),
-            Self::CallRendererFunction(_) | Self::AgentFunctionResponse(_) => None,
+            Self::CreateSurface(_) => Operation::CreateSurface,
+            Self::UpdateComponents(_) => Operation::UpdateComponents,
+            Self::UpdateDataModel(_) => Operation::UpdateDataModel,
+            Self::DeleteSurface(_) => Operation::DeleteSurface,
+            Self::CallRendererFunction(_) => Operation::CallRendererFunction,
+            Self::AgentFunctionResponse(_) => Operation::AgentFunctionResponse,
         }
     }
 
     /// Why this payload cannot be written in `version`, when it cannot.
     fn unsayable_in(&self, version: A2uiVersion) -> Option<String> {
-        let Self::CreateSurface(create) = self else {
-            return None;
+        let create = match self {
+            Self::CreateSurface(create) => create,
+            Self::CallRendererFunction(_) | Self::AgentFunctionResponse(_)
+                if !version.carries_function_calls() =>
+            {
+                return Some(format!(
+                    "a {version} message carries no function call: `{}` is a message of A2UI 1.0",
+                    self.operation()
+                ));
+            }
+            _ => return None,
         };
         if create.catalog_id.is_none() && !version.mixes_catalogs() {
             return Some(format!(
@@ -413,7 +455,17 @@ impl AgentPayload {
             Some(Operation::DeleteSurface) => serde_json::from_value(payload)
                 .map(Self::DeleteSurface)
                 .map_err(decoded),
-            None => {
+            Some(Operation::CallRendererFunction) if version.carries_function_calls() => {
+                serde_json::from_value(payload)
+                    .map(Self::CallRendererFunction)
+                    .map_err(decoded)
+            }
+            Some(Operation::AgentFunctionResponse) if version.carries_function_calls() => {
+                serde_json::from_value(payload)
+                    .map(Self::AgentFunctionResponse)
+                    .map_err(decoded)
+            }
+            Some(Operation::CallRendererFunction | Operation::AgentFunctionResponse) | None => {
                 let known: Vec<String> = version
                     .operations()
                     .iter()
@@ -642,73 +694,344 @@ pub struct DeleteSurface {
     pub surface_id: String,
 }
 
-/// Payload of a `callRendererFunction` message.
+/// Rejects a `null` where a field, when written, has to hold something.
+fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// Payload of a `callRendererFunction` message: the agent asks the renderer
+/// to run a function of a catalog. From v1.0.
+///
+/// The renderer answers with a `rendererFunctionResponse` that copies
+/// `function_call_id`. With the `agent` feature, `agent::RendererCalls` makes
+/// the call and keeps track of it until then.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
 pub struct CallRendererFunction {
+    /// The surface whose data model the arguments are resolved against. With
+    /// none the call runs against an empty data model.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub surface_id: Option<String>,
     /// Correlation id; the renderer copies it into its response.
     pub function_call_id: String,
-    /// The function to invoke, with its arguments.
+    /// The function to run, with its arguments. Its `catalog_id` is required
+    /// here: there is no surface default to fall back on.
     pub call_function: FunctionCall,
 }
 
-/// Payload of a `callAgentFunction` message.
+impl CallRendererFunction {
+    /// A call under this `functionCallId`, on no surface.
+    pub fn new(function_call_id: impl Into<String>, call_function: FunctionCall) -> Self {
+        Self {
+            surface_id: None,
+            function_call_id: function_call_id.into(),
+            call_function,
+        }
+    }
+
+    /// The surface whose data model the arguments are resolved against.
+    #[must_use]
+    pub fn on_surface(mut self, surface_id: impl Into<String>) -> Self {
+        self.surface_id = Some(surface_id.into());
+        self
+    }
+}
+
+/// Payload of a `callAgentFunction` message: the renderer asks the agent to
+/// run a function. From v1.0.
+///
+/// The agent answers with an `agentFunctionResponse` that copies
+/// `function_call_id`.
+/// With the `agent` feature, `agent::RendererMessageRouter` reads one
+/// and says which function of the agent it is for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
 pub struct CallAgentFunction {
     /// Surface the call originated from.
     pub surface_id: String,
     /// Correlation id; the agent copies it into its response.
     pub function_call_id: String,
-    /// The function to invoke, with its arguments.
+    /// The function to run, with its arguments resolved. A renderer names
+    /// the catalog the call resolved to.
     pub call_function: FunctionCall,
 }
 
-/// A named function invocation, used both in component properties and in the
-/// two `call*Function` messages.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FunctionCall {
-    /// Function name, e.g. `formatString`, `required`, `@index`.
-    pub call: String,
-    /// Named arguments. Values may themselves be bindings or nested calls.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args: Option<Map<String, Value>>,
-    /// Catalog the function is drawn from, when it is not the surface default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub catalog_id: Option<String>,
-    /// Expected return type, used to disambiguate overloads on the wire.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub return_type: Option<String>,
+impl CallAgentFunction {
+    /// A call made on `surface_id`, under this `functionCallId`.
+    pub fn new(
+        surface_id: impl Into<String>,
+        function_call_id: impl Into<String>,
+        call_function: FunctionCall,
+    ) -> Self {
+        Self {
+            surface_id: surface_id.into(),
+            function_call_id: function_call_id.into(),
+            call_function,
+        }
+    }
 }
 
-/// The result of a `call*Function`, sent back by whichever side ran it.
+/// A function call as the two `call…Function` messages carry one, which
+/// exist from v1.0: `{"@call": name, "catalogId": …, "args": {…}}`.
+///
+/// A call inside a component is a JSON value of the surface's version
+/// ([`A2uiVersion::call`]); this type is not that.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionCall {
+    /// Function name, e.g. `getLocale`.
+    #[serde(rename = "@call")]
+    pub call: String,
+    /// The catalog that declares the function.
+    #[serde(
+        rename = "catalogId",
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub catalog_id: Option<String>,
+    /// Named arguments. In a `callRendererFunction` a value may be a binding
+    /// or a nested call, which the renderer resolves; in a
+    /// `callAgentFunction` they are resolved values.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub args: Option<Map<String, Value>>,
+}
+
+impl FunctionCall {
+    /// A call to `name`, with no catalog named and no arguments written.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            call: name.into(),
+            catalog_id: None,
+            args: None,
+        }
+    }
+
+    /// The catalog that declares the function.
+    #[must_use]
+    pub fn with_catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
+        self.catalog_id = Some(catalog_id.into());
+        self
+    }
+
+    /// The arguments, by name.
+    #[must_use]
+    pub fn with_args(mut self, args: Map<String, Value>) -> Self {
+        self.args = Some(args);
+        self
+    }
+
+    /// One more argument.
+    #[must_use]
+    pub fn with_arg(mut self, name: impl Into<String>, value: Value) -> Self {
+        self.args
+            .get_or_insert_with(Map::new)
+            .insert(name.into(), value);
+        self
+    }
+}
+
+/// The answer to a function call, sent by the side that ran it:
+/// `agentFunctionResponse` or `rendererFunctionResponse`. From v1.0.
+///
+/// On the wire it is `{"functionCallId": …, "value": …}` or
+/// `{"functionCallId": …, "error": {"code": …, "message": …}}`: one of the
+/// two, never both, and a `value` of `null` is a value.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct FunctionResponse {
-    /// Correlation id copied from the originating call.
+    /// Correlation id copied from the call.
     pub function_call_id: String,
-    /// Whatever the function returned.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    /// Set instead of `result` when the call failed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    /// What the function returned, or why the call failed.
+    pub outcome: FunctionOutcome,
+}
+
+impl FunctionResponse {
+    /// The response to a call that returned `value`.
+    pub fn value(function_call_id: impl Into<String>, value: Value) -> Self {
+        Self {
+            function_call_id: function_call_id.into(),
+            outcome: FunctionOutcome::Value(value),
+        }
+    }
+
+    /// The response to a call that failed.
+    pub fn error(function_call_id: impl Into<String>, error: RpcError) -> Self {
+        Self {
+            function_call_id: function_call_id.into(),
+            outcome: FunctionOutcome::Error(error),
+        }
+    }
+}
+
+impl Serialize for FunctionResponse {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let mut response = serializer.serialize_map(Some(2))?;
+        response.serialize_entry("functionCallId", &self.function_call_id)?;
+        match &self.outcome {
+            FunctionOutcome::Value(value) => response.serialize_entry("value", value)?,
+            FunctionOutcome::Error(error) => response.serialize_entry("error", error)?,
+        }
+        response.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for FunctionResponse {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        let mut fields = Map::<String, Value>::deserialize(deserializer)?;
+        let function_call_id = match fields.remove("functionCallId") {
+            Some(Value::String(id)) => id,
+            Some(_) => return Err(D::Error::custom("`functionCallId` must be a string")),
+            None => return Err(D::Error::missing_field("functionCallId")),
+        };
+        // `null` is a value: what tells the two apart is which key is there.
+        let outcome = match (fields.remove("value"), fields.remove("error")) {
+            (Some(value), None) => FunctionOutcome::Value(value),
+            (None, Some(error)) => FunctionOutcome::Error(
+                serde_json::from_value(error)
+                    .map_err(|error| D::Error::custom(format!("`error`: {error}")))?,
+            ),
+            (Some(_), Some(_)) => {
+                return Err(D::Error::custom(
+                    "a function response carries `value` or `error`, not both",
+                ));
+            }
+            (None, None) => {
+                return Err(D::Error::custom(
+                    "a function response carries `value` or `error`",
+                ));
+            }
+        };
+        if let Some(unknown) = fields.keys().next() {
+            return Err(D::Error::custom(format!(
+                "unknown field `{unknown}` in a function response"
+            )));
+        }
+        Ok(Self {
+            function_call_id,
+            outcome,
+        })
+    }
 }
 
 /// One renderer → agent message.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Written and read as its `version` spells it: the two messages of a
+/// function call, `callAgentFunction` and `rendererFunctionResponse`, are
+/// messages of v1.0, and one stamped with an earlier version neither
+/// serializes nor reads.
+#[derive(Debug, Clone, PartialEq)]
 pub struct RendererMessage {
     /// Protocol version stamped on the wire.
-    #[serde(
-        serialize_with = "serialize_version",
-        deserialize_with = "deserialize_version"
-    )]
     pub version: String,
     /// The single payload key that gives this message its type.
-    #[serde(flatten)]
     pub payload: RendererPayload,
+}
+
+impl Serialize for RendererMessage {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::Error as _;
+
+        let Some(version) = A2uiVersion::parse(&self.version) else {
+            return Err(S::Error::custom("unsupported A2UI version"));
+        };
+        let mut message = serializer.serialize_map(Some(2))?;
+        message.serialize_entry("version", &self.version)?;
+        match &self.payload {
+            RendererPayload::Action(action) => message.serialize_entry("action", action)?,
+            RendererPayload::Error(error) => message.serialize_entry("error", error)?,
+            RendererPayload::CallAgentFunction(_)
+            | RendererPayload::RendererFunctionResponse(_)
+                if !version.carries_function_calls() =>
+            {
+                return Err(S::Error::custom(format!(
+                    "a {version} message carries no function call"
+                )));
+            }
+            RendererPayload::CallAgentFunction(call) => {
+                message.serialize_entry("callAgentFunction", call)?;
+            }
+            RendererPayload::RendererFunctionResponse(response) => {
+                message.serialize_entry("rendererFunctionResponse", response)?;
+            }
+        }
+        message.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RendererMessage {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        let mut fields = Map::<String, Value>::deserialize(deserializer)?;
+        let version = match fields.remove("version") {
+            Some(Value::String(version)) => version,
+            Some(_) => return Err(D::Error::custom("`version` must be a string")),
+            None => return Err(D::Error::missing_field("version")),
+        };
+        let Some(spoken) = A2uiVersion::parse(&version) else {
+            return Err(D::Error::custom("unsupported A2UI version"));
+        };
+        let mut payloads = fields.into_iter();
+        let Some((key, payload)) = payloads.next() else {
+            return Err(D::Error::custom("a message carries one payload key"));
+        };
+        if let Some((other, _)) = payloads.next() {
+            return Err(D::Error::custom(format!(
+                "a message carries one payload key, not `{key}` and `{other}`"
+            )));
+        }
+        let read = |error: serde_json::Error| D::Error::custom(error.to_string());
+        let calls = spoken.carries_function_calls();
+        let payload = match key.as_str() {
+            "action" => RendererPayload::Action(serde_json::from_value(payload).map_err(read)?),
+            "error" => RendererPayload::Error(serde_json::from_value(payload).map_err(read)?),
+            "callAgentFunction" if calls => {
+                RendererPayload::CallAgentFunction(serde_json::from_value(payload).map_err(read)?)
+            }
+            "rendererFunctionResponse" if calls => RendererPayload::RendererFunctionResponse(
+                serde_json::from_value(payload).map_err(read)?,
+            ),
+            other => {
+                let known = if calls {
+                    "`action`, `error`, `callAgentFunction`, `rendererFunctionResponse`"
+                } else {
+                    "`action`, `error`"
+                };
+                return Err(D::Error::custom(format!(
+                    "unknown variant `{other}`, expected one of {known}"
+                )));
+            }
+        };
+        Ok(Self { version, payload })
+    }
 }
 
 impl RendererMessage {
@@ -718,6 +1041,14 @@ impl RendererMessage {
             version: default_version(),
             payload,
         }
+    }
+
+    /// Selects the wire version explicitly. A function call needs
+    /// [`A2uiVersion::V1_0`].
+    #[must_use]
+    pub fn with_version(mut self, version: A2uiVersion) -> Self {
+        self.version = version.as_str().into();
+        self
     }
 
     /// Validates the original client message against the pinned official schema
@@ -744,10 +1075,13 @@ impl RendererMessage {
 pub enum RendererPayload {
     /// A user interacted with a component that declares an `action`.
     Action(Action),
-    /// The renderer wants the agent to run a function on its behalf.
+    /// The renderer wants the agent to run a function on its behalf. From
+    /// v1.0, so a payload on its own, which is spelled as the v0.9 family
+    /// spells it, does not carry one: the [`RendererMessage`] does.
     #[serde(skip)]
     CallAgentFunction(CallAgentFunction),
     /// Result of an agent-initiated [`AgentPayload::CallRendererFunction`].
+    /// From v1.0, as [`RendererPayload::CallAgentFunction`] is.
     #[serde(skip)]
     RendererFunctionResponse(FunctionResponse),
     /// The renderer is reporting a problem, typically a failed validation.
@@ -1126,9 +1460,18 @@ mod tests {
                 json!({"version": "v0.9", "deleteSurface": {"surfaceId": "s"}, "extra": 1}),
                 "one payload key",
             ),
+            // A function call is a message of v1.0, with all of its fields.
             (
                 json!({"version": "1.0", "callRendererFunction": {"functionCallId": "c"}}),
+                "missing field `callFunction`",
+            ),
+            (
+                json!({"version": "v0.9.1", "callRendererFunction": {"functionCallId": "c"}}),
                 "unknown variant `callRendererFunction`",
+            ),
+            (
+                json!({"version": "1.0", "agentFunctionResponse": {"functionCallId": "c"}}),
+                "`value` or `error`",
             ),
         ] {
             let error = serde_json::from_value::<AgentMessage>(wire.clone()).unwrap_err();

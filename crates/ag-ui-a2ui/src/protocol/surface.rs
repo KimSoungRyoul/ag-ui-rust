@@ -337,7 +337,12 @@ impl SurfaceState {
         catalogs: impl IntoIterator<Item = &'a Catalog>,
         data: &'a Value,
     ) -> Outline<'a> {
-        self.outlined(Catalogs::Several(catalogs.into_iter().collect()), data)
+        // Of two catalogs under one id, the first given is the one read.
+        let mut by_id: BTreeMap<&'a str, &'a Catalog> = BTreeMap::new();
+        for catalog in catalogs {
+            by_id.entry(catalog.catalog_id.as_str()).or_insert(catalog);
+        }
+        self.outlined(Catalogs::Several(by_id), data)
     }
 
     fn outlined<'a>(&'a self, catalogs: Catalogs<'a>, data: &'a Value) -> Outline<'a> {
@@ -366,7 +371,7 @@ enum Catalogs<'a> {
     /// One, which stands for whatever a surface and its components name.
     One(&'a Catalog),
     /// Several, each found by the id a component or its surface names.
-    Several(Vec<&'a Catalog>),
+    Several(BTreeMap<&'a str, &'a Catalog>),
 }
 
 /// The components a surface's root reaches, placed one at a time.
@@ -468,13 +473,10 @@ impl<'a> Iterator for Outline<'a> {
                     // its properties name children.
                     let catalog = match &self.catalogs {
                         Catalogs::One(catalog) => Some(*catalog),
-                        Catalogs::Several(catalogs) => {
-                            let named = self.surface.catalog_of(component);
-                            catalogs
-                                .iter()
-                                .copied()
-                                .find(|catalog| Some(catalog.catalog_id.as_str()) == named)
-                        }
+                        Catalogs::Several(catalogs) => self
+                            .surface
+                            .catalog_of(component)
+                            .and_then(|named| catalogs.get(named).copied()),
                     };
                     self.path.push(Step {
                         component,
@@ -924,9 +926,16 @@ impl SurfaceStore {
         let Some(version) = A2uiVersion::parse(&message.version) else {
             return Err(Error::parse("unsupported A2UI version"));
         };
-        let id = message
-            .surface_id()
-            .ok_or_else(|| Error::parse("RPC messages are not part of A2UI v0.9 or v0.9.1"))?;
+        // A function call changes no surface. It is a message of the
+        // versions that have one.
+        let Some(id) = message.surface_id() else {
+            return match version.carries_function_calls() {
+                true => Ok(()),
+                false => Err(Error::parse(format!(
+                    "a {version} message carries no function call"
+                ))),
+            };
+        };
         if let AgentPayload::CreateSurface(create) = &message.payload {
             if self.lifecycle(id) == Lifecycle::Live {
                 return Err(Error::parse(format!("surface {id:?} already exists")));

@@ -317,10 +317,7 @@ impl A2uiAuthor {
         let mut draws = false;
         for (index, operation) in operations.iter().enumerate() {
             let at = format!("messages[{index}]");
-            let key = operation
-                .payload
-                .operation()
-                .map_or("message", |operation| operation.as_str());
+            let key = operation.payload.operation().as_str();
             if operation.version != version {
                 faults.push(invalid(
                     format!("{at}.version"),

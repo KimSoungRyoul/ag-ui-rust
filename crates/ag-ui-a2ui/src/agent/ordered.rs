@@ -12,6 +12,7 @@
 //! So what a prompt shows is kept twice: as a [`Value`], which is what
 //! everything else reads, and as an [`Ordered`], which is what is written.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
@@ -87,8 +88,9 @@ impl Ordered {
                     .iter()
                     .filter_map(|(key, value)| Some((key.clone(), value.keeping(kept.get(key)?))))
                     .collect();
+                let own: BTreeSet<&str> = fields.iter().map(|(key, _)| key.as_str()).collect();
                 for (key, value) in kept {
-                    if !fields.iter().any(|(own, _)| own == key) {
+                    if !own.contains(key.as_str()) {
                         left.push((key.clone(), Self::from_value(value)));
                     }
                 }
@@ -115,11 +117,14 @@ impl Ordered {
     /// Whether `kept` could be this value with entries taken away.
     fn holds(&self, kept: &Value) -> bool {
         match (self, kept) {
-            (Self::Object(fields), Value::Object(kept)) => kept.iter().all(|(key, value)| {
-                fields
+            (Self::Object(fields), Value::Object(kept)) => {
+                let own: BTreeMap<&str, &Self> = fields
                     .iter()
-                    .any(|(own, held)| own == key && held.holds(value))
-            }),
+                    .map(|(key, held)| (key.as_str(), held))
+                    .collect();
+                kept.iter()
+                    .all(|(key, value)| own.get(key.as_str()).is_some_and(|held| held.holds(value)))
+            }
             (Self::Array(items), Value::Array(kept)) => {
                 let mut items = items.iter();
                 kept.iter()
@@ -138,6 +143,18 @@ impl Ordered {
         match fields.iter_mut().find(|(own, _)| own == key) {
             Some((_, held)) => *held = value,
             None => fields.insert(0, (key.to_string(), value)),
+        }
+    }
+
+    /// Sets `key` on an object: in place where the object has it, and last
+    /// where it does not. Nothing happens to a value that is not an object.
+    pub(crate) fn set_last(&mut self, key: &str, value: Self) {
+        let Self::Object(fields) = self else {
+            return;
+        };
+        match fields.iter_mut().find(|(own, _)| own == key) {
+            Some((_, held)) => *held = value,
+            None => fields.push((key.to_string(), value)),
         }
     }
 
@@ -260,10 +277,16 @@ impl<'de> Deserialize<'de> for Ordered {
 
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Ordered, A::Error> {
                 let mut fields: Vec<(String, Ordered)> = Vec::new();
+                // Where each key sits, so that a key written twice is found
+                // without reading the object again.
+                let mut places: BTreeMap<String, usize> = BTreeMap::new();
                 while let Some((key, value)) = map.next_entry::<String, Ordered>()? {
-                    match fields.iter_mut().find(|(own, _)| *own == key) {
-                        Some((_, held)) => *held = value,
-                        None => fields.push((key, value)),
+                    match places.get(&key) {
+                        Some(place) => fields[*place].1 = value,
+                        None => {
+                            places.insert(key.clone(), fields.len());
+                            fields.push((key, value));
+                        }
                     }
                 }
                 Ok(Ordered::Object(fields))

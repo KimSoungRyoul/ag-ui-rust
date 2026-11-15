@@ -7,6 +7,20 @@
 //! exactly that key to decide whether it is a surface. The envelope is a JSON
 //! *string*, because that is what a tool result carries.
 //!
+//! # Function calls
+//!
+//! The envelope carries the operations that change a surface, and no other
+//! message. AG-UI's middleware knows four (`A2UIMessageType`,
+//! `middlewares/a2ui-middleware/src/types.ts:155-161` at
+//! `ag-ui-protocol/ag-ui` commit `2330368a`), and neither it nor AG-UI's
+//! toolkit names `callRendererFunction`, `callAgentFunction` or their
+//! responses anywhere. So this adapter has no mapping for a function call and
+//! invents none: [`operations_envelope`] refuses a batch that holds one, and
+//! with it [`SurfacePainter::settle`](super::SurfacePainter::settle) and
+//! `paint`, rather than drop the call or put it where no frontend reads it.
+//! A call travels by a transport that carries A2UI messages as they are, such
+//! as A2A, where a data part holds any message (`adapters::a2a`).
+//!
 //! A failure is a different object, never an empty envelope: a result that
 //! carried the key would be read as a surface. A tool that could not produce a
 //! surface answers `{"error": …}` ([`error_envelope`]), and one that gave up
@@ -19,9 +33,9 @@ use serde_json::{Map, Value, json};
 
 use crate::agent::Feedback;
 use crate::constants::A2UI_OPERATIONS_KEY;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::protocol::message::AgentMessage;
-use crate::protocol::validate::ValidationError;
+use crate::protocol::validate::{ErrorCode, ValidationError};
 
 /// The `code` of the envelope a tool returns when its attempts are used up.
 pub const RECOVERY_EXHAUSTED_CODE: &str = "a2ui_recovery_exhausted";
@@ -50,8 +64,38 @@ pub fn wrap_as_operations_envelope(operations: &[AgentMessage]) -> Result<String
 /// # Errors
 ///
 /// Returns [`Error::Json`](crate::Error::Json) if an operation cannot be
-/// serialized.
+/// serialized, and [`Error::Validation`](crate::Error::Validation) when one
+/// is a function call (`callRendererFunction`, `agentFunctionResponse`),
+/// which the envelope has no place for. AG-UI's middleware knows the four
+/// operations that change a surface (`A2UIMessageType`,
+/// `middlewares/a2ui-middleware/src/types.ts:155-161` at
+/// `ag-ui-protocol/ag-ui` commit `2330368a`) and names no function call, so
+/// this adapter has no mapping for one and invents none: the batch is refused,
+/// and the call is neither dropped nor put where no frontend reads it. See
+/// [the adapter's documentation](super#function-calls).
 pub fn operations_envelope(operations: &[AgentMessage]) -> Result<Value> {
+    let calls: Vec<ValidationError> = operations
+        .iter()
+        .enumerate()
+        .filter(|(_, operation)| !operation.payload.operation().changes_a_surface())
+        .map(|(index, operation)| {
+            let key = operation.payload.operation();
+            ValidationError::new(
+                ErrorCode::InvalidValue,
+                format!("messages[{index}].{key}"),
+                format!(
+                    "'{key}' is a function call, and AG-UI's A2UI operations envelope carries \
+                     only the operations that change a surface. Send it by a transport that \
+                     carries A2UI messages, such as A2A."
+                ),
+            )
+        })
+        .collect();
+    if !calls.is_empty() {
+        return Err(Error::Validation {
+            errors: calls.into(),
+        });
+    }
     let operations = serde_json::to_value(operations)?;
     let mut envelope = Map::new();
     envelope.insert(A2UI_OPERATIONS_KEY.to_string(), operations);

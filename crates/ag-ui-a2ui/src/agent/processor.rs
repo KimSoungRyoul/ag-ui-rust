@@ -6,10 +6,12 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use super::calls::RendererCalls;
 use super::capabilities::{AgentCapabilities, RendererCapabilities, resolve_catalogs};
 use super::catalog::{CatalogConfig, CatalogDocument, check_catalogs};
 use super::direct_json::DirectJson;
 use super::format::{OutputFormat, RawPart, ResponseError, ResponsePart};
+use super::functions::RendererMessageRouter;
 use super::state::{RendererState, session_processor, validate_payload};
 use super::stream::{ResponseStream, StreamOptions};
 use crate::error::{Error, Result};
@@ -312,6 +314,41 @@ impl A2uiRequestProcessor {
     /// preference. They are the transformed ones.
     pub fn active_catalogs(&self) -> &[CatalogDocument] {
         &self.inner.documents
+    }
+
+    /// A router for the messages this request's renderer sends, over the
+    /// active catalogs: it finds the agent function a `callAgentFunction` is
+    /// for, and reads an `action`, an `error` and a
+    /// `rendererFunctionResponse`. The functions it answers for are the ones
+    /// the catalogs were given with
+    /// [`CatalogDocument::with_agent_functions`].
+    ///
+    /// # Errors
+    ///
+    /// As [`RendererMessageRouter::new`], which the active catalogs of a
+    /// processor do not give cause for.
+    pub fn renderer_messages(&self) -> Result<RendererMessageRouter> {
+        RendererMessageRouter::new(&self.inner.documents)
+    }
+
+    /// An empty table for the calls the agent makes to this request's
+    /// renderer, which checks each call against the active catalogs
+    /// ([`RendererCalls::with_catalogs`]).
+    ///
+    /// Keep one table for the whole of the conversation with that renderer.
+    /// A table counts its ids from `call-1`, so a second one made in the same
+    /// conversation, for the next request or after a restart, gives the ids
+    /// of the first again, and a late answer to a call of the first settles a
+    /// call of the second. A host that cannot keep the table gives each one a
+    /// prefix no earlier table of the conversation used
+    /// ([`RendererCalls::with_id_prefix`]): the id of the run, say.
+    ///
+    /// # Errors
+    ///
+    /// As [`RendererCalls::with_catalogs`], which the active catalogs of a
+    /// processor do not give cause for.
+    pub fn renderer_calls(&self) -> Result<RendererCalls> {
+        RendererCalls::new().with_catalogs(&self.inner.documents)
     }
 
     /// The example turns the prompt shows.

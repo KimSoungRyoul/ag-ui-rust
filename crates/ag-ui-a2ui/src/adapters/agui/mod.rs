@@ -34,6 +34,19 @@
 //! same, and a surface is still created, drawn and filled by three
 //! operations (`a2ui-middleware/src/index.ts:711-730`).
 //!
+//! # Function calls
+//!
+//! The function-call messages of v1.0 do not travel on this wire. AG-UI's
+//! middleware names four A2UI messages, the ones that change a surface
+//! (`A2UIMessageType`, `middlewares/a2ui-middleware/src/types.ts:155-161`),
+//! and neither it nor AG-UI's toolkit mentions `callRendererFunction`,
+//! `callAgentFunction` or their responses. So the adapter has no mapping for
+//! a call and invents none: [`operations_envelope`],
+//! [`SurfacePainter::settle`] and `SurfacePainter::paint` refuse a batch that
+//! holds one with an error that says so, and paint nothing of it. A call
+//! travels by a transport that carries A2UI messages as they are: over A2A a
+//! data part holds any message (`adapters::a2a`, with the `a2a` feature).
+//!
 //! # What a client receives
 //!
 //! For one batch of operations, in this order:

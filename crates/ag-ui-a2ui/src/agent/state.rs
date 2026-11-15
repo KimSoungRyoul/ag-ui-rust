@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::catalog::{CatalogDocument, check_catalogs};
 use crate::error::{Error, Result};
-use crate::protocol::message::AgentMessage;
+use crate::protocol::message::{AgentMessage, AgentPayload, CallRendererFunction};
 use crate::protocol::operation::Operation;
 use crate::protocol::processor::{MessageProcessor, Rejection, RejectionKind};
 use crate::protocol::surface::{SurfaceState, SurfaceStore};
@@ -255,7 +255,8 @@ impl RendererState {
             let mut touched: Vec<String> = Vec::new();
             for (index, message) in messages.iter().enumerate() {
                 let applied = state.apply_at(index, message)?;
-                if !touched.contains(&applied.surface_id) {
+                // A function call touches no surface.
+                if !applied.surface_id.is_empty() && !touched.contains(&applied.surface_id) {
                     touched.push(applied.surface_id);
                 }
             }
@@ -300,6 +301,11 @@ impl RendererState {
     {
         let mut checked = BTreeSet::new();
         let mut report = ValidationReport::default();
+        // One validator over the active catalogs, for every surface checked.
+        let validator = Validator::over(
+            self.catalogs.iter().map(CatalogDocument::catalog),
+            ValidateOptions::full_surface(),
+        );
         for surface_id in surface_ids {
             let surface_id = surface_id.as_ref();
             if !checked.insert(surface_id.to_string()) {
@@ -323,10 +329,6 @@ impl RendererState {
                     ));
                 }
             }
-            let validator = Validator::over(
-                self.catalogs.iter().map(CatalogDocument::catalog),
-                ValidateOptions::full_surface(),
-            );
             let found = validator.validate_stored(self.store(), surface);
             // A version that constrains composition has it in the report
             // already, once nothing else is wrong; so is it added here.
@@ -398,14 +400,57 @@ impl RendererState {
     /// processor's: the checks, their order and their wording are the ones a
     /// renderer written on this crate applies. All or nothing: a rejected
     /// message changes nothing.
+    ///
+    /// One check is the agent's own, since only the agent knows it: a
+    /// `callRendererFunction` to a function the agent runs itself
+    /// ([`AgentFunction`](super::AgentFunction)) is refused. The catalog
+    /// declares the function, so a renderer's check of the call passes, and
+    /// no renderer has an implementation of it to run. It is the refusal
+    /// [`RendererCalls::call`](super::RendererCalls::call) makes for a call
+    /// of the agent's own, held here for a call an answer wrote. The
+    /// reference SDK makes it for the agent's own call
+    /// (`renderer_function_calls.py`, `_check_target`: "Agent functions run on
+    /// the agent, so the renderer can't run them") and not for the answer's
+    /// (`renderer_state.py`, `_check_function_call`, which reads every
+    /// function of the catalog); here the two agree.
     pub(crate) fn apply_at(&mut self, index: usize, message: &Value) -> Result<Applied> {
         match self.processor.process_typed_at(index, message) {
-            Ok(message) => Ok(Applied {
-                surface_id: message.surface_id().unwrap_or_default().to_string(),
-                message,
-            }),
+            Ok(message) => {
+                if let AgentPayload::CallRendererFunction(call) = &message.payload {
+                    self.renderer_runs(index, call)?;
+                }
+                Ok(Applied {
+                    surface_id: message.surface_id().unwrap_or_default().to_string(),
+                    message,
+                })
+            }
             Err(rejection) => Err(self.payloads_fault(index, message, rejection)),
         }
+    }
+
+    /// Refuses a call to a function that the agent, and no renderer, runs.
+    fn renderer_runs(&self, index: usize, call: &CallRendererFunction) -> Result<()> {
+        let name = call.call_function.call.as_str();
+        let agents = self.catalogs.iter().find(|catalog| {
+            Some(catalog.catalog_id()) == call.call_function.catalog_id.as_deref()
+                && catalog.is_agent_function(name)
+        });
+        let Some(catalog) = agents else {
+            return Ok(());
+        };
+        Err(Error::Validation {
+            errors: vec![ValidationError::new(
+                ErrorCode::InvalidValue,
+                format!("messages[{index}].callRendererFunction.callFunction"),
+                format!(
+                    "Function '{name}' of catalog '{}' is one the agent runs itself: no renderer \
+                     has it to run, so it cannot be called with 'callRendererFunction'. Run it \
+                     on the agent and send what it returns.",
+                    catalog.catalog_id()
+                ),
+            )]
+            .into(),
+        })
     }
 
     /// A refusal, as the agent reads it: whatever a message was refused for,

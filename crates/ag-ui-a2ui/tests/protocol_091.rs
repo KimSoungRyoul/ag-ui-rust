@@ -246,18 +246,19 @@ fn full_stream_validation_is_surface_scoped_and_updates_need_prior() {
 }
 
 #[test]
-fn candidate_rpc_and_multiple_payloads_cannot_be_serialized_as_v09() {
+fn a_function_call_and_multiple_payloads_cannot_be_serialized_as_v09() {
     use ag_ui_a2ui::message::{CallRendererFunction, FunctionCall};
-    let rpc = AgentMessage::new(AgentPayload::CallRendererFunction(CallRendererFunction {
-        function_call_id: "f".into(),
-        call_function: FunctionCall {
-            call: "f".into(),
-            args: None,
-            catalog_id: None,
-            return_type: None,
-        },
-    }));
+    // A function call is a message of v1.0: stamped v0.9 it does not
+    // serialize, and a v0.9 message that carries one does not read.
+    let call = CallRendererFunction::new("f", FunctionCall::new("f").with_catalog_id("c"));
+    let rpc = AgentMessage::new(AgentPayload::CallRendererFunction(call.clone()));
     assert!(serde_json::to_value(rpc).is_err());
+    let written = serde_json::to_value(AgentMessage::call_renderer_function(call)).unwrap();
+    assert_eq!(written["version"], "1.0");
+    let mut as_v0_9 = written.clone();
+    as_v0_9["version"] = json!("v0.9.1");
+    assert!(serde_json::from_value::<AgentMessage>(as_v0_9).is_err());
+    assert!(serde_json::from_value::<AgentMessage>(written).is_ok());
     assert!(serde_json::from_value::<AgentMessage>(json!({"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"c"},"deleteSurface":{"surfaceId":"s"}})).is_err());
 }
 
@@ -351,11 +352,14 @@ fn upserts_match_reference_renderer_container_and_sparse_array_behavior() {
             .unwrap(),
         json!(3)
     );
+    // Removing past the end of a list changes nothing: the list is not
+    // padded out to the index (`@a2ui/web_core` 0.15.0, and the protocol's
+    // conformance suite for v0.9).
     model.apply("/items/4", &DataModelUpdate::Remove).unwrap();
     let Some(ModelValue::Array(items)) = model.lookup("/items").unwrap() else {
         panic!("expected array")
     };
-    assert_eq!(items.len(), 5);
+    assert_eq!(items.len(), 3);
     let before = model.clone();
     assert!(
         model

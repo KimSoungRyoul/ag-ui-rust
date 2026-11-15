@@ -365,10 +365,8 @@ fn a_replay_is_as_large_as_the_values_a_surface_holds() {
             set("/tail", json!([1, 2, 3])),
             remove("/tail/2"),
         ];
-        if version.removal_pads() {
-            // Removing past the end pads the list out to the index.
-            updates.push(remove("/padded/9999"));
-        }
+        // Removing past the end of a list that is not there changes nothing.
+        updates.push(remove("/padded/9999"));
         let surface = surface_after(version, &updates);
         let held = surface.data_model.undefined_slots();
         assert!(held > 19_000, "{version}: {held}");

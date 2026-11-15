@@ -23,7 +23,6 @@
 //! | May a catalog keep a function from the renderer? | [`A2uiVersion::restricts_function_callers`] |
 //! | Is a function call resolved when a message is read, and `@index` held to a template? | [`A2uiVersion::resolves_function_calls`] |
 //! | Does a `null` value in `updateDataModel` remove, or is it stored? | [`A2uiVersion::null_removes`] |
-//! | Does removing a path that holds nothing still create what leads to it? | [`A2uiVersion::removal_pads`] |
 //! | May a surface mix catalogs, each component naming its own? | [`A2uiVersion::mixes_catalogs`] |
 //! | Which basic catalog is published for it? | [`A2uiVersion::basic_catalog_id`] |
 //! | Under which metadata keys do capabilities and the data model travel? | [`A2uiVersion::capabilities_key`], [`A2uiVersion::capabilities_entry`], [`A2uiVersion::data_model_key`] |
@@ -45,7 +44,8 @@
 //! let versions: &'static [A2uiVersion] = A2uiVersion::ALL;
 //! let operations: &'static [Operation] = Operation::ALL;
 //! assert!(versions.contains(&A2uiVersion::DEFAULT));
-//! assert_eq!(version.operations(), operations);
+//! assert_eq!(version.operations(), Operation::SURFACE);
+//! assert_eq!(A2uiVersion::V1_0.operations(), operations);
 //!
 //! // A version-dependent question is a method, not a string comparison.
 //! assert!(A2uiVersion::V0_9.accepts(version), "v0.9.1 may update a v0.9 surface");
@@ -219,10 +219,23 @@ impl A2uiVersion {
             .find(|version| version.number() == bare)
     }
 
-    /// The operations a message of this version may carry, in envelope order.
+    /// The operations a message of this version may carry, in envelope order:
+    /// the four that change a surface, and from v1.0 the two that carry a
+    /// function call.
     pub fn operations(self) -> &'static [Operation] {
         match self.family() {
-            Family::V0_9 | Family::V1_0 => Operation::ALL,
+            Family::V0_9 => Operation::SURFACE,
+            Family::V1_0 => Operation::ALL,
+        }
+    }
+
+    /// Whether an agent and a renderer call each other's functions with
+    /// messages: `callRendererFunction` and `callAgentFunction`, and the two
+    /// responses. From v1.0.
+    pub const fn carries_function_calls(self) -> bool {
+        match self.family() {
+            Family::V0_9 => false,
+            Family::V1_0 => true,
         }
     }
 
@@ -404,20 +417,6 @@ impl A2uiVersion {
         }
     }
 
-    /// Whether removing a path that holds nothing still creates what leads to
-    /// it: the containers on the way, and the slots of a list up to the index.
-    ///
-    /// Before v1.0 it does, which is what the renderer this workspace is
-    /// tested against does with a v0.9 surface (`@a2ui/web_core` 0.11.0).
-    /// From v1.0 such a removal changes nothing, and removing the root leaves
-    /// an empty object.
-    pub const fn removal_pads(self) -> bool {
-        match self.family() {
-            Family::V0_9 => true,
-            Family::V1_0 => false,
-        }
-    }
-
     /// Whether a catalog's `allowedParents` and `allowedChildren` are part of
     /// the protocol, so that a [`Validator`](crate::validate::Validator) and a
     /// [`MessageProcessor`](crate::processor::MessageProcessor) refuse a
@@ -524,6 +523,8 @@ impl A2uiVersion {
                     ("path", PropType::String, false),
                 ],
                 Operation::DeleteSurface => &[("surfaceId", PropType::String, true)],
+                // Not operations of this family.
+                Operation::CallRendererFunction | Operation::AgentFunctionResponse => &[],
             },
             Family::V1_0 => match operation {
                 Operation::CreateSurface => &[
@@ -543,6 +544,15 @@ impl A2uiVersion {
                     ("path", PropType::String, false),
                 ],
                 Operation::DeleteSurface => &[("surfaceId", PropType::String, true)],
+                Operation::CallRendererFunction => &[
+                    ("functionCallId", PropType::String, true),
+                    ("callFunction", PropType::Object, true),
+                    ("surfaceId", PropType::String, false),
+                ],
+                Operation::AgentFunctionResponse => &[
+                    ("functionCallId", PropType::String, true),
+                    ("error", PropType::Object, false),
+                ],
             },
         }
     }
@@ -657,8 +667,15 @@ mod tests {
                     "{created} surface, {message}"
                 );
             }
-            assert_eq!(created.operations(), Operation::ALL);
-            for &operation in Operation::ALL {
+            assert_eq!(
+                created.operations(),
+                if created.carries_function_calls() {
+                    Operation::ALL
+                } else {
+                    Operation::SURFACE
+                }
+            );
+            for &operation in Operation::SURFACE {
                 let fields = created.envelope(operation);
                 assert_eq!(
                     fields[0],
@@ -686,7 +703,6 @@ mod tests {
                 ["@catalogId", "@accessibility", "@checks", "@metadata"]
             );
             assert!(!version.null_removes());
-            assert!(version.removal_pads());
             assert!(!version.mixes_catalogs());
             let keys = version.component_keys();
             assert_eq!(keys.all().collect::<Vec<_>>(), ["accessibility", "checks"]);
@@ -704,7 +720,6 @@ mod tests {
             ["accessibility", "checks"]
         );
         assert!(version.null_removes());
-        assert!(!version.removal_pads());
         assert!(version.mixes_catalogs());
         let keys = version.component_keys();
         assert_eq!(

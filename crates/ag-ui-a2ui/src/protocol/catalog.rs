@@ -506,6 +506,10 @@ pub struct FunctionDef {
     /// Whether the function runs only in answer to a user's gesture, such as
     /// `openUrl`. From v1.0.
     pub requires_user_activation: bool,
+    /// The JSON Schema of the function's `args`, when its declaration states
+    /// one: `properties.args` of a function written as the schema of a call
+    /// to it, or its `args`.
+    pub args: Option<Value>,
 }
 
 impl FunctionDef {
@@ -517,7 +521,53 @@ impl FunctionDef {
             return_type: None,
             allowed_callers: AllowedCallers::default(),
             requires_user_activation: false,
+            args: None,
         }
+    }
+
+    /// What is wrong with the names of `args`, by what the declaration says
+    /// of them without a schema engine: an argument a closed `args` schema
+    /// does not declare, and a required one that is missing. `None` when the
+    /// declaration states no schema, or one whose arguments cannot be read
+    /// off its `properties`.
+    ///
+    /// The types of the arguments are a schema engine's to check.
+    pub(crate) fn argument_fault(&self, args: &serde_json::Map<String, Value>) -> Option<String> {
+        let schema = self.args.as_ref()?.as_object()?;
+        // Anything that composes the arguments from elsewhere is not read.
+        const COMPOSED: [&str; 6] = [
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "patternProperties",
+            "propertyNames",
+        ];
+        if COMPOSED.iter().any(|keyword| schema.contains_key(*keyword)) {
+            return None;
+        }
+        let declared = schema.get("properties").and_then(Value::as_object);
+        let closed = schema.get("unevaluatedProperties") == Some(&Value::Bool(false))
+            || schema.get("additionalProperties") == Some(&Value::Bool(false));
+        if closed {
+            let undeclared = args
+                .keys()
+                .find(|name| !declared.is_some_and(|declared| declared.contains_key(*name)));
+            if let Some(name) = undeclared {
+                return Some(format!(
+                    "Function '{}' takes no argument '{name}'.",
+                    self.name
+                ));
+            }
+        }
+        let missing = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .find(|name| !args.contains_key(*name));
+        missing.map(|name| format!("Function '{}' requires the argument '{name}'.", self.name))
     }
 }
 
@@ -875,6 +925,11 @@ impl Catalog {
                     .unwrap_or_default();
                 function.requires_user_activation =
                     function_schema.get("requiresUserActivation") == Some(&Value::Bool(true));
+                function.args = function_schema
+                    .pointer("/properties/args")
+                    .or_else(|| function_schema.get("args"))
+                    .filter(|args| args.is_object())
+                    .cloned();
                 catalog.functions.insert(name.to_string(), function);
             }
         }
@@ -1358,8 +1413,14 @@ fn argument_names<'a>(
                     .skip(1)
                     .try_fold(None::<&Value>, |at, segment| {
                         let segment = segment.replace("~1", "/").replace("~0", "~");
+                        // A pointer steps into a list by position.
                         match at {
                             None => root.get(&segment).map(Some),
+                            Some(Value::Array(items)) => segment
+                                .parse::<usize>()
+                                .ok()
+                                .and_then(|position| items.get(position))
+                                .map(Some),
                             Some(at) => at.get(&segment).map(Some),
                         }
                     })

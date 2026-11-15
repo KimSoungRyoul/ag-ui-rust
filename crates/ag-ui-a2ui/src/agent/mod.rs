@@ -136,10 +136,12 @@
 //! them, an `invalid_value` at its `catalogId`: the name came from the answer.
 
 mod answer;
+mod calls;
 mod capabilities;
 mod catalog;
 mod direct_json;
 mod format;
+mod functions;
 mod ordered;
 mod processor;
 mod retry;
@@ -147,6 +149,7 @@ mod state;
 mod stream;
 
 pub use answer::{AnswerPart, StreamedAnswer};
+pub use calls::{RendererCall, RendererCalls};
 pub use capabilities::{
     AgentCapabilities, CLIENT_CAPABILITIES_KEY, RendererCapabilities, resolve_catalogs,
 };
@@ -155,6 +158,9 @@ pub use direct_json::DirectJson;
 pub use format::{
     AnswerReader, Candidate, OutputFormat, RawPart, ReaderEvent, ResponseError, ResponsePart,
     StreamPart,
+};
+pub use functions::{
+    AgentFunction, AgentFunctionCall, RendererMessageKind, RendererMessageRouter, Routed,
 };
 pub use processor::{A2uiGenerator, A2uiRequestProcessor};
 pub use retry::{Feedback, RetryDriver, Verdict};

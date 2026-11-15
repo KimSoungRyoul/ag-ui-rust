@@ -57,13 +57,13 @@ suite counts one check per case and verifies its steps in order; a case that
 stops at a step is reported under that step, `suite::case[step 2]`, and that is
 the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 805 passed, 34 expected divergence, 1194 skipped, 5 failing.
+Totals: 948 passed, 34 expected divergence, 1053 skipped, 3 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
 | `core/validator_v0_9.yaml` | 38 | 39 | 3 | 5 | 0 | executed |
 | `core/data_context.yaml` | 11 | 9 | 2 | 0 | 0 | executed |
-| `core/data_model.yaml` | 52 | 45 | 4 | 1 | 2 | executed |
+| `core/data_model.yaml` | 52 | 47 | 4 | 1 | 0 | executed |
 | `core/expressions.yaml` | 98 | 97 | 0 | 1 | 0 | executed |
 | `core/message_processor_v0_9.yaml` | 48 | 42 | 2 | 4 | 0 | executed |
 | `core/catalog.yaml` | 73 | 48 | 8 | 16 | 1 | executed |
@@ -79,12 +79,12 @@ Totals: 805 passed, 34 expected divergence, 1194 skipped, 5 failing.
 | `core/composition_constraints.yaml` | 10 | 9 | 1 | 0 | 0 | executed |
 | `core/index_function.yaml` | 4 | 1 | 0 | 3 | 0 | executed |
 | `core/validation_result.yaml` | 6 | 0 | 0 | 7 | 0 | executed |
-| `core/rpc_functions.yaml` | 33 | 0 | 0 | 33 | 0 | later: A2UI v1.0 (#42): callRendererFunction and its response |
-| `core/agent_function_routing.yaml` | 43 | 0 | 0 | 43 | 0 | later: A2UI v1.0 (#42): routing function calls to the agent with callAgentFunction |
+| `core/rpc_functions.yaml` | 33 | 19 | 0 | 14 | 0 | executed |
 | `core/validator_v0_8.yaml` | 27 | 0 | 0 | 27 | 0 | out of scope: v0.8: validation of v0.8 messages |
 | `core/message_processor_v0_8.yaml` | 9 | 0 | 0 | 9 | 0 | out of scope: v0.8: the v0.8 message processor |
 | `core/agent_to_renderer.yaml` | 4 | 0 | 0 | 4 | 0 | not applicable: a message schema generated from an SDK's own types against the published one; this crate ships the published schema |
 | `core/functions.yaml` | 116 | 0 | 0 | 116 | 0 | out of scope: renderer: evaluating the basic catalog functions, which run on the renderer |
+| `core/agent_function_routing.yaml` | 43 | 0 | 0 | 43 | 0 | out of scope: renderer: evaluating a function call in a binding, a check rule or an action, and sending the ones the renderer does not implement to the agent |
 | `core/actions.yaml` | 18 | 0 | 0 | 18 | 0 | out of scope: renderer: dispatching a user action from a rendered component |
 | `core/error_responses.yaml` | 24 | 0 | 0 | 24 | 0 | out of scope: renderer: the error messages a renderer sends back to the agent |
 | `core/node_resolution.yaml` | 31 | 0 | 0 | 31 | 0 | out of scope: renderer: materialising the reactive component node tree |
@@ -98,10 +98,10 @@ Totals: 805 passed, 34 expected divergence, 1194 skipped, 5 failing.
 | `agent/renderer_state.yaml` | 9 | 5 | 0 | 4 | 0 | executed |
 | `agent/streamed_answer.yaml` | 6 | 6 | 0 | 0 | 0 | executed |
 | `agent/direct_json/prompt_generator.yaml` | 15 | 15 | 0 | 0 | 0 | executed |
-| `agent/direct_json/response_parser.yaml` | 36 | 35 | 0 | 1 | 0 | executed |
-| `agent/direct_json/response_streaming.yaml` | 139 | 92 | 7 | 40 | 0 | executed |
-| `agent/direct_json/compiler.yaml` | 38 | 19 | 0 | 19 | 0 | executed |
-| `agent/direct_json/decompiler.yaml` | 11 | 10 | 0 | 1 | 0 | executed |
+| `agent/direct_json/response_parser.yaml` | 36 | 36 | 0 | 0 | 0 | executed |
+| `agent/direct_json/response_streaming.yaml` | 139 | 93 | 7 | 39 | 0 | executed |
+| `agent/direct_json/compiler.yaml` | 38 | 38 | 0 | 0 | 0 | executed |
+| `agent/direct_json/decompiler.yaml` | 11 | 11 | 0 | 0 | 0 | executed |
 | `agent/direct_json/scaling.yaml` | 7 | 0 | 0 | 7 | 0 | later: timing (#75): the direct JSON format: parse time against payload size |
 | `agent/skill.yaml` | 12 | 0 | 0 | 12 | 0 | later: other formats (#74): skill documents generated from a format and its catalogs; the goldens are Express |
 | `agent/express/prompt_generator.yaml` | 23 | 0 | 0 | 23 | 0 | later: other formats (#74): the Express format: system prompt snippet |
@@ -117,9 +117,9 @@ Totals: 805 passed, 34 expected divergence, 1194 skipped, 5 failing.
 | `agent/legacy/parser.yaml` | 23 | 0 | 0 | 23 | 0 | superseded: the SDK design before the agent layer: the tag parser; `agent/direct_json/response_parser.yaml` is the suite of the parser that reads the same tags now |
 | `agent/legacy/inference_format.yaml` | 22 | 0 | 0 | 22 | 0 | superseded: the SDK design before the agent layer: catalog selection and prompt assembly; `agent/catalog_resolution.yaml`, `agent/request_processor.yaml` and `agent/direct_json/prompt_generator.yaml` are the suites of what does that now |
 | `agent/legacy/streaming_parser.yaml` | 88 | 0 | 0 | 88 | 0 | superseded: the SDK design before the agent layer: the streaming parser, with placeholders for components still to arrive; `agent/direct_json/response_streaming.yaml` is the suite of the stream that replaced it |
-| `agent/multi_catalog_formats.yaml` | 35 | 9 | 0 | 26 | 0 | executed |
-| `agent/agent_functions.yaml` | 64 | 0 | 0 | 64 | 0 | later: A2UI v1.0 (#42): agent functions and the agent's side of renderer messages |
-| `agent/renderer_function_calls.yaml` | 30 | 0 | 0 | 30 | 0 | later: A2UI v1.0 (#42): the agent calling renderer functions |
+| `agent/multi_catalog_formats.yaml` | 35 | 15 | 0 | 20 | 0 | executed |
+| `agent/agent_functions.yaml` | 64 | 64 | 0 | 0 | 0 | executed |
+| `agent/renderer_function_calls.yaml` | 30 | 30 | 0 | 0 | 0 | executed |
 | `e2e/v0_9_1/login_form_action.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
 | `e2e/v0_9_1/missing_surface_error.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
 | `e2e/v0_9_1/newsletter_signup.yaml` | 1 | 1 | 0 | 1 | 0 | executed |
@@ -187,40 +187,62 @@ How a case is read:
   that states the path `/` and one that states none. A typed message states
   both defaults.
 
-A case that carries a `callRendererFunction`, a `callAgentFunction` or one of
-their responses is skipped: the crate has the payload types and does not read
-or write those messages yet. That is the "v1.0" column below, and what is left
-of #42.
+**Function calls.** `agent/agent_functions.yaml` and
+`agent/renderer_function_calls.yaml` are about the messages by which an agent
+and a renderer call each other's functions. The crate carries a call and
+routes it, and runs no function, so the runner
+(`tests/conformance_agent/rpc.rs`) stands where an application stands:
+
+- Where a case scripts a handler (`returns`, `returns_args`,
+  `returns_context`, `raises`), the router hands the runner the call
+  (`Routed::Call`), the runner does what the script says, and the crate writes
+  the `agentFunctionResponse` for the outcome. A case that expects
+  `UNKNOWN_FUNCTION` or `INVALID_FUNCTION_CALL` fails if a call was handed
+  over at all.
+- The router is made with `checking_schemas`, so arguments are held to the
+  function's `args` schema and the schema's defaults are filled in, which is
+  what the cases compare.
+- A callback of a case is the runner taking the message the router read; a
+  kind no callback takes is not read, as `RendererMessageKind::of` allows.
+- The clock of `renderer_function_calls` is the `now` the crate is told:
+  `advance_ms` adds to it and calls `RendererCalls::expire`. A response goes
+  through the router and then to `RendererCalls::resolve`, and the runner
+  checks that it is taken exactly when its call waits.
+- A catalog a case builds in code is a `Catalog` built in code
+  (`RendererCalls::with_catalog_summaries`), so it may state what a catalog
+  document may not.
 
 How each executed agent-tier suite ran. "In v1.0" and "In v0.9" count executed
 checks by the version of the case's catalogs; a case that hands the crate
 nothing that states a version, such as text to unwrap, counts with v0.9.
 
-| Suite | Cases | In v1.0 | In v0.9 | Skipped: v1.0 | Skipped: v0.8 | Skipped: another format |
-|---|---:|---:|---:|---:|---:|---:|
-| `agent/request_processor.yaml` | 29 | 19 | 1 | 0 | 0 | 9 |
-| `agent/catalog_resolution.yaml` | 23 | 21 | 2 | 0 | 0 | 0 |
-| `agent/catalog_provider.yaml` | 10 | 4 | 6 | 0 | 0 | 0 |
-| `agent/catalog_transformer.yaml` | 15 | 15 | 0 | 0 | 0 | 0 |
-| `agent/renderer_capabilities.yaml` | 24 | 17 | 5 | 0 | 2 | 0 |
-| `agent/renderer_state.yaml` | 9 | 5 | 0 | 0 | 0 | 4 |
-| `agent/streamed_answer.yaml` | 6 | 6 | 0 | 0 | 0 | 0 |
-| `agent/direct_json/prompt_generator.yaml` | 15 | 14 | 1 | 0 | 0 | 0 |
-| `agent/direct_json/response_parser.yaml` | 36 | 5 | 30 | 1 | 0 | 0 |
-| `agent/direct_json/response_streaming.yaml` | 139 | 56 | 43 | 1 | 39 | 0 |
-| `agent/direct_json/compiler.yaml` | 38 | 19 | 0 | 19 | 0 | 0 |
-| `agent/direct_json/decompiler.yaml` | 11 | 10 | 0 | 1 | 0 | 0 |
-| `agent/multi_catalog_formats.yaml` | 35 | 9 | 0 | 6 | 0 | 20 |
-| `e2e/v0_9_1/login_form_action.yaml` | 1 | 0 | 1 | 0 | 0 | 1 |
-| `e2e/v0_9_1/missing_surface_error.yaml` | 1 | 0 | 1 | 0 | 0 | 1 |
-| `e2e/v0_9_1/newsletter_signup.yaml` | 1 | 0 | 1 | 0 | 0 | 1 |
-| `e2e/v0_9_1/restaurant_list_booking.yaml` | 1 | 0 | 1 | 0 | 0 | 1 |
-| `e2e/login_form_action.yaml` | 1 | 1 | 0 | 0 | 0 | 1 |
-| `e2e/missing_surface_error.yaml` | 1 | 1 | 0 | 0 | 0 | 1 |
-| `e2e/newsletter_signup.yaml` | 1 | 1 | 0 | 0 | 0 | 1 |
-| `e2e/restaurant_list_booking.yaml` | 1 | 1 | 0 | 0 | 0 | 1 |
+| Suite | Cases | In v1.0 | In v0.9 | Skipped: v0.8 | Skipped: another format |
+|---|---:|---:|---:|---:|---:|
+| `agent/request_processor.yaml` | 29 | 19 | 1 | 0 | 9 |
+| `agent/catalog_resolution.yaml` | 23 | 21 | 2 | 0 | 0 |
+| `agent/catalog_provider.yaml` | 10 | 4 | 6 | 0 | 0 |
+| `agent/catalog_transformer.yaml` | 15 | 15 | 0 | 0 | 0 |
+| `agent/renderer_capabilities.yaml` | 24 | 17 | 5 | 2 | 0 |
+| `agent/renderer_state.yaml` | 9 | 5 | 0 | 0 | 4 |
+| `agent/streamed_answer.yaml` | 6 | 6 | 0 | 0 | 0 |
+| `agent/direct_json/prompt_generator.yaml` | 15 | 14 | 1 | 0 | 0 |
+| `agent/direct_json/response_parser.yaml` | 36 | 6 | 30 | 0 | 0 |
+| `agent/direct_json/response_streaming.yaml` | 139 | 57 | 43 | 39 | 0 |
+| `agent/direct_json/compiler.yaml` | 38 | 38 | 0 | 0 | 0 |
+| `agent/direct_json/decompiler.yaml` | 11 | 11 | 0 | 0 | 0 |
+| `agent/multi_catalog_formats.yaml` | 35 | 15 | 0 | 0 | 20 |
+| `agent/agent_functions.yaml` | 64 | 64 | 0 | 0 | 0 |
+| `agent/renderer_function_calls.yaml` | 30 | 30 | 0 | 0 | 0 |
+| `e2e/v0_9_1/login_form_action.yaml` | 1 | 0 | 1 | 0 | 1 |
+| `e2e/v0_9_1/missing_surface_error.yaml` | 1 | 0 | 1 | 0 | 1 |
+| `e2e/v0_9_1/newsletter_signup.yaml` | 1 | 0 | 1 | 0 | 1 |
+| `e2e/v0_9_1/restaurant_list_booking.yaml` | 1 | 0 | 1 | 0 | 1 |
+| `e2e/login_form_action.yaml` | 1 | 1 | 0 | 0 | 1 |
+| `e2e/missing_surface_error.yaml` | 1 | 1 | 0 | 0 | 1 |
+| `e2e/newsletter_signup.yaml` | 1 | 1 | 0 | 0 | 1 |
+| `e2e/restaurant_list_booking.yaml` | 1 | 1 | 0 | 0 | 1 |
 
-In all: 204 checks ran in v1.0 and 92 in the v0.9 family.
+In all: 326 checks ran in v1.0 and 92 in the v0.9 family.
 
 ## Why suites are skipped
 
@@ -228,9 +250,8 @@ In all: 204 checks ran in v1.0 and 92 in the v0.9 family.
 |---|---:|---:|---|
 | later: other formats (#74) | 11 | 406 | The suite tests an output format other than direct JSON (Express, Atom, Elemental), or something built on one: the typesafe builder, its macros, skill documents. |
 | later: timing (#75) | 2 | 10 | The suite times an operation instead of checking its result: the direct JSON stream, and the v1.0 message processor. The stream is not yet linear in the size of one message, and timing cases need a job of their own. |
-| later: A2UI v1.0 (#42) | 4 | 170 | The suite tests the part of A2UI v1.0 this crate does not have yet, function calls between the two sides: `core/rpc_functions.yaml`, `core/agent_function_routing.yaml`, `agent/agent_functions.yaml`, `agent/renderer_function_calls.yaml`. |
 | superseded: the SDK design before the agent layer | 3 | 133 | The suite tests the design upstream's SDK had before its agent layer: a tag parser, a streaming parser that drew placeholders for components still to arrive, a schema manager that selected a catalog and assembled a prompt. Upstream keeps those suites under `agent/legacy/` and wrote the agent-tier suites in their place. This crate had ports of that design in `toolkit` and removed them when the agent layer took over (#41); see "The legacy suites". |
-| out of scope: renderer | 8 | 241 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. |
+| out of scope: renderer | 9 | 284 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. `core/agent_function_routing.yaml` is one of them, beside `core/functions.yaml`: it evaluates a function call in a binding, a check rule or an action on a surface, with a value that is null until the agent answers, one request shared between identical calls and a cache on the surface. The crate carries a `callAgentFunction` and routes it on the agent's side (`agent/agent_functions.yaml`); what a renderer does before it sends one is a renderer's. |
 | out of scope: v0.8 | 2 | 36 | The suite tests the v0.8 wire format. This crate speaks v0.9, v0.9.1 and v1.0. |
 | not applicable | 2 | 12 | The suite asks something of an SDK that does not apply here: a schema generated from the SDK's own types, an integration with Google's ADK. |
 
@@ -305,25 +326,29 @@ states no `path`.
 
 ## Failing
 
-Five checks. Two are about removing a path that is not there from a v0.9 data
-model, where upstream's rule and the renderer this workspace tests against
-disagree (#42). Three are about JSON Schema validation of a v1.0 message that
-draws from more than one catalog (#97).
+Three checks, all about JSON Schema validation of a v1.0 message that draws
+from more than one catalog (#97).
 
 | Check | What happens |
 |---|---|
-| `core/data_model.yaml::test_data_model_delete_out_of_range_list_index_is_noop[step 1]` | Removing `/items/10` from a list of three pads the list to eleven slots, eight of them undefined. The case wants the list left as it was. Upstream added the case on 2026-09-15. The official renderer core that `examples/review-desk/interop` runs against, `@a2ui/web_core` 0.11.0, pads as this crate does, and that test and `tests/protocol_091.rs` assert it. On a v1.0 surface the removal does nothing (`core/data_deletion.yaml` passes); for v0.9 the rule is read again in #42, when that harness moves to a newer renderer. |
-| `core/data_model.yaml::test_data_model_delete_absent_deep_path_is_noop[step 0]` | Removing `/nonexistent/child/path` from an empty model leaves `{"nonexistent": {"child": {}}}`. The case wants nothing created, and no watched path changed. The same rule, and the same issue (#42). |
 | `core/message_processor_v1_0.yaml::test_v10_function_call_naming_catalog_with_invalid_args_errors` | A call that names another catalog than its surface's has an argument of the wrong type. The call's catalog and function are found; its arguments are not held to that catalog's JSON Schema, so the message is accepted. |
 | `core/message_processor_v1_0.yaml::test_v10_call_in_list_with_invalid_args_errors` | The same, for a call inside a list in a component of another catalog. |
 | `core/catalog.yaml::test_v10_published_basic_catalog_validates_nested_calls` | A `SchemaValidator` is compiled for one catalog. A call that names another one matches no function of its schema, so a component the case lists as valid is refused. A `MessageProcessor` does not run the schema check on such a message. |
 
+The two cases about removing a path that is not there
+(`test_data_model_delete_out_of_range_list_index_is_noop`,
+`test_data_model_delete_absent_deep_path_is_noop`) pass: such a removal
+changes nothing in any version. The suite asks it of a v0.9 model, and the
+renderer `examples/review-desk/interop` runs against, `@a2ui/web_core` 0.15.0,
+does it (`src/state/data-model.js`: a removal of a path that holds nothing
+returns at once, and "Deleting an index past the end of the array is a
+no-op").
+
 ## Skips inside the executed suites
 
 The agent-tier suites are in the table under "The agent tier", by suite and by
-label: 28 checks for the function calls of v1.0 (#42), 41 for v0.8, 33 cases
-for another format and the Express half of the eight transcripts (#74). The
-rest:
+label: 41 checks for v0.8, 33 cases for another format and the Express half of
+the eight transcripts (#74). The rest:
 
 | Count | Reason |
 |---:|---|
@@ -332,6 +357,8 @@ rest:
 | 5 + 1 | **A JSON Schema failure**: in `core/validator_v0_9.yaml`, an undeclared property, an undeclared function, a function argument of the wrong type, and two theme values; in `core/validator_v1_0.yaml`, a function argument of the wrong type. The semantic validator the harness runs does not evaluate these; `SchemaValidator`, behind the `schema-validation` feature, does. They are listed by name in `SCHEMA_ONLY`, because their fixtures are also invalid in ways the semantic validator does report, and would otherwise pass for the wrong reason. |
 | 1 | **A category and nothing else.** `test_v10_invalid_json_pointer_path_error` in `core/validator_v1_0.yaml` expects a `ValidationError` for an `updateDataModel` whose path is not a JSON Pointer, on a surface that was never created. This crate refuses the message for the surface, before it reads the path, so the refusal would satisfy the category for another reason than the case's. |
 | 3 | **Validation rules given for one call.** Three cases of `core/message_processor_v1_0.yaml` put a `validationConfig` on a step. That belongs to the optional `agent_renderer_app` feature of the reference SDKs; a `MessageProcessor` has the options it was made with. |
+| 6 + 1 + 5 + 1 | **The renderer's side of a function call**, in `core/rpc_functions.yaml`. The crate checks a `callRendererFunction` as a renderer does before anything runs, answers one it refuses or cannot resolve the arguments of, and keeps the table of the calls a side has made (`rpc::PendingCalls`); 19 cases are that, among them `…_index_at_root_execution_error`, where an argument the renderer cannot resolve is answered with `EXECUTION_ERROR`. The rest need a renderer: 6 expect the value a renderer function returns (`test_rpc_call_renderer_function_success`, `…_requires_user_activation`, `…_agent_only_boundary`, `…_with_surface_id_and_dynamic_args`, `…_format_string_arg_inherits_catalog`, `…_without_surface_id_isolated_data_model`), 1 expects the `EXECUTION_ERROR` of a function that fails as it runs (`…_execution_exception`), 5 evaluate a call in a binding, a check rule or an action on a surface (the `test_rpc_ui_*` cases), and 1 is about a renderer's outbound listener (`test_rpc_call_agent_function_no_listener`), which the crate does not have: a call a host would send is a value handed to it. |
+| 1 | **The types of a call's arguments**, in `core/rpc_functions.yaml`. `test_rpc_call_renderer_function_invalid_argument_schema` passes a string where a function's `parameters` want a number. A processor holds the arguments of a call to the names their function declares; their types are a JSON Schema's, which it does not apply to a call (#97). |
 | 1 | **Detaching observers.** `test_data_model_stops_notifying_after_dispose`, in `core/data_model.yaml`. Registering observers on a data model is a renderer's; `DataModel` has none to detach. |
 | 4 | **`validation_schema`**, in `core/catalog.yaml`. `validationSchema` is the reference's bundled schema: `allOf` envelopes flattened, an `id` envelope added to each component, the referenced common types inlined, compared whole with a golden file. This crate validates against the documents as published, through a registry, and has no bundled form to compare. |
 | 8 | **`derive`**, in `core/catalog.yaml`. `Catalog` has no `derive`. Restricting a catalog to some of its entries is `CatalogConfig::keeping_components` and `keeping_functions` in the agent layer; building a new catalog from named entries and new ones is #96. |

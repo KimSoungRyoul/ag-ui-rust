@@ -202,17 +202,32 @@ impl DataModel {
     ///
     /// The model is the agent's copy of what a renderer holds, so it refuses
     /// the two kinds of path the reference renderers refuse, with
-    /// [`Error::Pointer`]: one with a segment in [`FORBIDDEN_PATH_SEGMENTS`],
-    /// and one that names a list index above [`MAX_LIST_INDEX`]. Accepting
-    /// either would leave the agent with a state the renderer does not have.
+    /// [`Error::Pointer`]: any path with a segment in
+    /// [`FORBIDDEN_PATH_SEGMENTS`], and a write that names a list index above
+    /// [`MAX_LIST_INDEX`]. Accepting either would leave the agent with a state
+    /// the renderer does not have. A removal that names such an index is not
+    /// a write: nothing is there, and it changes nothing, as below.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::model::MAX_LIST_INDEX;
+    /// use ag_ui_a2ui::{DataModel, DataModelUpdate};
+    /// use serde_json::json;
+    ///
+    /// let mut model = DataModel::from(json!({"items": ["a"]}));
+    /// let past = format!("/items/{}", MAX_LIST_INDEX + 1);
+    /// assert!(model.apply(&past, &DataModelUpdate::Set(json!("x"))).is_err());
+    /// model.apply(&past, &DataModelUpdate::Remove)?;
+    /// assert_eq!(model, json!({"items": ["a"]}));
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
     ///
     /// # How far a list may grow
     ///
-    /// Two bounds, and the stricter one applies. No index of the path may be
-    /// above [`MAX_LIST_INDEX`]; that is the renderers' bound. And the update
-    /// may add no more than [`DEFAULT_ARRAY_GROWTH_LIMIT`] slots in all; that
-    /// is this model's own, and with the default it is reached only by a path
-    /// that grows several lists at once.
+    /// Two bounds, and the stricter one applies. No index a write names may
+    /// be above [`MAX_LIST_INDEX`]; that is the renderers' bound. And the
+    /// update may add no more than [`DEFAULT_ARRAY_GROWTH_LIMIT`] slots in
+    /// all; that is this model's own, and with the default it is reached only
+    /// by a path that grows several lists at once.
     ///
     /// And what the updates add between them is bounded: an update that would
     /// leave the model holding more than [`DEFAULT_UNDEFINED_SLOT_LIMIT`]
@@ -221,23 +236,31 @@ impl DataModel {
     ///
     /// # Removing what is not there
     ///
-    /// A removal is applied as the v0.9 family applies it: the containers on
-    /// the way to the path are created, and a list is padded out to the index
-    /// with undefined slots. [`DataModel::apply_as`] applies an update as the
-    /// surface's own version does.
+    /// Removing a path that holds nothing changes nothing: no container is
+    /// created on the way to it, and a list is not padded out to an index
+    /// past its end. That is what the protocol's conformance suite asks of a
+    /// v0.9 model (`core/data_model.yaml`,
+    /// `test_data_model_delete_out_of_range_list_index_is_noop` and
+    /// `test_data_model_delete_absent_deep_path_is_noop`) and what the
+    /// renderer does (`@a2ui/web_core` 0.15.0, `src/state/data-model.js`:
+    /// "Deleting an index past the end of the array is a no-op"). A slot that
+    /// is there keeps its place when it is removed, and is undefined.
+    ///
+    /// [`DataModel::apply_as`] applies an update as a surface's own version
+    /// does, which differs for `null` and for the root.
     pub fn apply(&mut self, path: &str, value: &DataModelUpdate) -> Result<()> {
         self.apply_with_array_growth_limit(path, value, DEFAULT_ARRAY_GROWTH_LIMIT)
     }
     /// Applies an update as a surface of `version` takes it.
     ///
-    /// What differs is a removal. From v1.0, removing a path that holds
-    /// nothing changes nothing, and removing the root leaves an empty object
-    /// ([`A2uiVersion::removal_pads`]). And from v1.0 a `null` written at the
-    /// path is a removal ([`A2uiVersion::null_removes`]): that is how the
-    /// message is written, so an update that sets `null` is applied as the
-    /// renderer that receives it applies it. A `null` inside a value that is
-    /// written is stored in every version. Before v1.0 this is
-    /// [`DataModel::apply`].
+    /// What differs is a removal. From v1.0 a `null` written at the path is
+    /// a removal ([`A2uiVersion::null_removes`]): that is how the message is
+    /// written, so an update that sets `null` is applied as the renderer that
+    /// receives it applies it; and removing the root leaves an empty object.
+    /// A `null` inside a value that is written is stored in every version.
+    /// Before v1.0 this is [`DataModel::apply`].
+    ///
+    /// In every version, removing a path that holds nothing changes nothing.
     ///
     /// ```
     /// use ag_ui_a2ui::{A2uiVersion, DataModel, DataModelUpdate};
@@ -284,15 +307,14 @@ impl DataModel {
             DataModelUpdate::Set(Value::Null) if version.null_removes() => &removal,
             other => other,
         };
-        if !version.removal_pads() && matches!(value, DataModelUpdate::Remove) {
-            if tokens(path)?.is_empty() {
-                self.root = ModelValue::Object(BTreeMap::new());
-                self.undefined = 0;
-                return Ok(());
-            }
-            if lookup(&self.root, path)?.is_none() {
-                return Ok(());
-            }
+        // From v1.0 a removed root is an empty object.
+        if version.null_removes()
+            && matches!(value, DataModelUpdate::Remove)
+            && tokens(path)?.is_empty()
+        {
+            self.root = ModelValue::Object(BTreeMap::new());
+            self.undefined = 0;
+            return Ok(());
         }
         self.apply(path, value)
     }
@@ -408,6 +430,14 @@ impl DataModel {
         max_undefined_slots: usize,
     ) -> Result<(ModelValue, usize)> {
         let tokens = tokens(path)?;
+        // Removing what is not there changes nothing: no container is made on
+        // the way to it, and no list is padded out to its index.
+        if matches!(value, DataModelUpdate::Remove)
+            && !tokens.is_empty()
+            && lookup(&self.root, path)?.is_none()
+        {
+            return Ok((self.root.clone(), self.undefined));
+        }
         let mut next = self.root.clone();
         let mut remaining = max_new_slots;
         let mut undefined = self.undefined;
@@ -663,21 +693,21 @@ mod tests {
     }
 
     #[test]
-    fn removing_what_is_not_there_pads_before_v1_0_and_does_nothing_from_it() {
+    fn removing_what_is_not_there_does_nothing_in_any_version() {
         let start = json!({"items": ["a", "b", "c"], "user": {"name": "Ada"}, "text": "x"});
-        for (path, padded) in [
-            ("/items/5", json!({"kind": "array"})),
-            ("/absent/child/path", json!({"kind": "object"})),
-        ] {
-            let mut v0_9 = DataModel::from(start.clone());
-            v0_9.apply_as(A2uiVersion::V0_9, path, &DataModelUpdate::Remove)
-                .unwrap();
-            assert_ne!(v0_9, DataModel::from(start.clone()), "{path}: {padded}");
-
-            let mut v1_0 = DataModel::from(start.clone());
-            v1_0.apply_as(A2uiVersion::V1_0, path, &DataModelUpdate::Remove)
-                .unwrap();
-            assert_eq!(v1_0, DataModel::from(start.clone()), "{path}");
+        // Past the end of a list, and under a key that is not there: no list
+        // is padded and no container is made.
+        for path in ["/items/5", "/absent/child/path"] {
+            for version in A2uiVersion::ALL {
+                let mut model = DataModel::from(start.clone());
+                model
+                    .apply_as(*version, path, &DataModelUpdate::Remove)
+                    .unwrap();
+                assert_eq!(model, DataModel::from(start.clone()), "{version}: {path}");
+            }
+            let mut model = DataModel::from(start.clone());
+            model.apply(path, &DataModelUpdate::Remove).unwrap();
+            assert_eq!(model, DataModel::from(start.clone()), "{path}");
         }
 
         // Under a scalar there is nothing to remove either, where a write
@@ -873,11 +903,12 @@ mod tests {
             "/fresh/10001",
             "/fresh/20000/0",
         ] {
-            for update in [set(json!("x")), DataModelUpdate::Remove] {
-                let refused = reason(model.apply(path, &update).unwrap_err());
-                assert!(refused.starts_with("list index"), "{path}: {refused}");
-                assert_eq!(model, before, "{path}");
-            }
+            let refused = reason(model.apply(path, &set(json!("x"))).unwrap_err());
+            assert!(refused.starts_with("list index"), "{path}: {refused}");
+            assert_eq!(model, before, "{path}");
+            // A removal there finds nothing to remove, and is not a write.
+            model.apply(path, &DataModelUpdate::Remove).unwrap();
+            assert_eq!(model, before, "{path}");
         }
         // A read is not a write: past the end there is nothing to find.
         assert_eq!(model.lookup("/items/10001").unwrap(), None);

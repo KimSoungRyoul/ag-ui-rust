@@ -16,8 +16,9 @@ mod agui {
     use super::*;
     use ag_ui::{ActivityMessage, Event, Message};
     use ag_ui_a2ui::adapters::agui::{
-        CatalogContext, Intent, RenderArgs, SurfacePainter, assemble_ops, basic_catalog,
-        basic_catalog_id, latest_surface, operations_in, render_a2ui_tool_for, surfaces_in,
+        CatalogContext, Intent, RenderArgs, SurfacePainter, SurfaceSpec, assemble_ops,
+        basic_catalog, basic_catalog_id, latest_surface, operations_in, render_a2ui_tool_for,
+        surfaces_in,
     };
     use ag_ui_a2ui::agent::{A2uiGenerator, CatalogConfig, ResponsePart};
     use ag_ui_a2ui::constants::A2UI_OPERATIONS_KEY;
@@ -228,6 +229,41 @@ mod agui {
         );
     }
 
+    /// AG-UI's envelope carries the operations that change a surface, and
+    /// its middleware names no function call, so there is no place to put
+    /// one: a batch that holds a call is refused, and nothing is painted.
+    #[test]
+    fn a_function_call_is_refused_and_not_dropped() {
+        use ag_ui_a2ui::Error;
+        use ag_ui_a2ui::adapters::agui::operations_envelope;
+        use ag_ui_a2ui::message::{CallRendererFunction, FunctionCall};
+
+        let version = A2uiVersion::V1_0;
+        let spec = SurfaceSpec::new("cart").with_version(version);
+        let mut batch = assemble_ops(Intent::Create, &spec);
+        batch.push(AgentMessage::call_renderer_function(
+            CallRendererFunction::new(
+                "call-1",
+                FunctionCall::new("getLocale").with_catalog_id(BASIC),
+            ),
+        ));
+
+        let mut painter = SurfacePainter::new();
+        let refused = painter.settle("call-1", &batch).unwrap_err();
+        let Error::Validation { errors } = &refused else {
+            panic!("a validation error, not {refused:?}");
+        };
+        let [error] = errors.as_slice() else {
+            panic!("one error: {errors:?}");
+        };
+        assert_eq!(error.path, "messages[1].callRendererFunction");
+        assert!(error.message.contains("function call"), "{}", error.message);
+        // Nothing of the batch was taken.
+        assert!(painter.surfaces().get("cart").is_none());
+        assert!(operations_envelope(&batch).is_err());
+        assert!(operations_envelope(&batch[..1]).is_ok());
+    }
+
     #[test]
     fn a_creation_that_carries_its_surface_is_one_operation_in_a_tool_result() {
         let version = A2uiVersion::V1_0;
@@ -318,5 +354,54 @@ mod a2a {
         let part = a2a::data_part(&serde_json::to_value(&message).unwrap(), None);
         assert_eq!(part["metadata"]["mimeType"], a2a::MIME_TYPE);
         assert_eq!(part["data"]["version"], "1.0");
+    }
+
+    /// Over A2A a data part carries one A2UI message, whichever it is: the
+    /// four of a function call travel as any other.
+    #[test]
+    fn a_data_part_carries_a_function_call() {
+        use ag_ui_a2ui::agent::{AgentFunction, CatalogDocument, RendererMessageRouter, Routed};
+        use ag_ui_a2ui::message::{CallRendererFunction, FunctionCall};
+
+        // The agent's call to the renderer, as a part of its answer.
+        let call = AgentMessage::call_renderer_function(CallRendererFunction::new(
+            "call-1",
+            FunctionCall::new("getLocale").with_catalog_id(BASIC),
+        ));
+        let part = a2a::data_part(&serde_json::to_value(&call).unwrap(), None);
+        assert!(a2a::is_a2ui_part(&part));
+        assert_eq!(part["metadata"]["mimeType"], a2a::MIME_TYPE);
+        assert_eq!(
+            part["data"]["callRendererFunction"]["functionCallId"],
+            "call-1"
+        );
+
+        // The renderer's call to the agent, as a part of its message.
+        let incoming = json!({"version": "1.0", "callAgentFunction": {
+            "surfaceId": "checkout",
+            "functionCallId": "fx-1",
+            "callFunction": {"@call": "fetchFxRate", "catalogId": BASIC, "args": {}}
+        }});
+        let parts = [
+            json!({"kind": "text", "text": "hello"}),
+            a2a::data_part(&incoming, None),
+        ];
+        let [message] = a2a::a2ui_messages(&parts)[..] else {
+            panic!("one A2UI message among the parts");
+        };
+        let catalog = CatalogDocument::basic(A2uiVersion::V1_0)
+            .unwrap()
+            .with_agent_functions([AgentFunction::new("fetchFxRate", json!({"type": "object"}))])
+            .unwrap();
+        let router = RendererMessageRouter::new(&[catalog]).unwrap();
+        let Routed::Call(handed) = router.route(message).unwrap() else {
+            panic!("a call to run");
+        };
+        // The answer goes back as a part of its own.
+        let answer = a2a::data_part(
+            &serde_json::to_value(handed.value(json!(1.08))).unwrap(),
+            None,
+        );
+        assert_eq!(answer["data"]["agentFunctionResponse"]["value"], 1.08);
     }
 }

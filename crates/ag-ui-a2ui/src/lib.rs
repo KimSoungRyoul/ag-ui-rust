@@ -24,6 +24,7 @@
 //! |---|---|
 //! | [`version`] | Which protocol versions exist, how each is spelled, and what differs between them. |
 //! | [`operation`] | The names of the agent → renderer operations. |
+//! | [`rpc`] | Function calls between an agent and a renderer, from v1.0: how a call ends, and the table of the calls one side has made and waits on. |
 //! | [`message`] | The wire types, in both directions. A message is written and read as its `version` spells it. |
 //! | [`catalog`] | What a surface may contain: components, their properties, functions. Includes the basic catalog of each version, read from the published document. |
 //! | [`binding`] | JSON Pointer resolution, template scopes and the `formatString` interpolation grammar, so an agent can check its own bindings before shipping them. |
@@ -135,9 +136,38 @@
 //! otherwise, so nothing changes for a caller that never names
 //! [`A2uiVersion::V1_0`]. A session of the agent layer speaks the version of
 //! the catalogs it was given: register v1.0 catalogs, and the prompt, the
-//! reading of an answer and the renderer's capabilities are v1.0's. The
-//! function-call messages of v1.0 (`callRendererFunction`,
-//! `callAgentFunction` and their responses) are not accepted or serialized.
+//! reading of an answer and the renderer's capabilities are v1.0's.
+//!
+//! # Function calls
+//!
+//! From v1.0 an agent and a renderer call each other's functions with
+//! messages: `callRendererFunction` and `rendererFunctionResponse` one way,
+//! `callAgentFunction` and `agentFunctionResponse` the other. A message of an
+//! earlier version carries none of them.
+//!
+//! This crate carries a call and routes it. It does not run a function. It
+//! holds no handler, awaits nothing, starts no timer and listens to nothing:
+//!
+//! - The four messages are types ([`message`]) that are written and read, and
+//!   a [`MessageProcessor`] takes a `callRendererFunction` and checks it as a
+//!   renderer checks one before anything runs: the surface it names, the
+//!   catalog, the function, who may call it, what its arguments hold. A call
+//!   it refuses answers with the `rendererFunctionResponse` a renderer sends.
+//! - A call the application has to run comes to it as a value. With the
+//!   `agent` feature, `agent::RendererMessageRouter` reads what a renderer
+//!   sends and hands over a call to a function the agent declared
+//!   (`agent::AgentFunction`); the application runs whatever it likes for it
+//!   and hands the outcome back, and gets the `agentFunctionResponse` to
+//!   send. What there is nothing to run for is answered without the
+//!   application: `UNKNOWN_FUNCTION`, `INVALID_FUNCTION_CALL`.
+//! - A call the agent makes is a message to send and an entry in a table
+//!   (`agent::RendererCalls`, on [`rpc::PendingCalls`]). Time is an argument:
+//!   the table is told what the time is and says which calls have waited too
+//!   long.
+//!
+//! What a renderer does around a call is a renderer's: running a function of
+//! a catalog, evaluating a call in a binding or a check or an action, sending
+//! the ones it has no implementation of to the agent.
 //!
 //! # Example
 //!
@@ -210,7 +240,7 @@ mod protocol;
 
 #[doc(inline)]
 pub use crate::protocol::{
-    binding, catalog, message, model, operation, processor, schema, surface, validate, version,
+    binding, catalog, message, model, operation, processor, rpc, schema, surface, validate, version,
 };
 #[cfg(feature = "schema-validation")]
 #[doc(inline)]

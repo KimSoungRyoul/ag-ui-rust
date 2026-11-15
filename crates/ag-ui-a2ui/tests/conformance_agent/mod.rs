@@ -9,8 +9,8 @@
 //! Every case runs as written, under the version its catalogs declare. A
 //! fixture that states no version is a v1.0 one, as the harness guide says.
 //!
-//! What is still skipped for v1.0 is what the crate does not have yet: the
-//! messages by which an agent and a renderer call each other's functions.
+//! The suites of the messages by which an agent and a renderer call each
+//! other's functions are run by the `rpc` module.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -26,9 +26,8 @@ use serde_json::{Value, json};
 
 use super::{Outcome, conformance_dir, truncate};
 
-/// The label of a case that needs a part of A2UI v1.0 this crate does not
-/// have yet.
-pub(crate) const NEEDS_V1_0: &str = "later: A2UI v1.0 (#42)";
+mod rpc;
+
 /// The label of a case written for the v0.8 wire format.
 pub(crate) const NEEDS_V0_8: &str = "out of scope: v0.8";
 /// The label of a case that needs a format other than direct JSON.
@@ -123,6 +122,21 @@ fn dispatch(case: &Value, in_v1_0: &mut bool) -> Step {
         "compile" => compile(case, args, in_v1_0),
         "decompile" => decompile(case, args, in_v1_0),
         "parse_chunk" => parse_chunk(case, args, in_v1_0),
+        // The function-call suites are v1.0 throughout.
+        "declare_agent_functions"
+        | "handle_agent_function"
+        | "validate_payload"
+        | "process_renderer_message"
+        | "call_renderer_function" => {
+            *in_v1_0 = true;
+            match action {
+                "declare_agent_functions" => rpc::declare_agent_functions(case, args),
+                "handle_agent_function" => rpc::handle_agent_function(case, args),
+                "validate_payload" => rpc::validate(case, args),
+                "process_renderer_message" => rpc::process_renderer_message(case, args),
+                _ => rpc::call_renderer_function(case, args),
+            }
+        }
         other => fail(format!("unknown action '{other}'")),
     }
 }
@@ -221,20 +235,6 @@ fn fixture_version(document: &Value) -> Step<Option<A2uiVersion>> {
         // The document says, and its loader reads it.
         Some(_) => Ok(None),
     }
-}
-
-/// Why a case cannot run yet, when it cannot: it carries one of the messages
-/// by which an agent and a renderer call each other's functions.
-fn not_yet(text: &str) -> Option<&'static str> {
-    [
-        "callRendererFunction",
-        "agentFunctionResponse",
-        "callAgentFunction",
-        "rendererFunctionResponse",
-    ]
-    .into_iter()
-    .find(|marker| text.contains(marker))
-    .map(|_| "function calls between an agent and a renderer")
 }
 
 fn read_fixture(relative: &str) -> Step<Value> {
@@ -344,9 +344,6 @@ fn setup(case: &Value, container: &Value, default: bool, in_v1_0: &mut bool) -> 
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
         );
-    }
-    if let Some(why) = not_yet(&text) {
-        return skip(NEEDS_V1_0, why);
     }
     *in_v1_0 = catalogs
         .first()
