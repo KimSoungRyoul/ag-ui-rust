@@ -1,8 +1,8 @@
 //! Cross-crate end-to-end coverage for the AG-UI Rust SDK.
 //!
 //! The per-crate suites prove each half in isolation. This crate proves they
-//! meet: an agent hosted by `ag-ui-server` behind `ag-ui-axum`, driven over
-//! real HTTP by `ag-ui-client`, with nothing mocked between them.
+//! meet: an agent hosted by `ag_ui::server` behind `ag_ui::axum`, driven over
+//! real HTTP by `ag_ui::client`, with nothing mocked between them.
 //!
 //! The live tier lives here too: [`llm`] is an agent backed by a real streaming
 //! model over the OpenAI-compatible `/chat/completions` format, served by the

@@ -5,20 +5,21 @@ description: "Use when the ag-ui-rust SKILLS themselves need refreshing — not 
 
 # Refreshing the ag-ui-rust skills
 
-The `ag-ui-rust-server` and `ag-ui-rust-client` skills each state the workspace version they
-were written against. When the SDK has moved past it, refresh before trusting them.
+The `ag-ui-rust-server`, `ag-ui-rust-client` and `ag-ui-rust-qwen` skills each state the
+workspace version they were written against. When the SDK has moved past it, refresh before
+trusting them.
 
 ## Check first
 
 ```sh
 # What the project actually depends on.
 cargo tree -p ag-ui --depth 0
-grep -n 'ag-ui-' Cargo.toml
+grep -n 'ag-ui' Cargo.toml
 ```
 
 Compare that against the version line near the top of the skill. A mismatch is not proof of
-staleness — the crates are a git dependency and most changes are additive — but it is the
-signal to prefer `cargo doc --open` and the source over the skill's prose.
+staleness — most changes are additive — but it is the signal to prefer `cargo doc --open` and
+the source over the skill's prose.
 
 ## Refresh
 

@@ -319,7 +319,7 @@ fn ended(end: &RunEnd) -> String {
 ///
 /// A call is printed when it *closes*, so anything the agent emitted while it
 /// was open — a `STATE_DELTA` published from inside the call, which
-/// `ag-ui-server`'s handles allow — prints **before** the call line rather than
+/// `ag_ui::server`'s handles allow — prints **before** the call line rather than
 /// inside it.
 ///
 /// That is a property of *this* rendering, not a limit of the client. Arrival

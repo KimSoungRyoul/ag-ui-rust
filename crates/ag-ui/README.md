@@ -84,7 +84,7 @@ valid traffic.
 | `client` | no | Consume a remote agent, transport-agnostic. |
 | `http` | no | Adds the reqwest-backed transport to `client`. What most consumers want; leave it off for wasm. |
 | `axum` | no | Mount a hosted agent on an axum router. Implies `server` and `sse`, and is the one feature that pulls in tokio. |
-| `protobuf` | no | The binary transport's media type and a documented stub. `events.proto` covers only 21 of the 36 decodable variants, including legacy input, and omits current 1.0 events, so there is no encoder. |
+| `protobuf` | no | The binary transport's media type and a documented stub; there is no encoder. The stub predates upstream's 1.0 `events.proto`, which now covers all 31 1.0 event types. |
 | `schemars` | no | Derives `schemars::JsonSchema` on the public types. |
 | `utoipa` | no | Derives `utoipa::ToSchema` on the public types. |
 
