@@ -278,6 +278,10 @@ fn a_state_of_other_catalogs_is_not_the_models_to_fix() {
     ));
 }
 
+/// The agent's half of a rule with two halves. A renderer that is handed a
+/// catalog it does not hold reports a catalog error; the core's message
+/// processor (#72) is where this crate says so, and its half of the rule is
+/// pinned beside this one once it is on main.
 #[test]
 fn a_surface_that_names_another_catalog_is_the_models_to_fix() {
     let processor = processor();

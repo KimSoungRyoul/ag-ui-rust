@@ -63,6 +63,30 @@ impl ActiveCatalog {
 /// that a later message adds, so asking earlier would reject a tree for being
 /// unfinished.
 ///
+/// # Every rejection is the payload's
+///
+/// A state is given catalogs once, and messages ever after, so whatever it
+/// rejects, a message got wrong. Both checks return
+/// [`Error::Validation`](crate::Error::Validation), each failure with a locator
+/// into the messages, and nothing else:
+///
+/// - A fault of a surface's life (created while it is live, updated while it
+///   is not) is one `invalid_value` at `messages[i]`. So is a message that does
+///   not decode.
+/// - A `createSurface` that names a catalog the state does not hold is one
+///   `invalid_value` at `messages[i].createSurface.catalogId`. A renderer
+///   calls that a catalog error, since it was handed a catalog it does not
+///   have. Here the name came from the payload. The reference SDK's agent
+///   layer makes the same turn above its core processor (`RendererState` wraps
+///   it in `_as_validation_error`: "errors of other kinds, such as a catalog
+///   that a message names but the processor doesn't hold, come from the
+///   payload too"), and `agent/request_processor.yaml` of the conformance
+///   suite expects it.
+///
+/// [`Error::Catalog`](crate::Error::Catalog) is kept for what no payload can
+/// fix: [`RendererState::new`] with no catalogs or catalogs of two protocol
+/// families.
+///
 /// ```
 /// use ag_ui_a2ui::A2uiVersion;
 /// use ag_ui_a2ui::agent::{CatalogDocument, RendererState};

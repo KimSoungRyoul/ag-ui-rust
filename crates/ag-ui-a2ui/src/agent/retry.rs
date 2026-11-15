@@ -17,6 +17,24 @@ use crate::protocol::validate::{ErrorCode, ValidationError};
 /// nothing, so it can be kept in the same struct as the state across `.await`
 /// points.
 ///
+/// # What is fed back, and what is given up on
+///
+/// The line is whether another answer could fix it.
+///
+/// | The answer was rejected with | Verdict |
+/// |---|---|
+/// | [`Error::Validation`]: a renderer in this state would reject a message or a tree. Includes a surface out of place in its life, and a `createSurface` that names a catalog the session does not hold. | [`Verdict::Retry`], with the errors as they were located. |
+/// | [`Error::Parse`]: a block could not be read. | [`Verdict::Retry`], with one error at `response` that says why. |
+/// | [`Error::Catalog`]: the state holds other catalogs than the processor. | [`Verdict::GiveUp`], at once, with the error. |
+/// | Any of the first two, on the last attempt. | [`Verdict::GiveUp`], with [`Error::RecoveryExhausted`] and the last attempt's errors. |
+///
+/// A wrong catalog id is on the retry side because the answer wrote it. For a
+/// renderer the same thing is a catalog error (`CatalogError` in the core
+/// conformance suites); the agent layer turns it into a validation error at
+/// the `catalogId`, as the reference SDK's agent layer does (see
+/// [`RendererState`]), so that [`Error::Catalog`] here always means "no answer
+/// can fix this".
+///
 /// ```
 /// use ag_ui_a2ui::A2uiVersion;
 /// use ag_ui_a2ui::agent::{A2uiGenerator, CatalogConfig, RendererCapabilities, RetryDriver, Verdict};
