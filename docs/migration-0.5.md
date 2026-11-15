@@ -167,9 +167,8 @@ These are on `main` and not yet in a published version.
 - A `RUN_ERROR` after `RUN_FINISHED` fails the run, so a `Thread` yields `Done` only
   when the stream ends, not at `RUN_FINISHED`. Aborting or dropping the run after
   `RUN_FINISHED` keeps the outcome it reported. Another event there is a protocol
-  error, except a later run's `RUN_STARTED`: the first run keeps its outcome and an
-  `unsupported` diagnostic (the new `Error::Unsupported`) says the rest was not read.
-  `Applier::interrupts` is cleared by `RUN_ERROR`.
+  error, except the `RUN_STARTED` of the next run on the same stream, which the last
+  bullets of this section describe. `Applier::interrupts` is cleared by `RUN_ERROR`.
 - `Validator` rejects a child written inline. A catalog's `ComponentId`,
   `ChildList` and `Tabs` child references must be component id strings, never
   objects or bindings, and a `ChildList` template needs both `componentId` and
@@ -295,10 +294,11 @@ These are on `main` and not yet in a published version.
   read as its media part, with a warning naming it ("translated retired binary content part
   at /messages/0/content/1 to image"). The client used to drop the part as unrecognised.
   One with only an `id` is still dropped, with the "unrecognised union member" warning.
-- A `Thread` reports a second `RUN_STARTED` inside an active run as "RUN_STARTED arrived
-  twice in one stream" whatever ids it carries. Alpha.3 reported a different run id as
-  "RUN_STARTED does not match the requested thread and run IDs". With `verify(false)` the
-  id check is still what fails it.
+- A `Thread` reports a `RUN_STARTED` inside a run that has not ended as "RUN_STARTED
+  arrived while a run was still active" whatever ids it carries. Alpha.3 reported a
+  different run id as "RUN_STARTED does not match the requested thread and run IDs". With
+  `verify(false)` it is reported the same way, unless it repeats the ids of the run it
+  arrived in, which is let through as before.
 - `server::EventVerifier` rejects a first event that is neither `RUN_STARTED` nor
   `RUN_ERROR`, with `Rule::OutOfOrder`. Alpha.3 accepted any first event. A hosted run is
   unaffected, since the driver emits `RUN_STARTED` first, and so is `RunContext::new`, whose
@@ -576,7 +576,7 @@ These are on `main` and not yet in a published version.
   The client verifier already named the first opened, in this order.
 - `Applier::apply` applies the explicit form only. For a `TEXT_MESSAGE_CHUNK`,
   `TOOL_CALL_CHUNK` or `REASONING_MESSAGE_CHUNK`, and for a retired `THINKING_*` event,
-  it returns `Error::Unsupported` and changes nothing; alpha.3 assembled chunks by rules
+  it returns the new `Error::Unsupported` and changes nothing; alpha.3 assembled chunks by rules
   of its own, which had drifted from the normalizer's, and turned `THINKING_*` into
   reasoning under ids `thinking-1`, `thinking-2`, …. A `Thread` is unaffected: it expands
   and translates before it applies. Code that drives an `Applier` itself puts a
@@ -689,6 +689,65 @@ These are on `main` and not yet in a published version.
   in a new snapshot, so code that read it reads `messages` and filters by role. A
   version 2 snapshot with entries in `reasoning` is refused, and alpha.3 cannot read a
   version 2 snapshot.
+- A `RunStream` yields one more update per run: the new `Update::RunEnded(RunSummary)`,
+  once for every run the stream carried, the only run of a stream included. It arrives
+  right before `Update::Done`, after a fatal `Update::Error` and whatever that run left
+  aborted, so a stream that ended `[.., Error, Done]` in alpha.3 now ends
+  `[.., Error, RunEnded, Done]`, and one that yielded only `Done` yields `RunEnded` and
+  then `Done`. Code that matches on the variant is unaffected. Code that counts updates,
+  or takes the one before `Done` by position, skips `Update::RunEnded`. `RunSummary` has
+  the run's `run_id`, its `end` and whether it is the one the request asked for
+  (`requested`); `RunReport::runs` lists them in stream order.
+- A `Thread`, `client::Verifier`, `client::verify_all` and `server::EventVerifier` read
+  several runs in sequence on one stream, as AG-UI 1.0 allows: a `RUN_STARTED` after
+  `RUN_FINISHED` or after `RUN_ERROR` begins the next run. Messages accumulate, reasoning
+  messages among them, and state persists across runs; what a run had open does not
+  carry over, so a new run may open a step, or announce a subagent, of the same name,
+  and a message a failed run left half-written stays as it is. In alpha.3 the verifiers
+  rejected that `RUN_STARTED` ("arrived after the run had already finished",
+  `Rule::RunEnded`), and a `Thread` stopped reading at the first run's terminal event. A
+  hosted run still sends one run: its sink refuses every emit after a terminal event, as
+  before.
+- A `Thread` reads to the end of the stream after `RUN_ERROR` too, since another run may
+  follow. `Update::Error` and `Update::RunEnded` arrive at the `RUN_ERROR`, and
+  `Update::Done(RunEnd::Failed { .. })` when the transport ends the stream; alpha.3
+  yielded `Done` at the `RUN_ERROR`. Against a server that leaves the connection open
+  after `RUN_ERROR`, act on `Update::RunEnded`, or abort: the request still ends as
+  `Failed`. `RunStream::collect_report` returns when the stream ends.
+- A `Thread` no longer requires every `RUN_STARTED` to carry the request's run id. The
+  run that does is the requested run; one before it is a run the producer replays, read
+  into the conversation and listed in `RunReport::runs` with `requested: false`. Alpha.3
+  failed such a stream at its first event with "RUN_STARTED does not match the requested
+  thread and run IDs" and applied nothing. A stream that ends without the requested run
+  now fails at its end, with "the stream ended without the requested run: no RUN_STARTED
+  carried run ID …", after what it carried was applied. A `RUN_STARTED` for another
+  thread fails with "RUN_STARTED does not match the requested thread ID". Each
+  `RUN_FINISHED` must still carry the ids of the `RUN_STARTED` it closes.
+- On a stream of several runs, `RunReport::end`, `Update::Done` and
+  `Thread::last_run_end` say how the last run from the requested one on ended, or how
+  reading stopped. What each run's end does to the thread depends on where it stands:
+
+  | Run | Ends | The thread |
+  | --- | --- | --- |
+  | replayed, before the requested run | any way | keeps what it delivered; nothing pending changes, no `Update::Interrupt` |
+  | requested | success, interrupt | confirms a resume submission; pending interrupts cleared, or set (as in alpha.3) |
+  | requested | cancelled, `RUN_ERROR`, cut short | submission `Unconfirmed`, interrupts as they were (as in alpha.3) |
+  | after the requested run | success, cancelled | pending interrupts cleared |
+  | after the requested run | interrupt | pending interrupts set, with `Update::Interrupt` |
+  | after the requested run | `RUN_ERROR`, cut short | pending interrupts left |
+  | after the requested run, a submission `Unconfirmed` | any `RUN_FINISHED` | pending interrupts left, with one `Update::Warning` |
+
+  A stream with only the requested run behaves as in alpha.3. `unanswered_tool_calls()`
+  reads the conversation, so a call any run on the stream left without a result is
+  listed; the calls a success outcome names are those of the run `end` reports.
+- A run after the requested one does not replace the pending interrupts while a resume
+  submission is `Unconfirmed`: its entries answer exactly those interrupts, and it stays
+  until the application reconciles it with the server's state and restores a reconciled
+  snapshot, as for any unconfirmed submission. The run's outcome is still what
+  `RunReport::end` reports, and one warning says the interrupts were kept: "run "r-2"
+  finished with outcome `interrupt` while a resume submission is unconfirmed: the
+  pending interrupts stay the ones that submission answers until the application
+  reconciles it". No `Update::Interrupt` is yielded for them.
 - `A2uiAuthor` keeps its constructors and methods and is now a use of the agent layer:
   `AuthorRequest::prompt` is the request's target followed by
   `A2uiRequestProcessor::prompt_snippet`, an answer is read by `DirectJson` (the

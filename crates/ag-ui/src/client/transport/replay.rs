@@ -69,6 +69,11 @@ impl ReplayTransport {
     /// Rebind each script's first RUN_STARTED and its matching RUN_FINISHED
     /// to the actual request IDs. Unmatched terminal IDs stay unchanged so
     /// malformed fixtures still fail. The default replays events literally.
+    ///
+    /// In a script of several runs this makes the first one the requested
+    /// run. To script runs replayed ahead of it, leave this off and give the
+    /// last run the id set with
+    /// [`Thread::set_next_run_id`](crate::client::Thread::set_next_run_id).
     #[must_use]
     pub fn matching_requests(mut self) -> Self {
         self.matching_requests = true;

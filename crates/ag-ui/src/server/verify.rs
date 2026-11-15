@@ -10,8 +10,8 @@
 //!
 //! | Rule | Rejected |
 //! | --- | --- |
-//! | [`RunEnded`] | anything after `RUN_ERROR`; anything after `RUN_FINISHED` except one `RUN_ERROR` |
-//! | [`DuplicateRunStarted`] | a second `RUN_STARTED` |
+//! | [`RunEnded`] | anything after `RUN_ERROR` except the `RUN_STARTED` of the next run; anything after `RUN_FINISHED` except that or one `RUN_ERROR` |
+//! | [`DuplicateRunStarted`] | a `RUN_STARTED` inside a run that has not ended |
 //! | [`DuplicateStart`] | opening a message, reasoning block, tool call, step or subagent whose id is already open — or a subagent id that already finished in this run |
 //! | [`NotOpen`] | content or a terminator for something that was never opened, including `SUBAGENT_FINISHED` / `SUBAGENT_ERROR` for a subagent that is not active |
 //! | [`UnknownId`] | `TOOL_CALL_RESULT` for a call id neither this run nor the history it continues introduced, or a `parentSubagentRunId` that was never started |
@@ -29,13 +29,16 @@
 //!
 //! # After the run ended
 //!
-//! AG-UI 1.0 lets one `RUN_ERROR` follow `RUN_FINISHED`: a failure that
-//! surfaced after the run reported success. A standalone `EventVerifier`
-//! accepts it, so a recorded stream that carries one verifies. A hosted run
-//! does not send one: its event sink refuses every emit after a terminal
-//! event, with [`RunEnded`], whether or not this verifier is compiled in.
-//! That is the sink's own rule about what it sends, not the protocol's about
-//! what a stream may carry.
+//! AG-UI 1.0 lets two things follow a run that ended: one `RUN_ERROR` after
+//! `RUN_FINISHED`, a failure that surfaced after the run reported success,
+//! and a `RUN_STARTED` after either terminal event, which begins the next
+//! run on the same stream. A standalone `EventVerifier` accepts both, so a
+//! recorded stream that carries a late failure or several runs in sequence
+//! verifies. The next run starts with nothing open, and keeps who owns each
+//! id. A hosted run sends neither: its event sink refuses every emit after a
+//! terminal event, with [`RunEnded`], whether or not this verifier is
+//! compiled in. That is the sink's own rule about what it sends, not the
+//! protocol's about what a stream may carry.
 //!
 //! # Chunks
 //!
@@ -140,7 +143,7 @@ mod enabled {
     }
 
     impl Verifier {
-        /// Creates the ordering state for one run.
+        /// Creates the ordering state for one stream.
         pub fn new() -> Self {
             Self {
                 rules: Ordering::new(Policy::PRODUCER),

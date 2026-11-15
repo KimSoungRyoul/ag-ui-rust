@@ -237,6 +237,7 @@ async fn updates_arrive_in_the_order_the_agent_emitted_them() {
             Update::Reasoning(_) => "reasoning",
             Update::Interrupt(_) => "interrupt",
             Update::Error(error) => panic!("a well-formed run produced {error}"),
+            Update::RunEnded(_) => "run ended",
             Update::Done(_) => "done",
             _ => "unrecognised",
         })
@@ -252,7 +253,7 @@ async fn updates_arrive_in_the_order_the_agent_emitted_them() {
     }
     assert_eq!(
         phases,
-        ["reasoning", "message", "state", "done"],
+        ["reasoning", "message", "state", "run ended", "done"],
         "{kinds:?}"
     );
 }

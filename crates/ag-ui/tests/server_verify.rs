@@ -319,15 +319,58 @@ fn a_recorded_stream_may_carry_one_run_error_after_run_finished() {
     ] {
         verifier.observe(&event).expect("a stream 1.0 allows");
     }
-    // Nothing follows RUN_ERROR, a second one included.
+    // Nothing follows RUN_ERROR, a second one included, except the next run.
     for after in [
         Event::run_error("again"),
         Event::custom("late", serde_json::json!(1)),
-        Event::run_started("t", "r-2"),
+        Event::run_finished_success("t", "r"),
     ] {
         let error = verifier.observe(&after).expect_err("the run has ended");
         assert_eq!(error.rule, Rule::RunEnded, "{after:?}");
     }
+}
+
+#[test]
+fn a_recorded_stream_may_carry_several_runs_in_sequence() {
+    // AG-UI 1.0, "After a run closes": a producer MAY emit RUN_STARTED to
+    // begin a new run on the same stream, after RUN_FINISHED and after
+    // RUN_ERROR. The upstream streams `two-sequential-runs-accumulate` and
+    // `run-error-then-new-run-continues`.
+    use ag_ui::server::EventVerifier;
+    let mut verifier = EventVerifier::new();
+    for event in [
+        Event::run_started("t", "r-1"),
+        Event::tool_call_start("c1", "search"),
+        Event::tool_call_end("c1"),
+        Event::run_finished_success("t", "r-1"),
+        Event::run_started("t", "r-2"),
+        Event::text_message_start("m1", TextMessageRole::Assistant),
+        Event::step_started("plan"),
+        Event::run_error("the model hung up"),
+        Event::run_started("t", "r-3"),
+        // A call an earlier run introduced is one this producer knows.
+        Event::tool_call_result("m2", "c1", "ok"),
+        // What the failed run left open ended with it.
+        Event::step_started("plan"),
+        Event::step_finished("plan"),
+        Event::run_finished_success("t", "r-3"),
+    ] {
+        verifier.observe(&event).expect("a stream 1.0 allows");
+    }
+
+    // "A RUN_STARTED while a run is still active is a violation."
+    verifier
+        .observe(&Event::run_started("t", "r-4"))
+        .expect("the next run");
+    let error = verifier
+        .observe(&Event::run_started("t", "r-5"))
+        .expect_err("r-4 has not ended");
+    assert_eq!(error.rule, Rule::DuplicateRunStarted);
+    // The failed run's message is not open in the run after it.
+    let error = verifier
+        .observe(&Event::text_message_content("m1", "x"))
+        .expect_err("m1 ended with the run that opened it");
+    assert_eq!(error.rule, Rule::NotOpen);
 }
 
 #[test]

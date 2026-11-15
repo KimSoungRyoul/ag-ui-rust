@@ -10,9 +10,11 @@
 //!
 //! 1. A stream opens with `RUN_STARTED`, or with `RUN_ERROR` for a run that
 //!    failed before it began. Nothing else comes first.
-//! 2. `RUN_FINISHED` and `RUN_ERROR` end the run. One `RUN_ERROR` may follow
-//!    `RUN_FINISHED` — a failure that surfaced after the run reported
-//!    success — and nothing else follows either.
+//! 2. `RUN_FINISHED` and `RUN_ERROR` end the run. Two things may follow: one
+//!    `RUN_ERROR` after `RUN_FINISHED`, a failure that surfaced after the run
+//!    reported success, and after either a `RUN_STARTED`, which begins the
+//!    next run on the same stream. A `RUN_STARTED` inside a run that has not
+//!    ended is a nested run, and is rejected.
 //! 3. A text message, tool call, reasoning message or reasoning block is
 //!    opened once, continued and closed only while open, and closed before
 //!    `RUN_FINISHED`. Everything is keyed by id: two ids may overlap, one id
@@ -36,6 +38,14 @@
 //!
 //! `RUN_ERROR` is exempt from the "closed before" clauses: a run that failed
 //! could not have closed what it had open.
+//!
+//! # Several runs
+//!
+//! What is open belongs to a run, and who owns an id belongs to the stream.
+//! A new run starts with nothing open — whatever a failed run left behind
+//! ended with it — and with no subagent id used yet, so a run may announce
+//! again the subagent the run before it suspended. The owners stay: messages
+//! accumulate across runs, and an id keeps its first writer.
 //!
 //! # What an end decides
 //!
@@ -202,10 +212,11 @@ pub(crate) struct Violation {
     pub(crate) broke: Broke,
 }
 
-/// Where a run is in its lifecycle.
+/// Where the stream is in the lifecycle of the run it is carrying.
 ///
 /// AG-UI 1.0, `events/lifecycle`: idle until the first event, active from
-/// `RUN_STARTED`, closed by `RUN_FINISHED`, failed by `RUN_ERROR`.
+/// `RUN_STARTED`, closed by `RUN_FINISHED`, failed by `RUN_ERROR`, and active
+/// again from the `RUN_STARTED` of the next run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     /// Nothing has arrived.
@@ -218,7 +229,8 @@ enum Phase {
     Failed,
 }
 
-/// The ordering state of one run's event stream.
+/// The ordering state of one event stream, which carries one run or several
+/// in sequence.
 #[derive(Clone, Debug)]
 pub(crate) struct Ordering {
     policy: Policy,
@@ -311,7 +323,7 @@ impl Ordering {
         self.phase != Phase::Idle
     }
 
-    /// Whether a terminal event has ended the run.
+    /// Whether a terminal event has ended the run the stream last started.
     pub(crate) fn has_ended(&self) -> bool {
         matches!(self.phase, Phase::Finished | Phase::Failed)
     }
@@ -371,20 +383,38 @@ impl Ordering {
 
     /// Whether an event of this type may arrive in the current phase.
     ///
-    /// The one place the run lifecycle is decided. AG-UI 1.0 also lets a new
-    /// `RUN_STARTED` follow a terminal event; this reads one run per stream,
-    /// so the arm that refuses it is where several runs on one stream
-    /// (#44) change the answer.
+    /// The one place the run lifecycle is decided: the state diagram of
+    /// AG-UI 1.0, `events/lifecycle`.
     fn admit(&self, at: EventType) -> Result<(), Broke> {
         let opens = matches!(at, EventType::RunStarted | EventType::RunError);
         match self.phase {
             Phase::Idle if opens => Ok(()),
             Phase::Idle => Err(Broke::NotStarted),
             Phase::Assumed | Phase::Active => Ok(()),
+            // The next run on the same stream.
+            Phase::Finished | Phase::Failed if at == EventType::RunStarted => Ok(()),
             // A failure that surfaced after the run reported success.
             Phase::Finished if at == EventType::RunError => Ok(()),
             Phase::Finished | Phase::Failed => Err(Broke::RunEnded),
         }
+    }
+
+    /// Forgets what the run that ended had open, for the run that follows it.
+    ///
+    /// `RUN_FINISHED` found nothing open, so this is what a failed run
+    /// abandoned, and what a reader's [`end_run`](Self::end_run) left. The
+    /// subagent ids the run used go too: an id names one invocation within a
+    /// run, and the next run may announce a suspended one again. The owners
+    /// stay, because the messages they describe do.
+    fn begin_next_run(&mut self) {
+        self.streams = Streams::default();
+        self.text.clear();
+        self.tool.clear();
+        self.reasoning.clear();
+        self.blocks.clear();
+        self.steps.clear();
+        self.subagents.clear();
+        self.closed_subagents.clear();
     }
 
     // ---- one explicit event ---------------------------------------------
@@ -399,6 +429,9 @@ impl Ordering {
             Event::RunStarted(e) => {
                 if self.phase == Phase::Active {
                     return Err(Broke::RunStartedTwice);
+                }
+                if self.has_ended() {
+                    self.begin_next_run();
                 }
                 self.phase = Phase::Active;
                 // The input echo replays history the consumer applies, so it
@@ -945,18 +978,107 @@ mod tests {
             Broke::RunStartedTwice
         );
 
-        // Closed: one late RUN_ERROR, and nothing else.
+        // Closed: one late RUN_ERROR or the next run, and nothing else.
         rules.observe(&Event::run_finished("t", "r")).unwrap();
         assert_eq!(broke(&mut rules, start("m1")), Broke::RunEnded);
         assert_eq!(
-            broke(&mut rules, Event::run_started("t", "r2")),
+            broke(&mut rules, Event::run_finished("t", "r")),
             Broke::RunEnded
         );
         rules.observe(&Event::run_error("while flushing")).unwrap();
+
+        // Failed: the next run, and nothing else.
         assert_eq!(
             broke(&mut rules, Event::run_error("again")),
             Broke::RunEnded
         );
+        assert_eq!(broke(&mut rules, start("m1")), Broke::RunEnded);
+        assert!(rules.has_ended());
+        rules.observe(&Event::run_started("t", "r2")).unwrap();
+        assert!(!rules.has_ended());
+        rules.observe(&start("m1")).unwrap();
+
+        // Closed again, and the run after it starts straight away.
+        rules.observe(&Event::text_message_end("m1")).unwrap();
+        rules.observe(&Event::run_finished("t", "r2")).unwrap();
+        rules.observe(&Event::run_started("t", "r3")).unwrap();
+        assert_eq!(
+            broke(&mut rules, Event::run_started("t", "r4")),
+            Broke::RunStartedTwice
+        );
+    }
+
+    #[test]
+    fn a_new_run_starts_with_nothing_open_and_keeps_the_owners() {
+        for policy in [Policy::PRODUCER, Policy::CONSUMER] {
+            let mut rules = started(policy);
+            for event in [
+                Event::subagent_started("s1", "researcher"),
+                Event::subagent_started("s2", "writer"),
+                Event::subagent_finished_success("s2"),
+                start("m1").with_subagent_run_id("s1"),
+                Event::tool_call_start("c1", "search"),
+                Event::reasoning_start("r1"),
+                Event::reasoning_message_start("r1"),
+                Event::step_started("plan"),
+                text_chunk(Some("m2"), "a"),
+                // The failed run abandons all of it.
+                Event::run_error("the model hung up"),
+                Event::run_started("t", "r2"),
+            ] {
+                rules.observe(&event).unwrap();
+            }
+            assert_eq!(rules.open(), OpenSets::default(), "{policy:?}");
+
+            // Nothing the failed run opened can be continued ...
+            assert!(matches!(
+                broke(&mut rules, Event::text_message_content("m1", "x")),
+                Broke::NotOpen { .. }
+            ));
+            assert!(matches!(
+                broke(&mut rules, text_chunk(None, "b")),
+                Broke::Chunk(ChunkError::NothingOpen { .. })
+            ));
+            assert!(matches!(
+                broke(&mut rules, Event::step_finished("plan")),
+                Broke::StepNotRunning { .. }
+            ));
+            assert!(matches!(
+                broke(&mut rules, Event::subagent_finished_success("s1")),
+                Broke::SubagentNotActive { .. }
+            ));
+            // ... each id may be opened again, a finished subagent's included ...
+            for event in [
+                Event::step_started("plan"),
+                Event::step_finished("plan"),
+                Event::subagent_started("s2", "writer"),
+                Event::subagent_finished_success("s2"),
+            ] {
+                rules.observe(&event).unwrap();
+            }
+            // ... and the first writer of an id is still its owner.
+            assert!(matches!(
+                broke(&mut rules, start("m1").with_subagent_run_id("s2")),
+                Broke::OwnerMismatch { .. }
+            ));
+            rules
+                .observe(&Event::tool_call_result("m3", "c1", "ok"))
+                .expect("a call the run before introduced is known");
+            rules.observe(&Event::run_finished("t", "r2")).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_rejected_run_started_changes_nothing() {
+        let mut rules = started(Policy::PRODUCER);
+        rules.observe(&start("m1")).unwrap();
+        rules.observe(&text_chunk(Some("m2"), "a")).unwrap();
+        let before = format!("{rules:?}");
+        assert_eq!(
+            broke(&mut rules, Event::run_started("t", "r2")),
+            Broke::RunStartedTwice
+        );
+        assert_eq!(format!("{rules:?}"), before);
     }
 
     #[test]

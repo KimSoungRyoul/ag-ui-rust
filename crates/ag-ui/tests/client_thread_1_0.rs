@@ -42,14 +42,20 @@ async fn official_fatal_streams_end_the_thread_run_at_the_first_violation() {
         let (thread_id, events) = official_stream(fixture);
         let mut thread = Thread::new(ReplayTransport::new(events).matching_requests(), thread_id);
         let updates: Vec<_> = thread.send("go").expect("request accepted").collect().await;
-        assert!(
-            matches!(updates.last(), Some(Update::Done(RunEnd::Failed { .. }))),
-            "{expected}: {updates:?}"
-        );
-        let Some(Update::Error(error)) = updates.get(updates.len() - 2) else {
-            panic!("{expected}: a fatal error must precede Done: {updates:?}");
+        // The error, then the run it ended, then the stream.
+        let [
+            ..,
+            Update::Error(error),
+            Update::RunEnded(run),
+            Update::Done(end),
+        ] = &updates[..]
+        else {
+            panic!("{expected}: a fatal error must precede the endings: {updates:?}");
         };
         assert!(error.to_string().contains(expected), "{error}");
+        assert!(matches!(end, RunEnd::Failed { .. }), "{expected}: {end:?}");
+        assert!(run.requested, "{expected}: {run:?}");
+        assert_eq!(&run.end, end, "{expected}");
         assert_eq!(
             thread.messages().len(),
             1,
@@ -127,41 +133,6 @@ async fn a_run_error_after_run_finished_fails_the_run() {
 }
 
 #[tokio::test]
-async fn a_later_run_on_the_stream_is_left_unread_without_failing_the_first() {
-    // 1.0 lets RUN_STARTED follow a closed run. Until a thread reads several
-    // runs (#44), the first run keeps the outcome it reported, and the
-    // diagnostic says the rest was not read — not that it was malformed.
-    for verify in [true, false] {
-        let transport = ReplayTransport::new([
-            Event::run_started("t", "r"),
-            Event::run_finished_success("t", "r"),
-            Event::run_started("t", "r-later"),
-            Event::text_message_start("later-m-1", TextMessageRole::Assistant),
-            Event::text_message_end("later-m-1"),
-            Event::run_finished_success("t", "r-later"),
-        ])
-        .matching_requests();
-        let mut thread = Thread::<_>::builder(transport, "t")
-            .verify(verify)
-            .build()
-            .unwrap();
-        let report = thread.send("go").unwrap().collect_report().await;
-        assert_eq!(
-            report.end,
-            RunEnd::Success { result: None },
-            "verify {verify}"
-        );
-        assert_eq!(report.diagnostics.len(), 1, "verify {verify}: {report:?}");
-        assert_eq!(report.diagnostics[0].kind, "unsupported");
-        assert!(
-            report.diagnostics[0].message.contains("later run"),
-            "{report:?}"
-        );
-        assert_eq!(thread.messages().len(), 1, "the later run is not applied");
-    }
-}
-
-#[tokio::test]
 async fn a_late_run_error_withdraws_the_outcome_it_follows() {
     // The interrupts a RUN_FINISHED reported belong to a run that then failed:
     // nothing is pending, and nothing is announced.
@@ -205,13 +176,15 @@ async fn a_run_started_inside_an_active_run_is_reported_as_nested() {
         assert!(
             report.diagnostics[0]
                 .message
-                .contains("RUN_STARTED arrived twice in one stream"),
+                .contains("RUN_STARTED arrived while a run was still active"),
             "{run_id}: {report:?}"
         );
+        // One run was being read, and the nested one never became a second.
+        assert_eq!(report.runs.len(), 1, "{run_id}: {report:?}");
     }
 
-    // Ordering verification off leaves the pairing of ids, which still fails
-    // a run that is not the one requested.
+    // Ordering verification off leaves the pairing of runs, which still
+    // fails a run that opens inside another.
     let transport =
         ReplayTransport::new([Event::run_started("t", "r"), Event::run_started("t", "r-2")])
             .matching_requests();
@@ -223,7 +196,7 @@ async fn a_run_started_inside_an_active_run_is_reported_as_nested() {
     assert!(
         report.diagnostics[0]
             .message
-            .contains("does not match the requested thread and run IDs"),
+            .contains("RUN_STARTED arrived while a run was still active"),
         "{report:?}"
     );
 }
@@ -743,7 +716,10 @@ async fn a_pause_that_takes_effect_when_the_run_stops_can_be_declined_once_expir
         });
         let mut thread = Thread::new(transport.clone(), "t");
         let mut run = thread.send("go").unwrap();
-        assert!(run.next().now_or_never().is_none(), "Done before the end");
+        assert!(
+            run.next().now_or_never().is_none(),
+            "the pause before the stream said what follows it"
+        );
         if drop_it {
             drop(run);
         } else {
@@ -751,8 +727,12 @@ async fn a_pause_that_takes_effect_when_the_run_stops_can_be_declined_once_expir
             let updates: Vec<_> = run.collect().await;
             assert!(
                 matches!(
-                    updates.last(),
-                    Some(Update::Done(RunEnd::Interrupted { .. }))
+                    &updates[..],
+                    [
+                        Update::Interrupt(_),
+                        Update::RunEnded(_),
+                        Update::Done(RunEnd::Interrupted { .. })
+                    ]
                 ),
                 "{updates:?}"
             );
@@ -779,7 +759,8 @@ async fn a_pause_that_takes_effect_when_the_run_stops_can_be_declined_once_expir
         assert!(thread.interrupts().is_empty(), "drop {drop_it}");
     }
 
-    // And when a later run on the same stream ends the first one.
+    // And when a later run on the same stream ends the first one: the pause
+    // took effect, and stays when the run after it is cut short.
     let transport = ReplayTransport::with_runs([
         vec![
             Event::run_started("t", "r"),
@@ -791,8 +772,9 @@ async fn a_pause_that_takes_effect_when_the_run_stops_can_be_declined_once_expir
     .matching_requests();
     let mut thread = Thread::new(transport, "t");
     let report = thread.send("go").unwrap().collect_report().await;
+    assert!(matches!(report.end, RunEnd::Failed { .. }), "{report:?}");
     assert!(
-        matches!(report.end, RunEnd::Interrupted { .. }),
+        matches!(report.runs[0].end, RunEnd::Interrupted { .. }),
         "{report:?}"
     );
     let pending = thread.interrupts()[0].clone();
