@@ -342,6 +342,17 @@ These are on `main` and not yet in a published version.
 - The message of `Error::Pointer` quotes at most `error::MAX_SHOWN_PATH_CHARS` (120)
   characters of the path and states its length; so do the validator's sentences about
   a binding path. The `pointer` field still holds the whole path.
+- `ag-ui-a2ui` has a new feature, `agent`, and a module behind it,
+  `ag_ui_a2ui::agent`: catalog negotiation (`RendererCapabilities`, `resolve_catalogs`),
+  `A2uiGenerator` and the per-request `A2uiRequestProcessor`, the `OutputFormat` trait
+  with `DirectJson`, `RendererState`, `ResponseStream` and `RetryDriver`. alpha.3 had no
+  such layer; `toolkit` and `A2uiAuthor` are unchanged and still there. The feature is
+  off by default: enable it with `features = ["agent"]`.
+- `SchemaBundle`, `SCHEMA_BLOCK_START`, `SCHEMA_BLOCK_END`, `remove_strict_validation`
+  and `DEFAULT_CUTTABLE_KEYS` are defined in the new module `ag_ui_a2ui::schema`, which
+  needs no feature. alpha.3 defined them in `toolkit::schema` and `toolkit::streaming`,
+  where they are still re-exported, so existing paths compile. New code can write
+  `ag_ui_a2ui::schema::SchemaBundle`.
 
 ## Verify the upgrade
 

@@ -149,6 +149,7 @@ jobs:
       - run: cargo check --all-targets -p ag-ui --features axum
       - run: cargo check --all-targets -p ag-ui --all-features
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features
+      - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features agent
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features toolkit
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features ag-ui
       - run: cargo check --all-targets -p ag-ui-a2ui --no-default-features --features schema-validation
@@ -310,6 +311,7 @@ jobs:
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features http
       - run: cargo doc --no-deps -p ag-ui --no-default-features --features axum
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features
+      - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features agent
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features toolkit
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features ag-ui
       - run: cargo doc --no-deps -p ag-ui-a2ui --no-default-features --features schema-validation
