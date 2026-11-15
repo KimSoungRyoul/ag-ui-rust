@@ -126,6 +126,27 @@ pub enum Changed {
 ///
 /// `#[non_exhaustive]`: read the fields, match with `..`, and build one, to
 /// compare with what [`Applier::apply`] returned, with [`MessageChange::new`].
+///
+/// ```
+/// use ag_ui::client::apply::{Applier, Changed, MessageChange, MessageChangeKind};
+/// use ag_ui::{Event, TextMessageRole};
+///
+/// let mut applier = Applier::new();
+/// let started = applier.apply(&Event::text_message_start("m-1", TextMessageRole::Assistant))?;
+/// assert_eq!(
+///     started,
+///     Changed::Message(MessageChange::new(0, "m-1", MessageChangeKind::Started))
+/// );
+/// # Ok::<(), ag_ui::client::Error>(())
+/// ```
+///
+/// A struct literal does not compile outside this crate:
+///
+/// ```compile_fail,E0639
+/// use ag_ui::client::apply::{MessageChange, MessageChangeKind};
+///
+/// let change = MessageChange { index: 0, id: "m-1".into(), kind: MessageChangeKind::Ended };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct MessageChange {
@@ -205,7 +226,14 @@ pub enum MessageChangeKind {
 ///
 /// `#[non_exhaustive]`: read the fields, match with `..`, and build one, to
 /// compare with what [`Applier::apply`] returned, with
-/// [`ReasoningChange::new`].
+/// [`ReasoningChange::new`]. A struct literal does not compile outside this
+/// crate:
+///
+/// ```compile_fail,E0639
+/// use ag_ui::client::apply::{ReasoningChange, ReasoningChangeKind};
+///
+/// let change = ReasoningChange { index: 0, id: "r-1".into(), kind: ReasoningChangeKind::Ended };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct ReasoningChange {
@@ -317,7 +345,14 @@ pub enum SubagentStatus {
 ///
 /// `#[non_exhaustive]`: read the fields, match with `..`, and build one, to
 /// compare with what [`Applier::apply`] returned, with
-/// [`SubagentChange::new`].
+/// [`SubagentChange::new`]. A struct literal does not compile outside this
+/// crate:
+///
+/// ```compile_fail,E0639
+/// use ag_ui::client::apply::{SubagentChange, SubagentChangeKind};
+///
+/// let change = SubagentChange { index: 0, run_id: "s-1".into(), kind: SubagentChangeKind::Finished };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct SubagentChange {

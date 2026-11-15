@@ -43,6 +43,30 @@ fn current_protocol_version() -> Option<String> {
 /// assert_eq!(thread.messages().len(), 1);
 /// # Ok::<(), ag_ui::client::Error>(())
 /// ```
+///
+/// A struct literal does not compile outside this crate, so a field added
+/// later breaks no caller:
+///
+/// ```compile_fail,E0639
+/// use ag_ui::client::ThreadSnapshot;
+///
+/// let snapshot = ThreadSnapshot {
+///     version: 2,
+///     thread_id: "thread-1".into(),
+///     protocol_version: None,
+///     messages: Vec::new(),
+///     state: serde_json::json!({}),
+///     reasoning: Vec::new(),
+///     subagents: Vec::new(),
+///     interrupts: Vec::new(),
+///     decided_interrupt_tool_call_ids: Vec::new(),
+///     abandoned: Vec::new(),
+///     submission: None,
+///     run_ids: Vec::new(),
+///     last_run_end: None,
+///     active_run_id: None,
+/// };
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ThreadSnapshot {

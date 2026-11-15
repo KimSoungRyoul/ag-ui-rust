@@ -35,7 +35,19 @@ pub struct ResumeSubmission {
 ///
 /// A thread holds one from the dispatch of a resume until the requested run
 /// reports `RUN_FINISHED`, whatever its outcome. `#[non_exhaustive]`: match
-/// with a wildcard arm.
+/// with a wildcard arm. A match without one does not compile outside this
+/// crate:
+///
+/// ```compile_fail,E0004
+/// use ag_ui::client::SubmissionStatus;
+///
+/// fn word(status: &SubmissionStatus) -> &'static str {
+///     match status {
+///         SubmissionStatus::InFlight => "in flight",
+///         SubmissionStatus::Unconfirmed => "unconfirmed",
+///     }
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum SubmissionStatus {
