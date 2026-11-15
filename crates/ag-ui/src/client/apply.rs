@@ -476,7 +476,8 @@ impl Applier {
     }
 
     /// The interrupts the last `RUN_FINISHED` paused on. Empty unless the run
-    /// is waiting for human input; cleared when the next run starts.
+    /// is waiting for human input; cleared when the next run starts, and by
+    /// `RUN_ERROR` — a failed run waits for nothing.
     pub fn interrupts(&self) -> &[Interrupt] {
         &self.interrupts
     }
@@ -628,10 +629,15 @@ impl Applier {
                     result: e.result.clone(),
                 })
             }
-            Event::RunError(e) => Ok(Changed::RunError {
-                message: e.message.clone(),
-                code: e.code.clone(),
-            }),
+            // Even after RUN_FINISHED: a late failure fails the run that
+            // paused, so what it paused on is no longer asked.
+            Event::RunError(e) => {
+                self.interrupts.clear();
+                Ok(Changed::RunError {
+                    message: e.message.clone(),
+                    code: e.code.clone(),
+                })
+            }
 
             Event::StepStarted(_) | Event::StepFinished(_) | Event::Raw(_) | Event::Custom(_) => {
                 Ok(Changed::Nothing)

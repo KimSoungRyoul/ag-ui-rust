@@ -305,6 +305,12 @@ async fn lost_response_run_error_and_invalid_terminal_keep_unconfirmed_submissio
     let error_cases = [
         vec![Event::run_started("t", "r")],
         vec![Event::run_started("t", "r"), Event::run_error("failed")],
+        vec![Event::run_error("failed before the run began")],
+        vec![
+            Event::run_started("t", "r"),
+            Event::run_finished_success("t", "r"),
+            Event::run_error("failed after reporting success"),
+        ],
         vec![
             Event::run_started("t", "r"),
             Event::step_started("open"),
@@ -518,6 +524,75 @@ async fn terminal_application_wins_late_abort_and_old_handle_cannot_cancel_next_
         thread.send("second").unwrap().collect_report().await.end,
         RunEnd::Success { .. }
     ));
+}
+
+/// Reports success, then fails the connection or holds it open.
+struct AfterSuccess {
+    connection_fails: bool,
+}
+impl Transport for AfterSuccess {
+    fn run(&self, input: RunAgentInput) -> TransportFuture {
+        let events = [
+            Ok(Event::run_started(
+                input.thread_id.clone(),
+                input.run_id.clone(),
+            )),
+            Ok(Event::run_finished_success(input.thread_id, input.run_id)),
+        ];
+        let rest = if self.connection_fails {
+            boxed_stream(futures_util::stream::iter([Err(Error::Transport(
+                "connection reset".into(),
+            ))]))
+        } else {
+            boxed_stream(futures_util::stream::pending())
+        };
+        Box::pin(async move { Ok(boxed_stream(futures_util::stream::iter(events).chain(rest))) })
+    }
+}
+
+#[tokio::test]
+async fn a_reported_success_waits_for_the_stream_and_outlives_a_local_stop() {
+    use futures_util::FutureExt;
+    // A RUN_ERROR may still follow RUN_FINISHED, so the run is not over until
+    // the stream is. Stopping locally in that window keeps the outcome the
+    // server already reported, as stopping after `Done` does.
+    for drop_it in [false, true] {
+        let mut thread = Thread::new(
+            AfterSuccess {
+                connection_fails: false,
+            },
+            "t",
+        );
+        let mut run = thread.send("go").unwrap();
+        assert!(run.next().now_or_never().is_none(), "Done before the end");
+        if !drop_it {
+            run.abort();
+            assert!(matches!(
+                run.next().await,
+                Some(Update::Done(RunEnd::Success { .. }))
+            ));
+            assert!(run.next().await.is_none());
+        }
+        drop(run);
+        assert!(
+            matches!(thread.last_run_end(), Some(RunEnd::Success { .. })),
+            "{:?}",
+            thread.last_run_end()
+        );
+    }
+
+    // A connection that breaks after the run closed truncates nothing: the
+    // break is reported, and the run keeps its outcome.
+    let mut thread = Thread::new(
+        AfterSuccess {
+            connection_fails: true,
+        },
+        "t",
+    );
+    let report = thread.send("go").unwrap().collect_report().await;
+    assert!(matches!(report.end, RunEnd::Success { .. }), "{report:?}");
+    assert_eq!(report.diagnostics.len(), 1, "{report:?}");
+    assert_eq!(report.diagnostics[0].kind, "transport");
 }
 
 #[tokio::test]
