@@ -852,6 +852,42 @@ These are on `main` and not yet in a published version.
 | `agui::A2uiRunContextExt`, `ctx.send_a2ui(&surface)?` | `let mut painter = SurfacePainter::from_history(ctx.messages()).map_err(Error::agent)?;` once in the run, then `painter.paint(ctx, surface.operations())?` |
 | A tool result unwrapped by hand: `serde_json::from_str`, `is_operations_envelope`, `unwrap_operations_envelope` | `adapters::agui::operations_in(&message)` |
 
+- New: `Runner::into_parts(input)` returns a run as its two halves, the future that
+  drives the agent and the `EventReceiver` of what it emits. Alpha.3 had only
+  `Runner::run`, whose stream drives the agent and drops it when the stream is dropped.
+  `run` is unchanged and is now the two halves joined. For a run that outlives its
+  response, write `let (driver, events) = runner.into_parts(input);`, put `driver` on
+  your own executor, poll it to completion, and drop it when `events` ends.
+- New: `Runner::continue_run(input, &sent)` drives a run that another driver began,
+  given the events already sent. It emits no `RUN_STARTED`, and its ordering checks,
+  state baseline, active subagents and id counters start from `sent`. Alpha.3 always
+  began a run at `RUN_STARTED` with a fresh verifier. It returns the same halves as
+  `into_parts`, or an error when `sent` holds no run to continue.
+- `EventVerifier::seed` is public, and `EventVerifier::replay` is new. Alpha.3 kept
+  `seed` to the crate, so a verifier used on its own rejected a `TOOL_CALL_RESULT` for
+  a call made by an earlier run unless `RUN_STARTED` echoed the input. To verify a run
+  that continues elsewhere, write `verifier.seed(&request.messages)`, then
+  `verifier.replay(&sent)?`, then `observe` each later event.
+- New: `server::RunProgress` folds the events of a run so far into what the run has
+  open (`open()`, as `OpenEntity`) and builds the `Prelude` a client that joins the run
+  is sent first: `progress.prelude().messages(conversation).into_events()`. Alpha.3
+  had neither; a server replayed every stored event to a joining client or built the
+  prelude by hand.
+- New: a supported way to have two runs in flight on one conversation. Alpha.3 had
+  none: `send` borrows its thread until the stream ends, and two threads made with the
+  same thread id each kept only their own messages. Hold two threads, the second from
+  `Thread::restore(transport, main.snapshot())`, and once both streams have ended write
+  `main.merge_messages_from(&side)?`. `main` takes the messages it lacks, by id, after
+  its own, with a tool result behind the message that holds its call. An id both hold
+  with different content keeps the copy of `main` and is named in
+  `MergeReport::differing`. The merge changes nothing and returns the new
+  `client::Error::Merge` when the threads have different thread ids, when either has
+  pending interrupts, a resume submission, unanswered tool calls or a request in
+  flight, and when a tool call has a result on each thread. State is not merged: call
+  `set_state` with the value the next run should start from.
+  `client::merge_messages(ours, theirs)` applies the same rules to two lists, for a
+  view of both while a run is still open. The `client::thread` module docs have the
+  example, and `docs/DESIGN.md` the reasons.
 - The `toolkit` feature and the `toolkit` module of `ag-ui-a2ui` are gone, so a
   manifest that names `features = ["toolkit"]` stops resolving. What alpha.3's
   `toolkit` held maps to:
@@ -928,6 +964,7 @@ These are on `main` and not yet in a published version.
   for the agent card, `select_newest` and `activate` to agree on a version, and
   `renderer_capabilities(&message, version)` for what a client's message says it
   draws. alpha.3 had none of these.
+
 
 ## Verify the upgrade
 

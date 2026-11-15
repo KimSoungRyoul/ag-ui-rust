@@ -29,6 +29,37 @@
 //! assert_eq!(events.last().map(Event::event_type), Some(ag_ui::EventType::RunFinished));
 //! # });
 //! ```
+//!
+//! # A run that outlives its response
+//!
+//! Draining the stream is running the agent, so the agent stops where it is
+//! when the stream is dropped, and one stream has one reader. A request and
+//! its response need no more. A server whose runs go on after the client
+//! that started them has gone does: a second client on the same thread, a
+//! client that joins a run in progress, a run that another process carries
+//! on.
+//!
+//! Such a server stores the events and fans them out itself. Admission,
+//! storage and recovery are its own. What it takes from here:
+//!
+//! - [`Runner::into_parts`] hands out the future that drives the agent and
+//!   the receiver of what it emits. The driver goes on an executor the
+//!   server chooses, and the events go to its store.
+//! - [`Runner::continue_run`] drives a run that another driver began, from
+//!   the events already sent: no second `RUN_STARTED`, and ordering checks
+//!   that start where the run is. A server that builds its events by hand
+//!   does the same with `EventVerifier::replay`, in [`verify`].
+//! - [`RunProgress`] folds the events of a run so far into what the run has
+//!   open, and builds the prelude a client that joins it is sent first. A
+//!   client's stream has to begin with `RUN_STARTED`, so the prelude does,
+//!   and it stands for the events already sent: a client is sent one or the
+//!   other, never both.
+//!
+//! None of these spawns anything. The crate still has no executor of its
+//! own.
+//!
+//! [`verify`]: crate::server::verify
+//! [`RunProgress`]: crate::server::RunProgress
 
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -36,8 +67,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use crate::{
-    Event, RunAgentInput, RunErrorEvent, RunFinishedEvent, RunId, RunOutcome, RunStartedEvent,
-    ThreadId, TokenUsage,
+    Event, EventType, RunAgentInput, RunErrorEvent, RunFinishedEvent, RunId, RunOutcome,
+    RunStartedEvent, ThreadId, TokenUsage,
 };
 use futures_channel::mpsc;
 use futures_core::Stream;
@@ -45,9 +76,9 @@ use futures_util::StreamExt as _;
 
 use crate::server::agent::Agent;
 use crate::server::cancel::CancellationToken;
-use crate::server::context::{RunContext, Terminal, decode_state};
+use crate::server::context::{Minted, RunContext, Terminal, decode_state};
 use crate::server::emit::{EventReceiver, EventSink};
-use crate::server::error::{Error, Result};
+use crate::server::error::{Error, Result, Rule, VerificationError};
 use crate::server::transform::{StreamTransformer, TransformerChain};
 
 /// Runs `agent` against `input` with no transformers and a fresh cancellation
@@ -182,63 +213,316 @@ impl<A: Agent> Runner<A> {
     /// polling the stream, as it would through any other future. Use the
     /// transport's own panic handling if you need a response body for that
     /// case.
+    ///
+    /// # The run lives as long as the stream
+    ///
+    /// The agent advances only while the stream is polled, and is dropped
+    /// with it. A stream dropped before its terminal event leaves a run that
+    /// stopped where it was: no `RUN_FINISHED` and no `RUN_ERROR`, for
+    /// anyone. That is the right lifetime for a run that answers one
+    /// request, where the response body is the stream and a client that goes
+    /// away takes the run with it.
+    ///
+    /// It is the wrong one for a run that outlives its response. Take the
+    /// halves with [`into_parts`](Self::into_parts) instead; the [module
+    /// docs](self#a-run-that-outlives-its-response) say what else such a
+    /// server needs.
     pub fn run(self, input: RunAgentInput) -> impl Stream<Item = Event> + Send {
-        let (driver, events) = self.parts(input);
+        let (driver, events) = self.into_parts(input);
         RunStream {
             driver: Some(Box::pin(driver)),
             events,
         }
     }
 
-    /// The two halves of a run: the future that drives the agent, and the
-    /// read end of what it emits. [`run`](Self::run) joins them in one stream.
-    fn parts(self, input: RunAgentInput) -> (impl Future<Output = ()> + Send, EventReceiver) {
+    /// Starts the run as its two halves: the future that drives the agent,
+    /// and the receiver of what it emits.
+    ///
+    /// For a run that is not tied to one response. Put the driver on an
+    /// executor of your choosing and send the events wherever they are
+    /// stored and fanned out. The agent then advances whether or not anyone
+    /// is reading, and a client that disconnects ends nothing.
+    ///
+    /// Everything [`run`](Self::run) promises holds for the halves:
+    /// `RUN_STARTED` first, exactly one terminal event last, the transformer
+    /// chain, the cancellation token, the typed emitters and the ordering
+    /// checks. `run` is these two halves joined in one stream.
+    ///
+    /// ```
+    /// # use ag_ui::{Event, EventType, RunAgentInput, RunOutcome};
+    /// # use ag_ui::server::{Agent, Result, RunContext, Runner};
+    /// # use futures_util::StreamExt;
+    /// # struct Greeter;
+    /// # impl Agent for Greeter {
+    /// #     type State = ();
+    /// #     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+    /// #         ctx.say("hello")?;
+    /// #         Ok(RunOutcome::Success)
+    /// #     }
+    /// # }
+    /// # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    /// # rt.block_on(async {
+    /// let runner = Runner::new(Greeter);
+    /// let (driver, mut events) = runner.into_parts(RunAgentInput::new("thread-1", "run-1"));
+    ///
+    /// // Any executor will do: the driver is a plain future.
+    /// let run = tokio::spawn(driver);
+    ///
+    /// // Store each event, and send it to whoever is on the thread now.
+    /// let mut stored = Vec::new();
+    /// while let Some(event) = events.next().await {
+    ///     stored.push(event);
+    /// }
+    /// // The receiver ended, so nothing more will arrive: stop the driver.
+    /// run.abort();
+    ///
+    /// assert_eq!(stored.first().map(Event::event_type), Some(EventType::RunStarted));
+    /// assert_eq!(stored.last().map(Event::event_type), Some(EventType::RunFinished));
+    /// # });
+    /// ```
+    ///
+    /// # What the stream did for you
+    ///
+    /// Three things, which are now the caller's:
+    ///
+    /// - **Poll the driver to completion.** The terminal event is emitted by
+    ///   the driver, after the agent returns. A driver dropped earlier ends
+    ///   the receiver with no terminal event.
+    /// - **Drop the driver when the receiver ends.** The receiver ends when
+    ///   the driver has finished, and also when a bounded queue overflows
+    ///   ([`event_buffer_capacity`](Self::event_buffer_capacity)): the sink
+    ///   then queues its `RUN_ERROR` and closes. An agent that ignores the
+    ///   error its emit returned can go on awaiting forever, and nothing it
+    ///   does after that reaches anyone.
+    /// - **Keep the receiver, or cancel.** Dropping the receiver fails every
+    ///   later emit with [`Error::Disconnected`], which unwinds an agent that
+    ///   uses `?`. To stop a run on purpose, trip the
+    ///   [`cancellation_token`](Self::cancellation_token): the run then
+    ///   closes what it opened and ends with a cancelled `RUN_FINISHED`.
+    ///
+    /// The receiver holds one run's events for one reader. Giving them to
+    /// several clients, and to one that joins later, is the application's:
+    /// [`RunProgress`](crate::server::RunProgress) builds what a client that
+    /// joins a run in progress is sent first.
+    pub fn into_parts(
+        self,
+        input: RunAgentInput,
+    ) -> (impl Future<Output = ()> + Send, EventReceiver) {
+        let echo_input = self.echo_input;
+        let (agent, sink, events) = self.split();
+        let opening = Opening::Start { echo_input };
+        (drive(agent, input, sink, opening), events)
+    }
+
+    /// Carries on a run that another driver began: the same halves as
+    /// [`into_parts`](Self::into_parts), for a run whose first events are
+    /// already sent.
+    ///
+    /// `sent` is every event of the run that went out, in order, as stored.
+    /// It may begin with the runs that came before on the same stream; the
+    /// run continued is the last one it starts. `input` is the request the
+    /// run is continued from: the thread and run ids of the run, the
+    /// `messages` it started with, and the state as it stands now, which
+    /// the agent reads as its own.
+    ///
+    /// The driver emits no `RUN_STARTED`, and it ends the run with exactly
+    /// one terminal event, as any driver does. What it emits continues the
+    /// stream that `sent` began:
+    ///
+    /// - the ordering checks start from where the run is, so an entity the
+    ///   earlier driver left open can be continued and closed, and has to be
+    ///   closed before `RUN_FINISHED`;
+    /// - the first state the agent publishes is compared with the state the
+    ///   events sent left a client holding, and goes out as a delta against
+    ///   it;
+    /// - a subagent left active is closed by the agent, or by the driver when
+    ///   the run is cancelled;
+    /// - the ids the context hands out count on from the ones `sent` used.
+    ///
+    /// The transformers start fresh, seeded with `input.messages`. `sent` is
+    /// their output, and they are fed what the agent emits: a transformer
+    /// that remembers something across events, such as
+    /// [`FilterToolCalls`](crate::server::FilterToolCalls) and the calls it
+    /// dropped, has not seen the earlier part of the run.
+    ///
+    /// An entity the earlier driver opened has no handle here. Continue and
+    /// close it with [`RunContext::emit`], naming its id.
+    /// [`echo_input`](Self::echo_input) has nothing to echo on, since no
+    /// `RUN_STARTED` is sent.
+    ///
+    /// ```
+    /// # use ag_ui::{Event, EventType, RunAgentInput, RunOutcome, TextMessageRole};
+    /// # use ag_ui::server::{Agent, Result, RunContext, Runner};
+    /// # use futures_util::StreamExt;
+    /// /// Finishes the sentence another process left open.
+    /// struct Finisher;
+    ///
+    /// impl Agent for Finisher {
+    ///     type State = ();
+    ///     async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+    ///         ctx.emit(Event::text_message_content("msg-1", " world"))?;
+    ///         ctx.emit(Event::text_message_end("msg-1"))?;
+    ///         Ok(RunOutcome::Success)
+    ///     }
+    /// }
+    ///
+    /// # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    /// # rt.block_on(async {
+    /// // What the store holds of the run: the process driving it stopped here.
+    /// let sent = [
+    ///     Event::run_started("thread-1", "run-1"),
+    ///     Event::text_message_start("msg-1", TextMessageRole::Assistant),
+    ///     Event::text_message_content("msg-1", "Hello"),
+    /// ];
+    ///
+    /// let request = RunAgentInput::new("thread-1", "run-1");
+    /// let (driver, events) = Runner::new(Finisher).continue_run(request, &sent)?;
+    /// tokio::spawn(driver);
+    ///
+    /// let rest: Vec<EventType> = events.map(|event| event.event_type()).collect().await;
+    /// assert_eq!(
+    ///     rest,
+    ///     [
+    ///         EventType::TextMessageContent,
+    ///         EventType::TextMessageEnd,
+    ///         EventType::RunFinished,
+    ///     ]
+    /// );
+    /// # Ok::<(), ag_ui::server::Error>(())
+    /// # })?;
+    /// # Ok::<(), ag_ui::server::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Nothing is driven and nothing is emitted when there is no run to
+    /// continue:
+    ///
+    /// - [`Error::Verification`] when `sent` holds no `RUN_STARTED`, when
+    ///   the last run it starts already ended, or, with the `verify`
+    ///   feature, when an event in it breaks the ordering rules: the error
+    ///   is that event's;
+    /// - [`Error::Protocol`] when `input` names another thread or run than
+    ///   the last `RUN_STARTED` in `sent`.
+    pub fn continue_run(
+        self,
+        input: RunAgentInput,
+        sent: &[Event],
+    ) -> Result<(impl Future<Output = ()> + Send + use<A>, EventReceiver)> {
+        let (agent, mut sink, events) = self.split();
+        // As the first driver did before its first event: a result in `sent`
+        // may answer a call the request's history introduced.
+        sink.seed(&input.messages);
+        let mut minted = Minted::default();
+        let mut started = None;
+        let mut ended = None;
+        for event in sent {
+            sink.replay(event)?;
+            minted.note(&input.run_id, event);
+            match event {
+                // The run to continue is the last one `sent` starts: the
+                // ones before it are the stream's history.
+                Event::RunStarted(event) => {
+                    started = Some(event);
+                    ended = None;
+                }
+                Event::RunFinished(_) | Event::RunError(_) => ended = Some(event.event_type()),
+                _ => {}
+            }
+        }
+        let nothing_to_continue = |event, rule, why: &str| {
+            let detail = format!("there is no run to continue: {why}");
+            Error::from(VerificationError::new(event, rule, detail))
+        };
+        if let Some(terminal) = ended {
+            return Err(nothing_to_continue(
+                terminal,
+                Rule::RunEnded,
+                "the run already ended",
+            ));
+        }
+        let Some(started) = started else {
+            return Err(nothing_to_continue(
+                EventType::RunStarted,
+                Rule::OutOfOrder,
+                "no RUN_STARTED was sent",
+            ));
+        };
+        if started.thread_id != input.thread_id || started.run_id != input.run_id {
+            return Err(Error::Protocol(crate::Error::Protocol(format!(
+                "the run that was started is {:?} on thread {:?}, and the input to continue it \
+                 names run {:?} on thread {:?}",
+                started.run_id.as_str(),
+                started.thread_id.as_str(),
+                input.run_id.as_str(),
+                input.thread_id.as_str(),
+            ))));
+        }
+        let opening = Opening::Continue { minted };
+        Ok((drive(agent, input, sink, opening), events))
+    }
+
+    /// The agent, the write end of its event stream and the read end.
+    fn split(self) -> (A, EventSink, EventReceiver) {
         let Self {
             agent,
             chain,
             cancel,
-            echo_input,
+            echo_input: _,
             event_buffer_capacity,
         } = self;
         let (tx, rx) = mpsc::unbounded();
         let sink =
             EventSink::new(tx, chain, cancel).with_event_buffer_capacity(event_buffer_capacity);
-        (
-            drive(agent, input, sink, echo_input),
-            EventReceiver::new(rx),
-        )
+        (agent, sink, EventReceiver::new(rx))
     }
 }
 
-/// Emits `RUN_STARTED`, runs the agent, and emits the terminal event.
+/// How a driver opens its part of the run.
+enum Opening {
+    /// With `RUN_STARTED`: the run begins here.
+    Start { echo_input: bool },
+    /// With nothing: an earlier driver began the run, and the sink already
+    /// holds what it sent.
+    Continue { minted: Minted },
+}
+
+/// Opens the run, runs the agent, and emits the terminal event.
 ///
 /// Takes the sink by value and only hands it to the context for the duration of
 /// the agent's call: whatever happens in there, the terminal event still goes
 /// through the same transformers and the same verifier.
-async fn drive<A: Agent>(agent: A, input: RunAgentInput, mut sink: EventSink, echo_input: bool) {
+async fn drive<A: Agent>(agent: A, input: RunAgentInput, mut sink: EventSink, opening: Opening) {
     let thread_id = input.thread_id.clone();
     let run_id = input.run_id.clone();
 
-    // The history is the request's whether or not RUN_STARTED echoes it: a
-    // resumed run may answer a tool call the interrupted run opened.
-    sink.seed(&input.messages);
-    let mut started = RunStartedEvent::new(thread_id.clone(), run_id.clone());
-    started.parent_run_id = input.parent_run_id.clone();
-    if echo_input {
-        started.input = Some(Box::new(input.clone()));
-    }
-    if sink.emit_forced(started.into()).is_err() {
-        // Nobody is listening, or RUN_STARTED was rejected. Either way there is
-        // no run to report on.
-        return;
-    }
+    let minted = match opening {
+        Opening::Start { echo_input } => {
+            // The history is the request's whether or not RUN_STARTED echoes
+            // it: a resumed run may answer a tool call the interrupted run
+            // opened.
+            sink.seed(&input.messages);
+            let mut started = RunStartedEvent::new(thread_id.clone(), run_id.clone());
+            started.parent_run_id = input.parent_run_id.clone();
+            if echo_input {
+                started.input = Some(Box::new(input.clone()));
+            }
+            if sink.emit_forced(started.into()).is_err() {
+                // Nobody is listening, or RUN_STARTED was rejected. Either way
+                // there is no run to report on.
+                return;
+            }
+            Minted::default()
+        }
+        Opening::Continue { minted } => minted,
+    };
 
     // Decoded before the match so the borrow of `input` ends here: the context
     // takes the input by value on the next line.
     let decoded = decode_state::<A::State>(&input.state);
     let (outcome, terminal) = match decoded {
         Ok(state) => {
-            let mut ctx = RunContext::from_parts(input, state, sink);
+            let mut ctx = RunContext::from_parts(input, state, sink, minted);
             let outcome = agent.run(&mut ctx).await;
             if ctx.is_terminated() {
                 // The agent emitted its own terminal event through `emit`.

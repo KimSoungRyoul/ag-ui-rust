@@ -304,3 +304,62 @@ terminate with children open.
 
 The 0.4 migration is in `migration-0.4.md`; `sdk-api-improvement-proposal.ko.md` keeps the
 0.3 → 0.4 design record as history.
+
+## Two runs at once on one conversation
+
+An application may want two runs in flight for one conversation: a long "write the report"
+run, and a quick question asked while it works. The supported way is two `Thread` values
+with the same thread id, each holding the conversation as it stood, and
+`Thread::merge_messages_from` once both streams have ended. The thread that took the
+other's messages sends the next request. State is not merged
+([#45](https://github.com/KimSoungRyoul/ag-ui-rust/issues/45)).
+
+The alternative was a run handle that does not borrow the thread (`thread.spawn(..)`): the
+transcript behind shared ownership, an applier per run merged by message id as events
+arrive, and a rule for state chosen by the SDK, last writer wins or state kept per run.
+It was not built, for four reasons.
+
+- **The protocol gives no rule to implement.** AG-UI 1.0 describes a thread as runs in
+  sequence. State "persists across runs on a thread until an event replaces it, and the
+  next run's input carries it back" (`events/state`); a resume answers "the most recent
+  interrupted run on the thread" (`basic/patterns/interrupt-resume`). Nothing says what
+  two runs open at once do to the state they share, or which of two interrupted runs a
+  resume continues. Whatever the SDK applied silently would be its own invention, and
+  would read as the protocol's.
+- **The reference client does not do it either.** Measured against `@ag-ui/client` 1.0.2:
+  two `runAgent` calls in flight on one agent, or a run and a `connectAgent` stream, each
+  take their own copy of the message list and write it back whole. When the longer one
+  ends, the shorter one's question and reply are gone from `agent.messages`, and nothing
+  reports an error. CopilotKit (`@copilotkit/react-core` 1.88.0) does not rely on it: it
+  awaits `detachActiveRun()` before it connects the same agent again.
+- **A `Thread` owes things to one request at a time**: one resume submission, one set of
+  pending interrupts, one last run end, and the list of messages still open, which every
+  request clears when it is dispatched and when it ends. Splitting those per request is a
+  rewrite, and the semantics it would need are the ones the protocol does not give.
+- **The unsupported use does not compile.** `Thread::send` borrows the thread mutably, so
+  a second request while the first stream is alive is `E0499`, and a doctest in
+  `client::thread` holds that. A compile error is the honest signal: the alternative is a
+  runtime rule nobody chose.
+
+What the merge does is narrow on purpose. A message id is unique within its thread (1.0,
+`basic`), so which message is which needs no judgment: the thread keeps its messages as
+they are and takes the other's that it lacks. The one message it places is a tool result,
+behind the message that holds its call, which is where the reference client puts a
+`TOOL_CALL_RESULT`. That is a property of the merged list and not of the order either
+thread kept, so the list is the same wherever a thread's applier left a result that
+arrived late.
+
+Two things had to be fixed for the result to be the same every time, and the caller picks
+both by picking which thread takes the other's. That thread's messages come first. And
+where both hold an id with different content, that thread's copy stays and the id is
+reported, because nothing on a message says which copy is newer.
+
+What cannot be merged without choosing is refused instead. Pending interrupts, a resume
+submission and unanswered tool calls belong to the thread that has them, so a thread with
+any is not merged until it has settled them itself; a tool call both threads answered has
+two results where the protocol expects one, and the merge does not pick. The state of the
+two threads is left exactly as it was: the application reads both and calls `set_state`.
+
+`merge_messages` is the same rule on two lists, for a view of both threads while either is
+still running. It cannot see interrupts or submissions, which is why the thread, and not
+the list, is what a request is sent from.

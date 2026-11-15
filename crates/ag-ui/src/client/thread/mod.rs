@@ -35,11 +35,102 @@
 //!
 //! [`Thread::unanswered_tool_calls`] reads the conversation, so a call any
 //! run left without a result is owed.
+//!
+//! # Two runs at once
+//!
+//! A request borrows its thread until its stream ends, so one [`Thread`] has
+//! one request in flight. A second one does not compile:
+//!
+//! ```compile_fail,E0499
+//! use ag_ui::client::{Thread, transport::ReplayTransport};
+//!
+//! let mut thread = Thread::new(ReplayTransport::new([]), "thread-1");
+//! let long = thread.send("Write the report").unwrap();
+//! let quick = thread.send("What time is it?").unwrap(); // `thread` is still borrowed
+//! drop((long, quick));
+//! ```
+//!
+//! That is deliberate. A thread tracks what one request owes: its resume
+//! submission, the interrupts it left pending, how it ended. AG-UI 1.0
+//! describes a thread as runs in sequence and does not say how two runs open
+//! at once reconcile their messages or the state they share.
+//!
+//! For a quick question while a long run works on the same conversation, use
+//! two threads with the same thread id, each holding the conversation as it
+//! stood, and merge their messages once both streams have ended:
+//!
+//! ```
+//! use ag_ui::client::{RunEnd, Thread, merge_messages, transport::ReplayTransport};
+//! # use ag_ui::{Event, TextMessageRole};
+//! use futures_util::StreamExt;
+//! # fn reply(id: &str, text: &str) -> Vec<Event> {
+//! #     vec![
+//! #         Event::run_started("thread-1", "run"),
+//! #         Event::text_message_start(id, TextMessageRole::Assistant),
+//! #         Event::text_message_content(id, text),
+//! #         Event::text_message_end(id),
+//! #         Event::run_finished_success("thread-1", "run"),
+//! #     ]
+//! # }
+//! # let transport = ReplayTransport::with_runs([
+//! #     reply("report", "Here is the report."),
+//! #     reply("time", "It is noon."),
+//! #     reply("welcome", "You are welcome."),
+//! # ])
+//! # .matching_requests();
+//! # let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+//! # rt.block_on(async {
+//! let mut main = Thread::new(transport.clone(), "thread-1");
+//! // A second thread on the same conversation, holding the same messages.
+//! let mut side = Thread::<_>::restore(transport.clone(), main.snapshot())?;
+//!
+//! // The long run starts, and borrows `main` until its stream ends ...
+//! let mut long = main.send("Write the report")?;
+//! long.next().await;
+//! // ... so the quick question goes to `side`, and is answered meanwhile.
+//! let quick = side.send("What time is it?")?.collect_report().await;
+//! assert_eq!(quick.end, RunEnd::Success { result: None });
+//! // Both can be drawn as one list at any moment.
+//! let on_screen = merge_messages(long.thread().messages(), side.messages());
+//! assert_eq!(on_screen.len(), 4);
+//! long.collect_report().await;
+//!
+//! // Both streams have ended: `main` takes the messages it lacks ...
+//! let merged = main.merge_messages_from(&side)?;
+//! assert_eq!(merged.added.len(), 2);
+//! assert!(merged.differing.is_empty());
+//! // ... and its next request carries both runs.
+//! main.send("Thanks")?.collect_report().await;
+//! assert_eq!(transport.last_request().unwrap().messages.len(), 5);
+//! # Ok::<(), ag_ui::client::Error>(())
+//! # })
+//! # .unwrap();
+//! ```
+//!
+//! Make the second thread from a [snapshot](Thread::snapshot) taken before
+//! the long run is polled, as above, so that both start from the same
+//! messages; with `HttpAgent` that is `agent.restore_thread(main.snapshot())`.
+//! A restored thread has the defaults for what a snapshot does not hold: set
+//! its tools, context and forwarded properties again. A second thread made
+//! later, from `long.thread().snapshot()` while the long run is being read,
+//! holds what had arrived by then. A message it holds only in part stays as
+//! the thread that finished it has it, and is named in
+//! [`MergeReport::differing`].
+//!
+//! [`Thread::merge_messages_from`] says what the merge takes, leaves and
+//! refuses, and [`merge_messages`] has the rules for the list. In short:
+//! messages are merged by id, this thread's copy of a message stays, and a
+//! tool result is put behind the message that holds its call. State is not
+//! merged. Pending interrupts, a resume submission and unanswered tool calls
+//! are not carried over: a thread that has any is not merged until it has
+//! settled them itself.
 
+mod merge;
 mod pending;
 mod run;
 mod snapshot;
 
+pub use merge::{MergeReport, merge_messages};
 pub use pending::{ResumeSubmission, SubmissionStatus};
 pub use run::{
     AbortHandle, MessageUpdate, ReasoningUpdate, RunDiagnostic, RunEnd, RunReport, RunStream,

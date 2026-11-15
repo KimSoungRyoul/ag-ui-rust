@@ -255,6 +255,59 @@ impl EventSink {
         self.verifier.assume_opened();
     }
 
+    /// Records an event that was already sent, without sending it again:
+    /// for a sink that continues a run. The event is one an earlier driver
+    /// of the run sent, or one of a run before it on the same stream.
+    ///
+    /// Everything [`send`](Self::send) remembers about an event it queues is
+    /// remembered here: the verifier's ordering state, the state the client
+    /// holds, whether the run ended. The subagents left active are read off
+    /// the same events, which is what a consumer saw of them.
+    ///
+    /// The transformers are not shown the event. What was sent is their
+    /// output, and they are fed the agent's events, not their own.
+    pub(crate) fn replay(&mut self, event: &Event) -> Result<()> {
+        let next_state = self.state_after(event)?;
+        self.verifier.observe(event)?;
+        self.terminated |= matches!(event, Event::RunFinished(_) | Event::RunError(_));
+        if let Some(state) = next_state {
+            self.state_manager.set_published(state);
+        }
+        match event {
+            // What was sent may hold the runs that came before the one being
+            // continued. Each starts with nothing active; the state a client
+            // holds carries over.
+            Event::RunStarted(_) => {
+                self.terminated = false;
+                self.active_subagents.clear();
+            }
+            Event::SubagentStarted(started) => {
+                if !self.active_subagents.contains(&started.subagent_run_id) {
+                    self.active_subagents.push(started.subagent_run_id.clone());
+                }
+            }
+            Event::SubagentFinished(finished) => self.close_subagent(&finished.subagent_run_id),
+            Event::SubagentError(error) => self.close_subagent(&error.subagent_run_id),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn close_subagent(&mut self, id: &SubagentRunId) {
+        self.active_subagents.retain(|active| active != id);
+    }
+
+    /// The state a consumer holds once it has applied `event`: `None` for an
+    /// event that leaves it alone, `Some(None)` for one that leaves it
+    /// unknown.
+    fn state_after(&self, event: &Event) -> Result<Option<Option<serde_json::Value>>> {
+        Ok(match event {
+            Event::StateSnapshot(snapshot) => Some(Some(snapshot.snapshot.clone())),
+            Event::StateDelta(delta) => Some(self.state_manager.after_delta(&delta.delta)?),
+            _ => None,
+        })
+    }
+
     /// Emits one event, unless the run was cancelled.
     ///
     /// Failing every emit after cancellation is what makes cancellation work
@@ -330,7 +383,7 @@ impl EventSink {
                     self.active_subagents.push(id);
                 }
             } else {
-                self.active_subagents.retain(|active| active != &id);
+                self.close_subagent(&id);
             }
         }
         Ok(())
@@ -407,11 +460,7 @@ impl EventSink {
                 return Err(error);
             }
         }
-        let next_state = match &event {
-            Event::StateSnapshot(snapshot) => Some(Some(snapshot.snapshot.clone())),
-            Event::StateDelta(delta) => Some(self.state_manager.after_delta(&delta.delta)?),
-            _ => None,
-        };
+        let next_state = self.state_after(&event)?;
         self.verifier.observe(&event)?;
         self.terminated |= matches!(event, Event::RunFinished(_) | Event::RunError(_));
         self.tx
@@ -436,8 +485,14 @@ impl EventSink {
 /// The read end of a run's event stream.
 ///
 /// Yielded by [`RunContext::new`](crate::server::RunContext::new) for agents under
-/// test. Transports get a [`Stream`] from
-/// [`Runner::run`](crate::server::Runner::run) instead.
+/// test, and by [`Runner::into_parts`](crate::server::Runner::into_parts) and
+/// [`Runner::continue_run`](crate::server::Runner::continue_run) for a run
+/// that is driven apart from whoever reads it. Transports that answer one
+/// request get a [`Stream`] from [`Runner::run`](crate::server::Runner::run)
+/// instead.
+///
+/// It is a [`Stream`] of the run's events, and it ends when the driver has
+/// finished or dropped, or when a bounded queue overflowed.
 #[derive(Debug)]
 pub struct EventReceiver {
     rx: UnboundedReceiver<Event>,

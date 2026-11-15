@@ -45,10 +45,82 @@ pub struct RunContext<S> {
     input: RunAgentInput,
     state: RunState<S>,
     sink: EventSink,
-    next_message: u64,
-    next_tool_call: u64,
-    next_subagent: u64,
+    minted: Minted,
     terminal: Terminal,
+}
+
+/// How many ids of each kind a run's contexts have handed out.
+///
+/// An id is the run id and a counter, so a context that continues a run
+/// counts on from where the earlier one stopped. A message id handed out
+/// twice does not start a second message: it re-opens the first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Minted {
+    messages: u64,
+    tool_calls: u64,
+    subagents: u64,
+}
+
+impl Minted {
+    /// Moves each counter past the ids `event` introduces, where they have
+    /// the shape a context of the run `run_id` hands out.
+    pub(crate) fn note(&mut self, run_id: &RunId, event: &Event) {
+        let prefix = id_prefix(run_id);
+        let past = |counter: &mut u64, kind: &str, id: &str| {
+            let number = id
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_prefix(kind))
+                .and_then(|number| number.parse::<u64>().ok());
+            if let Some(number) = number {
+                *counter = (*counter).max(number);
+            }
+        };
+        let mut message = |id: &MessageId| past(&mut self.messages, MESSAGE_ID, id);
+        let mut replayed = |messages: &[Message]| {
+            for replayed in messages {
+                message(replayed.id());
+            }
+        };
+        match event {
+            Event::TextMessageStart(e) => message(&e.message_id),
+            Event::ReasoningStart(e) => message(&e.message_id),
+            Event::ReasoningMessageStart(e) => message(&e.message_id),
+            Event::ActivitySnapshot(e) => message(&e.message_id),
+            Event::ToolCallResult(e) => message(&e.message_id),
+            Event::TextMessageChunk(e) => e.message_id.iter().for_each(message),
+            Event::ReasoningMessageChunk(e) => e.message_id.iter().for_each(message),
+            Event::MessagesSnapshot(e) => replayed(&e.messages),
+            Event::RunStarted(e) => {
+                if let Some(input) = &e.input {
+                    replayed(&input.messages);
+                }
+            }
+            Event::ToolCallStart(e) => past(&mut self.tool_calls, TOOL_CALL_ID, &e.tool_call_id),
+            Event::ToolCallChunk(e) => {
+                if let Some(id) = &e.tool_call_id {
+                    past(&mut self.tool_calls, TOOL_CALL_ID, id);
+                }
+            }
+            Event::SubagentStarted(e) => {
+                past(&mut self.subagents, SUBAGENT_ID, &e.subagent_run_id);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What separates the run id from the counter in an id a context hands out.
+const MESSAGE_ID: &str = "-msg-";
+const TOOL_CALL_ID: &str = "-call-";
+const SUBAGENT_ID: &str = "-sub-";
+
+/// What the ids a context hands out begin with.
+fn id_prefix(run_id: &RunId) -> &str {
+    if run_id.is_empty() {
+        "run"
+    } else {
+        run_id.as_str()
+    }
 }
 
 /// What the agent asked the driver to put on the terminal event.
@@ -85,21 +157,29 @@ impl<S: AgentState> RunContext<S> {
         sink.seed(&input.messages);
         sink.assume_run_started();
         let state = decode_state(&input.state)?;
-        Ok((Self::from_parts(input, state, sink), EventReceiver::new(rx)))
+        Ok((
+            Self::from_parts(input, state, sink, Minted::default()),
+            EventReceiver::new(rx),
+        ))
     }
 
     /// Assembles a context from an already-decoded state.
     ///
     /// The run driver decodes first so that a state that does not fit `S` is
-    /// reported through the sink it still owns, as a `RUN_ERROR`.
-    pub(crate) fn from_parts(input: RunAgentInput, state: S, sink: EventSink) -> Self {
+    /// reported through the sink it still owns, as a `RUN_ERROR`. `minted`
+    /// is where the run's ids stand: nothing handed out yet, unless this
+    /// context continues a run.
+    pub(crate) fn from_parts(
+        input: RunAgentInput,
+        state: S,
+        sink: EventSink,
+        minted: Minted,
+    ) -> Self {
         Self {
             input,
             state: RunState::new(state),
             sink,
-            next_message: 0,
-            next_tool_call: 0,
-            next_subagent: 0,
+            minted,
             terminal: Terminal::default(),
         }
     }
@@ -336,14 +416,16 @@ impl<S> RunContext<S> {
     /// deterministic id makes a recorded stream diffable. Pass your own id to
     /// [`message_with_id`](Self::message_with_id) when you need one.
     pub fn new_message_id(&mut self) -> MessageId {
-        self.next_message += 1;
-        MessageId::new(format!("{}-msg-{}", self.id_prefix(), self.next_message))
+        self.minted.messages += 1;
+        let (prefix, number) = (id_prefix(&self.input.run_id), self.minted.messages);
+        MessageId::new(format!("{prefix}{MESSAGE_ID}{number}"))
     }
 
     /// A fresh tool call id, unique within the run.
     pub fn new_tool_call_id(&mut self) -> ToolCallId {
-        self.next_tool_call += 1;
-        ToolCallId::new(format!("{}-call-{}", self.id_prefix(), self.next_tool_call))
+        self.minted.tool_calls += 1;
+        let (prefix, number) = (id_prefix(&self.input.run_id), self.minted.tool_calls);
+        ToolCallId::new(format!("{prefix}{TOOL_CALL_ID}{number}"))
     }
 
     /// A fresh subagent invocation id, unique within the run.
@@ -353,8 +435,9 @@ impl<S> RunContext<S> {
     /// resuming run that continues a *suspended* subagent should reuse the
     /// suspended id instead — see [`subagent_with`](Self::subagent_with).
     pub fn new_subagent_run_id(&mut self) -> SubagentRunId {
-        self.next_subagent += 1;
-        SubagentRunId::new(format!("{}-sub-{}", self.id_prefix(), self.next_subagent))
+        self.minted.subagents += 1;
+        let (prefix, number) = (id_prefix(&self.input.run_id), self.minted.subagents);
+        SubagentRunId::new(format!("{prefix}{SUBAGENT_ID}{number}"))
     }
 
     /// The subagent everything emitted right now is attributed to — `None`
@@ -428,14 +511,6 @@ impl<S> RunContext<S> {
         started: SubagentStartedEvent,
     ) -> Result<SubagentHandle<'_, S>> {
         SubagentHandle::start(self, started)
-    }
-
-    fn id_prefix(&self) -> &str {
-        if self.input.run_id.is_empty() {
-            "run"
-        } else {
-            self.input.run_id.as_str()
-        }
     }
 
     /// Opens an assistant message under a fresh id — `TEXT_MESSAGE_START`.

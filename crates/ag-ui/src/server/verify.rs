@@ -155,8 +155,91 @@ mod enabled {
         /// `RUN_STARTED` echo, which is optional: a resumed run answering a
         /// call the interrupted run opened is answering a call the consumer
         /// already holds, echo or not.
-        pub(crate) fn seed(&mut self, history: &[Message]) {
+        ///
+        /// A hosted run does this itself. A verifier used on its own needs
+        /// it when the run answers a tool call an earlier run made, or
+        /// continues a message a subagent owns: without the history that
+        /// result is one for a call that never started.
+        ///
+        /// ```
+        /// # use ag_ui::{AssistantMessage, Event, Message, ToolCall};
+        /// # use ag_ui::server::EventVerifier;
+        /// // The request's history: the previous run asked for a search.
+        /// let history = [Message::Assistant(AssistantMessage {
+        ///     id: "msg-1".into(),
+        ///     tool_calls: Some(vec![ToolCall::new("call-1", "search", "{}")]),
+        ///     ..Default::default()
+        /// })];
+        /// let answer = Event::tool_call_result("msg-2", "call-1", "3 results");
+        ///
+        /// let mut verifier = EventVerifier::new();
+        /// verifier.observe(&Event::run_started("thread-1", "run-2"))?;
+        /// assert!(verifier.observe(&answer).is_err());
+        ///
+        /// let mut verifier = EventVerifier::new();
+        /// verifier.seed(&history);
+        /// verifier.observe(&Event::run_started("thread-1", "run-2"))?;
+        /// verifier.observe(&answer)?;
+        /// # Ok::<(), ag_ui::server::VerificationError>(())
+        /// ```
+        pub fn seed(&mut self, history: &[Message]) {
             self.rules.seed(history);
+        }
+
+        /// Observes the events a run has already sent, in order, so that the
+        /// checks carry on from where the run is.
+        ///
+        /// This is how a verifier is made for a run that continues somewhere
+        /// else: in another process, or after the one that was driving it
+        /// stopped. Replay what was sent, then [`observe`](Self::observe)
+        /// what is sent next. The continuation sends no `RUN_STARTED`: the
+        /// one that was sent is among the events replayed, and a second
+        /// inside the same run is rejected.
+        ///
+        /// [`seed`](Self::seed) the history first when the run has one. What
+        /// is replayed may also begin with the runs that came before on the
+        /// same stream: the checks then stand in the last run it starts.
+        ///
+        /// ```
+        /// # use ag_ui::{Event, TextMessageRole};
+        /// # use ag_ui::server::{EventVerifier, Rule};
+        /// // What the store holds of the run so far.
+        /// let sent = [
+        ///     Event::run_started("thread-1", "run-1"),
+        ///     Event::text_message_start("msg-1", TextMessageRole::Assistant),
+        ///     Event::text_message_content("msg-1", "Hello"),
+        /// ];
+        ///
+        /// let mut verifier = EventVerifier::new();
+        /// verifier.replay(&sent)?;
+        ///
+        /// // The run is where it was left: started, with `msg-1` open.
+        /// let again = verifier.observe(&Event::run_started("thread-1", "run-1"));
+        /// assert_eq!(again.unwrap_err().rule, Rule::DuplicateRunStarted);
+        /// let early = verifier.observe(&Event::run_finished_success("thread-1", "run-1"));
+        /// assert_eq!(early.unwrap_err().rule, Rule::OpenAtFinish);
+        ///
+        /// verifier.observe(&Event::text_message_content("msg-1", " world"))?;
+        /// verifier.observe(&Event::text_message_end("msg-1"))?;
+        /// verifier.observe(&Event::run_finished_success("thread-1", "run-1"))?;
+        /// # Ok::<(), ag_ui::server::VerificationError>(())
+        /// ```
+        ///
+        /// # Cost
+        ///
+        /// One [`observe`](Self::observe) per event, and nothing is copied or
+        /// serialized. What the verifier keeps grows with the ids a run
+        /// introduces, not with the number of its events.
+        ///
+        /// # Errors
+        ///
+        /// The first event that breaks a rule, as `observe` reports it. The
+        /// events before it stay observed.
+        pub fn replay<'a>(
+            &mut self,
+            events: impl IntoIterator<Item = &'a Event>,
+        ) -> Result<(), VerificationError> {
+            events.into_iter().try_for_each(|event| self.observe(event))
         }
 
         /// Treats the stream as opened, for a sink the run driver is not
@@ -307,7 +390,7 @@ mod disabled {
     use crate::server::error::VerificationError;
 
     /// The `verify` feature is off: every check compiles away.
-    #[derive(Debug, Default)]
+    #[derive(Clone, Debug, Default)]
     pub(crate) struct Verifier;
 
     impl Verifier {
