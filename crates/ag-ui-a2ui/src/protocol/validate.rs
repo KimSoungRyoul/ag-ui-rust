@@ -41,17 +41,21 @@
 //! assert_eq!(report.errors[0].path, "components[0].child");
 //! ```
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::binding::{ModelScope, collect_bindings, names_the_scope};
+use super::binding::{
+    ModelScope, TemplatePart, collect_bindings_in, literal_key, names_the_scope, parse_template,
+};
 use super::catalog::{Catalog, ComponentDef, PropKind};
 use super::graph::{Cycle, Finding, Graph};
 use super::message::{AgentMessage, Component};
 use super::model::{DataModel, ModelValue};
+use super::operation::Operation;
 use super::surface::{Origin, SurfaceState, SurfaceStore};
 use super::version::A2uiVersion;
 use crate::constants::ROOT_ID;
@@ -71,10 +75,14 @@ pub const MAX_FUNCTION_CALL_DEPTH: usize = 5;
 
 /// The complete set of semantic failures this validator reports.
 ///
-/// Deliberately closed: these codes are the contract with callers that route on
-/// them (a recovery loop, a renderer's error channel), so adding one is a
-/// breaking change. Composition-constraint failures have their own codes and
-/// live in [`crate::catalog::CompositionCode`].
+/// These codes are the contract with callers that route on them (a recovery
+/// loop, a renderer's error channel). The enum is non-exhaustive, so that a
+/// protocol version can bring a failure of its own: v1.0 brought the last
+/// four. A caller that matches on a code keeps a wildcard arm.
+///
+/// [`crate::catalog::CompositionCode`] has the two composition failures as
+/// [`Catalog::composition_violations`](crate::Catalog::composition_violations)
+/// reports them, to a caller that asks the catalog directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -119,6 +127,21 @@ pub enum ErrorCode {
     /// the component graph, the raw JSON, and chained function calls — because
     /// all three are model-generated and all three are unbounded without a cap.
     MaxDepthExceeded,
+    /// A component or a function call names a catalog its surface cannot draw
+    /// from, or names none on a surface that has no default. From v1.0, where
+    /// a surface may mix catalogs.
+    UnknownCatalog,
+    /// A key starts with one `@` and is not a directive of the protocol. From
+    /// v1.0, which reserves the prefix: a literal key is written `@@…`.
+    ReservedKey,
+    /// A component sits under a parent its catalog's `allowedParents`
+    /// excludes: a renderer's `UNALLOWED_PARENT`. Reported in a version that
+    /// [constrains composition](A2uiVersion::constrains_composition), once
+    /// nothing else is wrong with the tree.
+    UnallowedParent,
+    /// A container holds a child its catalog's `allowedChildren` excludes.
+    /// A renderer's `UNALLOWED_CHILD`.
+    UnallowedChild,
 }
 
 impl ErrorCode {
@@ -142,6 +165,10 @@ impl ErrorCode {
             ErrorCode::ChildCycle => "child_cycle",
             ErrorCode::UnresolvedBinding => "unresolved_binding",
             ErrorCode::MaxDepthExceeded => "max_depth_exceeded",
+            ErrorCode::UnknownCatalog => "unknown_catalog",
+            ErrorCode::ReservedKey => "reserved_key",
+            ErrorCode::UnallowedParent => "unallowed_parent",
+            ErrorCode::UnallowedChild => "unallowed_child",
         }
     }
 }
@@ -210,7 +237,8 @@ pub struct ValidateOptions {
     /// a component id however this is set, because a child written any other
     /// way is not in the tree the other checks walk. See [`PropKind`].
     pub check_prop_types: bool,
-    /// Whether message envelopes must satisfy the v0.9 wire contract.
+    /// Whether message envelopes must satisfy the wire contract of the
+    /// version they state.
     ///
     /// Applies only to the raw-message entry points
     /// ([`Validator::validate_json_messages`] and
@@ -335,11 +363,58 @@ impl ValidationReport {
     }
 }
 
-/// Validates component trees against a catalog.
+/// Validates component trees against a catalog, or against several.
+///
+/// A validator made with one catalog ([`Validator::new`]) holds every surface
+/// to it, whatever id the surface names. One made over several
+/// ([`Validator::over`]) reads them by id: a surface's own, and from v1.0 the
+/// one a component names with `@catalogId`.
+///
+/// The components are read in the spelling of a protocol version: the
+/// surface's, where there is one, and otherwise [`Validator::speaking`], which
+/// defaults to the version the catalog is written against.
 #[derive(Clone, Debug)]
 pub struct Validator<'a> {
-    catalog: &'a Catalog,
+    /// The one catalog every surface is held to.
+    catalog: Option<&'a Catalog>,
+    /// The catalogs a surface or a component names, by id.
+    registry: BTreeMap<&'a str, &'a Catalog>,
+    /// The version components are read in when no surface says.
+    version: Option<A2uiVersion>,
     options: ValidateOptions,
+}
+
+/// What the components of one run are read against.
+#[derive(Clone, Copy)]
+struct Drawing<'a, 's> {
+    /// The spelling of the components: bindings, envelope keys, identifiers.
+    version: A2uiVersion,
+    /// The catalog of a component that names none.
+    default: Option<&'a Catalog>,
+    /// The surface the components are on, when they are on one.
+    surface: Option<&'s SurfaceState>,
+}
+
+/// Where one component's definition is to be found.
+enum Source<'a> {
+    /// The catalog the component is drawn from.
+    Catalog(&'a Catalog),
+    /// The component names no catalog, and its surface has no default.
+    Unnamed,
+    /// It names a catalog the validator does not hold: the id, and the key
+    /// that names it (empty when the surface does).
+    Unknown(String, &'static str),
+    /// Its catalog is written against another wire format than the surface.
+    OtherFormat(&'a Catalog, &'static str),
+}
+
+impl<'a> Source<'a> {
+    fn catalog(&self) -> Option<&'a Catalog> {
+        match self {
+            Self::Catalog(catalog) => Some(catalog),
+            _ => None,
+        }
+    }
 }
 
 /// A component normalized for validation, from either typed or raw JSON input.
@@ -427,23 +502,181 @@ impl<'a> Node<'a> {
 impl<'a> Validator<'a> {
     /// A validator holding a payload to the full-surface contract.
     pub fn new(catalog: &'a Catalog) -> Self {
-        Self {
-            catalog,
-            options: ValidateOptions::full_surface(),
-        }
+        Self::with_options(catalog, ValidateOptions::full_surface())
     }
 
     /// A validator for an incremental `updateComponents` payload.
     pub fn incremental(catalog: &'a Catalog) -> Self {
-        Self {
-            catalog,
-            options: ValidateOptions::incremental_update(),
-        }
+        Self::with_options(catalog, ValidateOptions::incremental_update())
     }
 
     /// A validator with explicit options.
     pub fn with_options(catalog: &'a Catalog, options: ValidateOptions) -> Self {
-        Self { catalog, options }
+        Self {
+            catalog: Some(catalog),
+            registry: BTreeMap::new(),
+            version: None,
+            options,
+        }
+    }
+
+    /// A validator over several catalogs, read by id.
+    ///
+    /// A surface is held to the catalog its `createSurface` named. From v1.0 a
+    /// component may name another with `@catalogId`, and a surface may name
+    /// none, each of its components then naming its own. A catalog that is
+    /// not among `catalogs`, and a component with none to fall back on, is an
+    /// [`ErrorCode::UnknownCatalog`]; so is a catalog written against another
+    /// wire format than the surface.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::{Catalog, ValidateOptions, Validator};
+    /// use ag_ui_a2ui::validate::ErrorCode;
+    /// use serde_json::json;
+    ///
+    /// let basic = Catalog::basic_for(ag_ui_a2ui::A2uiVersion::V1_0);
+    /// let charts = Catalog::from_schema(&json!({
+    ///     "catalogId": "charts",
+    ///     "protocolVersion": "1.0",
+    ///     "components": {"LineChart": {"type": "object", "properties": {"title": {"type": "string"}}}}
+    /// }))?;
+    /// let validator = Validator::over([&basic, &charts], ValidateOptions::full_surface());
+    ///
+    /// let stream = |chart_catalog: &str| vec![
+    ///     json!({"version": "1.0", "createSurface": {"surfaceId": "s", "catalogId": basic.catalog_id}}),
+    ///     json!({"version": "1.0", "updateComponents": {"surfaceId": "s", "components": [
+    ///         {"id": "root", "component": "Column", "children": ["chart"]},
+    ///         {"id": "chart", "component": "LineChart", "@catalogId": chart_catalog, "title": "Sales"}
+    ///     ]}}),
+    /// ];
+    /// assert!(validator.validate_json_messages(&stream("charts")).is_valid());
+    /// let report = validator.validate_json_messages(&stream("maps"));
+    /// assert_eq!(report.errors[0].code, ErrorCode::UnknownCatalog);
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    pub fn over(catalogs: impl IntoIterator<Item = &'a Catalog>, options: ValidateOptions) -> Self {
+        Self {
+            catalog: None,
+            registry: catalogs
+                .into_iter()
+                .map(|catalog| (catalog.catalog_id.as_str(), catalog))
+                .collect(),
+            version: None,
+            options,
+        }
+    }
+
+    /// Reads components that are on no surface in the spelling of `version`.
+    ///
+    /// That is what [`Validator::validate`], [`Validator::validate_surface`],
+    /// [`Validator::validate_model`] and [`Validator::validate_json`] are
+    /// given: a list of components and no message to say what they are written
+    /// in. Without this they are read in the version the catalog is written
+    /// against ([`Catalog::version`]). A stream of messages is always read as
+    /// each surface was created.
+    #[must_use]
+    pub fn speaking(mut self, version: A2uiVersion) -> Self {
+        self.version = Some(version);
+        self
+    }
+
+    /// What components that are on no surface are read against.
+    fn bare(&self) -> Drawing<'a, 'static> {
+        Drawing {
+            version: self
+                .version
+                .or(self.catalog.map(Catalog::version))
+                .unwrap_or(A2uiVersion::DEFAULT),
+            default: self.catalog,
+            surface: None,
+        }
+    }
+
+    /// What the components of `surface` are read against.
+    fn drawing<'s>(&self, surface: &'s SurfaceState) -> Drawing<'a, 's> {
+        Drawing {
+            version: surface.spoken_version(),
+            default: self.catalog.or_else(|| {
+                let named = surface.catalog_id.as_deref()?;
+                self.registry.get(named).copied()
+            }),
+            surface: Some(surface),
+        }
+    }
+
+    /// A catalog by id. With one catalog, that catalog under its own id or
+    /// under the one the surface gave it.
+    fn named(&self, drawing: &Drawing<'a, '_>, catalog_id: &str) -> Option<&'a Catalog> {
+        match self.catalog {
+            Some(only) => {
+                let surface_names_it = drawing
+                    .surface
+                    .is_some_and(|surface| surface.catalog_id.as_deref() == Some(catalog_id));
+                (only.catalog_id == catalog_id || surface_names_it).then_some(only)
+            }
+            None => self.registry.get(catalog_id).copied(),
+        }
+    }
+
+    /// The bare `catalogId` of a component, where it is the key the drafts
+    /// before v1.0 was final named a catalog with, and not a property: the
+    /// component's type declares no property of that name in the surface's
+    /// own catalog, which is where a component that names none is read from.
+    ///
+    /// The bare name and the value under it.
+    fn bare_catalog_key<'n>(
+        &self,
+        drawing: &Drawing<'a, '_>,
+        node: &Node<'n>,
+    ) -> Option<(&'static str, &'n Value)> {
+        let bare = drawing
+            .version
+            .component_keys()
+            .catalog_id?
+            .trim_start_matches('@');
+        let value = node.props?.get(bare)?;
+        let declared = drawing
+            .default
+            .and_then(|catalog| catalog.component(node.kind?))
+            .is_some_and(|def| def.declares(bare));
+        (!declared).then_some((bare, value))
+    }
+
+    /// Which catalog `node` is drawn from.
+    fn source(&self, drawing: &Drawing<'a, '_>, node: &Node<'_>) -> Source<'a> {
+        let named = drawing.version.component_keys().catalog_id.and_then(|key| {
+            if let Some(Value::String(id)) = node.props?.get(key) {
+                return Some((id.as_str(), key));
+            }
+            match self.bare_catalog_key(drawing, node) {
+                Some((_, Value::String(id))) => Some((id.as_str(), key)),
+                _ => None,
+            }
+        });
+        let found = |catalog: &'a Catalog, key: &'static str| {
+            // One catalog stands for whatever a surface names. Several are
+            // told apart, and each has to be written for the surface's format.
+            if self.catalog.is_none() && !drawing.version.accepts(catalog.version()) {
+                Source::OtherFormat(catalog, key)
+            } else {
+                Source::Catalog(catalog)
+            }
+        };
+        match named {
+            Some((id, key)) => match self.named(drawing, id) {
+                Some(catalog) => found(catalog, key),
+                None => Source::Unknown(id.to_string(), key),
+            },
+            None => match (
+                drawing.default,
+                drawing.surface.and_then(|s| s.catalog_id.as_deref()),
+            ) {
+                (Some(catalog), _) => found(catalog, ""),
+                (None, Some(id)) => Source::Unknown(id.to_string(), ""),
+                (None, None) if self.registry.is_empty() => Source::Unnamed,
+                (None, None) => Source::Unnamed,
+            },
+        }
     }
 
     /// Validates typed components, with no data model to bind against.
@@ -463,7 +696,7 @@ impl<'a> Validator<'a> {
             .map(|(i, c)| Node::from_component(i, c))
             .collect();
         let model = data_model.cloned().map(DataModel::from);
-        self.run(&nodes, model.as_ref(), "components")
+        self.run(&self.bare(), &nodes, model.as_ref(), "components")
     }
 
     /// Validates graph and bindings against a lossless model, including every
@@ -474,7 +707,7 @@ impl<'a> Validator<'a> {
             .enumerate()
             .map(|(i, component)| Node::from_component(i, component))
             .collect();
-        self.run(&nodes, Some(model), "components")
+        self.run(&self.bare(), &nodes, Some(model), "components")
     }
 
     /// Validates raw JSON components, as they arrive from a model.
@@ -493,7 +726,7 @@ impl<'a> Validator<'a> {
             .map(|(i, v)| Node::from_json(i, v))
             .collect();
         let model = data_model.cloned().map(DataModel::from);
-        self.run(&nodes, model.as_ref(), "components")
+        self.run(&self.bare(), &nodes, model.as_ref(), "components")
     }
 
     /// Validates a whole operation stream.
@@ -572,8 +805,8 @@ impl<'a> Validator<'a> {
                 &locator,
                 // The enclosing array is depth 0, so a message sits at 1.
                 1,
-                self.options.max_depth,
-                self.options.max_function_call_depth,
+                &self.options,
+                stated_version(message),
                 &mut message_report,
             );
         }
@@ -585,15 +818,14 @@ impl<'a> Validator<'a> {
         // missing from the store.
         let mut incomplete: BTreeSet<String> = BTreeSet::new();
         for (index, message) in messages.iter().enumerate() {
-            let components = message
-                .pointer("/updateComponents/components")
-                .and_then(Value::as_array);
-            let folded = match components {
+            let carried = carried_components(message);
+            let components = carried.map(|(_, components)| components);
+            let folded = match carried {
                 // The store keys components by id, so it cannot hold these, and
                 // serde would only say the message failed to decode. The checks
                 // below locate the component instead; the one thing left to
                 // report here is a surface the message could not have updated.
-                Some(components) if !foldable(components) => {
+                Some((Operation::UpdateComponents, components)) if !foldable(components) => {
                     let surface_id = message
                         .pointer("/updateComponents/surfaceId")
                         .and_then(Value::as_str)
@@ -610,6 +842,9 @@ impl<'a> Validator<'a> {
                     }
                     false
                 }
+                // A creation that carries components the store cannot hold
+                // creates nothing: what is wrong with them is reported below.
+                Some((_, components)) if !foldable(components) => false,
                 // The store numbers what it is given, and this loop skips
                 // messages, so it says which one this is.
                 _ => match serde_json::from_value::<AgentMessage>(message.clone())
@@ -631,7 +866,7 @@ impl<'a> Validator<'a> {
                 },
             };
             if let (false, Some(components)) = (folded, components) {
-                let report = self.validate_unfolded(index, components);
+                let report = self.validate_unfolded(&store, index, message, components);
                 message_report.errors.extend(report.errors);
             }
         }
@@ -652,33 +887,69 @@ impl<'a> Validator<'a> {
             } else {
                 self.options.clone()
             };
-            let report =
-                Validator::with_options(self.catalog, options).validate_stored(&store, surface);
+            let report = self.with(options).validate_stored(&store, surface);
             message_report.errors.extend(report.errors);
             message_report.unreachable.extend(report.unreachable);
         }
         (message_report, store)
     }
 
-    /// Validates the components of an `updateComponents` message that no
-    /// surface will hold, because the message could not be folded: one of them
-    /// has no usable id or type, or its surface is not live. They are checked
-    /// alone, since their root and their children may be elsewhere, and are
-    /// located in message `index`.
-    pub(crate) fn validate_unfolded(&self, index: usize, components: &[Value]) -> ValidationReport {
+    /// The same validator, with other options.
+    fn with(&self, options: ValidateOptions) -> Self {
+        Self {
+            options,
+            ..self.clone()
+        }
+    }
+
+    /// Validates the components of a message that no surface will hold,
+    /// because the message could not be folded: one of them has no usable id
+    /// or type, or its surface is not live. They are checked alone, since
+    /// their root and their children may be elsewhere, and are located in
+    /// message `index`.
+    ///
+    /// `message` is an `updateComponents`, or a v1.0 `createSurface` that
+    /// carries components. They are read as the surface `store` holds was
+    /// created, or as the message is written when there is no such surface.
+    pub(crate) fn validate_unfolded(
+        &self,
+        store: &SurfaceStore,
+        index: usize,
+        message: &Value,
+        components: &[Value],
+    ) -> ValidationReport {
         let options = ValidateOptions {
             require_root: false,
             allow_dangling_children: true,
             check_bindings: false,
             ..self.options.clone()
         };
-        let list = format!("messages[{index}].updateComponents.components");
+        let operation = Operation::of(message).unwrap_or(Operation::UpdateComponents);
+        let payload = message.get(operation.as_str());
+        let surface = payload
+            .and_then(|payload| payload.get("surfaceId"))
+            .and_then(Value::as_str)
+            .and_then(|surface_id| store.live(surface_id).ok());
+        let drawing = match surface {
+            Some(surface) => self.drawing(surface),
+            None => {
+                let named = payload
+                    .and_then(|payload| payload.get("catalogId"))
+                    .and_then(Value::as_str);
+                Drawing {
+                    version: stated_version(message),
+                    default: self.catalog.or_else(|| self.registry.get(named?).copied()),
+                    surface: None,
+                }
+            }
+        };
+        let list = format!("messages[{index}].{operation}.components");
         let nodes: Vec<Node<'_>> = components
             .iter()
             .enumerate()
             .map(|(i, v)| Node::from_json(i, v).at(format!("{list}[{i}]")))
             .collect();
-        Validator::with_options(self.catalog, options).run(&nodes, None, &list)
+        self.with(options).run(&drawing, &nodes, None, &list)
     }
 
     /// Validates updates against explicit previously observed renderer state.
@@ -738,13 +1009,19 @@ impl<'a> Validator<'a> {
                 }
             })
             .collect();
-        self.run(&nodes, Some(&surface.data_model), &list)
+        self.run(
+            &self.drawing(surface),
+            &nodes,
+            Some(&surface.data_model),
+            &list,
+        )
     }
 
     /// Every check, over `nodes`. `list` locates the component list itself, for
     /// the failures that belong to no one component.
     fn run(
         &self,
+        drawing: &Drawing<'a, '_>,
         nodes: &[Node<'_>],
         data_model: Option<&DataModel>,
         list: &str,
@@ -761,9 +1038,15 @@ impl<'a> Validator<'a> {
             return report;
         }
 
-        let ids = self.check_identity(nodes, &mut report);
-        self.check_types_and_props(nodes, &mut report);
-        self.check_component_depth(nodes, &mut report);
+        let sources: Vec<Source<'a>> = nodes
+            .iter()
+            .map(|node| self.source(drawing, node))
+            .collect();
+        let ids = self.check_identity(drawing, nodes, &mut report);
+        self.check_types_and_props(drawing, nodes, &sources, &mut report);
+        self.check_component_keys(drawing, nodes, &sources, &mut report);
+        self.check_function_calls(drawing, nodes, &mut report);
+        self.check_component_depth(drawing, nodes, &mut report);
 
         if self.options.require_root && !ids.contains_key(self.options.root_id.as_str()) {
             report.errors.push(ValidationError::new(
@@ -777,8 +1060,17 @@ impl<'a> Validator<'a> {
             ));
         }
 
-        let graph = self.build_graph(nodes, &ids, &mut report);
+        let graph = self.build_graph(nodes, &sources, &ids, &mut report);
         self.check_cycles(nodes, &graph, &mut report);
+        self.check_index_scope(drawing, nodes, &graph, &mut report);
+        // Where a component may sit is asked of a tree that is otherwise
+        // sound, and of a caller that holds components to their catalogs.
+        if drawing.version.constrains_composition()
+            && self.options.check_component_types
+            && report.errors.is_empty()
+        {
+            self.check_composition(nodes, &sources, &ids, &mut report);
+        }
 
         // A second pass of the same walk, from the root alone and with no
         // depth limit: what the root can reach, not what a renderer will draw.
@@ -794,14 +1086,113 @@ impl<'a> Validator<'a> {
         }
 
         if self.options.check_bindings || self.options.check_binding_syntax {
-            self.check_bindings(nodes, &graph, data_model, &mut report);
+            self.check_bindings(drawing, nodes, &graph, data_model, &mut report);
         }
         report
+    }
+
+    /// The composition constraints: what each component's catalog says of the
+    /// parents it may sit under (`allowedParents`) and the children it may
+    /// hold (`allowedChildren`).
+    ///
+    /// The root's parent is the surface itself, `Surface`, and only the
+    /// root's: a component nothing refers to has no parent to be checked
+    /// against. A component with several parents is checked against each. A
+    /// component that may not sit where it is is located as that component; a
+    /// child that may not be held is located as the reference to it.
+    fn check_composition(
+        &self,
+        nodes: &[Node<'_>],
+        sources: &[Source<'a>],
+        ids: &BTreeMap<&str, usize>,
+        report: &mut ValidationReport,
+    ) {
+        let definition = |index: usize| {
+            sources[index]
+                .catalog()
+                .and_then(|catalog| catalog.component(nodes[index].kind?))
+        };
+        let listed = |names: &[String]| {
+            let quoted: Vec<String> = names.iter().map(|name| format!("'{name}'")).collect();
+            format!("[{}]", quoted.join(", "))
+        };
+        let named = |index: usize| {
+            (
+                nodes[index].id.unwrap_or_default(),
+                nodes[index].kind.unwrap_or_default(),
+            )
+        };
+
+        if let Some(&root) = ids.get(self.options.root_id.as_str()) {
+            let allowed = definition(root).and_then(|def| def.allowed_parents.as_ref());
+            if let Some(allowed) = allowed.filter(|allowed| {
+                !allowed
+                    .iter()
+                    .any(|parent| parent == crate::constants::SURFACE_COMPONENT)
+            }) {
+                let (id, kind) = named(root);
+                report.errors.push(ValidationError::new(
+                    ErrorCode::UnallowedParent,
+                    nodes[root].locator(""),
+                    format!(
+                        "Component '{id}' ({kind}) cannot be placed under parent 'Surface' \
+                         (Surface). Allowed parents: {}.",
+                        listed(allowed)
+                    ),
+                ));
+            }
+        }
+        for node in nodes {
+            let (Some(parent_def), Some(parent)) = (definition(node.index), node.component())
+            else {
+                continue;
+            };
+            for reference in parent_def.references(parent) {
+                let Some(&child_index) = ids.get(reference.id.as_str()) else {
+                    continue;
+                };
+                let (child_id, child_kind) = named(child_index);
+                if let Some(allowed) = parent_def
+                    .allowed_children
+                    .as_ref()
+                    .filter(|allowed| !allowed.iter().any(|kind| kind == child_kind))
+                {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::UnallowedChild,
+                        node.locator(&reference.location),
+                        format!(
+                            "Container '{}' ({}) cannot contain child '{child_id}' \
+                             ({child_kind}). Allowed children: {}.",
+                            parent.id,
+                            parent.component,
+                            listed(allowed)
+                        ),
+                    ));
+                }
+                let allowed = definition(child_index).and_then(|def| def.allowed_parents.as_ref());
+                if let Some(allowed) =
+                    allowed.filter(|allowed| !allowed.contains(&parent.component))
+                {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::UnallowedParent,
+                        nodes[child_index].locator(""),
+                        format!(
+                            "Component '{child_id}' ({child_kind}) cannot be placed under \
+                             parent '{}' ({}). Allowed parents: {}.",
+                            parent.id,
+                            parent.component,
+                            listed(allowed)
+                        ),
+                    ));
+                }
+            }
+        }
     }
 
     /// Ids, types and duplicates. Returns id → node index for resolved ids.
     fn check_identity<'n>(
         &self,
+        drawing: &Drawing<'a, '_>,
         nodes: &'n [Node<'n>],
         report: &mut ValidationReport,
     ) -> BTreeMap<&'n str, usize> {
@@ -816,6 +1207,18 @@ impl<'a> Validator<'a> {
                 ));
                 continue;
             };
+            if drawing.version.names_are_identifiers() && !is_identifier(id) {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::InvalidValue,
+                    node.locator("id"),
+                    format!(
+                        "Component id '{id}' must be a valid identifier in A2UI {}: a letter or \
+                         '_' first, then letters, digits and '_', as in 'user_card'. No '-', no \
+                         spaces, no leading digit.",
+                        drawing.version
+                    ),
+                ));
+            }
             if let Some(&first) = ids.get(id) {
                 report.errors.push(ValidationError::new(
                     ErrorCode::DuplicateId,
@@ -833,9 +1236,14 @@ impl<'a> Validator<'a> {
         ids
     }
 
-    fn check_types_and_props(&self, nodes: &[Node<'_>], report: &mut ValidationReport) {
-        let catalog_is_usable = !self.catalog.components.is_empty();
-        for node in nodes {
+    fn check_types_and_props(
+        &self,
+        drawing: &Drawing<'a, '_>,
+        nodes: &[Node<'_>],
+        sources: &[Source<'a>],
+        report: &mut ValidationReport,
+    ) {
+        for (node, source) in nodes.iter().zip(sources) {
             let Some(kind) = node.kind else {
                 report.errors.push(ValidationError::new(
                     ErrorCode::MissingComponentType,
@@ -845,10 +1253,70 @@ impl<'a> Validator<'a> {
                 ));
                 continue;
             };
-            if !catalog_is_usable {
+            if drawing.version.names_are_identifiers() && !is_identifier(kind) {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::InvalidValue,
+                    node.locator("component"),
+                    format!(
+                        "Component type '{kind}' must be a valid identifier in A2UI {}: a \
+                         letter or '_' first, then letters, digits and '_'.",
+                        drawing.version
+                    ),
+                ));
                 continue;
             }
-            let Some(def) = self.catalog.component(kind) else {
+            let catalog = match source {
+                Source::Catalog(catalog) => *catalog,
+                Source::Unnamed => {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::UnknownCatalog,
+                        node.locator("component"),
+                        format!(
+                            "Component '{}' names no catalog, and its surface has no default \
+                             catalogId. Give the component '@catalogId', or create the surface \
+                             with a catalogId.",
+                            node.id.unwrap_or(kind)
+                        ),
+                    ));
+                    continue;
+                }
+                Source::Unknown(catalog_id, key) => {
+                    let place = if key.is_empty() { "component" } else { key };
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::UnknownCatalog,
+                        node.locator(place),
+                        match drawing.surface {
+                            Some(surface) => format!(
+                                "Catalog '{catalog_id}' is not supported by surface '{}'.",
+                                surface.surface_id
+                            ),
+                            None => format!(
+                                "Catalog '{catalog_id}' is not one this surface can draw from."
+                            ),
+                        },
+                    ));
+                    continue;
+                }
+                Source::OtherFormat(catalog, key) => {
+                    let place = if key.is_empty() { "component" } else { key };
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::UnknownCatalog,
+                        node.locator(place),
+                        format!(
+                            "Protocol version mismatch: cannot mix catalog '{}' ({}) with \
+                             surface version {}.",
+                            catalog.catalog_id,
+                            catalog.version(),
+                            drawing.version
+                        ),
+                    ));
+                    continue;
+                }
+            };
+            if catalog.components.is_empty() {
+                continue;
+            }
+            let Some(def) = catalog.component(kind) else {
                 // Whether an unfamiliar type is itself an error is the caller's
                 // choice; either way there is no definition to check against, so
                 // this component is done.
@@ -858,8 +1326,8 @@ impl<'a> Validator<'a> {
                         node.locator("component"),
                         format!(
                             "Component type '{kind}' is not in catalog '{}'. Use one of: {}.",
-                            self.catalog.catalog_id,
-                            self.catalog
+                            catalog.catalog_id,
+                            catalog
                                 .components_in_order()
                                 .map(|d| d.name.as_str())
                                 .collect::<Vec<_>>()
@@ -883,7 +1351,416 @@ impl<'a> Validator<'a> {
             }
             check_structure(node, kind, def, report);
             if self.options.check_prop_types {
-                self.check_prop_types(node, kind, def, report);
+                // The key that sent the component to this catalog is not one
+                // of its properties, whatever this catalog declares by that
+                // name.
+                let routed_by = self.bare_catalog_key(drawing, node).map(|(bare, _)| bare);
+                self.check_prop_types(drawing.version, node, kind, def, routed_by, report);
+            }
+        }
+    }
+
+    /// The keys of a component that are its envelope and not its properties,
+    /// as the surface's version has them.
+    ///
+    /// Before v1.0 the envelope keys of v1.0 mean nothing, and the reference
+    /// renderers refuse a component that carries one unless its catalog
+    /// declares a property by that name: a model that has seen v1.0 writes
+    /// them. From v1.0 `@` is reserved, here and inside every value; the
+    /// bare names of the drafts are still read where the component declares
+    /// no property of that name, and may not stand beside the `@` key.
+    ///
+    /// Always checked: what these keys are decides what the rest of the
+    /// component is.
+    fn check_component_keys(
+        &self,
+        drawing: &Drawing<'a, '_>,
+        nodes: &[Node<'_>],
+        sources: &[Source<'a>],
+        report: &mut ValidationReport,
+    ) {
+        let version = drawing.version;
+        let keys = version.component_keys();
+        for (node, source) in nodes.iter().zip(sources) {
+            let Some(props) = node.props else { continue };
+            let def = node.kind.and_then(|kind| source.catalog()?.component(kind));
+            let declares = |name: &str| def.is_some_and(|def| def.declares(name));
+
+            if !version.reserves_at_keys() {
+                for key in version.foreign_component_keys() {
+                    if props.contains_key(key) && !declares(key) {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            node.locator(key),
+                            format!(
+                                "'{key}' is a component key of a later A2UI version than this \
+                                 surface's {version}; the component declares no property by that \
+                                 name."
+                            ),
+                        ));
+                    }
+                }
+                continue;
+            }
+
+            for key in props.keys() {
+                if literal_key(version, key).is_none() && !keys.contains(key) {
+                    report.errors.push(reserved_key(node.locator(key), key));
+                }
+            }
+            // A catalog id that is not a string names nothing, and must not
+            // pass for no id at all: the component would be read against the
+            // surface's catalog instead of the one it meant.
+            if let Some(key) = keys.catalog_id {
+                let named = props
+                    .get(key)
+                    .map(|value| (key, value))
+                    .or_else(|| self.bare_catalog_key(drawing, node));
+                if let Some((written, _)) = named.filter(|(_, value)| !value.is_string()) {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::InvalidValue,
+                        node.locator(written),
+                        format!("'{written}' names a catalog by its catalogId, which is a string."),
+                    ));
+                }
+            }
+            // The envelope under its `@` key, or under the bare one the
+            // drafts used when the component does not declare that name.
+            let envelope = |key: &'static str| {
+                let bare = key.trim_start_matches('@');
+                // The catalog's key is read before the catalog is known, so
+                // what declares it is the surface's own catalog.
+                let legacy = if Some(key) == keys.catalog_id {
+                    self.bare_catalog_key(drawing, node).map(|(_, value)| value)
+                } else {
+                    props.get(bare).filter(|_| !declares(bare))
+                };
+                (props.get(key), legacy, bare)
+            };
+            for key in keys.all() {
+                let (current, legacy, bare) = envelope(key);
+                if current.is_some() && legacy.is_some() {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::InvalidValue,
+                        node.locator(bare),
+                        format!(
+                            "'{bare}' and '{key}' are the same component key, and this \
+                             component has both. Keep '{key}'."
+                        ),
+                    ));
+                }
+            }
+            let (checks, legacy_checks, _) = envelope(keys.checks);
+            if (checks.is_some() || legacy_checks.is_some())
+                && def.is_some_and(|def| !def.is_checkable())
+            {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::InvalidValue,
+                    node.locator(keys.checks),
+                    format!(
+                        "'{}' takes no check rules: '{}' belongs on an input component.",
+                        node.kind.unwrap_or_default(),
+                        keys.checks
+                    ),
+                ));
+            }
+            if let Some(metadata_key) = keys.metadata {
+                let (current, legacy, bare) = envelope(metadata_key);
+                for (key, metadata) in [(metadata_key, current), (bare, legacy)] {
+                    let Some(Value::Object(extensions)) =
+                        metadata.and_then(|metadata| metadata.get("extensions"))
+                    else {
+                        continue;
+                    };
+                    for name in extensions.keys().filter(|name| !is_identifier(name)) {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            node.locator(&format!("{key}.extensions.{name}")),
+                            format!(
+                                "Extension name '{name}' must be a valid identifier: a letter \
+                                 or '_' first, then letters, digits and '_'."
+                            ),
+                        ));
+                    }
+                }
+            }
+            for (key, value) in props {
+                check_reserved_keys(version, value, &node.locator(key), report);
+            }
+        }
+    }
+
+    /// The function calls a component carries, from v1.0, which says how a
+    /// call is resolved ([`A2uiVersion::resolves_function_calls`]).
+    ///
+    /// A call finds its catalog as a component does: the one it names with
+    /// `catalogId`, or the surface's own. A call written inside a
+    /// `formatString` template has nowhere to name one and is looked up where
+    /// that `formatString` was. A catalog that is not held, one written for
+    /// another wire format, and a call with no catalog at all are refused
+    /// whatever the options say, since a renderer cannot run them.
+    ///
+    /// With [`ValidateOptions::check_component_types`] the name has to be a
+    /// function of that catalog, or `@index`, the one system function there
+    /// is. A function its catalog gives to the agent alone
+    /// (`allowedCallers: agentOnly`) cannot stand in a property or an action,
+    /// both of which the renderer evaluates. A `formatString` template has to
+    /// parse.
+    fn check_function_calls(
+        &self,
+        drawing: &Drawing<'a, '_>,
+        nodes: &[Node<'_>],
+        report: &mut ValidationReport,
+    ) {
+        let version = drawing.version;
+        if !version.resolves_function_calls() {
+            return;
+        }
+        // The surface's own catalog is named and not held: every component
+        // says so already, and a call would only say it again.
+        let default_is_missing = drawing.default.is_none()
+            && drawing
+                .surface
+                .is_some_and(|surface| surface.catalog_id.is_some());
+        for node in nodes {
+            let Some(props) = node.props else { continue };
+            let mut calls = Vec::new();
+            let mut malformed = Vec::new();
+            for (key, value) in props {
+                function_calls(
+                    version,
+                    value,
+                    &node.locator(key),
+                    &mut calls,
+                    &mut malformed,
+                );
+            }
+            for (location, reason) in malformed {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::InvalidValue,
+                    location,
+                    format!("The formatString template does not parse: {reason}."),
+                ));
+            }
+            // The catalog each call resolved to, for the calls its template
+            // wrote. `None` for a call that resolved to none.
+            let mut resolved: Vec<Option<&'a Catalog>> = Vec::with_capacity(calls.len());
+            for call in &calls {
+                let name = call.name.as_ref();
+                // A system function belongs to no catalog.
+                if name.starts_with('@') {
+                    resolved.push(None);
+                    if name != "@index" && self.options.check_component_types {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            call.location.clone(),
+                            format!(
+                                "'{name}' is not a system function. A2UI {version} defines one, \
+                                 '@index'; a function of a catalog has no '@'."
+                            ),
+                        ));
+                    }
+                    continue;
+                }
+                if !is_identifier(name) {
+                    resolved.push(None);
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::InvalidValue,
+                        call.location.clone(),
+                        format!(
+                            "Function name '{name}' must be a valid UAX #31 identifier: a letter \
+                             or '_' first, then letters, digits and '_'."
+                        ),
+                    ));
+                    continue;
+                }
+                let catalog = match (call.catalog_id, call.written_in) {
+                    (_, Some(outer)) => resolved[outer],
+                    (Some(Value::String(named)), None) => match self.named(drawing, named) {
+                        Some(catalog)
+                            if self.catalog.is_some() || version.accepts(catalog.version()) =>
+                        {
+                            Some(catalog)
+                        }
+                        Some(catalog) => {
+                            report.errors.push(ValidationError::new(
+                                ErrorCode::UnknownCatalog,
+                                format!("{}.catalogId", call.location),
+                                format!(
+                                    "Protocol version mismatch: cannot mix catalog '{named}' \
+                                     ({}) with surface version {version}.",
+                                    catalog.version()
+                                ),
+                            ));
+                            None
+                        }
+                        None => {
+                            report.errors.push(ValidationError::new(
+                                ErrorCode::UnknownCatalog,
+                                format!("{}.catalogId", call.location),
+                                format!("Catalog not found: {named}"),
+                            ));
+                            None
+                        }
+                    },
+                    (Some(_), None) => {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            format!("{}.catalogId", call.location),
+                            "'catalogId' of a function call names a catalog by its id, which is \
+                             a string."
+                                .to_string(),
+                        ));
+                        None
+                    }
+                    (None, None) => {
+                        if drawing.default.is_none() && !default_is_missing {
+                            report.errors.push(ValidationError::new(
+                                ErrorCode::UnknownCatalog,
+                                call.location.clone(),
+                                match drawing.surface {
+                                    Some(surface) => format!(
+                                        "Function call '{name}' names no catalog, and surface \
+                                         '{}' has no default catalogId. Give the call a \
+                                         'catalogId'.",
+                                        surface.surface_id
+                                    ),
+                                    None => format!(
+                                        "Function call '{name}' names no catalog, and there is \
+                                         no default catalogId to fall back on."
+                                    ),
+                                },
+                            ));
+                        }
+                        drawing.default
+                    }
+                };
+                resolved.push(catalog);
+                let Some(catalog) = catalog else { continue };
+                match catalog.functions.get(name) {
+                    Some(function) => {
+                        if version.restricts_function_callers()
+                            && !function.allowed_callers.includes_renderer()
+                        {
+                            report.errors.push(ValidationError::new(
+                                ErrorCode::InvalidValue,
+                                call.location.clone(),
+                                format!(
+                                    "Function '{name}' is agentOnly: only the agent runs it, and \
+                                     a component property or an action is evaluated on the \
+                                     renderer. Compute the value on the agent and send it as \
+                                     data."
+                                ),
+                            ));
+                        }
+                    }
+                    // A catalog with nothing in it is one the caller has not
+                    // supplied; it defines no function to compare with.
+                    None if self.options.check_component_types
+                        && !(catalog.functions.is_empty() && catalog.components.is_empty()) =>
+                    {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            call.location.clone(),
+                            format!(
+                                "Unrecognized function '{name}': catalog '{}' defines no such \
+                                 function.",
+                                catalog.catalog_id
+                            ),
+                        ));
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// `@index` where no list template gives it an item to count, from v1.0
+    /// ([`A2uiVersion::resolves_function_calls`]).
+    ///
+    /// The walk is the one bindings are resolved on: from the root, or from
+    /// every component nothing points at when the list is a fragment, noting
+    /// which components a template draws. A component both inside and outside
+    /// a template is outside one somewhere, and is reported.
+    fn check_index_scope(
+        &self,
+        drawing: &Drawing<'a, '_>,
+        nodes: &[Node<'_>],
+        graph: &Graph,
+        report: &mut ValidationReport,
+    ) {
+        let version = drawing.version;
+        if !version.resolves_function_calls() || !self.options.check_binding_syntax {
+            return;
+        }
+        // Where each component calls `@index`, if it does.
+        let indexed: Vec<Vec<String>> = nodes
+            .iter()
+            .map(|node| {
+                let mut calls = Vec::new();
+                for (key, value) in node.props.into_iter().flatten() {
+                    function_calls(
+                        version,
+                        value,
+                        &node.locator(key),
+                        &mut calls,
+                        &mut Vec::new(),
+                    );
+                }
+                calls
+                    .into_iter()
+                    .filter(|call| call.name == "@index")
+                    .map(|call| call.location)
+                    .collect()
+            })
+            .collect();
+        if indexed.iter().all(Vec::is_empty)
+            || report
+                .errors
+                .iter()
+                .any(|error| error.code == ErrorCode::ChildCycle)
+        {
+            return;
+        }
+        let mut has_parent = vec![false; nodes.len()];
+        for edge in graph.all_edges() {
+            has_parent[edge.target] = true;
+        }
+        let is_root = |node: &Node<'_>| node.id == Some(self.options.root_id.as_str());
+        let rooted = nodes.iter().any(is_root);
+        let mut queue: Vec<(usize, bool)> = nodes
+            .iter()
+            .filter(|node| {
+                if rooted {
+                    is_root(node)
+                } else {
+                    !has_parent[node.index]
+                }
+            })
+            .map(|node| (node.index, false))
+            .collect();
+        let mut visited = BTreeSet::new();
+        while let Some((index, in_template)) = queue.pop() {
+            if !visited.insert((index, in_template)) {
+                continue;
+            }
+            if !in_template {
+                for location in &indexed[index] {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::InvalidValue,
+                        location.clone(),
+                        "The @index function can only be evaluated inside a collection \
+                         template iteration scope. Use it in a component a list template draws."
+                            .to_string(),
+                    ));
+                }
+            }
+            let Some(component) = nodes[index].component() else {
+                continue;
+            };
+            for edge in graph.edges(index) {
+                let templated = template_path(component, &edge.location).is_some();
+                queue.push((edge.target, in_template || templated));
             }
         }
     }
@@ -898,20 +1775,22 @@ impl<'a> Validator<'a> {
     /// shape a reference takes.
     fn check_prop_types(
         &self,
+        version: A2uiVersion,
         node: &Node<'_>,
         kind: &str,
         def: &ComponentDef,
+        routed_by: Option<&str>,
         report: &mut ValidationReport,
     ) {
         let Some(props) = node.props else { return };
         for prop in def.props.values() {
-            if prop.kind.is_structural() {
+            if prop.kind.is_structural() || Some(prop.name.as_str()) == routed_by {
                 continue;
             }
             let Some(value) = props.get(&prop.name) else {
                 continue;
             };
-            if resolves_at_render_time(value) {
+            if resolves_at_render_time(version, value) {
                 continue;
             }
             if !prop.value_type.accepts(value) {
@@ -920,10 +1799,11 @@ impl<'a> Validator<'a> {
                     node.locator(&prop.name),
                     format!(
                         "'{kind}' expects '{}' to be {}, not {}. Write a literal of that type, \
-                         or bind it with {{\"path\": \"/...\"}}.",
+                         or bind it with {{\"{}\": \"/...\"}}.",
                         prop.name,
                         prop.value_type.describe(),
-                        type_name(value)
+                        type_name(value),
+                        version.path_key()
                     ),
                 ));
                 continue;
@@ -952,7 +1832,12 @@ impl<'a> Validator<'a> {
     /// Separate from the component *graph* depth checked in
     /// [`Validator::check_cycles`]: a component can be shallow in the tree and
     /// still carry a pathologically nested `action` or data binding.
-    fn check_component_depth(&self, nodes: &[Node<'_>], report: &mut ValidationReport) {
+    fn check_component_depth(
+        &self,
+        drawing: &Drawing<'a, '_>,
+        nodes: &[Node<'_>],
+        report: &mut ValidationReport,
+    ) {
         for node in nodes {
             let Some(props) = node.props else { continue };
             for (key, value) in props {
@@ -960,8 +1845,8 @@ impl<'a> Validator<'a> {
                     value,
                     &node.locator(key),
                     1,
-                    self.options.max_depth,
-                    self.options.max_function_call_depth,
+                    &self.options,
+                    drawing.version,
                     report,
                 );
             }
@@ -969,14 +1854,21 @@ impl<'a> Validator<'a> {
     }
 
     /// The child-reference graph, reporting references that do not resolve.
+    /// Each component's references are read from the catalog it is drawn from.
     fn build_graph(
         &self,
         nodes: &[Node<'_>],
+        sources: &[Source<'a>],
         ids: &BTreeMap<&str, usize>,
         report: &mut ValidationReport,
     ) -> Graph {
         Graph::build(
-            self.catalog,
+            |node, component| {
+                sources[node]
+                    .catalog()
+                    .map(|catalog| catalog.references(component))
+                    .unwrap_or_default()
+            },
             nodes.iter().map(Node::component),
             ids,
             |node, component, reference| {
@@ -1026,6 +1918,7 @@ impl<'a> Validator<'a> {
 
     fn check_bindings(
         &self,
+        drawing: &Drawing<'a, '_>,
         nodes: &[Node<'_>],
         graph: &Graph,
         model: Option<&DataModel>,
@@ -1038,7 +1931,7 @@ impl<'a> Validator<'a> {
                     return Vec::new();
                 };
                 let raw = serde_json::to_value(component).expect("component JSON is infallible");
-                collect_bindings(&raw)
+                collect_bindings_in(drawing.version, &raw)
                     .into_iter()
                     .filter(|binding| {
                         let absolute = if binding.path.starts_with('/') {
@@ -1219,18 +2112,228 @@ fn is_valid_pointer(path: &str) -> bool {
 
 /// Whether the renderer computes this value rather than reading it literally.
 ///
-/// A `{"path": …}` binding and a `{"call": …}` / `{"functionCall": …}` invocation
-/// both carry something other than the property's own value, so the type they
-/// have on the wire says nothing about the type the renderer will see.
-/// `{componentId, path}` is excluded: that is a child template, and its `path`
-/// names a collection rather than a value.
-fn resolves_at_render_time(value: &Value) -> bool {
+/// A binding and a function call, in the spelling of `version`, and a
+/// `{"functionCall": …}` invocation, all carry something other than the
+/// property's own value, so the type they have on the wire says nothing about
+/// the type the renderer will see. `{componentId, path}` is excluded: that is
+/// a child template, and its `path` names a collection rather than a value.
+fn resolves_at_render_time(version: A2uiVersion, value: &Value) -> bool {
     let Some(map) = value.as_object() else {
         return false;
     };
-    (map.contains_key("path") && !map.contains_key("componentId"))
-        || map.contains_key("call")
+    (map.contains_key(version.path_key()) && !map.contains_key("componentId"))
+        || map.contains_key(version.call_key())
         || map.contains_key("functionCall")
+}
+
+/// Whether a name is an identifier as Unicode Standard Annex #31 defines one,
+/// with `_` allowed first: `^[\p{XID_Start}_][\p{XID_Continue}]*$`.
+pub(crate) fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || unicode_ident::is_xid_start(first))
+        && chars.all(unicode_ident::is_xid_continue)
+}
+
+fn reserved_key(location: String, key: &str) -> ValidationError {
+    ValidationError::new(
+        ErrorCode::ReservedKey,
+        location,
+        format!(
+            "'{key}' starts with '@', which is reserved for the protocol's own keys. Write a \
+             literal key doubled, as '@{key}', or drop the '@'."
+        ),
+    )
+}
+
+/// Reports a key that starts with one `@` and is no directive, anywhere inside
+/// a property's value. `@path` and `@call` are the directives a value may
+/// hold.
+fn check_reserved_keys(
+    version: A2uiVersion,
+    value: &Value,
+    location: &str,
+    report: &mut ValidationReport,
+) {
+    let mut stack: Vec<(&Value, String, usize)> = vec![(value, location.to_string(), 0)];
+    while let Some((current, location, depth)) = stack.pop() {
+        if depth > super::binding::MAX_VALUE_DEPTH {
+            continue;
+        }
+        match current {
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    stack.push((item, format!("{location}[{index}]"), depth + 1));
+                }
+            }
+            Value::Object(map) => {
+                for (key, child) in map {
+                    let directive = key == version.path_key() || key == version.call_key();
+                    if !directive && literal_key(version, key).is_none() {
+                        report
+                            .errors
+                            .push(reserved_key(format!("{location}.{key}"), key));
+                    }
+                    stack.push((child, format!("{location}.{key}"), depth + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One function call found in a component's property.
+struct Call<'v> {
+    /// Where it is, as a locator.
+    location: String,
+    /// The function it names.
+    name: Cow<'v, str>,
+    /// The `catalogId` written beside it.
+    catalog_id: Option<&'v Value>,
+    /// The `formatString` call whose template wrote this one, by its place in
+    /// the list. Such a call has nowhere to name a catalog.
+    written_in: Option<usize>,
+}
+
+/// Every function call inside `value`, a call before the ones in its
+/// arguments, and each `formatString` template that does not parse with why.
+fn function_calls<'v>(
+    version: A2uiVersion,
+    value: &'v Value,
+    location: &str,
+    calls: &mut Vec<Call<'v>>,
+    malformed: &mut Vec<(String, String)>,
+) {
+    let mut stack: Vec<(&'v Value, String, usize)> = vec![(value, location.to_string(), 0)];
+    while let Some((current, location, depth)) = stack.pop() {
+        if depth > super::binding::MAX_VALUE_DEPTH {
+            continue;
+        }
+        match current {
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate().rev() {
+                    stack.push((item, format!("{location}[{index}]"), depth + 1));
+                }
+            }
+            Value::Object(map) => {
+                if let Some(Value::String(name)) = map.get(version.call_key()) {
+                    let this = calls.len();
+                    calls.push(Call {
+                        location: location.clone(),
+                        name: Cow::Borrowed(name),
+                        catalog_id: map.get("catalogId"),
+                        written_in: None,
+                    });
+                    let template = map
+                        .get("args")
+                        .and_then(|args| args.get("value"))
+                        .and_then(Value::as_str)
+                        .filter(|_| name == "formatString");
+                    if let Some(template) = template {
+                        let written = format!("{location}.args.value");
+                        match parse_template(template) {
+                            Ok(parts) => {
+                                let mut inner: Vec<&TemplatePart> = parts.iter().rev().collect();
+                                while let Some(part) = inner.pop() {
+                                    if let TemplatePart::Call { name, args } = part {
+                                        calls.push(Call {
+                                            location: written.clone(),
+                                            name: Cow::Owned(name.clone()),
+                                            catalog_id: None,
+                                            written_in: Some(this),
+                                        });
+                                        inner.extend(args.iter().rev().map(|(_, value)| value));
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let reason = match error {
+                                    Error::Binding { reason, .. } => reason,
+                                    other => other.to_string(),
+                                };
+                                malformed.push((written, reason));
+                            }
+                        }
+                    }
+                }
+                for (key, child) in map.iter().rev() {
+                    stack.push((child, format!("{location}.{key}"), depth + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether a raw message names a catalog other than `own`, the one of the
+/// surface it is for: on a component, where `version` lets a component name
+/// one, or on a function call anywhere in it.
+#[cfg(feature = "schema-validation")]
+pub(crate) fn names_another_catalog(
+    version: A2uiVersion,
+    message: &Value,
+    own: Option<&str>,
+) -> bool {
+    let Some(component_key) = version.component_keys().catalog_id else {
+        return false;
+    };
+    let other = |value: &Value| value.as_str().is_none_or(|named| Some(named) != own);
+    let mut stack: Vec<(&Value, bool)> = Vec::new();
+    for component in carried_components(message)
+        .into_iter()
+        .flat_map(|(_, components)| components)
+    {
+        stack.push((component, true));
+    }
+    while let Some((current, is_component)) = stack.pop() {
+        match current {
+            Value::Array(items) => stack.extend(items.iter().map(|item| (item, false))),
+            Value::Object(map) => {
+                // The bare key of the v1.0 drafts names a catalog too, unless
+                // it is a property; a schema of another catalog cannot tell.
+                let named = map
+                    .get(component_key)
+                    .or_else(|| map.get(component_key.trim_start_matches('@')));
+                if is_component && named.is_some_and(other) {
+                    return true;
+                }
+                if map.contains_key(version.call_key()) && map.get("catalogId").is_some_and(other) {
+                    return true;
+                }
+                stack.extend(map.values().map(|value| (value, false)));
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The version a raw message states, or the default when it states none this
+/// crate speaks: the message is still held to a contract.
+pub(crate) fn stated_version(message: &Value) -> A2uiVersion {
+    message
+        .get("version")
+        .and_then(Value::as_str)
+        .and_then(A2uiVersion::parse)
+        .unwrap_or(A2uiVersion::DEFAULT)
+}
+
+/// The components a raw message carries, and the operation that carries them:
+/// an `updateComponents`, or a `createSurface` of a version that lets a
+/// creation carry them.
+pub(crate) fn carried_components(message: &Value) -> Option<(Operation, &Vec<Value>)> {
+    let operation = Operation::of(message)?;
+    let carries = match operation {
+        Operation::UpdateComponents => true,
+        Operation::CreateSurface => stated_version(message).creates_inline(),
+        _ => false,
+    };
+    let components = message.get(operation.as_str())?.get("components")?;
+    carries
+        .then(|| components.as_array())
+        .flatten()
+        .map(|components| (operation, components))
 }
 
 /// Structural properties against the shape their [`PropKind`] gives them.
@@ -1544,6 +2647,79 @@ pub(crate) fn check_envelope(message: &Value, locator: &str, report: &mut Valida
             _ => {}
         }
     }
+    // A field of this operation in another version, which this one does not
+    // have: a `theme` in v1.0, inline `components` before it. A reader drops
+    // such a field as it drops any it does not know, and what the agent meant
+    // by it would be lost without a word.
+    for other in A2uiVersion::ALL {
+        for (field, _, _) in other.envelope(operation) {
+            let own = fields.iter().any(|(name, _, _)| name == field);
+            if !own && payload.contains_key(*field) {
+                let already = report
+                    .errors
+                    .iter()
+                    .any(|error| error.path == format!("{locator}.{key}.{field}"));
+                if !already {
+                    report.errors.push(ValidationError::new(
+                        ErrorCode::InvalidValue,
+                        format!("{locator}.{key}.{field}"),
+                        format!(
+                            "'{field}' is not a field of '{key}' in A2UI {version}; it is one in \
+                             {other}. Leave it out, or send the message as {other}."
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    // Surface-level metadata, where a creation has it: an `extensions` map
+    // and nothing else, each extension named by an identifier.
+    if operation == Operation::CreateSurface {
+        if let Some(Value::Object(metadata)) = payload.get("metadata") {
+            for name in metadata.keys().filter(|name| *name != "extensions") {
+                report.errors.push(ValidationError::new(
+                    ErrorCode::InvalidValue,
+                    format!("{locator}.{key}.metadata.{name}"),
+                    format!("'metadata' of '{key}' holds 'extensions' and nothing else."),
+                ));
+            }
+            match metadata.get("extensions") {
+                None => {}
+                Some(Value::Object(extensions)) => {
+                    for name in extensions.keys().filter(|name| !is_identifier(name)) {
+                        report.errors.push(ValidationError::new(
+                            ErrorCode::InvalidValue,
+                            format!("{locator}.{key}.metadata.extensions.{name}"),
+                            format!(
+                                "Extension name '{name}' must be a valid identifier: a letter \
+                                 or '_' first, then letters, digits and '_'."
+                            ),
+                        ));
+                    }
+                }
+                Some(other) => report.errors.push(ValidationError::new(
+                    ErrorCode::TypeMismatch,
+                    format!("{locator}.{key}.metadata.extensions"),
+                    format!("'extensions' must be an object, not {}.", type_name(other)),
+                )),
+            }
+        }
+    }
+    // The value of an update has no one type, so the table does not list it.
+    // Where `null` is how a message removes, leaving it out says nothing.
+    if operation == Operation::UpdateDataModel
+        && version.null_removes()
+        && !payload.contains_key("value")
+    {
+        report.errors.push(ValidationError::new(
+            ErrorCode::MissingField,
+            format!("{locator}.{key}.value"),
+            format!(
+                "'{key}' requires the field 'value' in A2UI {version}. To remove what is at \
+                 the path, send \"value\": null."
+            ),
+        ));
+    }
 }
 
 /// Reports JSON nesting and function-call chains that run past their limits.
@@ -1563,10 +2739,11 @@ pub(crate) fn check_value_depth(
     value: &Value,
     path: &str,
     base_depth: usize,
-    max_depth: usize,
-    max_function_call_depth: usize,
+    options: &ValidateOptions,
+    version: A2uiVersion,
     report: &mut ValidationReport,
 ) {
+    let (max_depth, max_function_call_depth) = (options.max_depth, options.max_function_call_depth);
     let mut reported_depth = false;
     let mut reported_calls = false;
     let mut stack: Vec<(&Value, usize, usize)> = vec![(value, base_depth, 0)];
@@ -1603,7 +2780,7 @@ pub(crate) fn check_value_depth(
                 // is what every other toolkit counts, and a payload one of them
                 // rejects must be rejected here too.
                 let wrapper = map.get("functionCall").filter(|value| value.is_object());
-                let is_call = map.contains_key("call") && map.contains_key("args");
+                let is_call = map.contains_key(version.call_key()) && map.contains_key("args");
 
                 if (wrapper.is_some() || is_call) && call_depth >= max_function_call_depth {
                     if !reported_calls {

@@ -24,6 +24,7 @@ use std::collections::BTreeSet;
 use serde_json::Map;
 use serde_json::Value;
 
+use super::version::A2uiVersion;
 use crate::error::{Error, Result};
 
 /// Property names whose value is prose a model writes, in the basic catalog.
@@ -71,15 +72,68 @@ pub struct SchemaBundle {
 }
 
 impl SchemaBundle {
-    /// The unmodified official v0.9.1 schemas (which accept both wire versions).
-    /// No network or filesystem access is performed.
+    /// The unmodified official v0.9.1 schemas (which accept both wire versions
+    /// of the v0.9 family): [`SchemaBundle::for_version`] with
+    /// [`A2uiVersion::V0_9_1`]. No network or filesystem access is performed.
     pub fn basic() -> Result<Self> {
+        Self::for_version(A2uiVersion::V0_9_1)
+    }
+
+    /// The unmodified official schemas of `version`, with the basic catalog
+    /// published for it. No network or filesystem access is performed.
+    ///
+    /// The three sets are three registries, and a message is held to the one
+    /// of its own version:
+    ///
+    /// - v0.9: the envelope accepts `"version": "v0.9"` alone, and the basic
+    ///   catalog has `List.listStyle`.
+    /// - v0.9.1: the envelope accepts `v0.9` and `v0.9.1`, and the basic
+    ///   catalog has no `listStyle`.
+    /// - v1.0: `agent_to_renderer.json`, whose `createSurface` may carry
+    ///   components and data, with the v1 basic catalog.
+    ///
+    /// ```
+    /// use ag_ui_a2ui::A2uiVersion;
+    /// use ag_ui_a2ui::schema::SchemaBundle;
+    ///
+    /// let list_style = |version| -> ag_ui_a2ui::Result<bool> {
+    ///     let catalog = SchemaBundle::for_version(version)?.catalog;
+    ///     Ok(serde_json::to_string(&catalog["components"]["List"])?.contains("listStyle"))
+    /// };
+    /// assert!(list_style(A2uiVersion::V0_9)?);
+    /// assert!(!list_style(A2uiVersion::V0_9_1)?);
+    ///
+    /// let v1_0 = SchemaBundle::for_version(A2uiVersion::V1_0)?;
+    /// assert_eq!(v1_0.s2c["$id"], "https://a2ui.org/specification/v1_0/agent_to_renderer.json");
+    /// assert_eq!(v1_0.catalog_id(), Some(A2uiVersion::V1_0.basic_catalog_id()));
+    /// # Ok::<(), ag_ui_a2ui::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if a document this crate ships does not parse.
+    pub fn for_version(version: A2uiVersion) -> Result<Self> {
+        let (s2c, common_types, catalog) = match version {
+            A2uiVersion::V0_9 => (
+                include_str!("../../schemas/v0_9/server_to_client.json"),
+                include_str!("../../schemas/v0_9/common_types.json"),
+                include_str!("../../schemas/v0_9/catalog.json"),
+            ),
+            A2uiVersion::V0_9_1 => (
+                include_str!("../../schemas/v0_9_1/server_to_client.json"),
+                include_str!("../../schemas/v0_9_1/common_types.json"),
+                include_str!("../../schemas/v0_9_1/catalog.json"),
+            ),
+            A2uiVersion::V1_0 => (
+                include_str!("../../schemas/v1_0/agent_to_renderer.json"),
+                include_str!("../../schemas/v1_0/common_types.json"),
+                include_str!("../../schemas/v1_0/catalog.json"),
+            ),
+        };
         Ok(Self {
-            s2c: serde_json::from_str(include_str!("../../schemas/v0_9_1/server_to_client.json"))?,
-            common_types: serde_json::from_str(include_str!(
-                "../../schemas/v0_9_1/common_types.json"
-            ))?,
-            catalog: serde_json::from_str(include_str!("../../schemas/v0_9_1/catalog.json"))?,
+            s2c: serde_json::from_str(s2c)?,
+            common_types: serde_json::from_str(common_types)?,
+            catalog: serde_json::from_str(catalog)?,
         })
     }
 
