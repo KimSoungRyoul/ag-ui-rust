@@ -796,7 +796,7 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
             // A failed run ends what it had open along with it. Nothing is
             // closed on its behalf, and nothing of it is left for the next
             // run to close.
-            self.normalizer = ChunkNormalizer::new();
+            self.normalizer.abandon();
             self.handle(event);
             return;
         }

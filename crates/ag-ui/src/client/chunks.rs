@@ -176,6 +176,13 @@ impl ChunkNormalizer {
     pub fn finish(&mut self, out: &mut Vec<Event>) {
         self.streams.finish(out);
     }
+
+    /// Drops what is being assembled without ending it, for a run that
+    /// failed: what it had open ends with it. Whose each item is stays
+    /// known, for the lane of an untagged event of a later run.
+    pub(crate) fn abandon(&mut self) {
+        self.streams.abandon();
+    }
 }
 
 /// Normalizes a whole run in one call, closing anything left open at the end.

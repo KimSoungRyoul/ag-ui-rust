@@ -299,6 +299,7 @@ impl Ordering {
     /// history, like the `RUN_STARTED` echo, for ids not yet recorded.
     pub(crate) fn seed(&mut self, history: &[Message]) {
         self.seed_owners(history, false);
+        self.streams.seed(history);
     }
 
     /// Treats the stream as open without a `RUN_STARTED`.
@@ -340,19 +341,23 @@ impl Ordering {
             Event::TextMessageChunk(_) | Event::ToolCallChunk(_) | Event::ReasoningMessageChunk(_)
         );
         if !is_chunk && self.streams.is_idle() {
-            return self.apply(event, None).map_err(reject);
+            self.apply(event, None).map_err(reject)?;
+            // What the chunk model resolves the lane of an untagged event by
+            // is what was accepted, and nothing else.
+            self.streams.note(event);
+            return Ok(());
         }
 
         // The chunked form: judge the events this one stands for. They are
         // the ends of the streams it closes, which a conforming consumer
         // synthesizes at this point, then the event itself or what a chunk
         // expands to.
-        let before = self.streams.clone();
+        let before = self.streams.checkpoint();
         let mut stood_for = Vec::new();
         let expanded = if is_chunk {
-            self.streams.expand(event.clone(), &mut stood_for)
+            self.streams.expand_quietly(event.clone(), &mut stood_for)
         } else {
-            self.streams.end_for(event, &mut stood_for);
+            self.streams.close_for(event, &mut stood_for);
             Ok(())
         };
         let mut ended = Vec::new();
@@ -366,8 +371,15 @@ impl Ordering {
                 self.apply(event, None)
             }
         });
-        if judged.is_err() {
-            self.streams = before;
+        if judged.is_ok() {
+            for implied in &stood_for {
+                self.streams.note(implied);
+            }
+            if !is_chunk {
+                self.streams.note(event);
+            }
+        } else {
+            self.streams.rewind(before);
             for entry in ended.into_iter().rev() {
                 match entry {
                     Ended::Text(index, open) => self.text.insert(index, open),
@@ -407,7 +419,7 @@ impl Ordering {
     /// run, and the next run may announce a suspended one again. The owners
     /// stay, because the messages they describe do.
     fn begin_next_run(&mut self) {
-        self.streams = Streams::default();
+        self.streams.abandon();
         self.text.clear();
         self.tool.clear();
         self.reasoning.clear();

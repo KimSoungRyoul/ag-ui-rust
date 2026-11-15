@@ -29,6 +29,19 @@
 //! - `SUBAGENT_FINISHED` or `SUBAGENT_ERROR` arrives, which ends that
 //!   subagent's.
 //!
+//! An event is in the lane of the owner it is attributed to. An explicit
+//! event of the three families that carries no `subagentRunId` is in the lane
+//! of the owner the ordering rules record for its item: AG-UI 1.0
+//! (`events/subagents`, "Ownership"), "an untagged continuation continues
+//! whatever the opener owns". So the untagged `TEXT_MESSAGE_CONTENT` of a
+//! message a subagent opened ends that subagent's chunk stream, and leaves
+//! the parent agent's alone. The record is the rules': the opener's owner
+//! while an item is open; for an id, its first writer, the newest
+//! `TOOL_CALL_RESULT` that minted it, or the last `MESSAGES_SNAPSHOT` that
+//! restated it; for a tool call, the owner of the message that carries it.
+//! The same goes for `REASONING_START` and `REASONING_END`. An id nothing
+//! records is the parent agent's.
+//!
 //! # The two spellings do not mix
 //!
 //! Only chunks open and continue a chunk stream. An explicit event that names
@@ -59,12 +72,13 @@
     allow(dead_code)
 )]
 
+use std::collections::HashMap;
 use std::fmt;
 
 use serde_json::Value;
 
 use crate::{
-    BaseEvent, Event, JsonObject, MessageId, ReasoningMessageChunkEvent,
+    BaseEvent, Event, JsonObject, Message, MessageId, ReasoningMessageChunkEvent,
     ReasoningMessageContentEvent, ReasoningMessageStartEvent, SubagentRunId, TextMessageChunkEvent,
     TextMessageContentEvent, TextMessageRole, TextMessageStartEvent, ToolCallArgsEvent,
     ToolCallChunkEvent, ToolCallId, ToolCallStartEvent,
@@ -360,12 +374,175 @@ fn agree(
     }
 }
 
+/// Who owns each item, as the ordering rules record it: what the lane of an
+/// explicit event that carries no tag is resolved from. See the [module
+/// docs](self).
+///
+/// Kept by id, so that what an event costs does not grow with how many ids
+/// the run has used.
+#[derive(Clone, Debug, Default)]
+struct Owners {
+    /// Each item open in the explicit form, by kind, with the owner its
+    /// start gave it.
+    open_text: HashMap<String, Owner>,
+    open_tool: HashMap<String, Owner>,
+    open_reasoning: HashMap<String, Owner>,
+    /// Text message ids, and whose: the first writer, the newest result that
+    /// minted one, the last snapshot that restated one.
+    messages: HashMap<String, Owner>,
+    /// The same for reasoning, a bucket apart, as the rules keep it.
+    reasoning: HashMap<String, Owner>,
+    /// Tool call ids, and whose.
+    tool_calls: HashMap<String, Owner>,
+}
+
+impl Owners {
+    fn open(&self, kind: Kind) -> &HashMap<String, Owner> {
+        match kind {
+            Kind::Text => &self.open_text,
+            Kind::Tool => &self.open_tool,
+            Kind::Reasoning => &self.open_reasoning,
+        }
+    }
+
+    /// The owner the rules give an item of `kind` that `id` names and that
+    /// is not open: for a tool call, the owner of the message `parent` names
+    /// when one is recorded, and otherwise the id's own record.
+    fn recorded(&self, kind: Kind, id: &str, parent: Option<&MessageId>) -> Option<Owner> {
+        match kind {
+            Kind::Text => self.messages.get(id).cloned(),
+            Kind::Reasoning => self.reasoning.get(id).cloned(),
+            Kind::Tool => parent
+                .and_then(|parent| self.messages.get(parent.as_str()))
+                .or_else(|| self.tool_calls.get(id))
+                .cloned(),
+        }
+    }
+
+    /// Records the owners one accepted event in the explicit form gives.
+    fn note(&mut self, event: &Event) {
+        match event {
+            Event::TextMessageStart(e) => {
+                let owner = self.opener(Kind::Text, e.message_id.as_str(), &e.subagent_run_id);
+                self.messages
+                    .entry(e.message_id.as_str().to_owned())
+                    .or_insert_with(|| owner.clone());
+                self.open_text
+                    .insert(e.message_id.as_str().to_owned(), owner);
+            }
+            Event::TextMessageEnd(e) => {
+                self.open_text.remove(e.message_id.as_str());
+            }
+            Event::ToolCallStart(e) => {
+                // Its tag; else the owner of the message that carries it;
+                // else whoever introduced it before; else the parent agent.
+                let inherited = e
+                    .parent_message_id
+                    .as_ref()
+                    .and_then(|parent| self.messages.get(parent.as_str()).cloned());
+                let asserted = match &e.subagent_run_id {
+                    Some(tag) => Some(Some(tag.clone())),
+                    None => inherited,
+                };
+                let id = e.tool_call_id.as_str();
+                let owner = asserted
+                    .or_else(|| self.tool_calls.get(id).cloned())
+                    .unwrap_or(None);
+                self.tool_calls.insert(id.to_owned(), owner.clone());
+                self.open_tool.insert(id.to_owned(), owner);
+            }
+            Event::ToolCallEnd(e) => {
+                self.open_tool.remove(e.tool_call_id.as_str());
+            }
+            // A result mints the message it names under its own attribution.
+            Event::ToolCallResult(e) => {
+                self.messages
+                    .insert(e.message_id.as_str().to_owned(), e.subagent_run_id.clone());
+            }
+            Event::ReasoningStart(e) => {
+                let id = e.message_id.as_str();
+                let owner = self.opener(Kind::Reasoning, id, &e.subagent_run_id);
+                self.reasoning.entry(id.to_owned()).or_insert(owner);
+            }
+            Event::ReasoningMessageStart(e) => {
+                let id = e.message_id.as_str();
+                let owner = self.opener(Kind::Reasoning, id, &e.subagent_run_id);
+                self.reasoning
+                    .entry(id.to_owned())
+                    .or_insert_with(|| owner.clone());
+                self.open_reasoning.insert(id.to_owned(), owner);
+            }
+            Event::ReasoningMessageEnd(e) => {
+                self.open_reasoning.remove(e.message_id.as_str());
+            }
+            // Authoritative: the snapshot restates the conversation.
+            Event::MessagesSnapshot(e) => self.seed(&e.messages, true),
+            // A new run starts with nothing open, and its input echo is
+            // history: it records only what nothing has.
+            Event::RunStarted(e) => {
+                self.forget_open();
+                if let Some(input) = &e.input {
+                    self.seed(&input.messages, false);
+                }
+            }
+            // A failing run abandons whatever it had open.
+            Event::RunError(_) => self.forget_open(),
+            _ => {}
+        }
+    }
+
+    /// The owner a start of `kind` for `id` gives its item: its tag, else the
+    /// recorded owner of the id, else the parent agent.
+    fn opener(&self, kind: Kind, id: &str, tag: &Owner) -> Owner {
+        match tag {
+            Some(_) => tag.clone(),
+            None => self.recorded(kind, id, None).flatten(),
+        }
+    }
+
+    fn forget_open(&mut self) {
+        self.open_text.clear();
+        self.open_tool.clear();
+        self.open_reasoning.clear();
+    }
+
+    /// Records the owners of the messages of a conversation, and of the tool
+    /// calls they carry: all of them, or only those nothing has recorded.
+    fn seed(&mut self, messages: &[Message], authoritative: bool) {
+        for message in messages {
+            let owner = message.subagent_run_id().cloned();
+            let bucket = match message {
+                Message::Activity(_) => continue,
+                Message::Reasoning(_) => &mut self.reasoning,
+                _ => &mut self.messages,
+            };
+            if authoritative || !bucket.contains_key(message.id().as_str()) {
+                bucket.insert(message.id().as_str().to_owned(), owner.clone());
+            }
+            if let Message::Assistant(assistant) = message {
+                for call in assistant.tool_calls.iter().flatten() {
+                    if authoritative || !self.tool_calls.contains_key(call.id.as_str()) {
+                        self.tool_calls
+                            .insert(call.id.as_str().to_owned(), owner.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The chunk streams being assembled: at most one per lane, in the order they
 /// opened.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Streams {
     open: Vec<Stream>,
+    /// Whose each item is, for the lane of an untagged explicit event.
+    owners: Owners,
 }
+
+/// The chunk streams a [`Streams`] was assembling, to put back with
+/// [`Streams::rewind`].
+pub(crate) struct Checkpoint(Vec<Stream>);
 
 impl Streams {
     /// Whether no chunk stream is being assembled.
@@ -373,16 +550,36 @@ impl Streams {
         self.open.is_empty()
     }
 
+    /// Learns the conversation a run continues, before its first event: the
+    /// owners of its messages, for the ids nothing has recorded.
+    pub(crate) fn seed(&mut self, history: &[Message]) {
+        self.owners.seed(history, false);
+    }
+
     /// Expands one event into the explicit form, appending the result to
     /// `out`: the ends it implies, then for a chunk the start it stands for
     /// and its content, and for anything else the event itself.
     pub(crate) fn expand(&mut self, event: Event, out: &mut Vec<Event>) -> Result<(), ChunkError> {
+        let from = out.len();
+        self.expand_quietly(event, out)?;
+        self.note_all(&out[from..]);
+        Ok(())
+    }
+
+    /// [`expand`](Self::expand) without recording the owners of what comes
+    /// out, for a caller that judges it first and then [notes](Self::note)
+    /// what it accepted.
+    pub(crate) fn expand_quietly(
+        &mut self,
+        event: Event,
+        out: &mut Vec<Event>,
+    ) -> Result<(), ChunkError> {
         match event {
             Event::TextMessageChunk(chunk) => self.text_chunk(chunk, out),
             Event::ToolCallChunk(chunk) => self.tool_chunk(chunk, out),
             Event::ReasoningMessageChunk(chunk) => self.reasoning_chunk(chunk, out),
             other => {
-                self.end_for(&other, out);
+                self.close_for(&other, out);
                 out.push(other);
                 Ok(())
             }
@@ -392,7 +589,49 @@ impl Streams {
     /// Appends to `out` the end of every chunk stream an event that is not a
     /// chunk closes. The event itself is not appended.
     pub(crate) fn end_for(&mut self, event: &Event, out: &mut Vec<Event>) {
+        let from = out.len();
+        self.close_for(event, out);
+        self.note_all(&out[from..]);
+        self.note(event);
+    }
+
+    /// [`end_for`](Self::end_for) without recording owners: see
+    /// [`expand_quietly`](Self::expand_quietly).
+    pub(crate) fn close_for(&mut self, event: &Event, out: &mut Vec<Event>) {
         self.end(event, &mut |stream| out.push(stream.end()));
+    }
+
+    /// Records the owners an accepted event in the explicit form gives: a
+    /// start, an end, a result, a snapshot, a run's start. Each event a
+    /// caller of the quiet methods accepts is noted, in order, the ones a
+    /// chunk stood for included.
+    pub(crate) fn note(&mut self, event: &Event) {
+        self.owners.note(event);
+    }
+
+    fn note_all(&mut self, events: &[Event]) {
+        for event in events {
+            self.owners.note(event);
+        }
+    }
+
+    /// The chunk streams being assembled, to [`rewind`](Self::rewind) to
+    /// when what follows is rejected. The owners are not in it: the quiet
+    /// methods leave them alone.
+    pub(crate) fn checkpoint(&self) -> Checkpoint {
+        Checkpoint(self.open.clone())
+    }
+
+    pub(crate) fn rewind(&mut self, checkpoint: Checkpoint) {
+        self.open = checkpoint.0;
+    }
+
+    /// Drops every chunk stream without ending it, for a run that is over
+    /// whatever it had open. The owners stay, as the messages they describe
+    /// do.
+    pub(crate) fn abandon(&mut self) {
+        self.open.clear();
+        self.owners.forget_open();
     }
 
     /// Ends whatever is still being assembled. For the end of the transport
@@ -401,18 +640,18 @@ impl Streams {
         self.close_all(&mut |stream| out.push(stream.end()));
     }
 
-    /// Folds an event into the model without expanding it. A chunk that
-    /// cannot be placed changes nothing.
+    /// Folds an event into the model without handing back what it stands
+    /// for. A chunk that cannot be placed changes nothing.
     pub(crate) fn track(&mut self, event: &Event) {
-        let mut ignore = |_| {};
-        let _ = match event {
-            Event::TextMessageChunk(chunk) => self.place(&Chunk::text(chunk), &mut ignore),
-            Event::ToolCallChunk(chunk) => self.place(&Chunk::tool(chunk), &mut ignore),
-            Event::ReasoningMessageChunk(chunk) => {
-                self.place(&Chunk::reasoning(chunk), &mut ignore)
+        let mut stood_for = Vec::new();
+        match event {
+            Event::TextMessageChunk(_)
+            | Event::ToolCallChunk(_)
+            | Event::ReasoningMessageChunk(_) => {
+                let _ = self.expand(event.clone(), &mut stood_for);
             }
-            other => return self.end(other, &mut ignore),
-        };
+            other => self.end_for(other, &mut stood_for),
+        }
     }
 
     /// The stream a chunk that names no id continues: the one in the lane it
@@ -623,7 +862,11 @@ impl Streams {
         // its lane, even when it names the id that stream is assembling: the
         // two spellings do not mix.
         if let Some((kind, id, tag)) = item(event) {
-            let lane = self.lane_of(kind, id, tag);
+            let parent = match event {
+                Event::ToolCallStart(e) => e.parent_message_id.as_ref(),
+                _ => None,
+            };
+            let lane = self.explicit_lane(kind, id, tag, parent);
             return self.close_lane(&lane, ended);
         }
         match event {
@@ -637,11 +880,17 @@ impl Streams {
                 self.close_lane(&e.subagent_run_id, ended);
             }
             // A reasoning block closing implies the message inside it has.
+            // Untagged, a block's event is in its owner's lane, as an item's
+            // continuation is.
             Event::ReasoningEnd(e) => {
                 self.close_id(Kind::Reasoning, &e.message_id, ended);
-                self.close_lane(&e.subagent_run_id, ended);
+                let lane = self.block_lane(&e.message_id, &e.subagent_run_id);
+                self.close_lane(&lane, ended);
             }
-            Event::ReasoningStart(e) => self.close_lane(&e.subagent_run_id, ended),
+            Event::ReasoningStart(e) => {
+                let lane = self.block_lane(&e.message_id, &e.subagent_run_id);
+                self.close_lane(&lane, ended);
+            }
 
             // The standalone events that end their lane's stream.
             Event::StateSnapshot(e) => self.close_lane(&e.subagent_run_id, ended),
@@ -682,7 +931,42 @@ impl Streams {
         self.open.iter().find(|stream| &stream.owner == owner)
     }
 
-    /// The lane an event for `id` is in: the one it is attributed to;
+    /// The lane an explicit start, content or end event for `id` is in: the
+    /// one it is attributed to; unattributed, the owner of the item it
+    /// continues while that is open, else the owner of the chunk stream
+    /// assembling the id, else the owner the rules record for the id, else
+    /// the parent's. See the [module docs](self).
+    fn explicit_lane(
+        &self,
+        kind: Kind,
+        id: &str,
+        tag: &Owner,
+        parent: Option<&MessageId>,
+    ) -> Owner {
+        if tag.is_some() {
+            return tag.clone();
+        }
+        if let Some(owner) = self.owners.open(kind).get(id) {
+            return owner.clone();
+        }
+        if let Some(stream) = self.holder(kind, id) {
+            return stream.owner.clone();
+        }
+        self.owners.recorded(kind, id, parent).flatten()
+    }
+
+    /// The lane of `REASONING_START` or `REASONING_END`: the tag, else the
+    /// owner recorded for the block's id.
+    fn block_lane(&self, id: &MessageId, tag: &Owner) -> Owner {
+        if tag.is_some() {
+            return tag.clone();
+        }
+        self.owners
+            .recorded(Kind::Reasoning, id.as_str(), None)
+            .flatten()
+    }
+
+    /// The lane a chunk for `id` is in: the one it is attributed to;
     /// unattributed, the one assembling that id, else the parent's. An
     /// untagged continuation of a subagent's stream is legal on the wire and
     /// must not be read as the parent's.
@@ -774,6 +1058,94 @@ mod tests {
                 ]
             );
         }
+    }
+
+    /// AG-UI 1.0, `events/subagents`: "an untagged continuation continues
+    /// whatever the opener owns". Before, the untagged event below was read
+    /// as the parent agent's, ended the parent's chunk stream, and the chunk
+    /// after it had nothing to continue.
+    #[test]
+    fn an_untagged_explicit_event_is_in_the_lane_of_whoever_owns_its_item() {
+        let s1 = |event: Event| event.with_subagent_run_id("s1");
+        let parents = || text(Some("m-p"), "a");
+        let continued = || text(None, "b");
+        let open = [
+            Event::subagent_started("s1", "worker"),
+            s1(Event::text_message_start("m-s", TextMessageRole::Assistant)),
+            s1(Event::tool_call_start("c-s", "search")),
+            s1(Event::reasoning_start("r-s")),
+            s1(Event::reasoning_message_start("r-s")),
+        ];
+        // Each continuation, content or end, of each kind.
+        for untagged in [
+            Event::text_message_content("m-s", "x"),
+            Event::text_message_end("m-s"),
+            Event::tool_call_args("c-s", "{}"),
+            Event::tool_call_end("c-s"),
+            Event::reasoning_message_content("r-s", "hm"),
+            Event::reasoning_message_end("r-s"),
+        ] {
+            let mut events = open.to_vec();
+            events.extend([parents(), untagged.clone(), continued()]);
+            let out = expanded(events);
+            let parents_stream: Vec<_> = out
+                .iter()
+                .filter(|event| match event {
+                    Event::TextMessageContent(e) => e.message_id.as_str() == "m-p",
+                    Event::TextMessageEnd(e) => e.message_id.as_str() == "m-p",
+                    _ => false,
+                })
+                .map(Event::event_type)
+                .collect();
+            assert_eq!(
+                parents_stream,
+                [
+                    EventType::TextMessageContent,
+                    EventType::TextMessageContent,
+                    EventType::TextMessageEnd,
+                ],
+                "{untagged:?}: {out:?}"
+            );
+        }
+
+        // An item that has closed is still its owner's: an untagged start
+        // for its id opens it again under that owner, in that lane. So is a
+        // reasoning block's end.
+        let mut events = vec![
+            Event::subagent_started("s1", "worker"),
+            s1(Event::text_message_start("m-s", TextMessageRole::Assistant)),
+            s1(Event::text_message_end("m-s")),
+            s1(Event::reasoning_start("r-s")),
+            parents(),
+            Event::text_message_start("m-s", TextMessageRole::Assistant),
+            Event::reasoning_end("r-s"),
+            continued(),
+        ];
+        assert!(expand(events.clone()).is_ok());
+        // Tagged as the parent's, the start is in the parent's lane.
+        events[5] = Event::text_message_start("m-p2", TextMessageRole::Assistant);
+        assert_eq!(
+            expand(events),
+            Err(ChunkError::NothingOpen {
+                kind: Kind::Text,
+                subagent: None
+            })
+        );
+    }
+
+    #[test]
+    fn the_lane_of_a_call_is_that_of_the_message_that_carries_it() {
+        let s1 = |event: Event| event.with_subagent_run_id("s1");
+        let call = crate::ToolCallStartEvent::new("c-1", "search").with_parent_message_id("m-s");
+        let events = [
+            Event::subagent_started("s1", "worker"),
+            s1(Event::text_message_start("m-s", TextMessageRole::Assistant)),
+            s1(Event::text_message_end("m-s")),
+            text(Some("m-p"), "a"),
+            call.into(),
+            text(None, "b"),
+        ];
+        assert!(expand(events).is_ok());
     }
 
     #[test]
