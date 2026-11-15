@@ -1169,6 +1169,85 @@ These are on `main` and not yet in a published version.
   | `match retry.judge(..) { Verdict::Done(..) => .., Verdict::Retry(..) => .., Verdict::GiveUp(error) => return Err(error) }` | The same with `_ => return Err(Error::parse("a verdict this agent does not know"))`: a verdict a later version adds is one the loop cannot act on |
   | `match part { StreamPart::Text(..) => .., StreamPart::A2ui(..) => .., StreamPart::Rejected(..) => .. }` | The same with `_ => {}` |
 
+- `FilterToolCalls` filters a conversation the stream restates by the same names as the
+  tool-call events. A `MESSAGES_SNAPSHOT`, and the request echoed on `RUN_STARTED`, go out
+  without a filtered call, without the encrypted value that call carries and without the
+  tool message that answers it. Alpha.3 dropped the four tool-call events and sent a
+  restated conversation as it was. Two more things are taken out: an assistant message
+  left with neither content nor tool calls, and a tool message that answers a call
+  nothing named. There is nothing to write; a call a client has to see does not belong on
+  the filter's list.
+- `FilterToolCalls` learns the calls a `MESSAGES_SNAPSHOT` carries, so the result of a
+  call a snapshot introduced goes where the call went. Alpha.3 dropped that result
+  whatever the tool, and the run finished with the call unanswered. An event of a call
+  nothing named is still dropped, and its emit returns `Ok` as in alpha.3: the filter
+  cannot tell such a call from one it removed in an earlier run. There is nothing to
+  write.
+- `StreamTransformer` gains a provided method, `replay(&mut self, sent: &[Event])`, and
+  existing implementations compile unchanged. `Runner::continue_run` calls it once, after
+  `seed` and before the first event, with the events the run already sent; the default
+  ignores them. Alpha.3 showed a continued run's transformers nothing of `sent`.
+  Implement it for a transformer that judges an event by the id it names.
+- In a run continued with `Runner::continue_run`, `FilterToolCalls` and
+  `ToolResultToState` know the calls that `sent` opened. A continuation can finish and
+  answer a call the earlier driver left open under `FilterToolCalls`, and a
+  `ToolResultToState` promotes its result; before, the filter dropped those events and
+  the run ended in `RUN_ERROR` (`open-at-finish`). A call the earlier driver's filter
+  removed is not in `sent`, so its events are dropped with `Ok`. The filter does not take
+  up the chunk streams `sent` left open: a continuation that keeps streaming a call by
+  chunks names the call's id on its first chunk, and the chunks after it may name none. A
+  `TOOL_CALL_CHUNK` with no id before that is dropped with `Ok`, because the filter
+  cannot tell whose it is: the earlier driver may have been streaming a call its filter
+  removed in the same lane, and `sent` does not show it.
+- `ToolResultToState` promotes the result of a call the run did not open itself: one the
+  request's history holds unanswered, and one a `MESSAGES_SNAPSHOT` introduced. Alpha.3
+  promoted only the result of a call started in the same run, so a resumed run's result
+  went out with no state event after it.
+- `ToolResultToState::delta` leaves a result alone unless its content is a JSON Patch a
+  consumer can read: the `path` and `from` of every operation must be JSON Pointers.
+  Alpha.3 promoted `[{"op":"add","path":"oops","value":1}]`, and the run then ended in
+  `RUN_ERROR` (`SERIALIZATION`) after the result was sent, or sent a `STATE_DELTA` that
+  the client rejects. A hosted run now refuses to send a `STATE_DELTA` with such a patch
+  whether or not state was published before it: the emit fails with `Error::Json`, where
+  alpha.3 sent it when nothing had been published. A well-formed patch that does not
+  apply to the state is still sent.
+- `SubagentVisibility::inline()` and `hidden()` give a `*_CHUNK` event the fields that
+  open its item when the event has to open it again for the consumer: `toolCallName` and
+  `parentMessageId` on a `TOOL_CALL_CHUNK`, `role` and `name` on a `TEXT_MESSAGE_CHUNK`.
+  That happens when a chunk stream is still open for the agent and has ended for the
+  consumer, because an event that left its subagent's lane ended it: under `inline()`
+  another subagent's chunk, under `hidden()` the state a subagent published. Alpha.3
+  sent the continuation as it was, and the run ended in `RUN_ERROR` ("opens tool call
+  … without a toolCallName"). A `TOOL_CALL_CHUNK` that named no id used to be given the
+  tool's name every time; it now gets it only when it opens the call again.
+- A run continued with `Runner::continue_run` and then cancelled closes what `sent` left
+  open, and ends with `RUN_FINISHED` and the cancelled outcome. The driver sends the end
+  event of each message, tool call, reasoning message, reasoning block and step that
+  `sent` opened and nothing closed, innermost first and under the subagent that opened
+  it, as it already sent `SUBAGENT_ERROR` for a subagent left active. Before, such a run
+  ended in `RUN_ERROR` (`open-at-finish`), or without the `verify` feature in a
+  `RUN_FINISHED` with the entity still open. An end event the agent emits itself after
+  cancellation still fails with `Error::Cancelled`. Without the `verify` feature, a
+  continued run that is not cancelled and leaves such an entity open now ends in
+  `RUN_ERROR` as it does with `verify` on, not in `RUN_FINISHED`.
+- The ids a context hands out in a continued run are never ones `sent` already used, and
+  the counter behind them cannot overflow. An id in `sent` of the shape the context
+  hands out with the largest number a counter holds, such as
+  `<runId>-msg-18446744073709551615`, used to panic the driver in a build with overflow
+  checks and to repeat ids otherwise. The count now starts again from 1 and passes over
+  every number in use.
+- `server::SubagentVisibility`, `server::StatePublish`, `encode::sse::SseFrame` (also
+  `axum::SseFrame`) and `server::VerificationError` are `#[non_exhaustive]`. A `match` on
+  one of the three enums needs a wildcard arm; for `StatePublish`, `other.into_event()`
+  covers every variant. `VerificationError` can no longer be built with a struct literal
+  outside the crate, and a struct pattern needs `..`: write
+  `VerificationError::new(event, rule, detail)`. Variants are built as before.
+- `ExecutionCapabilities` reads `maxIterations` and `maxExecutionTime` written as a
+  float with no fractional part, such as `10.0` or `3e4`, as the integer it is, which is
+  what the schema's `integer` means. Alpha.3 failed the whole document over such a
+  number. They are written back as `10` and `30000`. A number with a fractional part is
+  still an error, and `-1.0` reads as `None` like `-1`.
+
 ## Verify the upgrade
 
 Test the application against its own real agent and transport. The workspace's

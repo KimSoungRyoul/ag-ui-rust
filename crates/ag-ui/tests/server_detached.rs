@@ -7,15 +7,17 @@
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use ag_ui::server::{Agent, Error, EventReceiver, FilterToolCalls, Result, RunContext, Runner};
+use ag_ui::server::{
+    Agent, Error, EventReceiver, FilterToolCalls, Result, RunContext, Runner, ToolResultToState,
+};
 use ag_ui::{
-    AssistantMessage, Event, EventType, Interrupt, Message, RunAgentInput, RunOutcome,
-    TextMessageRole, ToolCall,
+    AssistantMessage, Event, EventType, Interrupt, Message, RunAgentInput, RunFinishedEvent,
+    RunOutcome, RunStartedEvent, TextMessageRole, ToolCall,
 };
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -373,7 +375,6 @@ async fn a_continuation_sends_no_run_started_and_exactly_one_terminal_event() {
     let _ = run;
 }
 
-#[cfg(feature = "verify")]
 #[tokio::test]
 async fn what_the_first_driver_left_open_has_to_be_closed() {
     struct Forgets;
@@ -578,6 +579,547 @@ async fn the_run_continued_is_the_last_one_the_events_start() {
             panic!("{between}");
         };
         assert_eq!(error.rule, ag_ui::server::Rule::RunEnded);
+    }
+}
+
+// ---- what a continuation inherits ---------------------------------------
+
+/// The first driver stopped half way through the arguments of a call.
+fn stopped_mid_call() -> [Event; 3] {
+    [
+        Event::run_started("t", "r"),
+        Event::tool_call_start("c1", "search"),
+        Event::tool_call_args("c1", r#"{"q":"#),
+    ]
+}
+
+/// Finishes the call the first driver left open, and answers it.
+struct FinishesTheCall;
+
+impl Agent for FinishesTheCall {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        ctx.emit(Event::tool_call_args("c1", r#""rust"}"#))?;
+        ctx.emit(Event::tool_call_end("c1"))?;
+        ctx.emit(Event::tool_call_result("m1", "c1", "1 hit"))?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+#[tokio::test]
+async fn a_filter_lets_a_continuation_finish_a_call_it_has_nothing_against() {
+    let sent = stopped_mid_call();
+    let whole = [
+        Event::tool_call_args("c1", r#""rust"}"#),
+        Event::tool_call_end("c1"),
+        Event::tool_call_result("m1", "c1", "1 hit"),
+        Event::run_finished_success("t", "r"),
+    ];
+    assert_eq!(
+        continued(Runner::new(FinishesTheCall), input(), &sent).await,
+        whole
+    );
+
+    // The filter did not see the call start: the driver before this one
+    // did. It is told what was sent, and judges the call by its name.
+    for filter in [
+        FilterToolCalls::deny(["internal_debug"]),
+        FilterToolCalls::allow(["search"]),
+    ] {
+        let runner = Runner::new(FinishesTheCall).transformer(filter);
+        assert_eq!(continued(runner, input(), &sent).await, whole);
+    }
+}
+
+/// What each emit of an agent returned, for a test to read afterwards.
+type Outcomes = Arc<Mutex<Vec<std::result::Result<(), String>>>>;
+
+/// Emits each event, recording what the emit returned, and carries on.
+struct Reports {
+    events: Vec<Event>,
+    outcomes: Outcomes,
+}
+
+impl Agent for Reports {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        for event in &self.events {
+            let outcome = ctx.emit(event.clone()).map_err(|error| error.to_string());
+            self.outcomes.lock().unwrap().push(outcome);
+        }
+        Ok(RunOutcome::Success)
+    }
+}
+
+/// A filter that never saw a call start cannot tell it from a call that was
+/// filtered where it could not see. What belongs to the call is dropped, as
+/// the call was, and the emit returns `Ok`.
+#[tokio::test]
+async fn an_event_for_a_call_a_filter_never_saw_start_is_dropped() {
+    // The call is not among the events sent, and not in the history: what a
+    // call the first driver's filter dropped looks like from here.
+    let sent = [Event::run_started("t", "r")];
+    let unknown = vec![
+        Event::tool_call_args("c9", r#"{"dump":true}"#),
+        Event::tool_call_end("c9"),
+        Event::tool_call_result("m9", "c9", "everything"),
+        Event::reasoning_encrypted_value(
+            ag_ui::ReasoningEncryptedValueSubtype::ToolCall,
+            "c9",
+            "opaque",
+        ),
+        Event::tool_call_chunk(Some("c9".into()), None, Some("more".into())),
+        Event::tool_call_chunk(None, None, Some("and more".into())),
+    ];
+
+    for filter in [
+        FilterToolCalls::deny(["internal_debug"]),
+        FilterToolCalls::allow(["search"]),
+    ] {
+        let outcomes = Outcomes::default();
+        let agent = Reports {
+            events: unknown.clone(),
+            outcomes: Arc::clone(&outcomes),
+        };
+        let rest = continued(Runner::new(agent).transformer(filter), input(), &sent).await;
+        assert_eq!(
+            rest,
+            [Event::run_finished_success("t", "r")],
+            "nothing of the call is sent"
+        );
+        assert_eq!(*outcomes.lock().unwrap(), vec![Ok(()); unknown.len()]);
+    }
+}
+
+/// The first driver's filter removed a call it started, and the run stopped
+/// before the call ended. The call is not among the events sent. The
+/// continuation finishes and answers it, is told nothing went wrong, and
+/// nothing of the call is sent.
+#[tokio::test]
+async fn a_continuation_finishes_a_call_the_first_driver_s_filter_removed() {
+    struct StartsADeniedCall;
+    impl Agent for StartsADeniedCall {
+        type State = ();
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            ctx.emit(Event::tool_call_start("c9", "internal_debug"))?;
+            ctx.emit(Event::tool_call_args("c9", r#"{"dump":"#))?;
+            std::future::pending().await
+        }
+    }
+    let finishing = vec![
+        Event::tool_call_args("c9", "true}"),
+        Event::tool_call_end("c9"),
+        Event::tool_call_result("m9", "c9", "everything"),
+    ];
+
+    for filter in [
+        FilterToolCalls::deny(["internal_debug"]),
+        FilterToolCalls::allow(["search"]),
+    ] {
+        let first = Runner::new(StartsADeniedCall).transformer(filter.clone());
+        let sent = stopped_mid_run(first, input());
+        assert_eq!(sent, [Event::run_started("t", "r")]);
+
+        let outcomes = Outcomes::default();
+        let agent = Reports {
+            events: finishing.clone(),
+            outcomes: Arc::clone(&outcomes),
+        };
+        let rest = continued(Runner::new(agent).transformer(filter), input(), &sent).await;
+        assert_eq!(rest, [Event::run_finished_success("t", "r")]);
+        assert_eq!(*outcomes.lock().unwrap(), vec![Ok(()); finishing.len()]);
+    }
+}
+
+/// The call the first driver left open, streamed by chunks: it opened the
+/// call with a chunk that names the call and the tool. The continuation
+/// names the call on its first chunk and goes on with chunks that name no
+/// id, as within any single run, and all of it goes out with the call.
+#[tokio::test]
+async fn a_filter_lets_a_continuation_finish_a_chunked_call_whose_first_chunk_names_it() {
+    let sent = [
+        Event::run_started("t", "r"),
+        Event::tool_call_chunk(
+            Some("c1".into()),
+            Some("search".into()),
+            Some(r#"{"q":"#.into()),
+        ),
+    ];
+    let finishing = vec![
+        Event::tool_call_chunk(Some("c1".into()), None, Some(r#""ru"#.into())),
+        Event::tool_call_chunk(None, None, Some(r#"st""#.into())),
+        Event::tool_call_chunk(None, None, Some("}".into())),
+        Event::tool_call_result("m1", "c1", "1 hit"),
+    ];
+    let mut whole = finishing.clone();
+    whole.push(Event::run_finished_success("t", "r"));
+
+    for filter in [
+        None,
+        Some(FilterToolCalls::deny(["internal_debug"])),
+        Some(FilterToolCalls::allow(["search"])),
+    ] {
+        let outcomes = Outcomes::default();
+        let agent = Reports {
+            events: finishing.clone(),
+            outcomes: Arc::clone(&outcomes),
+        };
+        let mut runner = Runner::new(agent);
+        if let Some(filter) = filter {
+            runner = runner.transformer(filter);
+        }
+        let rest = continued(runner, input(), &sent).await;
+        assert_eq!(rest, whole);
+        assert_eq!(*outcomes.lock().unwrap(), vec![Ok(()); finishing.len()]);
+
+        // A client reads one call, assembled from both drivers' chunks.
+        #[cfg(feature = "client")]
+        {
+            let run = [sent.as_slice(), rest.as_slice()].concat();
+            ag_ui::client::verify_all(&run).expect("one well-formed run");
+            let expanded = ag_ui::client::normalize_all(run).expect("normalizes");
+            let args: String = expanded
+                .iter()
+                .filter_map(|event| match event {
+                    Event::ToolCallArgs(args) => Some(args.delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(args, r#"{"q":"rust"}"#);
+        }
+    }
+}
+
+/// The first driver streamed two calls by chunks in one lane, and its filter
+/// removed the second. The events sent leave the first call's stream open
+/// and say nothing of the second, so a chunk of the continuation that names
+/// no id may be meant for either: it is dropped, and so are the chunks that
+/// follow one naming the removed call. None of them reaches the wire or the
+/// arguments of the call that was sent, and each emit returns `Ok`. A chunk
+/// naming the call that was sent takes it up again.
+#[tokio::test]
+async fn a_chunk_that_names_no_id_does_not_continue_what_the_first_driver_left_open() {
+    struct StreamsTwoCalls;
+    impl Agent for StreamsTwoCalls {
+        type State = ();
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            ctx.emit(Event::tool_call_chunk(
+                Some("c1".into()),
+                Some("search".into()),
+                Some("A".into()),
+            ))?;
+            ctx.emit(Event::tool_call_chunk(
+                Some("c2".into()),
+                Some("internal_debug".into()),
+                Some("B".into()),
+            ))?;
+            std::future::pending().await
+        }
+    }
+    let chunk = |id: Option<&str>, delta: &str| {
+        Event::tool_call_chunk(id.map(ag_ui::ToolCallId::new), None, Some(delta.into()))
+    };
+
+    let filter = FilterToolCalls::deny(["internal_debug"]);
+    let first = Runner::new(StreamsTwoCalls).transformer(filter.clone());
+    let sent = stopped_mid_run(first, input());
+    assert_eq!(
+        sent,
+        [
+            Event::run_started("t", "r"),
+            Event::tool_call_chunk(Some("c1".into()), Some("search".into()), Some("A".into())),
+        ]
+    );
+
+    let continuing = vec![
+        chunk(None, "C"),
+        chunk(Some("c2"), "D"),
+        chunk(None, "E"),
+        chunk(Some("c1"), "F"),
+        chunk(None, "G"),
+    ];
+    let outcomes = Outcomes::default();
+    let agent = Reports {
+        events: continuing.clone(),
+        outcomes: Arc::clone(&outcomes),
+    };
+    let rest = continued(Runner::new(agent).transformer(filter), input(), &sent).await;
+    assert_eq!(
+        rest,
+        [
+            chunk(Some("c1"), "F"),
+            chunk(None, "G"),
+            Event::run_finished_success("t", "r"),
+        ]
+    );
+    assert_eq!(*outcomes.lock().unwrap(), vec![Ok(()); continuing.len()]);
+
+    #[cfg(feature = "client")]
+    {
+        let run = [sent.as_slice(), rest.as_slice()].concat();
+        ag_ui::client::verify_all(&run).expect("one well-formed run");
+        let expanded = ag_ui::client::normalize_all(run).expect("normalizes");
+        let args: Vec<(&str, &str)> = expanded
+            .iter()
+            .filter_map(|event| match event {
+                Event::ToolCallArgs(args) => {
+                    Some((args.tool_call_id.as_str(), args.delta.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(args, [("c1", "A"), ("c1", "F"), ("c1", "G")]);
+    }
+}
+
+/// A transformer of your own is shown what the run already sent: once, after
+/// the history, before the first event of the driver that continues the run.
+#[tokio::test]
+async fn a_custom_transformer_is_shown_what_was_sent_before_a_continuation_s_first_event() {
+    use ag_ui::server::StreamTransformer;
+
+    struct Records(Arc<Mutex<Vec<String>>>);
+
+    impl StreamTransformer for Records {
+        fn seed(&mut self, history: &[Message]) {
+            let ids = history.iter().map(|message| message.id().to_string());
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("seed {:?}", ids.collect::<Vec<_>>()));
+        }
+
+        fn replay(&mut self, sent: &[Event]) {
+            let types: Vec<_> = sent.iter().map(Event::event_type).collect();
+            self.0.lock().unwrap().push(format!("replay {types:?}"));
+        }
+
+        fn transform(&mut self, event: Event) -> Vec<Event> {
+            let seen = format!("transform {}", event.event_type());
+            self.0.lock().unwrap().push(seen);
+            vec![event]
+        }
+    }
+
+    let mut request = input();
+    request.messages = vec![Message::user("u1", "hi")];
+    let sent = stopped_mid_call();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runner = Runner::new(FinishesTheCall).transformer(Records(Arc::clone(&seen)));
+    continued(runner, request, &sent).await;
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            r#"seed ["u1"]"#,
+            "replay [RunStarted, ToolCallStart, ToolCallArgs]",
+            "transform TOOL_CALL_ARGS",
+            "transform TOOL_CALL_END",
+            "transform TOOL_CALL_RESULT",
+            "transform RUN_FINISHED",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_continuation_promotes_the_result_of_a_call_the_first_driver_made() {
+    let sent = [
+        Event::run_started("t", "r"),
+        Event::tool_call_start("c1", "load_document"),
+        Event::tool_call_end("c1"),
+    ];
+    let result = Event::tool_call_result("m1", "c1", r#"{"title":"Notes"}"#);
+    let agent = Reports {
+        events: vec![result.clone()],
+        outcomes: Outcomes::default(),
+    };
+    let runner = Runner::new(agent).transformer(ToolResultToState::snapshot("load_document"));
+    assert_eq!(
+        continued(runner, input(), &sent).await,
+        [
+            result,
+            Event::state_snapshot(json!({ "title": "Notes" })),
+            Event::run_finished_success("t", "r"),
+        ]
+    );
+}
+
+fn cancelled_run_finished() -> Event {
+    RunFinishedEvent::new("t", "r")
+        .with_outcome(RunOutcome::Cancelled)
+        .into()
+}
+
+/// Cancelled before it could do anything. It has no handle for what the
+/// first driver opened, and an emit after cancellation fails, a terminator
+/// included.
+struct CancelledAtOnce;
+
+impl Agent for CancelledAtOnce {
+    type State = ();
+
+    async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+        ctx.cancellation_token().cancel();
+        let by_hand = ctx.emit(Event::text_message_end("r-msg-1"));
+        assert!(by_hand.is_err_and(|error| error.is_cancelled()));
+        ctx.check_cancelled()?;
+        Ok(RunOutcome::Success)
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_continuation_closes_what_the_first_driver_left_open() {
+    let sent = stopped_mid_run(Runner::new(Stalls), input());
+    let rest = continued(Runner::new(CancelledAtOnce), input(), &sent).await;
+    assert_eq!(
+        rest,
+        [Event::text_message_end("r-msg-1"), cancelled_run_finished()],
+        "a cancelled run closes what it had open and ends as cancelled"
+    );
+
+    // One of everything, nested: the driver closes the innermost first, each
+    // under the subagent that opened it.
+    let helper = |event: Event| event.with_subagent_run_id("helper-1");
+    let sent = [
+        Event::run_started("t", "r"),
+        Event::step_started("work"),
+        // Closed before the first driver stopped: not the driver's to close.
+        Event::text_message_start("m0", TextMessageRole::Assistant),
+        Event::text_message_end("m0"),
+        Event::reasoning_start("think-1"),
+        Event::reasoning_message_start("think-1"),
+        Event::reasoning_message_content("think-1", "Hm."),
+        Event::subagent_started("helper-1", "helper"),
+        helper(Event::text_message_start("m1", TextMessageRole::Assistant)),
+        helper(Event::tool_call_start("c1", "search")),
+        helper(Event::step_started("work")),
+    ];
+    let rest = continued(Runner::new(CancelledAtOnce), input(), &sent).await;
+    let closed: Vec<(EventType, Option<&str>)> = rest
+        .iter()
+        .map(|event| {
+            let owner = event.subagent_run_id().map(|id| id.as_str());
+            (event.event_type(), owner)
+        })
+        .collect();
+    assert_eq!(
+        closed,
+        [
+            (EventType::StepFinished, Some("helper-1")),
+            (EventType::ToolCallEnd, Some("helper-1")),
+            (EventType::TextMessageEnd, Some("helper-1")),
+            (EventType::SubagentError, Some("helper-1")),
+            (EventType::ReasoningMessageEnd, None),
+            (EventType::ReasoningEnd, None),
+            (EventType::StepFinished, None),
+            (EventType::RunFinished, None),
+        ],
+        "{rest:?}"
+    );
+    assert_eq!(rest.last(), Some(&cancelled_run_finished()));
+
+    let run = [sent.as_slice(), rest.as_slice()].concat();
+    #[cfg(feature = "client")]
+    ag_ui::client::verify_all(&run).expect("one well-formed run");
+    #[cfg(feature = "verify")]
+    ag_ui::server::EventVerifier::new()
+        .replay(&run)
+        .expect("one well-formed run");
+    let _ = run;
+}
+
+#[tokio::test]
+async fn what_a_continuation_closed_itself_is_not_closed_again() {
+    struct ClosesThenCancelled;
+    impl Agent for ClosesThenCancelled {
+        type State = ();
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            ctx.emit(Event::text_message_end("r-msg-1"))?;
+            ctx.cancellation_token().cancel();
+            ctx.check_cancelled()?;
+            Ok(RunOutcome::Success)
+        }
+    }
+    let sent = stopped_mid_run(Runner::new(Stalls), input());
+    let rest = continued(Runner::new(ClosesThenCancelled), input(), &sent).await;
+    assert_eq!(
+        rest,
+        [Event::text_message_end("r-msg-1"), cancelled_run_finished()]
+    );
+}
+
+/// The largest number an id counter can hold.
+const LAST: u64 = u64::MAX;
+
+#[tokio::test]
+async fn an_id_that_was_sent_cannot_exhaust_the_ids_a_continuation_hands_out() {
+    // A request for run `r` names a message by an id of the shape a context
+    // hands out, with the largest number there is, and the run echoed it.
+    // A call and a subagent of the same shape were sent as well. The first
+    // of each kind is in use too: by a message, by a call that message
+    // carries, and by the subagent it is attributed to.
+    let mut request = input();
+    request.messages = vec![
+        Message::user(format!("r-msg-{LAST}"), "hi"),
+        Message::Assistant(AssistantMessage {
+            id: "r-msg-1".into(),
+            tool_calls: Some(vec![ToolCall::new("r-call-1", "search", "{}")]),
+            subagent_run_id: Some("r-sub-1".into()),
+            ..Default::default()
+        }),
+    ];
+    let mut started = RunStartedEvent::new("t", "r");
+    started.input = Some(Box::new(request.clone()));
+    let sent = [
+        Event::from(started),
+        Event::tool_call_start(format!("r-call-{LAST}"), "search"),
+        Event::tool_call_end(format!("r-call-{LAST}")),
+        Event::subagent_started(format!("r-sub-{LAST}"), "helper"),
+        Event::subagent_finished_success(format!("r-sub-{LAST}")),
+        // Attributed to a subagent that no event announced.
+        Event::custom("note", json!(1)).with_subagent_run_id("r-sub-2"),
+    ];
+
+    struct MintsOfEachKind;
+    impl Agent for MintsOfEachKind {
+        type State = ();
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            ctx.say("one")?;
+            ctx.say("two")?;
+            ctx.tool_call("search")?.end()?;
+            ctx.tool_call("search")?.end()?;
+            ctx.subagent("helper")?.finish()?;
+            ctx.subagent("helper")?.finish()?;
+            Ok(RunOutcome::Success)
+        }
+    }
+
+    // `continued` asserts the driver did not panic.
+    let rest = continued(Runner::new(MintsOfEachKind), request, &sent).await;
+    assert_eq!(rest.last(), Some(&Event::run_finished_success("t", "r")));
+    let minted: Vec<String> = rest
+        .iter()
+        .filter_map(|event| match event {
+            Event::TextMessageStart(e) => Some(e.message_id.to_string()),
+            Event::ToolCallStart(e) => Some(e.tool_call_id.to_string()),
+            Event::SubagentStarted(e) => Some(e.subagent_run_id.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(minted.len(), 6, "{rest:?}");
+    let in_use = [
+        format!("r-msg-{LAST}"),
+        "r-msg-1".to_owned(),
+        format!("r-call-{LAST}"),
+        "r-call-1".to_owned(),
+        format!("r-sub-{LAST}"),
+        "r-sub-1".to_owned(),
+        "r-sub-2".to_owned(),
+    ];
+    for (index, id) in minted.iter().enumerate() {
+        assert!(!in_use.contains(id), "{id} was already in use");
+        assert!(!minted[..index].contains(id), "{id} was handed out twice");
     }
 }
 
