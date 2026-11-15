@@ -50,7 +50,10 @@
 //!   that start where the run is. A server that builds its events by hand
 //!   does the same with `EventVerifier::replay`, in [`verify`].
 //! - [`RunProgress`] folds the events of a run so far into what the run has
-//!   open, and builds the prelude a client that joins it is sent first.
+//!   open, and builds the prelude a client that joins it is sent first. A
+//!   client's stream has to begin with `RUN_STARTED`, so the prelude does,
+//!   and it stands for the events already sent: a client is sent one or the
+//!   other, never both.
 //!
 //! None of these spawns anything. The crate still has no executor of its
 //! own.

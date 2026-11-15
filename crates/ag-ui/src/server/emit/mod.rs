@@ -255,8 +255,9 @@ impl EventSink {
         self.verifier.assume_opened();
     }
 
-    /// Records an event an earlier driver of this run already sent, without
-    /// sending it again: for a sink that continues the run.
+    /// Records an event that was already sent, without sending it again:
+    /// for a sink that continues a run. The event is one an earlier driver
+    /// of the run sent, or one of a run before it on the same stream.
     ///
     /// Everything [`send`](Self::send) remembers about an event it queues is
     /// remembered here: the verifier's ordering state, the state the client
