@@ -54,7 +54,7 @@ other suite counts one check per case and verifies its steps in order; a case
 that stops at a step is reported under that step, `suite::case[step 2]`, and
 that is the name `KNOWN_FAILURES` and `DIVERGENCES` list it by.
 
-Totals: 220 passed, 17 expected divergence, 1803 skipped, 7 failing.
+Totals: 312 passed, 17 expected divergence, 1711 skipped, 7 failing.
 
 | Suite | Cases | Passed | Expected divergence | Skipped | Failing | Standing |
 |---|---:|---:|---:|---:|---:|---|
@@ -64,11 +64,11 @@ Totals: 220 passed, 17 expected divergence, 1803 skipped, 7 failing.
 | `agent/legacy/streaming_parser.yaml` | 88 | 33 | 8 | 45 | 2 | executed |
 | `core/data_context.yaml` | 11 | 9 | 2 | 0 | 0 | executed |
 | `core/data_model.yaml` | 52 | 43 | 4 | 1 | 4 | executed |
+| `core/expressions.yaml` | 98 | 92 | 0 | 6 | 0 | executed |
 | `retired/core/validator.yaml` | 45 | 26 | 0 | 25 | 0 | executed; retired upstream |
 | `retired/core/catalog.yaml` | 24 | 23 | 0 | 1 | 0 | executed; retired upstream |
 | `retired/agent/inference_format.yaml` | 19 | 13 | 0 | 6 | 0 | executed; retired upstream |
 | `core/message_processor_v0_9.yaml` | 48 | 0 | 0 | 48 | 0 | no runner yet (#72): the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads |
-| `core/expressions.yaml` | 98 | 0 | 0 | 98 | 0 | no runner yet (#72): the formatString template parser; the crate evaluates a template and exposes no parse |
 | `core/catalog.yaml` | 73 | 0 | 0 | 73 | 0 | no runner yet (#72): the reference catalog API: fromJson, toJson, round trip, validationSchema, derive |
 | `core/common_types.yaml` | 22 | 0 | 0 | 22 | 0 | no runner yet (#72): values against the published common types; 3 cases compare a schema generated from an SDK's own types |
 | `core/validator_v1_0.yaml` | 49 | 0 | 0 | 49 | 0 | later: A2UI v1.0 (#42): envelope, schema and topology validation of v1.0 messages |
@@ -148,7 +148,7 @@ name.
 | later: agent layer (#41) | 28 | 772 | The suite tests the agent layer: inference formats, the per-request processor, catalog resolution, renderer capabilities and state. The next pull request of #41 builds it. |
 | later: A2UI v1.0 (#42) | 19 | 397 | The suite tests A2UI v1.0. |
 | later: adapters (#43) | 1 | 11 | The suite tests the A2A transport adapter. |
-| no runner yet (#72) | 4 | 241 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
+| no runner yet (#72) | 3 | 143 | The suite tests the pre-1.0 core this crate implements, and this harness has no runner for its action. Issue #72 adds them; see below. |
 | out of scope: renderer | 8 | 241 | The suite tests a renderer: drawing, evaluating functions, dispatching actions, reporting errors back. This crate does not render. |
 | out of scope: v0.8 | 2 | 36 | The suite tests the v0.8 wire format. This crate speaks v0.9 and v0.9.1. |
 | not applicable | 2 | 12 | The suite asks something of an SDK that does not apply here: a schema generated from the SDK's own types, an integration with Google's ADK. |
@@ -157,7 +157,7 @@ Upstream's `adapter/` tier is its UI framework adapters (`@a2ui/lit`, React,
 Angular, Flutter, SwiftUI), that is, renderers. The suites about transports are
 under `extensions/`.
 
-### The four suites with no runner yet
+### The three suites with no runner yet
 
 These are in scope: they test the same core this crate implements, at the
 versions it speaks. They are not run because each needs a runner for an action
@@ -167,7 +167,6 @@ expose. Issue #72 tracks them, suite by suite.
 | Suite | What a runner would need |
 |---|---|
 | `core/message_processor_v0_9.yaml` | A facade over `SurfaceStore` with a catalog registry, and the `rendererError` payload a renderer would send for each rejection. The lifecycle cases map onto `SurfaceStore::apply` directly. |
-| `core/expressions.yaml` | A parse of a `formatString` template into parts. `Scope::format_string` evaluates one. |
 | `core/catalog.yaml` | 17 of the 73 cases state v0.9 or v0.9.1. `Catalog::from_schema` covers `from_json`; there is no `toJson`, `validationSchema` or `derive`. |
 | `core/common_types.yaml` | 19 cases validate a value against a published common type; 3 compare a schema generated from an SDK's own types, which this crate does not generate. |
 
@@ -222,7 +221,7 @@ cases are for it to pass. Four are rules of the reference data model that
 | Count | Reason |
 |---:|---|
 | 39 + 25 | **v0.8 wire format.** v0.8 nests component properties under the type name and uses different message names. 39 cases of `agent/legacy/streaming_parser.yaml`, 25 checks of `retired/core/validator.yaml`. |
-| 6 + 4 | **A2UI v1.0** (#42). 6 cases of `agent/legacy/streaming_parser.yaml`, 4 of `agent/legacy/inference_format.yaml`. |
+| 6 + 4 + 6 | **A2UI v1.0** (#42). 6 cases of `agent/legacy/streaming_parser.yaml`, 4 of `agent/legacy/inference_format.yaml`, and the 6 `validate` cases of `core/expressions.yaml`, which evaluate a template on a v1.0 surface. |
 | 4 + 4 | **Superseded toolkit policy.** Default fallback and cross-ID inline merging conflict with the reviewed contract. `toolkit::negotiate` tests enforce explicit matching, complete inline documents, and conflict rejection. The same four cases in the current and the retired `inference_format.yaml`. |
 | 2 + 2 | **v0.8 schema bundle in a prompt.** Two `generate_prompt` cases ask for the v0.8 schema documents to be embedded in the prompt; this crate ships v0.9. In both `inference_format.yaml` files. |
 | 5 | **A JSON Schema failure** in `core/validator_v0_9.yaml`: an undeclared property, an undeclared function, a function argument of the wrong type, and two theme values. The semantic validator the harness runs does not evaluate these; `SchemaValidator`, behind the `schema-validation` feature, does. They are listed by name in `SCHEMA_ONLY`, because their fixtures are also invalid in ways the semantic validator does report, and would otherwise pass for the wrong reason. |
@@ -270,6 +269,14 @@ that was understood.
   that says so counts as notified, once for each time `watch` lists it. That
   is the reference's own rule for firing an observer. The one case that
   detaches observers (`dispose`) has nothing to run against and is skipped.
+- **`parse_expression_template`** (`core/expressions.yaml`).
+  `binding::parse_template`, each part written as the value a component would
+  carry in its place (`TemplatePart::to_json`): a literal, `{path}`, or
+  `{call, args, returnType}`. As the suite asks, adjacent literal strings are
+  joined and empty ones dropped on both sides before comparing, and a number is
+  compared as a number, so `1e5` is the `100000` the suite writes. A
+  `ParseError` is an `Error::Binding`, with the phrase of the reference's
+  message mapped to this crate's reason for the same fault.
 
 ## Retired suites
 

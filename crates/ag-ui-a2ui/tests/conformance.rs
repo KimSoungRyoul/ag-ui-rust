@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use ag_ui_a2ui::binding::absolute_path;
+use ag_ui_a2ui::binding::{absolute_path, parse_template};
 use ag_ui_a2ui::catalog::Catalog;
 use ag_ui_a2ui::surface::SurfaceStore;
 use ag_ui_a2ui::toolkit::negotiate::{CatalogRegistry, ClientCapabilities, select_catalog_schema};
@@ -142,13 +142,13 @@ const SUITES: &[Suite] = &[
     run("agent/legacy/streaming_parser.yaml", [33, 8, 45, 2]),
     run("core/data_context.yaml", [9, 2, 0, 0]),
     run("core/data_model.yaml", [43, 4, 1, 4]),
+    run("core/expressions.yaml", [92, 0, 6, 0]),
     retired("retired/core/validator.yaml", [26, 0, 25, 0]),
     retired("retired/core/catalog.yaml", [23, 0, 1, 0]),
     retired("retired/agent/inference_format.yaml", [13, 0, 6, 0]),
 
     // --- core tier, pre-1.0: in scope, no runner in this harness yet (#72) ---------------------
     skip("core/message_processor_v0_9.yaml", 48, Why::Unharnessed, "the surface state machine, driven as a renderer's MessageProcessor: catalog registry, rendererError payloads"),
-    skip("core/expressions.yaml", 98, Why::Unharnessed, "the formatString template parser; the crate evaluates a template and exposes no parse"),
     skip("core/catalog.yaml", 73, Why::Unharnessed, "the reference catalog API: fromJson, toJson, round trip, validationSchema, derive"),
     skip("core/common_types.yaml", 22, Why::Unharnessed, "values against the published common types; 3 cases compare a schema generated from an SDK's own types"),
 
@@ -773,11 +773,13 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
     // on the protocol, and gate themselves where a version matters.
     let wire_format = matches!(
         (action, format),
-        ("validate" | "resolve_path" | "data_model", Format::Current)
-            | (
-                "process_chunk" | "parse_full" | "fix_payload" | "has_parts",
-                _
-            )
+        (
+            "validate" | "resolve_path" | "data_model" | "parse_expression_template",
+            Format::Current,
+        ) | (
+            "process_chunk" | "parse_full" | "fix_payload" | "has_parts",
+            _
+        )
     );
     if wire_format {
         if let CaseVersion::Unsupported(reason) = case_version(case) {
@@ -802,6 +804,9 @@ fn run_case(check: &str, case: &Value, format: Format, tally: &mut Tally) {
         ("load_catalog", _) => tally.record(check, run_load_catalog(case)),
         ("generate_prompt", _) => tally.record(check, run_generate_prompt(case)),
         ("resolve_path", Format::Current) => settle(check, run_resolve_path(case), tally),
+        ("parse_expression_template", Format::Current) => {
+            settle(check, run_parse_expression_template(case), tally);
+        }
         ("data_model", Format::Current) => match data_model_skip(case) {
             Some(reason) => tally.record(check, Outcome::Skipped(reason.to_string())),
             None => settle(check, run_data_model(case), tally),
@@ -1509,6 +1514,117 @@ fn data_model_step(
         }
     }
     Ok(())
+}
+
+// --- parse_expression_template ----------------------------------------------
+
+/// Whether two JSON values are the same value, with a number compared as a
+/// number: the suite writes `100000` where a literal `1e5` is a float.
+fn same_json(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => left.as_f64() == right.as_f64(),
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len() && left.iter().zip(right).all(|(l, r)| same_json(l, r))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .all(|(key, l)| right.get(key).is_some_and(|r| same_json(l, r)))
+        }
+        _ => left == right,
+    }
+}
+
+/// The parts of a template as the suite compares them: adjacent literal
+/// strings joined, and empty ones dropped. A case fixes what a template means,
+/// not where an implementation happens to split its literal text.
+fn joined_literals(parts: &[Value]) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for part in parts {
+        match (out.last_mut(), part) {
+            (_, Value::String(text)) if text.is_empty() => {}
+            (Some(Value::String(last)), Value::String(text)) => last.push_str(text),
+            _ => out.push(part.clone()),
+        }
+    }
+    out
+}
+
+/// What this crate's reason for a template that does not parse starts or ends
+/// with, for a phrase of the reference parser's message.
+fn template_fault(phrase: &str) -> Option<fn(&str) -> bool> {
+    Some(match phrase {
+        "Unexpected characters" => |reason| reason.starts_with("unexpected characters after"),
+        "Unclosed interpolation" => |reason| reason.starts_with("unterminated interpolation"),
+        "after function arguments" => {
+            |reason| reason.starts_with("expected ')' after the arguments")
+        }
+        "after argument name" => {
+            |reason| reason.starts_with("expected ':' after the argument name")
+        }
+        "Invalid number literal" => |reason| reason.starts_with("invalid number literal"),
+        "out of range" => |reason| reason.ends_with("is out of range"),
+        "Max recursion depth" => |reason| reason.starts_with("expressions nest deeper"),
+        _ => return None,
+    })
+}
+
+/// `parse_expression_template`: a `formatString` template into its parts.
+fn run_parse_expression_template(case: &Value) -> Result<(), Miss> {
+    unknown_key(
+        case,
+        &[&CASE_KEYS[..], &["input", "expect", "expect_error"]].concat(),
+        "case",
+    )?;
+    let input = case
+        .get("input")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let parsed = parse_template(input).map(|parts| {
+        let parts: Vec<Value> = parts.iter().map(|part| part.to_json()).collect();
+        Value::Array(joined_literals(&parts))
+    });
+
+    let Some(expect_error) = case.get("expect_error") else {
+        let wanted = case.get("expect").and_then(Value::as_array);
+        let wanted = Value::Array(joined_literals(wanted.map_or(&[], Vec::as_slice)));
+        return match parsed {
+            Ok(parts) if same_json(&parts, &wanted) => Ok(()),
+            Ok(parts) => Err(Miss::new(parts.to_string(), wanted.to_string())),
+            Err(error) => Err(Miss::new(format!("error: {error}"), wanted.to_string())),
+        };
+    };
+    unknown_key(expect_error, &["category", "message"], "expect_error")?;
+    // The reference raises one error class for a template that does not
+    // parse, and the suite names it by either category.
+    let category = expect_error.get("category").and_then(Value::as_str);
+    if !matches!(category, Some("ParseError" | "ExpressionError")) {
+        return Err(Miss::new(
+            format!("the runner does not map the category {category:?}"),
+            "ParseError",
+        ));
+    }
+    let phrase = expect_error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match parsed {
+        Ok(parts) => Err(Miss::new(parts.to_string(), format!("an error: {phrase}"))),
+        Err(Error::Binding { reason, .. }) => match template_fault(phrase) {
+            _ if phrase.is_empty() => Ok(()),
+            Some(is_fault) if is_fault(&reason) => Ok(()),
+            Some(_) => Err(Miss::new(
+                format!("binding error: {reason}"),
+                format!("the error for {phrase:?}"),
+            )),
+            None => Err(Miss::new(
+                format!("binding error: {reason}"),
+                format!("an error for {phrase:?}, a phrase this runner does not map"),
+            )),
+        },
+        Err(other) => Err(Miss::new(format!("error: {other}"), "a binding error")),
+    }
 }
 
 fn load_vendored(relative: &str) -> Value {

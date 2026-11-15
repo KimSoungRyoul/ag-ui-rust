@@ -48,7 +48,7 @@
 //! feature still implies `toolkit`.
 //!
 //! With default features off, the protocol modules are all there is, and they
-//! need only `serde`, `serde_json`, `thiserror` and `jsonptr`.
+//! need only `serde`, `serde_json`, `thiserror`, `jsonptr` and `unicode-ident`.
 //!
 //! # Around the protocol
 //!

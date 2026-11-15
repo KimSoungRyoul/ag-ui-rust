@@ -56,6 +56,14 @@
 //! check. The component *graph* — where depth is genuinely unbounded — is walked
 //! iteratively in [`crate::validate`] instead.
 //!
+//! # Templates
+//!
+//! A `formatString` template has one grammar, and [`parse_template`] is it:
+//! the template in, its parts out, nothing evaluated. [`Scope::format_string`]
+//! parses with it and evaluates the parts, so what parses and what evaluates
+//! cannot differ. The parser bounds a template's length, its number of parts
+//! and how deep an expression nests, because a template is model output too.
+//!
 //! [rfc6901]: https://datatracker.ietf.org/doc/html/rfc6901
 
 use std::collections::BTreeMap;
@@ -63,6 +71,9 @@ use std::collections::BTreeMap;
 use jsonptr::Pointer;
 use serde_json::{Map, Value};
 
+pub use super::template::{
+    MAX_TEMPLATE_CHARS, MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_PARTS, TemplatePart, parse_template,
+};
 use crate::error::{Error, Result};
 
 /// Deepest nesting these walks will descend into a value, and the most
@@ -391,15 +402,16 @@ impl<'a> Scope<'a> {
 
     /// Interpolates a `formatString` template against this scope.
     ///
-    /// Expressions are written `${...}` and may contain an absolute path
-    /// (`${/user/name}`), a relative path (`${name}`), a literal, a nested
-    /// `${...}`, or a function call (`${@index(offset: 1)}`). A literal `${` is
-    /// written `\${`.
+    /// The template is parsed by [`parse_template`], which states the grammar:
+    /// `${…}` holds an absolute path (`${/user/name}`), a relative path
+    /// (`${name}`), a literal, a nested `${…}`, or a function call
+    /// (`${@index(offset: 1)}`), and a literal `${` is written `\${`. Each
+    /// part is then evaluated and stringified by [`stringify()`].
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Binding`] for an unterminated expression, trailing
-    /// characters after an expression, or a function this crate cannot evaluate.
+    /// Returns [`Error::Binding`] for a template [`parse_template`] rejects, or
+    /// a function this crate cannot evaluate.
     pub fn format_string(&self, template: &str) -> Result<String> {
         self.format_string_with(template, &NoFunctions)
     }
@@ -415,230 +427,28 @@ impl<'a> Scope<'a> {
         functions: &dyn FunctionResolver,
     ) -> Result<String> {
         let mut out = String::with_capacity(template.len());
-        let chars: Vec<char> = template.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            if chars[i] == '\\' && matches(&chars, i + 1, "${") {
-                out.push_str("${");
-                i += 3;
-                continue;
-            }
-            if matches(&chars, i, "${") {
-                let (body, next) = take_expression(&chars, i + 2)?;
-                let value = self.eval_expression(&body, functions, 0)?;
-                out.push_str(&stringify(Some(&value)));
-                i = next;
-                continue;
-            }
-            out.push(chars[i]);
-            i += 1;
+        for part in parse_template(template)? {
+            let value = self.evaluate(&part, functions)?;
+            out.push_str(&stringify(Some(&value)));
         }
         Ok(out)
     }
 
-    fn eval_expression(
-        &self,
-        expression: &str,
-        functions: &dyn FunctionResolver,
-        depth: usize,
-    ) -> Result<Value> {
-        const MAX_DEPTH: usize = 10;
-        if depth > MAX_DEPTH {
-            return Err(Error::binding(expression, "expression nesting is too deep"));
-        }
-        let expression = expression.trim();
-        if expression.is_empty() {
-            return Ok(Value::String(String::new()));
-        }
-
-        let chars: Vec<char> = expression.chars().collect();
-
-        // Nested `${...}`, used to make a binding explicit or chain calls.
-        if matches(&chars, 0, "${") {
-            let (body, next) = take_expression(&chars, 2)?;
-            if next != chars.len() {
-                return Err(Error::binding(
-                    expression,
-                    "unexpected characters after nested expression",
-                ));
-            }
-            return self.eval_expression(&body, functions, depth + 1);
-        }
-
-        if let Some(literal) = parse_literal(expression) {
-            return Ok(literal);
-        }
-
-        // `name(...)` is a function call; anything else is a data-model path.
-        match expression.find('(') {
-            Some(open) if expression.ends_with(')') => {
-                let name = expression[..open].trim();
-                let raw_args = &expression[open + 1..expression.len() - 1];
-                let mut args = Map::new();
-                for (key, raw) in split_arguments(raw_args, expression)? {
-                    args.insert(key, self.eval_expression(&raw, functions, depth + 1)?);
+    /// The value of one parsed part. The parser bounds how deep a part nests,
+    /// so this may recurse over it.
+    fn evaluate(&self, part: &TemplatePart, functions: &dyn FunctionResolver) -> Result<Value> {
+        match part {
+            TemplatePart::Literal(value) => Ok(value.clone()),
+            TemplatePart::Path(path) => Ok(self.resolve(path).cloned().unwrap_or(Value::Null)),
+            TemplatePart::Call { name, args } => {
+                let mut resolved = Map::new();
+                for (argument, value) in args {
+                    resolved.insert(argument.clone(), self.evaluate(value, functions)?);
                 }
-                self.call_function(name, &args, functions)
+                self.call_function(name, &resolved, functions)
             }
-            Some(_) => Err(Error::binding(expression, "unbalanced parentheses")),
-            None => Ok(self.resolve(expression).cloned().unwrap_or(Value::Null)),
         }
     }
-}
-
-fn matches(chars: &[char], at: usize, needle: &str) -> bool {
-    needle
-        .chars()
-        .enumerate()
-        .all(|(offset, want)| chars.get(at + offset) == Some(&want))
-}
-
-/// Reads an expression body starting just after `${`, returning it and the
-/// index just past the closing `}`.
-///
-/// Tracks brace depth and skips over quoted strings so that
-/// `${formatDate(format:'{yyyy}')}` and nested `${...}` both survive.
-fn take_expression(chars: &[char], start: usize) -> Result<(String, usize)> {
-    let mut depth = 1usize;
-    let mut i = start;
-    while i < chars.len() {
-        let ch = chars[i];
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok((chars[start..i].iter().collect(), i + 1));
-                }
-            }
-            '\'' | '"' => {
-                let quote = ch;
-                i += 1;
-                while i < chars.len() {
-                    if chars[i] == '\\' {
-                        i += 1;
-                    } else if chars[i] == quote {
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    Err(Error::binding(
-        chars[start..].iter().collect::<String>(),
-        "unterminated interpolation: missing '}'",
-    ))
-}
-
-fn parse_literal(expression: &str) -> Option<Value> {
-    let bytes: Vec<char> = expression.chars().collect();
-    if bytes.len() >= 2 {
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == '\'' || first == '"') && first == last {
-            let inner: String = bytes[1..bytes.len() - 1].iter().collect();
-            return Some(Value::String(
-                inner.replace("\\'", "'").replace("\\\"", "\""),
-            ));
-        }
-    }
-    match expression {
-        "true" => return Some(Value::Bool(true)),
-        "false" => return Some(Value::Bool(false)),
-        // `null` interpolates as the empty string, matching the reference
-        // toolkits rather than resolving a path named "null".
-        "null" => return Some(Value::String(String::new())),
-        _ => {}
-    }
-    if expression
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_digit() || c == '-')
-    {
-        // Integers stay integers: `@index(offset: 1)` must not become 1.0.
-        if let Ok(integer) = expression.parse::<i64>() {
-            return Some(Value::Number(integer.into()));
-        }
-        if let Ok(number) = expression.parse::<f64>() {
-            return serde_json::Number::from_f64(number).map(Value::Number);
-        }
-    }
-    None
-}
-
-/// Splits `name: value, name: value` argument lists, respecting nesting.
-fn split_arguments(raw: &str, expression: &str) -> Result<Vec<(String, String)>> {
-    let mut out = Vec::new();
-    if raw.trim().is_empty() {
-        return Ok(out);
-    }
-    let chars: Vec<char> = raw.chars().collect();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    let mut i = 0usize;
-    let mut pieces: Vec<String> = Vec::new();
-    while i < chars.len() {
-        match chars[i] {
-            '(' | '{' | '[' => depth += 1,
-            ')' | '}' | ']' => depth = depth.saturating_sub(1),
-            '\'' | '"' => {
-                let quote = chars[i];
-                i += 1;
-                while i < chars.len() {
-                    if chars[i] == '\\' {
-                        i += 1;
-                    } else if chars[i] == quote {
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            ',' if depth == 0 => {
-                pieces.push(chars[start..i].iter().collect());
-                start = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    pieces.push(chars[start..].iter().collect());
-
-    for piece in pieces {
-        let piece = piece.trim().to_string();
-        if piece.is_empty() {
-            continue;
-        }
-        let colon = split_top_level_colon(&piece).ok_or_else(|| {
-            Error::binding(
-                expression,
-                format!("argument {piece:?} is missing a 'name: value' separator"),
-            )
-        })?;
-        let name = piece[..colon].trim().to_string();
-        let value = piece[colon + 1..].trim().to_string();
-        out.push((name, value));
-    }
-    Ok(out)
-}
-
-fn split_top_level_colon(piece: &str) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut in_quote: Option<char> = None;
-    for (index, ch) in piece.char_indices() {
-        match (in_quote, ch) {
-            (Some(quote), c) if c == quote => in_quote = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"') => in_quote = Some(ch),
-            (None, '(' | '{' | '[') => depth += 1,
-            (None, ')' | '}' | ']') => depth = depth.saturating_sub(1),
-            (None, ':') if depth == 0 => return Some(index),
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Every data-model path referenced anywhere inside a JSON value.
@@ -923,6 +733,47 @@ mod tests {
                 .unwrap(),
             "-9223372036854775807"
         );
+    }
+
+    #[test]
+    fn format_string_evaluates_what_parse_template_parses() {
+        let data = model();
+        let scope = Scope::root(&data);
+        // String escapes, number forms and `null` are the parser's.
+        assert_eq!(
+            scope
+                .format_string(r"${'a\tb'}|${+1}|${.5}|${null}|${ true }")
+                .unwrap(),
+            "a\tb|1|0.5||true"
+        );
+        // What does not parse is an error, where it used to be read as a path
+        // that resolved to nothing.
+        for malformed in ["${/count extra}", "${count:}", "${/a~1b}"] {
+            let error = scope.format_string(malformed).unwrap_err();
+            assert!(
+                matches!(error, Error::Binding { .. }),
+                "{malformed}: {error}"
+            );
+        }
+        // Nesting is the parser's bound, one hundred levels, not ten.
+        let nested = format!("{}/count{}", "${".repeat(50), "}".repeat(50));
+        assert_eq!(scope.format_string(&nested).unwrap(), "3");
+        let too_deep = format!(
+            "{}/count{}",
+            "${".repeat(MAX_TEMPLATE_DEPTH + 1),
+            "}".repeat(MAX_TEMPLATE_DEPTH + 1)
+        );
+        assert!(scope.format_string(&too_deep).is_err());
+
+        // Evaluating the parts by hand gives what evaluating the template does.
+        let template = "${/company}: ${/count} of ${/nested/a}";
+        let by_hand: String = parse_template(template)
+            .unwrap()
+            .iter()
+            .map(|part| stringify(Some(&scope.resolve_dynamic(&part.to_json()).unwrap())))
+            .collect();
+        assert_eq!(by_hand, scope.format_string(template).unwrap());
+        assert_eq!(by_hand, "Acme Corp: 3 of [1,2]");
     }
 
     #[test]

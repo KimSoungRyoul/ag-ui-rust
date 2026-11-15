@@ -480,6 +480,25 @@ These are on `main` and not yet in a published version.
 - `DataModel::apply_reporting` and `ModelChange` are new: a write that reports, for any
   path, whether the value there is different afterwards. `DataModel::apply` is
   unchanged.
+- `binding::parse_template` and `TemplatePart` are new: a `formatString` template
+  parsed into its parts without evaluating it. `Scope::format_string` and
+  `format_string_with` now parse with it, so they accept the grammar the reference
+  renderers do and nothing else:
+  - An expression that does not parse is `Error::Binding`. The old scanner read
+    anything it did not recognize as a path, so `${a b}` or `${count:}` resolved to
+    an empty string.
+  - A path in a template is made of `XID_Continue` characters, `/`, `.` and `-`. One
+    with a JSON Pointer escape, `${/a~1b}`, no longer parses; bind such a key with
+    `{"path": "/a~1b"}`.
+  - In a quoted string `\n`, `\t` and `\r` are the control characters and a
+    backslash before any other character is that character. Only `\'` and `\"` were
+    unescaped.
+  - `+1`, `.5` and `1.` are numbers, and a trailing comma after the last argument of
+    a call is accepted.
+  - An expression may nest 100 levels deep (`MAX_TEMPLATE_DEPTH`); the limit was 10.
+    A template of more than 10,000 characters or 1,000 parts is an error
+    (`MAX_TEMPLATE_CHARS`, `MAX_TEMPLATE_PARTS`); there was no limit.
+- `ag-ui-a2ui` depends on `unicode-ident`, for the `XID_Continue` table.
 
 ## Verify the upgrade
 
