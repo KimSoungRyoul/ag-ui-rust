@@ -22,6 +22,6 @@ Hel = "Hel"
 Sur = "Sur"
 
 # A deliberately misspelled data binding. The component in
-# crates/ag-ui-a2ui/src/validate.rs is literally named `typo`, and exists so the
+# crates/ag-ui-a2ui/src/protocol/validate.rs is literally named `typo`, and exists so the
 # validator has an unresolvable binding to report.
 nmae = "nmae"

@@ -30,12 +30,12 @@
 
 use serde_json::Value;
 
-use crate::catalog::Catalog;
 use crate::constants::{A2UI_CLOSE_TAG, A2UI_OPEN_TAG, ROOT_ID};
+use crate::protocol::catalog::Catalog;
+use crate::protocol::validate::ValidationError;
 use crate::toolkit::history::PriorSurface;
 use crate::toolkit::ops::Intent;
 use crate::toolkit::schema::SchemaBundle;
-use crate::validate::ValidationError;
 
 /// Heading of the section carrying the generation rules.
 pub const WORKFLOW_SECTION: &str = "## Workflow Description:";
@@ -304,7 +304,7 @@ pub fn render_data_model(data_model: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Component;
+    use crate::protocol::message::Component;
     use serde_json::json;
 
     fn prior() -> PriorSurface {
@@ -381,12 +381,12 @@ mod tests {
     fn validation_errors_render_one_actionable_line_each() {
         let errors = vec![
             ValidationError::new(
-                crate::validate::ErrorCode::NoRoot,
+                crate::protocol::validate::ErrorCode::NoRoot,
                 "components",
                 "No component has id 'root'.",
             ),
             ValidationError::new(
-                crate::validate::ErrorCode::ChildCycle,
+                crate::protocol::validate::ErrorCode::ChildCycle,
                 "components[1].child",
                 "Child references form a loop: a -> b -> a.",
             ),

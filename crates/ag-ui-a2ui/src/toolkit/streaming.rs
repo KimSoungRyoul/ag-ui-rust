@@ -57,31 +57,40 @@
 //! A parser instance carries the surface state for one generation: which
 //! surfaces exist, which components have been seen and emitted, and the data
 //! model so far. Create a new one per generation.
+//!
+//! # What is the parser's and what is the protocol's
+//!
+//! The protocol half is not implemented here. Whether a surface exists is the
+//! [`SurfaceStore`] state machine's answer, a message's envelope is checked by
+//! the validator's one check, and which components the root reaches — and
+//! whether following them loops — is the protocol's one graph walk. What the
+//! parser keeps for itself is what only a stream has: the fragments of a
+//! message that has not finished, and a record of what it has already emitted.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use crate::catalog::{Catalog, PropKind};
 use crate::constants::{A2UI_CLOSE_TAG, A2UI_OPEN_TAG, ROOT_ID};
-use crate::error::{Error, Result};
-use crate::message::Component;
+use crate::error::{Error, Result, ValidationErrors};
+use crate::protocol::catalog::{Catalog, PropKind};
+use crate::protocol::graph::{Cycle, Finding, Graph};
+use crate::protocol::message::{AgentMessage, AgentPayload, Component, DeleteSurface};
+use crate::protocol::operation::Operation;
+use crate::protocol::surface::{Lifecycle, SurfaceStore};
+use crate::protocol::validate::{
+    ErrorCode, ValidateOptions, ValidationError, ValidationReport, Validator, check_envelope,
+    cycle_error,
+};
+use crate::protocol::version::A2uiVersion;
 use crate::toolkit::parser::ResponsePart;
-use crate::validate::{OPERATIONS, ValidateOptions, Validator};
 
-/// Message keys the parser recognizes, in envelope order.
-const MSG_CREATE_SURFACE: &str = "createSurface";
-const MSG_UPDATE_COMPONENTS: &str = "updateComponents";
-const MSG_UPDATE_DATA_MODEL: &str = "updateDataModel";
-const MSG_DELETE_SURFACE: &str = "deleteSurface";
-
-/// The four together, for the places that ask "is this a message, and which".
-const MESSAGE_KEYS: [&str; 4] = [
-    MSG_CREATE_SURFACE,
-    MSG_UPDATE_COMPONENTS,
-    MSG_UPDATE_DATA_MODEL,
-    MSG_DELETE_SURFACE,
-];
+// Shorthand for the payload keys this parser reads raw JSON by. The names
+// themselves are spelled once, in [`Operation`].
+const MSG_CREATE_SURFACE: &str = Operation::CreateSurface.as_str();
+const MSG_UPDATE_COMPONENTS: &str = Operation::UpdateComponents.as_str();
+const MSG_UPDATE_DATA_MODEL: &str = Operation::UpdateDataModel.as_str();
+const MSG_DELETE_SURFACE: &str = Operation::DeleteSurface.as_str();
 
 /// Structural positions that can carry A2UI metadata or components. Other
 /// objects, including application data, remain opaque to protocol dispatch.
@@ -89,7 +98,7 @@ const MESSAGE_KEYS: [&str; 4] = [
 enum JsonScope {
     Messages,
     Message,
-    Payload(&'static str),
+    Payload(Operation),
     Components,
     Component,
     Other,
@@ -138,11 +147,21 @@ pub struct StreamParser {
     found_valid_json_in_block: bool,
 
     // --- protocol state ---
+    /// Which surfaces the stream has created and deleted: the protocol's state
+    /// machine, told of every `createSurface` and `deleteSurface` this parser
+    /// emits. A surface is drawn into only while this says it is live.
+    surfaces: SurfaceStore,
+
+    // --- stream state ---
+    /// Every component written for a surface so far, by id: those of finished
+    /// messages and the healed fragments of the one still open alike. This is
+    /// the stream's working set rather than a surface; it holds whatever the
+    /// model has written, before any of it is validated, and for surfaces that
+    /// do not exist yet.
     seen_components: BTreeMap<String, BTreeMap<String, Value>>,
     /// Last semantic model update per surface. Omitted paths mean root;
     /// omitted values mean removal, which is distinct from every JSON value.
     yielded_data_model: BTreeMap<String, (Value, Option<Value>)>,
-    deleted_surfaces: BTreeSet<String>,
     /// Component ids already emitted, per surface.
     yielded_ids: BTreeMap<String, BTreeSet<String>>,
     /// Canonical content of each emitted component, for change detection.
@@ -157,10 +176,7 @@ pub struct StreamParser {
     /// Wire version of the currently open message. Partial output waits until
     /// it is known and supported, because the complete envelope may fail later.
     message_version: Option<Value>,
-    yielded_start_messages: BTreeSet<String>,
-    yielded_surfaces: BTreeSet<String>,
-    active_msg_type: Option<String>,
-    buffered_start_message: Option<Value>,
+    active_msg_type: Option<Operation>,
     topology_dirty: bool,
 }
 
@@ -182,9 +198,9 @@ impl StreamParser {
             in_string: false,
             string_escaped: false,
             found_valid_json_in_block: false,
+            surfaces: SurfaceStore::new(),
             seen_components: BTreeMap::new(),
             yielded_data_model: BTreeMap::new(),
-            deleted_surfaces: BTreeSet::new(),
             yielded_ids: BTreeMap::new(),
             yielded_contents: BTreeMap::new(),
             root_ids: BTreeMap::new(),
@@ -193,10 +209,7 @@ impl StreamParser {
             message_surface_id: None,
             message_root_id: None,
             message_version: None,
-            yielded_start_messages: BTreeSet::new(),
-            yielded_surfaces: BTreeSet::new(),
             active_msg_type: None,
-            buffered_start_message: None,
             topology_dirty: false,
         }
     }
@@ -431,11 +444,10 @@ impl StreamParser {
             None => JsonScope::Message,
             Some(frame) => match (frame.scope, frame.key.as_deref(), kind) {
                 (JsonScope::Messages, _, '{') => JsonScope::Message,
-                (JsonScope::Message, Some(key), '{') => MESSAGE_KEYS
-                    .iter()
-                    .find(|candidate| **candidate == key)
-                    .map_or(JsonScope::Other, |key| JsonScope::Payload(key)),
-                (JsonScope::Payload(MSG_UPDATE_COMPONENTS), Some("components"), '[') => {
+                (JsonScope::Message, Some(key), '{') => {
+                    Operation::parse(key).map_or(JsonScope::Other, JsonScope::Payload)
+                }
+                (JsonScope::Payload(Operation::UpdateComponents), Some("components"), '[') => {
                     JsonScope::Components
                 }
                 (JsonScope::Components, _, '{') => JsonScope::Component,
@@ -447,8 +459,11 @@ impl StreamParser {
             self.message_root_id = None;
             self.message_version = None;
         }
-        if let JsonScope::Payload(key @ (MSG_CREATE_SURFACE | MSG_UPDATE_COMPONENTS)) = scope {
-            self.active_msg_type = Some(key.to_string());
+        if let JsonScope::Payload(
+            operation @ (Operation::CreateSurface | Operation::UpdateComponents),
+        ) = scope
+        {
+            self.active_msg_type = Some(operation);
         }
         self.brace_stack.push(JsonFrame {
             kind,
@@ -500,7 +515,10 @@ impl StreamParser {
                     self.set_root_id(root.clone());
                 }
             }
-            (JsonScope::Payload(MSG_CREATE_SURFACE | MSG_UPDATE_COMPONENTS), Some("root")) => {
+            (
+                JsonScope::Payload(Operation::CreateSurface | Operation::UpdateComponents),
+                Some("root"),
+            ) => {
                 self.message_root_id = Some(value.clone());
                 if self.message_surface_id.is_some() {
                     self.set_root_id(value);
@@ -560,17 +578,16 @@ impl StreamParser {
         obj: &Value,
         parts: &mut Vec<ResponsePart>,
     ) -> Result<bool> {
-        if !is_protocol_message(obj) {
+        let Some(operation) = Operation::of(obj) else {
             return Ok(false);
-        }
+        };
         if self.validate {
             self.validate_message(obj)?;
         }
         self.message_version = obj.get("version").cloned();
 
-        let payload_surface = MESSAGE_KEYS
-            .iter()
-            .find_map(|key| obj.get(*key))
+        let payload_surface = obj
+            .get(operation.as_str())
             .and_then(|payload| payload.get("surfaceId"))
             .and_then(Value::as_str)
             .map(str::to_string);
@@ -586,24 +603,21 @@ impl StreamParser {
             if let Some(root) = payload.get("root").and_then(Value::as_str) {
                 self.set_root_id(root.to_string());
             }
-            self.active_msg_type = Some(MSG_CREATE_SURFACE.to_string());
-            self.buffered_start_message = Some(obj.clone());
-            if !self.yielded_start_messages.contains(&sid) {
+            self.active_msg_type = Some(Operation::CreateSurface);
+            // Replacing a surface is delete-then-create on the same id, so a
+            // deleted surface is created again like one never seen. A create
+            // for a surface that is still live is not forwarded: the renderer
+            // already has it.
+            if self.surfaces.lifecycle(&sid) != Lifecycle::Live {
                 self.yield_message(obj.clone(), parts, false)?;
-                self.yielded_start_messages.insert(sid.clone());
-                self.yielded_surfaces.insert(sid.clone());
-                self.buffered_start_message = None;
+                self.surfaces.apply(&lifecycle_message(obj, &sid))?;
             }
-            // A fresh surface is live again: replacing a surface is
-            // delete-then-create on the same id, and leaving it marked deleted
-            // would suppress every component that follows.
-            self.deleted_surfaces.remove(&sid);
             self.yield_reachable(parts, true)?;
             return Ok(true);
         }
 
         if let Some(payload) = obj.get(MSG_UPDATE_COMPONENTS) {
-            self.active_msg_type = Some(MSG_UPDATE_COMPONENTS.to_string());
+            self.active_msg_type = Some(Operation::UpdateComponents);
             if let Some(root) = payload.get("root").and_then(Value::as_str) {
                 self.set_root_id(root.to_string());
             }
@@ -620,13 +634,13 @@ impl StreamParser {
         }
 
         if obj.get(MSG_DELETE_SURFACE).is_some() {
-            if !self.yielded_start_messages.contains(&sid) {
+            if self.surfaces.lifecycle(&sid) != Lifecycle::Live {
                 // The surface was never created, so there is nothing to delete
                 // and nothing to forward: a renderer that never drew it would
                 // have to invent it in order to remove it.
                 return Ok(true);
             }
-            self.delete_surface(&sid);
+            self.delete_surface(&sid)?;
             self.yield_message(obj.clone(), parts, false)?;
             return Ok(true);
         }
@@ -638,16 +652,34 @@ impl StreamParser {
         Ok(false)
     }
 
-    fn delete_surface(&mut self, sid: &str) {
+    /// Moves a live surface to deleted, and drops everything the stream held
+    /// for it.
+    fn delete_surface(&mut self, sid: &str) -> Result<()> {
+        // Stamped with the version the surface was created under, which is
+        // what the state machine holds an update to.
+        let version = self.surfaces.live(sid)?.version.clone();
+        self.surfaces.apply(&AgentMessage {
+            version,
+            payload: AgentPayload::DeleteSurface(DeleteSurface {
+                surface_id: sid.to_string(),
+            }),
+        })?;
         self.seen_components.remove(sid);
         self.root_ids.remove(sid);
         self.yielded_ids.remove(sid);
         self.yielded_data_model.remove(sid);
         self.yielded_contents
             .retain(|(surface, _), _| surface != sid);
-        self.yielded_surfaces.remove(sid);
-        self.yielded_start_messages.remove(sid);
-        self.deleted_surfaces.insert(sid.to_string());
+        Ok(())
+    }
+
+    /// The version of the open message, once it is known and one this crate
+    /// speaks.
+    fn open_version(&self) -> Option<A2uiVersion> {
+        self.message_version
+            .as_ref()
+            .and_then(Value::as_str)
+            .and_then(A2uiVersion::parse)
     }
 
     /// Caches a component seen before its message finished.
@@ -683,26 +715,19 @@ impl StreamParser {
 
     /// Emits every component currently reachable from the root.
     fn yield_reachable(&mut self, parts: &mut Vec<ResponsePart>, complete: bool) -> Result<()> {
-        let Some(active_msg_type) = self.active_msg_type.clone() else {
+        let Some(active_msg_type) = self.active_msg_type else {
             return Ok(());
         };
         let Some(sid) = self.surface_id.clone() else {
             return Ok(());
         };
-        // Components mean nothing until the surface they attach to exists.
-        if !self.yielded_surfaces.contains(&sid) && self.buffered_start_message.is_none() {
+        // Components mean nothing until the surface they attach to exists, and
+        // nothing again once it is deleted. They stay in the working set, and
+        // are drawn when a `createSurface` makes the surface live.
+        if self.surfaces.lifecycle(&sid) != Lifecycle::Live {
             return Ok(());
         }
-        if self.deleted_surfaces.contains(&sid) {
-            return Ok(());
-        }
-        if (!complete || self.validate)
-            && !self
-                .message_version
-                .as_ref()
-                .and_then(Value::as_str)
-                .is_some_and(|version| matches!(version, "v0.9" | "v0.9.1"))
-        {
+        if (!complete || self.validate) && self.open_version().is_none() {
             return Ok(());
         }
         let version = self.message_version.clone();
@@ -748,21 +773,14 @@ impl StreamParser {
             return Ok(());
         }
 
-        if let Some(start) = self.buffered_start_message.clone() {
-            if !self.yielded_start_messages.contains(&sid) {
-                self.yield_message(start, parts, false)?;
-                self.yielded_start_messages.insert(sid.clone());
-                self.yielded_surfaces.insert(sid.clone());
-            }
-        }
-
         let mut payload = Map::new();
         payload.insert("surfaceId".to_string(), Value::String(sid.clone()));
         payload.insert("components".to_string(), Value::Array(processed.clone()));
-        let key = if active_msg_type == MSG_CREATE_SURFACE {
-            MSG_UPDATE_COMPONENTS
-        } else {
-            active_msg_type.as_str()
+        // Components that arrived before their surface are sent as an update
+        // to it, once the create has gone out.
+        let key = match active_msg_type {
+            Operation::CreateSurface => MSG_UPDATE_COMPONENTS,
+            other => other.as_str(),
         };
         let mut message = Map::new();
         if let Some(version) = version {
@@ -792,38 +810,73 @@ impl StreamParser {
     /// Ids reachable from the root, erroring on loops.
     ///
     /// A loop is fatal because no further input can undo it, unlike a dangling
-    /// reference which the next chunk usually resolves.
+    /// reference which the next chunk usually resolves. The walk is the one
+    /// the validator runs ([`Graph::walk`]), here over the stream's working
+    /// set and from the root alone: a loop among components nothing draws yet
+    /// may still be redefined, but a component that names itself never
+    /// resolves, wherever it sits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Validation`] carrying a
+    /// [`ChildCycle`](ErrorCode::ChildCycle) for each loop found.
     fn analyze_topology(&self, sid: &str, root_id: &str) -> Result<BTreeSet<String>> {
         let Some(seen_components) = self.seen_components.get(sid) else {
             return Ok(BTreeSet::new());
         };
-        let mut adjacency: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-        for (id, component) in seen_components {
-            let mut edges = Vec::new();
-            let Ok(component) = serde_json::from_value::<Component>(component.clone()) else {
-                continue;
-            };
-            for reference in self.catalog.references(&component) {
-                if reference.id == *id {
-                    return Err(Error::Parse(format!(
-                        "Self-reference detected: Component '{id}' references itself in field \
-                         '{}'",
-                        reference.location
-                    )));
-                }
-                edges.push(reference.id);
-            }
-            adjacency.insert(id.as_str(), edges);
-        }
+        let ids: Vec<&str> = seen_components.keys().map(String::as_str).collect();
+        let index: BTreeMap<&str, usize> = ids.iter().copied().zip(0..).collect();
+        // A fragment that is not yet a component refers to nothing yet.
+        let components: Vec<Option<Component>> = seen_components
+            .values()
+            .map(|component| serde_json::from_value(component.clone()).ok())
+            .collect();
+        let graph = Graph::build(
+            &self.catalog,
+            components.iter().map(Option::as_ref),
+            &index,
+            |_, _, _| {},
+        );
 
-        let mut visited: BTreeSet<String> = BTreeSet::new();
-        let mut on_path: BTreeSet<String> = BTreeSet::new();
-        if seen_components.contains_key(root_id) {
-            walk(root_id, &adjacency, &mut visited, &mut on_path)?;
+        let walk = match index.get(root_id) {
+            Some(&root) => graph.walk([root], None),
+            None => Default::default(),
+        };
+        // The first component that names itself, wherever it sits; then every
+        // loop the root reaches. With no depth limit a walk finds nothing else.
+        let own = (0..graph.len()).find_map(|node| {
+            let edge = graph.edges(node).iter().find(|edge| edge.target == node)?;
+            Some(Cycle {
+                nodes: vec![node],
+                from: node,
+                edge: edge.clone(),
+            })
+        });
+        let reached = walk.findings.iter().filter_map(|finding| match finding {
+            Finding::Cycle(cycle) => Some(cycle),
+            Finding::TooDeep { .. } => None,
+        });
+        let mut cycles: Vec<ValidationError> = Vec::new();
+        for cycle in own.iter().chain(reached) {
+            let error = cycle_error(
+                cycle,
+                |node| ids[node],
+                format!("components[{:?}].{}", ids[cycle.from], cycle.edge.location),
+            );
+            // A self-reference the root reaches is found both ways.
+            if !cycles.contains(&error) {
+                cycles.push(error);
+            }
         }
-        Ok(visited
+        if !cycles.is_empty() {
+            return Err(Error::Validation {
+                errors: ValidationErrors(cycles),
+            });
+        }
+        Ok(walk
+            .reached
             .into_iter()
-            .filter(|id| seen_components.contains_key(id))
+            .map(|node| ids[node].to_string())
             .collect())
     }
 
@@ -968,15 +1021,10 @@ impl StreamParser {
     /// Looks for a data-model update inside the still-open buffer, emitting only
     /// what changed since the last one.
     fn sniff_partial_data_model(&mut self, parts: &mut Vec<ResponsePart>) {
-        let Some(version) = self
-            .message_version
-            .as_ref()
-            .and_then(Value::as_str)
-            .filter(|version| matches!(*version, "v0.9" | "v0.9.1"))
-        else {
+        let Some(version) = self.open_version() else {
             return;
         };
-        let version = version.to_string();
+        let version = version.as_str().to_string();
         let Some(obj) = self.open_message() else {
             return;
         };
@@ -1107,122 +1155,80 @@ impl StreamParser {
     }
 }
 
-/// Depth-first walk collecting reachable ids and rejecting loops.
-fn walk<'a>(
-    root: &'a str,
-    adjacency: &BTreeMap<&'a str, Vec<String>>,
-    visited: &mut BTreeSet<String>,
-    on_path: &mut BTreeSet<String>,
-) -> Result<()> {
-    // Iterative rather than recursive: this runs on every chunk of a model's
-    // output, over a component graph whose depth the model chooses. A recursive
-    // walk would take the process down on a deep enough tree, and unlike a
-    // validation failure there is nothing to report afterwards.
-    let mut stack: Vec<(&str, usize)> = vec![(root, 0)];
-    visited.insert(root.to_string());
-    on_path.insert(root.to_string());
-
-    while let Some(&(node, edge_index)) = stack.last() {
-        let edges = adjacency.get(node).map(Vec::as_slice).unwrap_or_default();
-        let Some(target) = edges.get(edge_index) else {
-            on_path.remove(node);
-            stack.pop();
-            continue;
-        };
-        if let Some(top) = stack.last_mut() {
-            top.1 += 1;
-        }
-        if on_path.contains(target.as_str()) {
-            return Err(Error::Parse(format!(
-                "Circular reference detected involving component '{target}'"
-            )));
-        }
-        if visited.insert(target.to_string()) {
-            on_path.insert(target.to_string());
-            // Borrow the key out of the map so the stack holds `&'a str`
-            // rather than a reference into `adjacency`'s values.
-            let next = adjacency
-                .get_key_value(target.as_str())
-                .map(|(key, _)| *key)
-                .unwrap_or(target.as_str());
-            stack.push((next, 0));
-        }
-    }
-    Ok(())
-}
-
-fn is_protocol_message(obj: &Value) -> bool {
-    MESSAGE_KEYS.iter().any(|key| obj.get(*key).is_some())
+/// The `createSurface` the state machine is told of.
+///
+/// The message as written, whenever the typed model can hold it. With
+/// validation turned off the parser also forwards creates it cannot — one with
+/// no catalog, or a version this crate does not speak — and the renderer has
+/// the surface all the same, so the state machine is told as much as there is.
+fn lifecycle_message(message: &Value, sid: &str) -> AgentMessage {
+    serde_json::from_value::<AgentMessage>(message.clone())
+        .ok()
+        .filter(|typed| {
+            matches!(typed.payload, AgentPayload::CreateSurface(_))
+                && typed.surface_id() == Some(sid)
+        })
+        .unwrap_or_else(|| {
+            let catalog_id = message
+                .pointer("/createSurface/catalogId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            AgentMessage::create_surface(sid, catalog_id)
+        })
 }
 
 /// Checks the envelope of a message this parser is about to emit.
 ///
-/// The *contract* — which operations exist and which of their fields are
-/// required — is read from [`crate::validate::OPERATIONS`], the one table this
-/// crate keeps the v0.9 envelope in. Only the rendering is local: the
-/// language-agnostic conformance suite matches on these exact strings, so this
-/// cannot simply forward the validator's report, which locates each failure by
-/// path instead.
+/// The check is the validator's own ([`check_envelope`]): which versions,
+/// operations and fields exist is asked there, once. What is local is the
+/// wording of the failures a stream meets most. The language-agnostic
+/// conformance suite matches streaming errors on the reference toolkit's
+/// phrasing, where the validator's sentences are written for a model.
 fn validate_envelope(message: &Value) -> Result<()> {
-    let Some(map) = message.as_object() else {
-        return Err(validation_error(
-            "Validation failed: message must be an object",
-        ));
-    };
-
-    let Some(key) = MESSAGE_KEYS.into_iter().find(|key| map.contains_key(*key)) else {
-        return Err(validation_error(format!(
-            "Validation failed: {:?} is not a valid A2UI message; it must contain exactly one of \
-             {}",
-            map.keys().collect::<Vec<_>>(),
-            MESSAGE_KEYS.join(", ")
-        )));
-    };
-    match map.get("version") {
-        Some(Value::String(version)) if matches!(version.as_str(), "v0.9" | "v0.9.1") => {}
-        None => {
-            return Err(validation_error(
-                "Validation failed: 'version' is a required property",
-            ));
-        }
-        _ => {
-            return Err(validation_error(
-                "Validation failed: unsupported A2UI version",
-            ));
+    let mut report = ValidationReport::default();
+    check_envelope(message, "message", &mut report);
+    for error in &mut report.errors {
+        if let Some(reference) = reference_wording(error, message) {
+            error.message = reference;
         }
     }
-
-    let Some(payload) = map.get(key).and_then(Value::as_object) else {
-        return Err(validation_error(format!(
-            "Validation failed: '{key}' must be an object"
-        )));
-    };
-    let fields = OPERATIONS
-        .iter()
-        .find(|(name, _)| *name == key)
-        .map_or(&[][..], |(_, fields)| *fields);
-    for (field, _, required) in fields {
-        if *required && !payload.contains_key(*field) {
-            return Err(validation_error(format!(
-                "Validation failed: '{field}' is a required property of {key}"
-            )));
-        }
-    }
-    // Keep the reference toolkit's wording for absent fields above, then use
-    // the shared wire contract for payload count and known field types.
-    let mut report = crate::validate::ValidationReport::default();
-    crate::validate::check_envelope(message, "message", &mut report);
     report.into_result()
 }
 
-fn validation_error(message: impl Into<String>) -> Error {
-    Error::Validation {
-        errors: crate::ValidationErrors(vec![crate::validate::ValidationError::new(
-            crate::validate::ErrorCode::MissingField,
-            "message",
-            message,
-        )]),
-    }
+/// The reference toolkit's sentence for an envelope failure, when it has one.
+fn reference_wording(error: &ValidationError, message: &Value) -> Option<String> {
+    let location: Vec<&str> = error
+        .path
+        .strip_prefix("message")?
+        .split('.')
+        .skip(1)
+        .collect();
+    Some(match (error.code, location.as_slice()) {
+        (ErrorCode::TypeMismatch, []) => "Validation failed: message must be an object".into(),
+        (ErrorCode::MissingField, []) => format!(
+            "Validation failed: {:?} is not a valid A2UI message; it must contain exactly one of \
+             {}",
+            message.as_object()?.keys().collect::<Vec<_>>(),
+            Operation::ALL
+                .iter()
+                .map(|operation| operation.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        (ErrorCode::MissingField, ["version"]) => {
+            "Validation failed: 'version' is a required property".into()
+        }
+        (ErrorCode::InvalidValue, ["version"]) => {
+            "Validation failed: unsupported A2UI version".into()
+        }
+        (ErrorCode::TypeMismatch, [key]) => {
+            format!("Validation failed: '{key}' must be an object")
+        }
+        (ErrorCode::MissingField, [key, field]) => {
+            format!("Validation failed: '{field}' is a required property of {key}")
+        }
+        _ => return None,
+    })
 }
 
 fn text_part(text: &str) -> ResponsePart {
@@ -1440,7 +1446,6 @@ fn canonical_json(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::Catalog;
     use serde_json::json;
 
     /// A catalog with the component types the streaming tests use, including the
@@ -1794,6 +1799,133 @@ mod tests {
         );
     }
 
+    /// `process_chunk` documents a reference loop as [`Error::Validation`].
+    /// The walk over the stream's working set used to raise [`Error::Parse`]
+    /// instead, on every route that reached it before the validator did: a
+    /// loop closed by a later message, one seen in a message still open, and
+    /// any loop at all with validation turned off.
+    #[test]
+    fn a_loop_found_while_streaming_is_a_validation_error_on_every_route() {
+        let cycle = |error: Error| -> ValidationError {
+            let Error::Validation { errors } = error else {
+                panic!("a loop must be Error::Validation, got {error:?}");
+            };
+            assert_eq!(errors.len(), 1, "{errors}");
+            errors.0.into_iter().next().unwrap()
+        };
+
+        // Closed by a second message, which is valid on its own.
+        let mut across = parser();
+        feed(&mut across, &["<a2ui-json>[", CREATE]);
+        let chunk = format!(
+            r#"{UPDATE_OPEN}[{{"id":"root","component":"Card","child":"c1"}}]}}}},{UPDATE_OPEN}[{{"id":"c1","component":"Card","child":"root"}}]}}}}"#
+        );
+        let error = cycle(across.process_chunk(&chunk).unwrap_err());
+        assert_eq!(error.code, ErrorCode::ChildCycle);
+        assert_eq!(error.path, r#"components["c1"].child"#);
+        assert!(error.message.contains("root -> c1 -> root"), "{error}");
+
+        // Seen while the message that carries it is still open.
+        let mut open = parser();
+        feed(&mut open, &["<a2ui-json>[", CREATE]);
+        let chunk = format!(r#"{UPDATE_OPEN}[{{"id":"root","component":"Card","child":"root"}}"#);
+        let error = cycle(open.process_chunk(&chunk).unwrap_err());
+        assert_eq!(error.code, ErrorCode::ChildCycle);
+        assert_eq!(error.path, r#"components["root"].child"#);
+        assert!(error.message.contains("Self-reference detected"), "{error}");
+
+        // With validation off the walk is the only check there is.
+        let mut unvalidated = parser().without_validation();
+        feed(&mut unvalidated, &["<a2ui-json>[", CREATE]);
+        let chunk = format!(
+            r#"{UPDATE_OPEN}[{{"id":"root","component":"Card","child":"a"}},{{"id":"a","component":"Card","child":"root"}}]}}}}"#
+        );
+        let error = cycle(unvalidated.process_chunk(&chunk).unwrap_err());
+        assert_eq!(error.code, ErrorCode::ChildCycle);
+    }
+
+    /// A loop among components the root does not reach is not yet an error:
+    /// nothing draws them, and a later message may still redefine them. A
+    /// component that names itself is one wherever it sits.
+    #[test]
+    fn only_loops_the_root_reaches_and_self_references_stop_a_stream() {
+        let mut parser = parser().without_validation();
+        feed(&mut parser, &["<a2ui-json>[", CREATE]);
+        let detached = format!(
+            r#"{UPDATE_OPEN}[{{"id":"root","component":"Text","text":"hi"}},{{"id":"x","component":"Card","child":"y"}},{{"id":"y","component":"Card","child":"x"}}]}}}},"#
+        );
+        let messages = feed(&mut parser, &[&detached]);
+        assert_eq!(
+            messages[0]["updateComponents"]["components"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "only the root is attached"
+        );
+
+        let own = format!(r#"{UPDATE_OPEN}[{{"id":"z","component":"Card","child":"z"}}]}}}}"#);
+        let error = parser.process_chunk(&own).unwrap_err();
+        assert!(matches!(error, Error::Validation { .. }), "{error:?}");
+        assert!(error.to_string().contains("Self-reference detected"));
+    }
+
+    /// Whether a surface exists is the state machine's answer, so a stream
+    /// moves a surface through the same lifecycle a replayed batch does.
+    #[test]
+    fn surface_lifecycle_is_the_state_machines() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>["]);
+        assert_eq!(parser.surfaces.lifecycle("s1"), Lifecycle::Absent);
+
+        // A delete for a surface that does not exist changes nothing.
+        feed(
+            &mut parser,
+            &[r#"{"version":"v0.9","deleteSurface":{"surfaceId":"s1"}},"#],
+        );
+        assert_eq!(parser.surfaces.lifecycle("s1"), Lifecycle::Absent);
+
+        feed(&mut parser, &[CREATE]);
+        assert_eq!(parser.surfaces.lifecycle("s1"), Lifecycle::Live);
+        assert_eq!(parser.surfaces.get("s1").unwrap().catalog_id, "test");
+
+        // A second create for a live surface is not forwarded.
+        assert!(feed(&mut parser, &[CREATE]).is_empty());
+        assert_eq!(parser.surfaces.lifecycle("s1"), Lifecycle::Live);
+
+        let deleted = feed(
+            &mut parser,
+            &[r#"{"version":"v0.9","deleteSurface":{"surfaceId":"s1"}},"#],
+        );
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(parser.surfaces.lifecycle("s1"), Lifecycle::Deleted);
+
+        assert_eq!(feed(&mut parser, &[CREATE]).len(), 1);
+        assert_eq!(parser.surfaces.lifecycle("s1"), Lifecycle::Live);
+    }
+
+    /// A repeated `createSurface` for a live surface used to be kept as a
+    /// pending start message, and was then sent — for the wrong surface — as
+    /// soon as components arrived for a surface that had not been created.
+    #[test]
+    fn a_repeated_create_is_not_replayed_for_another_surface() {
+        let mut parser = parser();
+        feed(&mut parser, &["<a2ui-json>[", CREATE, CREATE]);
+        let early = r#"{"version":"v0.9","updateComponents":{"surfaceId":"s2","components":[{"id":"root","component":"Text","text":"early"}]}},"#;
+        assert!(
+            feed(&mut parser, &[early]).is_empty(),
+            "s2 does not exist yet, so nothing is drawn into it"
+        );
+
+        let created = feed(
+            &mut parser,
+            &[r#"{"version":"v0.9","createSurface":{"surfaceId":"s2","catalogId":"test"}},"#],
+        );
+        assert_eq!(created.len(), 2, "{created:?}");
+        assert_eq!(created[0]["createSurface"]["surfaceId"], "s2");
+        assert_eq!(created[1]["updateComponents"]["surfaceId"], "s2");
+    }
+
     #[test]
     fn a_message_matching_no_envelope_is_an_error() {
         let mut parser = parser();
@@ -1819,35 +1951,100 @@ mod tests {
     }
 
     /// The streaming parser renders envelope failures in the wording the
-    /// conformance suite pins, but reads *which* fields are required from the
-    /// same table [`crate::validate`] uses — so a change to one operation's
-    /// contract cannot reach only one of the two paths.
+    /// conformance suite pins, but which fields are required is the version's
+    /// own table, read through the validator's one check — so a change to one
+    /// operation's contract cannot reach only one of the two paths.
     #[test]
     fn the_envelope_contract_is_the_validators_own_table() {
-        for (key, fields) in OPERATIONS {
-            let required: Vec<&str> = fields
-                .iter()
-                .filter(|(_, _, required)| *required)
-                .map(|(field, _, _)| *field)
-                .collect();
-            if !MESSAGE_KEYS.contains(&key) {
-                continue;
-            }
-            for omitted in &required {
-                let payload: Map<String, Value> = required
+        for version in A2uiVersion::ALL {
+            for operation in version.operations().iter().copied() {
+                let key = operation.as_str();
+                let required: Vec<&str> = version
+                    .envelope(operation)
                     .iter()
-                    .filter(|field| *field != omitted)
-                    .map(|field| ((*field).to_string(), json!("x")))
+                    .filter(|(_, _, required)| *required)
+                    .map(|(field, _, _)| *field)
                     .collect();
-                let message = json!({"version": "v0.9", key: payload});
-                let error = validate_envelope(&message)
-                    .expect_err("a message missing a required field must not validate");
-                assert!(
-                    error.to_string().contains(&format!("'{omitted}'")),
-                    "{key} without {omitted}: {error}"
-                );
+                for omitted in &required {
+                    let payload: Map<String, Value> = required
+                        .iter()
+                        .filter(|field| *field != omitted)
+                        .map(|field| ((*field).to_string(), json!("x")))
+                        .collect();
+                    let message = json!({"version": version.as_str(), key: payload});
+                    let error = validate_envelope(&message)
+                        .expect_err("a message missing a required field must not validate");
+                    assert!(
+                        error
+                            .to_string()
+                            .contains(&format!("'{omitted}' is a required property of {key}")),
+                        "{key} without {omitted}: {error}"
+                    );
+                }
             }
         }
+    }
+
+    /// Every envelope failure a stream reports is one the validator found,
+    /// with the validator's code and locator; only the sentence is reworded.
+    #[test]
+    fn envelope_failures_keep_the_validators_codes_and_locators() {
+        let located = |message: Value| -> Vec<(ErrorCode, String, String)> {
+            let Err(Error::Validation { errors }) = validate_envelope(&message) else {
+                panic!("{message} must fail envelope validation");
+            };
+            errors
+                .0
+                .into_iter()
+                .map(|error| (error.code, error.path, error.message))
+                .collect()
+        };
+
+        let errors = located(json!({"unknownMessage": "invalid"}));
+        assert_eq!(
+            errors
+                .iter()
+                .map(|(code, path, _)| (*code, path.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (ErrorCode::MissingField, "message.version"),
+                (ErrorCode::MissingField, "message"),
+            ]
+        );
+        assert_eq!(
+            errors[0].2,
+            "Validation failed: 'version' is a required property"
+        );
+        assert!(errors[1].2.contains("is not a valid A2UI message"));
+        assert!(errors[1].2.ends_with(
+            "exactly one of createSurface, updateComponents, updateDataModel, deleteSurface"
+        ));
+
+        let errors = located(json!({"version": "1.0", "deleteSurface": "s1"}));
+        assert_eq!(
+            errors,
+            vec![
+                (
+                    ErrorCode::InvalidValue,
+                    "message.version".to_string(),
+                    "Validation failed: unsupported A2UI version".to_string()
+                ),
+                (
+                    ErrorCode::TypeMismatch,
+                    "message.deleteSurface".to_string(),
+                    "Validation failed: 'deleteSurface' must be an object".to_string()
+                ),
+            ]
+        );
+
+        assert_eq!(
+            located(json!("createSurface")),
+            vec![(
+                ErrorCode::TypeMismatch,
+                "message".to_string(),
+                "Validation failed: message must be an object".to_string()
+            )]
+        );
     }
 
     #[test]

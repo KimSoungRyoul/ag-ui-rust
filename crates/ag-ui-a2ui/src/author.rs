@@ -1,7 +1,7 @@
 //! Provider-neutral async authoring with a single immutable validation contract.
 
-use crate::schema_validation::SchemaValidator;
-use crate::surface::{SurfaceState, SurfaceStore};
+use crate::protocol::schema_validation::SchemaValidator;
+use crate::protocol::surface::{SurfaceState, SurfaceStore};
 use crate::toolkit::schema::SchemaBundle;
 use crate::{A2uiVersion, AgentMessage, AgentPayload, Catalog, DataModel, Error, Result};
 use serde_json::Value;
@@ -220,7 +220,7 @@ impl A2uiAuthor {
             .ok_or_else(|| Error::parse("createSurface is required"))?;
         self.contract
             .schema
-            .validate_surface(&state, &self.contract.catalog)?;
+            .validate_surface_in(Some(&store), &state, &self.contract.catalog)?;
         let mut history = prior.map_or_else(Vec::new, |p| p.history.clone());
         history.extend(operations.clone());
         Ok(ValidatedSurface {
