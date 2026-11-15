@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keeps the `uses:` pins in .github/workflows current, in one grouped PR.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    ignore:
+      # Its refs are toolchain names (`stable`, `nightly`, `1.85.0`), not versions.
+      - dependency-name: dtolnay/rust-toolchain
+    commit-message:
+      prefix: ci

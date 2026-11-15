@@ -14,7 +14,7 @@
 //! | [`DuplicateRunStarted`] | a second `RUN_STARTED` |
 //! | [`DuplicateStart`] | opening a message, reasoning block, tool call, step or subagent whose id is already open — or a subagent id that already finished in this run |
 //! | [`NotOpen`] | content or a terminator for something that was never opened, including `SUBAGENT_FINISHED` / `SUBAGENT_ERROR` for a subagent that is not active |
-//! | [`UnknownId`] | `TOOL_CALL_RESULT` for a call id that was never introduced, or a `parentSubagentRunId` that was never started |
+//! | [`UnknownId`] | `TOOL_CALL_RESULT` for a call id neither this run nor the history it continues introduced, or a `parentSubagentRunId` that was never started |
 //! | [`OutOfOrder`] | `TOOL_CALL_RESULT` before the call's `TOOL_CALL_END` |
 //! | [`OpenAtFinish`] | `RUN_FINISHED` while a message, reasoning block, tool call, step or subagent is open |
 //! | [`OwnerMismatch`] | a tagged continuation, terminator or re-open whose `subagentRunId` is not the one that opened the entity — a message, reasoning block, tool call, activity, or the entity a `REASONING_ENCRYPTED_VALUE` names; a tool call tagged with one subagent whose parent message belongs to another |
@@ -34,8 +34,10 @@
 //! subagent cannot close the parent's step, or a sibling's, and two agents may
 //! run a step of the same name at once. A `MESSAGES_SNAPSHOT` seeds ownership
 //! from the messages it carries and is authoritative; the `RUN_STARTED` input
-//! echo seeds it too, for ids not yet recorded; a `TOOL_CALL_RESULT` mints the
-//! tool message it names under its own attribution.
+//! echo seeds it too, for ids not yet recorded — and in a hosted run so do the
+//! request's `messages`, before the first event, whether or not they are
+//! echoed; a `TOOL_CALL_RESULT` mints the tool message it names under its own
+//! attribution.
 //!
 //! What is deliberately *not* checked, because the protocol does not require
 //! it: that an attributing `subagentRunId` was announced by `SUBAGENT_STARTED`
@@ -159,6 +161,15 @@ mod enabled {
         /// Creates the ordering state for one run.
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// Learns the conversation the run continues — the request's
+        /// `messages` — before its first event. As history, like the
+        /// `RUN_STARTED` echo, which is optional: a resumed run answering a
+        /// call the interrupted run opened is answering a call the consumer
+        /// already holds, echo or not.
+        pub(crate) fn seed(&mut self, history: &[Message]) {
+            self.seed_owners(history, false);
         }
 
         /// Checks `event` against the state machine and folds it in.
@@ -834,7 +845,7 @@ mod enabled {
 
 #[cfg(not(feature = "verify"))]
 mod disabled {
-    use crate::Event;
+    use crate::{Event, Message};
 
     use crate::server::error::VerificationError;
 
@@ -847,6 +858,9 @@ mod disabled {
         pub(crate) fn new() -> Self {
             Self
         }
+
+        #[inline]
+        pub(crate) fn seed(&mut self, _history: &[Message]) {}
 
         #[inline]
         pub(crate) fn observe(&mut self, _event: &Event) -> Result<(), VerificationError> {

@@ -47,15 +47,22 @@ pub enum Error {
 
     /// The `Content-Type` was set to something that is not JSON.
     ///
-    /// An absent header is accepted — `curl -d` and hand-written clients often
-    /// omit it. A *wrong* one is refused rather than sniffed, which also means
-    /// a cross-origin HTML form (whose content type is always one of three
-    /// non-JSON values it cannot override) can never reach an agent.
+    /// Refused rather than sniffed. See
+    /// [`AgUiInput`](crate::axum::AgUiInput#the-content-type-is-required) for
+    /// what requiring a JSON media type does and does not protect.
     #[error("expected a JSON request body, got Content-Type {found:?}")]
     ContentType {
         /// The offending header value.
         found: String,
     },
+
+    /// The request carried no `Content-Type` at all.
+    ///
+    /// An unlabelled body is not assumed to be JSON.
+    /// [`AgentEndpoint::allow_missing_content_type`](crate::axum::AgentEndpoint::allow_missing_content_type)
+    /// accepts one, for clients that cannot be changed to send the header.
+    #[error("expected a JSON request body, but the request has no Content-Type")]
+    MissingContentType,
 
     /// The body was JSON, but not a
     /// [`RunAgentInput`](crate::input::RunAgentInput).
@@ -87,7 +94,9 @@ impl Error {
     pub const fn status(&self) -> StatusCode {
         match self {
             Self::Body { status, .. } => *status,
-            Self::ContentType { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::ContentType { .. } | Self::MissingContentType => {
+                StatusCode::UNSUPPORTED_MEDIA_TYPE
+            }
             Self::Decode(_) | Self::EmptyBody => StatusCode::BAD_REQUEST,
             Self::NotAcceptable { .. } => StatusCode::NOT_ACCEPTABLE,
         }
@@ -100,7 +109,7 @@ impl Error {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Body { .. } => "INVALID_BODY",
-            Self::ContentType { .. } => "UNSUPPORTED_MEDIA_TYPE",
+            Self::ContentType { .. } | Self::MissingContentType => "UNSUPPORTED_MEDIA_TYPE",
             Self::Decode(_) | Self::EmptyBody => "INVALID_INPUT",
             Self::NotAcceptable { .. } => "NOT_ACCEPTABLE",
         }

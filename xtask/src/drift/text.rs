@@ -240,9 +240,39 @@ pub fn apply_rename_all(name: &str, rule: &str) -> String {
     }
 }
 
+/// Word-wraps `text` to `width` columns, each line starting with `indent`.
+/// For report prose; a word longer than the width gets a line of its own.
+pub fn wrap(text: &str, indent: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && indent.len() + line.len() + 1 + word.len() > width {
+            out.push_str(&format!("{indent}{line}\n"));
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push_str(&format!("{indent}{line}\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wraps_report_prose_at_word_boundaries() {
+        assert_eq!(
+            wrap("one two three four", "  ", 12),
+            "  one two\n  three four\n"
+        );
+        assert_eq!(wrap("", "  ", 12), "");
+    }
 
     #[test]
     fn matches_nested_delimiters_and_skips_strings() {

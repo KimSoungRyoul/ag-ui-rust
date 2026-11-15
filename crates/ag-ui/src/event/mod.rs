@@ -101,11 +101,6 @@ pub struct BaseEvent {
 }
 
 impl BaseEvent {
-    /// An empty base — no timestamp, no raw event, no metadata.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Whether every field is absent, in which case the base contributes
     /// nothing to the serialized event.
     pub const fn is_empty(&self) -> bool {

@@ -225,7 +225,8 @@ Publish once per change, not once per run — the point is that the client watch
 - `Ok(RunOutcome::interrupt(pending))` — paused for a human. Still a `RUN_FINISHED`; the
   connection closes and **no server-side thread survives**.
 - `Ok(RunOutcome::Cancelled)` or `Err(Error::Cancelled)` — stopped before completion.
-  The driver emits `RUN_FINISHED` with a cancelled outcome when verification permits it.
+  Open handles still close on the way out, the driver ends any subagent left active with
+  `SUBAGENT_ERROR` (code `CANCELLED`), and the run ends with a cancelled `RUN_FINISHED`.
 - `Err(Error::agent(..))` — failed. The driver attempts `RUN_ERROR` while the stream is writable.
 
 A panic is *not* an error and is not caught: it unwinds through whoever polls the stream, and
@@ -333,9 +334,11 @@ fn main() {
 
 A failed run can still be `200` — its `RUN_ERROR` event lets a client
 tell "the agent errored" from "the network died". `400`/`406`/`413`/`415` are the refusals
-that happen before a run starts. There is no `AgUiLayer`: by the time a tower layer sees the
-response the events are already SSE bytes. `AgUiInput` (extractor) and `SseResponse` are
-there for a hand-written handler.
+that happen before a run starts. The body must be labelled JSON: a non-JSON `Content-Type`
+is a `415`, and so is none at all unless the endpoint opts in with
+`.allow_missing_content_type()`. Requiring it is not authentication or CSRF protection.
+There is no `AgUiLayer`: by the time a tower layer sees the response the events are already
+SSE bytes. `AgUiInput` (extractor) and `SseResponse` are there for a hand-written handler.
 
 `AgentEndpoint` sends idle SSE comments every 15 seconds by default; `.keep_alive(interval)`
 changes the interval and `.without_keep_alive()` disables them. These comments are not AG-UI

@@ -101,6 +101,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
+// See `ag_ui`'s lib.rs: a library never prints.
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 // See `ag_ui`'s lib.rs: marks feature-gated items in the rendered docs.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 

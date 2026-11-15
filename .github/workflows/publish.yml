@@ -1,34 +1,20 @@
 name: Publish
 
-# Publishing a GitHub release by hand, or dispatching this workflow with
-# dry_run=false, uploads the crates to crates.io. A release created by
-# release.yml with GITHUB_TOKEN does not trigger this workflow. The release is
-# what a human decides; this file is what carries it out, so the two steps a
-# person used to do by hand — `cargo publish` twice, in the right order — stop
-# being a thing anyone can get wrong at 2am.
+# Uploads the crates to crates.io when a release is published by hand, or when
+# dispatched with dry_run unticked. A release that release.yml creates with
+# GITHUB_TOKEN does not trigger this workflow.
 #
-# The registry has no undo. A published version can be yanked but never
-# replaced, so everything that can be checked is checked before the upload,
-# and an upload that has already happened is skipped rather than retried into
-# an error.
+# crates.io has no undo, so everything checkable is checked before the upload,
+# and a version that is already published is skipped rather than retried.
 #
-# # There is no API token here
-#
-# The credential is minted per run by crates.io's Trusted Publishing: GitHub
-# signs a short-lived OIDC token asserting which repository and which workflow
-# file is asking, crates.io trades it for an access token that expires in
-# thirty minutes, and the action revokes that token when the job ends. What
-# makes it work is a Trusted Publisher entry on each crate's settings page
-# naming this repository and this file — `publish.yml`. Nothing is stored on
-# the repository, so nothing can leak from it, and a fork cannot mint a token
-# because the OIDC claim names the upstream repository.
+# No API token is stored. crates.io Trusted Publishing trades this run's OIDC
+# token for a publish token that lasts 30 minutes, and only because each
+# crate's Trusted Publisher entry names this repository and `publish.yml`.
 on:
   release:
     types: [published]
-  # For a rehearsal, or to finish a release whose upload failed halfway. The
-  # default is a dry run: the box has to be unticked to reach crates.io. The
-  # authentication happens either way. A rehearsal proves the ag-ui publishing
-  # credential; ag-ui-a2ui's registry dry run waits for this ag-ui version.
+  # A rehearsal, or finishing a release whose upload failed halfway. A dry run
+  # still authenticates, so it proves the credential too.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -42,108 +28,100 @@ env:
 
 permissions:
   contents: read
-  # Lets the job ask GitHub for the signed token crates.io trades for a
-  # publishing one. Without it the auth step fails; with it, and without a
-  # matching Trusted Publisher entry, crates.io refuses the trade.
-  id-token: write
 
 jobs:
   audit:
     uses: ./.github/workflows/audit.yml
-    permissions:
-      contents: read
 
   publish:
     needs: audit
     name: publish to crates.io
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the OIDC token crates.io trades for a publish token
+    env:
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # A release can be cut by hand from any commit, so the tag it names is
-      # checked here as well as in the release workflow. This is the last
-      # place the number can still be wrong for free.
+      # A release can be cut by hand from any commit, so the tag is checked
+      # again here, the last place a wrong number is still free to fix.
       - name: the version to publish
         id: version
         run: |
           set -euo pipefail
           declared=$(cargo metadata --format-version 1 --no-deps \
-            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "ag-ui"))')
+            | jq -r '.packages[] | select(.name == "ag-ui") | .version')
           echo "version=$declared" >> "$GITHUB_OUTPUT"
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            tagged="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tagged=${GITHUB_REF_NAME#v}
             echo "tag $tagged, workspace $declared"
             if [ "$tagged" != "$declared" ]; then
               echo "::error title=Version mismatch::the release tag says $tagged and Cargo.toml says $declared"
               exit 1
             fi
+          elif [ "$DRY_RUN" = true ]; then
+            echo "no tag; dry run of the checkout's version $declared"
           else
-            echo "no tag (manual dry run); validating checkout version $declared"
-          fi
-
-      - name: real publication requires a tag
-        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
-        run: |
-          if [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
             echo "::error title=Tag required::real publication must run from a version tag"
             exit 1
           fi
 
-      # The release workflow already ran these on the tag. They run again here
-      # because this job is the irreversible one, and because a release made by
-      # hand from an unverified commit reaches this job without having passed
-      # that one.
-      - run: cargo test --workspace --all-features
+      # The upstream copy of ag-ui (PR 2778, recorded in UPSTREAM.md) reserves
+      # the version it will publish first; taking that number here would
+      # collide with it. Offline: it reads the record, which the scheduled
+      # upstream-sync job keeps honest.
+      - name: the version is not reserved by the upstream copy
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: cargo run --locked -p xtask -- upstream-sync --publish-guard "$VERSION"
+
+      # The release workflow ran these on the tag, but a release made by hand
+      # from an unverified commit reaches this job without them.
+      - run: cargo test --workspace --all-features --all-targets
       - run: cargo test --doc --workspace --all-features
 
-      # The token this mints lasts thirty minutes and is revoked in the
-      # action's post step. It is scoped to the crates whose Trusted Publisher
-      # entries name this repository and this workflow file.
+      # Scoped by the Trusted Publisher entries; revoked in the post step.
       - name: authenticate with crates.io
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
 
-      # `ag-ui-a2ui` depends on `ag-ui` by version, so `ag-ui` goes first and
-      # the second upload waits for the index to catch up — which `cargo
-      # publish` does on its own since 1.66.
-      #
-      # A version already on crates.io is skipped, not retried: re-running this
-      # workflow after a half-finished release must finish it rather than fail
-      # on the half that worked.
+      # ag-ui first: ag-ui-a2ui depends on it by version, and `cargo publish`
+      # waits for the index to catch up. A version already on crates.io is
+      # skipped, so a re-run finishes a half-done release instead of failing.
       - name: publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           VERSION: ${{ steps.version.outputs.version }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          if [ "${DRY_RUN:-false}" = "true" ]; then
-            echo "::notice title=Dry run::authenticated, packaging and verifying, uploading nothing"
+          if [ "$DRY_RUN" = true ]; then
+            echo "::notice title=Dry run::authenticated; packaging and verifying, uploading nothing"
           fi
 
-          on_crates_io() {
-            curl -sS -m 30 -H "user-agent: ag-ui-rust publish workflow" \
-              "https://crates.io/api/v1/crates/$1/$2" \
-              | python3 -c 'import json,sys; sys.exit(0 if "version" in json.load(sys.stdin) else 1)'
+          published() {
+            local code
+            code=$(curl -sS -m 30 -o /dev/null -w '%{http_code}' -A "ag-ui-rust publish workflow" \
+              "https://crates.io/api/v1/crates/$1/$VERSION")
+            case $code in
+              200) return 0 ;;
+              404) return 1 ;;
+              *) echo "::error::crates.io answered HTTP $code for $1 $VERSION"; exit 1 ;;
+            esac
           }
 
           for crate in ag-ui ag-ui-a2ui; do
-            if on_crates_io "$crate" "$VERSION"; then
+            if published "$crate"; then
               echo "::notice title=Already published::$crate $VERSION is on crates.io; skipping"
-              continue
-            fi
-            if [ "${DRY_RUN:-false}" = "true" ]; then
-              if [ "$crate" = "ag-ui-a2ui" ] && ! on_crates_io ag-ui "$VERSION"; then
-                cargo package --list -p "$crate" >/dev/null
-                echo "::notice title=Dry run::ag-ui-a2ui registry check waits for ag-ui $VERSION"
-              else
-                cargo publish --dry-run -p "$crate"
-              fi
-            else
-              cargo publish --dry-run -p "$crate"
+            elif [ "$DRY_RUN" != true ]; then
               cargo publish -p "$crate"
-              echo "published $crate $VERSION"
+            elif [ "$crate" = ag-ui ] || published ag-ui; then
+              cargo publish --dry-run -p "$crate"
+            else
+              cargo package --list -p "$crate" >/dev/null
+              echo "::notice title=Dry run::the ag-ui-a2ui registry check waits for ag-ui $VERSION"
             fi
           done

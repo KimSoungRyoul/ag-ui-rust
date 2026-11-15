@@ -206,6 +206,9 @@ impl Agent for Janitor {
 `ag_ui::server::CancellationToken` — deliberately not `tokio_util`'s, because these crates
 build for wasm. A transport trips it when the client hangs up, and **every emit after
 cancellation fails**, so the next `?` unwinds the run without any cooperation from the agent.
+The one exception is a handle's terminator: what the run had open still closes on the way
+out, the driver ends any subagent left active with `SUBAGENT_ERROR` (code `CANCELLED`), and
+the run ends with a cancelled `RUN_FINISHED`.
 
 To notice sooner: `is_cancelled()`, `check_cancelled()?`, `cancelled()` (a `'static` future),
 and `until_cancelled(f)` — the one that matters, because an in-flight model request is what
