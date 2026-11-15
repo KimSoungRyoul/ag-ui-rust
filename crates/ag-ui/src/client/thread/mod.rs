@@ -131,6 +131,19 @@
 //! the thread that finished it has it, and is named in
 //! [`MergeReport::differing`].
 //!
+//! Two things the long run had in flight then are the copy's to settle, as
+//! on any restored thread. A tool call the run made and has not had the
+//! result of yet is unanswered on the copy, which sends nothing until it has
+//! an answer: give the call up there first, with
+//! [`abandon_tool_call`](Thread::abandon_tool_call). When the long run then
+//! receives the result, merging the copy into `main` leaves the copy's
+//! stand-in out and names it in [`MergeReport::superseded`]. Merging `main`
+//! into the copy is refused: a merge removes nothing of the thread it adds
+//! to, and the copy gave the call up. And a copy
+//! taken while a resume is in flight holds that
+//! [submission](Thread::submission) unconfirmed, and runs and merges once
+//! the application has reconciled it.
+//!
 //! [`Thread::merge_messages_from`] says what the merge takes, leaves and
 //! refuses, and [`merge_messages`] has the rules for the list. In short:
 //! messages are merged by id, this thread's copy of a message stays, and a

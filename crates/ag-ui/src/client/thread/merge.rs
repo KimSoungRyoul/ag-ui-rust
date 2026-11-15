@@ -22,6 +22,12 @@ pub struct MergeReport {
     /// was kept, and the other thread's was not taken. Empty when the two
     /// threads started from the same messages and each only added its own.
     pub differing: Vec<MessageId>,
+    /// The tool messages of the other thread that
+    /// [`abandon_tool_call`](Thread::abandon_tool_call) made there for a call
+    /// this thread holds an answer to, in the order the other thread holds
+    /// them. Each stood in for a result the other thread never got, and was
+    /// not taken: the call keeps the answer this thread has.
+    pub superseded: Vec<MessageId>,
 }
 
 /// Merges two copies of one conversation's messages, by message id.
@@ -95,7 +101,7 @@ pub struct MergeReport {
 /// ```
 #[must_use]
 pub fn merge_messages(ours: &[Message], theirs: &[Message]) -> Vec<Message> {
-    merge(ours, theirs).messages
+    merge(ours, theirs, &HashSet::new()).messages
 }
 
 /// One merge, worked out before anything is changed.
@@ -108,7 +114,9 @@ struct Merge {
     answered_twice: Vec<(ToolCallId, MessageId, MessageId)>,
 }
 
-fn merge(ours: &[Message], theirs: &[Message]) -> Merge {
+/// Merges `theirs` into `ours`, leaving out the messages of `theirs` named in
+/// `skip`.
+fn merge(ours: &[Message], theirs: &[Message], skip: &HashSet<&MessageId>) -> Merge {
     let mut merged = Merge {
         messages: Vec::with_capacity(ours.len() + theirs.len()),
         added: Vec::new(),
@@ -127,7 +135,7 @@ fn merge(ours: &[Message], theirs: &[Message]) -> Merge {
     }
     let mut met = HashSet::with_capacity(theirs.len());
     for message in theirs {
-        if !met.insert(message.id()) {
+        if !met.insert(message.id()) || skip.contains(message.id()) {
             continue;
         }
         if let Some(mine) = held.get(message.id()) {
@@ -243,6 +251,7 @@ impl<T: Transport, S> Thread<T, S> {
     /// | --- | --- |
     /// | a message this thread lacks | added |
     /// | a message both hold | this thread's copy; an id whose copies differ is in [`MergeReport::differing`] |
+    /// | a tool message [`abandon_tool_call`](Thread::abandon_tool_call) made there, for a call this thread holds an answer to | left out, and named in [`MergeReport::superseded`] |
     /// | the subagents it lists ([`subagents`](Thread::subagents)) | added where this thread lacks the invocation |
     /// | the run ids it used | refused for a run of this thread too |
     /// | a tool call an interrupt decided there | stays decided here, when its message was added |
@@ -267,7 +276,14 @@ impl<T: Transport, S> Thread<T, S> {
     ///
     /// A tool call that both threads answered, each with a message of its
     /// own, is refused as well: a call has one result, and choosing between
-    /// two is not this method's to do.
+    /// two is not this method's to do. A stand-in is not a result. A thread
+    /// remembers the tool messages its `abandon_tool_call` made, and so does
+    /// its [snapshot](Thread::snapshot), so a stand-in on the other thread
+    /// gives way to the answer this thread holds. The other way round, a
+    /// stand-in here and a result there, is refused, because a merge
+    /// changes and removes nothing of this thread's: merge this thread into
+    /// the other one instead, where the result stands and the stand-in gives
+    /// way.
     ///
     /// ```
     /// use ag_ui::Message;
@@ -303,8 +319,9 @@ impl<T: Transport, S> Thread<T, S> {
     /// # Errors
     ///
     /// [`Error::Merge`], with nothing changed, when the two threads have
-    /// different thread ids, when either is not at rest, and when a tool call
-    /// has a result on each thread.
+    /// different thread ids, when either is not at rest, when a tool call
+    /// has a result on each thread, and when this thread gave up a call the
+    /// other holds a result for.
     pub fn merge_messages_from<U: Transport, R>(
         &mut self,
         other: &Thread<U, R>,
@@ -319,21 +336,63 @@ impl<T: Transport, S> Thread<T, S> {
         self.at_rest("this thread")?;
         other.at_rest("the other thread")?;
 
-        let merged = merge(self.messages(), other.messages());
+        // A stand-in the other thread made for a call this thread holds an
+        // answer to is left out: the call has its answer here. Told from a
+        // result by the record `abandon_tool_call` keeps, not by what the
+        // message says.
+        let answered: HashSet<&ToolCallId> = self
+            .messages()
+            .iter()
+            .filter_map(|message| match message {
+                Message::Tool(answer) => Some(&answer.tool_call_id),
+                _ => None,
+            })
+            .collect();
+        let superseded: Vec<&MessageId> = other
+            .messages()
+            .iter()
+            .filter(|message| match message {
+                Message::Tool(stand_in) => {
+                    other.abandoned.contains(&stand_in.id)
+                        && answered.contains(&stand_in.tool_call_id)
+                        && self.applier.message(&stand_in.id).is_none()
+                }
+                _ => false,
+            })
+            .map(Message::id)
+            .collect();
+        let skip: HashSet<&MessageId> = superseded.iter().copied().collect();
+
+        let merged = merge(self.messages(), other.messages(), &skip);
         if let Some((call, here, there)) = merged
             .answered_twice
             .iter()
             .find(|(_, here, _)| self.applier.message(here).is_some())
         {
+            // Giving a call up here does not undo a result there, and a merge
+            // changes and removes nothing of this thread's: the result is
+            // merged the other way.
+            if self.abandoned.contains(here) {
+                return Err(Error::Merge(format!(
+                    "tool call {call} was given up on this thread, with message {here}, and has \
+                     a result on the other thread, message {there}: merge this thread into the \
+                     one that holds the result"
+                )));
+            }
             return Err(Error::Merge(format!(
                 "tool call {call} has a result on each thread, message {here} on this one and \
                  message {there} on the other"
             )));
         }
 
+        let superseded = superseded.into_iter().cloned().collect();
         // An interrupt's decision stands in for a tool message, and is kept
-        // by call id. It travels with the call it decided.
+        // by call id. It travels with the call it decided. So does a
+        // stand-in's record, with the stand-in.
         for id in &merged.added {
+            if other.abandoned.contains(id) {
+                self.abandoned.insert(id.clone());
+            }
             let Some(message) = other.applier.message(id) else {
                 continue;
             };
@@ -362,6 +421,7 @@ impl<T: Transport, S> Thread<T, S> {
         Ok(MergeReport {
             added: merged.added,
             differing: merged.differing,
+            superseded,
         })
     }
 
