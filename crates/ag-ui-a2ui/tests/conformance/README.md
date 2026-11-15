@@ -74,10 +74,10 @@ Totals: 168 passed, 11 expected divergence, 1865 skipped, 3 failing.
 | `core/message_processor_scaling.yaml` | 3 | 0 | 0 | 3 | 0 | later: A2UI v1.0 (#42): timing of the v1.0 message processor |
 | `core/data_deletion.yaml` | 7 | 0 | 0 | 7 | 0 | later: A2UI v1.0 (#42): updateDataModel removal by null |
 | `core/data_model_pointers.yaml` | 7 | 0 | 0 | 7 | 0 | later: A2UI v1.0 (#42): data-model pointer rules in v1.0 messages |
-| `core/reserved_keys.yaml` | 10 | 0 | 0 | 10 | 0 | later: A2UI v1.0 (#42): @-prefixed reserved keys |
+| `core/reserved_keys.yaml` | 10 | 0 | 0 | 10 | 0 | later: A2UI v1.0 (#42): `@`-prefixed reserved keys |
 | `core/multi_catalog.yaml` | 8 | 0 | 0 | 8 | 0 | later: A2UI v1.0 (#42): several catalogs on one surface |
 | `core/composition_constraints.yaml` | 10 | 0 | 0 | 10 | 0 | later: A2UI v1.0 (#42): allowedParents and allowedChildren through the v1.0 processor |
-| `core/index_function.yaml` | 4 | 0 | 0 | 4 | 0 | later: A2UI v1.0 (#42): the @index function in v1.0 templates |
+| `core/index_function.yaml` | 4 | 0 | 0 | 4 | 0 | later: A2UI v1.0 (#42): the `@index` function in v1.0 templates |
 | `core/validation_result.yaml` | 6 | 0 | 0 | 6 | 0 | later: A2UI v1.0 (#42): per-component validation results |
 | `core/rpc_functions.yaml` | 33 | 0 | 0 | 33 | 0 | later: A2UI v1.0 (#42): callRendererFunction and its response |
 | `core/agent_function_routing.yaml` | 43 | 0 | 0 | 43 | 0 | later: A2UI v1.0 (#42): routing function calls to the agent with callAgentFunction |
