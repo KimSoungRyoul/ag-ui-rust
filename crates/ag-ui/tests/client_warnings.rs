@@ -273,7 +273,11 @@ async fn a_warning_repeated_through_a_run_is_delivered_once() {
     assert_eq!(warnings(&report), distinct);
     assert_eq!(report.diagnostics.len(), distinct.len());
     assert_eq!(report.diagnostics_omitted, 0);
-    assert_eq!(thread.reasoning().len(), 1, "the reasoning itself is kept");
+    assert_eq!(
+        thread.reasoning().count(),
+        1,
+        "the reasoning itself is kept"
+    );
 }
 
 #[tokio::test]

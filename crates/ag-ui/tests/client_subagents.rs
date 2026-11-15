@@ -8,7 +8,7 @@ use ag_ui::client::apply::{Applier, Changed, SubagentChange, SubagentChangeKind,
 use ag_ui::client::transport::ReplayTransport;
 use ag_ui::client::{ChunkNormalizer, RunEnd, Thread, Update, verify_all};
 use ag_ui::{
-    Event, Interrupt, JsonObject, SubagentErrorEvent, SubagentFinishedEvent, SubagentOutcome,
+    Event, Interrupt, JsonObject, Role, SubagentErrorEvent, SubagentFinishedEvent, SubagentOutcome,
     SubagentRunId, SubagentStartedEvent, TextMessageRole,
 };
 use futures_util::StreamExt;
@@ -187,9 +187,11 @@ fn attribution_transfers_to_the_messages_events_create() {
     assert_eq!(owner("m2"), None);
     assert_eq!(owner("m3"), Some("sub-1"));
     assert_eq!(owner("m4"), None);
+    // The reasoning message is in the same list, so one lookup covers it.
+    assert_eq!(owner("r1"), Some("sub-1"));
     assert_eq!(
-        applier.reasoning()[0].subagent_run_id.as_deref(),
-        Some("sub-1")
+        applier.message(&"r1".into()).unwrap().role(),
+        Role::Reasoning
     );
 
     // A snapshot restates the activity, attribution included.
@@ -281,8 +283,8 @@ fn metadata_merges_into_what_each_event_builds() {
         .apply(&Event::reasoning_message_content("r1", "hm").with_metadata(meta(json!({ "b": 2 }))))
         .unwrap();
     assert_eq!(
-        applier.reasoning()[0].metadata,
-        Some(meta(json!({ "a": 1, "b": 2 })))
+        applier.message(&"r1".into()).unwrap().metadata(),
+        Some(&meta(json!({ "a": 1, "b": 2 })))
     );
 
     // Activities: the activity message.

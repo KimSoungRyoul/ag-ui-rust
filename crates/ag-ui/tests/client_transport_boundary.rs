@@ -190,7 +190,7 @@ async fn a_thread_gets_the_warnings_a_typed_stream_can_cause() {
     );
     // The retired events reached the thread as the reasoning they translate to.
     assert_eq!(reasoning, "hmhm");
-    assert_eq!(thread.reasoning().len(), 1);
+    assert_eq!(thread.reasoning().count(), 1);
 }
 
 /// The events and the warnings a transport's stream comes to.

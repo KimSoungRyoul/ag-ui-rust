@@ -742,14 +742,7 @@ impl Catalog {
     /// One line per component with its required and optional properties, plus
     /// the function list. This is the cheap alternative to pasting the whole
     /// JSON Schema; when a model needs the exact document instead, use
-    #[cfg_attr(
-        feature = "toolkit",
-        doc = "[`SchemaBundle::render_llm_instructions`](crate::toolkit::schema::SchemaBundle::render_llm_instructions)."
-    )]
-    #[cfg_attr(
-        not(feature = "toolkit"),
-        doc = "`SchemaBundle::render_llm_instructions`, behind the `toolkit` feature."
-    )]
+    /// [`SchemaBundle::render_llm_instructions`](crate::schema::SchemaBundle::render_llm_instructions).
     pub fn render_summary(&self) -> String {
         let mut out = String::new();
         out.push_str("### Component catalog\n");

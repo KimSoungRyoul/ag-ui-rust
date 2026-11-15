@@ -252,31 +252,12 @@ fn render_prior_surface(prior: &PriorSurface) -> String {
 /// One line per error, code first so the model can see the kind at a glance,
 /// then the locator, then the sentence explaining the fix.
 pub fn format_validation_errors(errors: &[ValidationError]) -> String {
-    if errors.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from(
-        "The previous attempt was rejected. Fix every problem below and return the corrected \
-         A2UI, not a diff:\n",
-    );
-    for error in errors {
-        out.push_str(&format!(
-            "- [{}] at {}: {}\n",
-            error.code, error.path, error.message
-        ));
-    }
-    out.trim_end().to_string()
+    crate::error::correction_request(errors)
 }
 
 /// Appends the errors from a failed attempt to the prompt for the next one.
 pub fn augment_prompt_with_errors(prompt: &str, errors: &[ValidationError]) -> String {
-    if errors.is_empty() {
-        return prompt.to_string();
-    }
-    format!(
-        "{prompt}\n\n## Correction required\n{}",
-        format_validation_errors(errors)
-    )
+    crate::error::prompt_with_corrections(prompt, errors)
 }
 
 /// A short human-readable summary of a surface, for logs and activity reports.
