@@ -458,3 +458,101 @@ async fn a_broken_connection_ends_the_stream_with_a_transport_error() {
         "unexpected error: {error}"
     );
 }
+
+#[test]
+fn frame_accounting_is_independent_of_chunk_boundaries() {
+    for ending in ["\n", "\r", "\r\n"] {
+        let body = format!("\u{feff}data: hello{ending}{ending}data: world{ending}{ending}");
+        for split in 0..=body.len() {
+            let mut decoder = SseDecoder::new().with_max_frame_size(11);
+            let mut frames = Vec::new();
+            for chunk in [&body.as_bytes()[..split], &body.as_bytes()[split..]] {
+                decoder.push(chunk).unwrap();
+                while let Some(frame) = decoder.next_frame().unwrap() {
+                    frames.push(frame);
+                }
+            }
+            frames.extend(decoder.finish().unwrap());
+            assert_eq!(
+                frames.iter().map(|f| f.data.as_str()).collect::<Vec<_>>(),
+                ["hello", "world"]
+            );
+        }
+    }
+}
+
+#[test]
+fn small_budget_is_enforced_on_normal_fields_and_at_eof() {
+    for body in [
+        "data: hello\ndata: world\n",
+        "event: greeting\ndata: hello\n",
+        "id: example\ndata: hello\n",
+        ": greeting\ndata: hello\n",
+    ] {
+        for eof in [false, true] {
+            let mut decoder = SseDecoder::new().with_max_frame_size(16);
+            decoder.push(body.as_bytes()).unwrap();
+            if eof {
+                assert!(decoder.finish().is_err());
+            } else {
+                assert!(decoder.next_frame().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn a_valid_prefix_is_delivered_before_an_oversized_line_at_every_split() {
+    let bytes = b"data: {}\n\n0123456789abcdefg";
+    for split in 0..=bytes.len() {
+        let mut decoder = SseDecoder::new().with_max_frame_size(16);
+        let mut delivered = Vec::new();
+        let decoded = (|| {
+            for chunk in [&bytes[..split], &bytes[split..]] {
+                decoder.push(chunk)?;
+                while let Some(frame) = decoder.next_frame()? {
+                    delivered.push(frame.data);
+                }
+            }
+            Ok::<_, ag_ui::client::Error>(())
+        })();
+        assert_eq!(delivered, ["{}"], "split at {split}");
+        assert!(
+            matches!(decoded, Err(ag_ui::client::Error::Decode(_))),
+            "split at {split}"
+        );
+    }
+}
+
+#[test]
+fn lone_cr_dispatches_before_the_next_read_and_a_late_lf_is_consumed() {
+    let mut decoder = SseDecoder::new();
+    decoder.push(b"data: first\r\r").unwrap();
+    assert_eq!(decoder.next_frame().unwrap().unwrap().data, "first");
+    decoder.push(b"").unwrap();
+    decoder.push(b"\ndata: second\r").unwrap();
+    assert!(decoder.next_frame().unwrap().is_none());
+    decoder.push(b"\ndata: line two\n\n").unwrap();
+    assert_eq!(
+        decoder.next_frame().unwrap().unwrap().data,
+        "second\nline two"
+    );
+}
+
+#[tokio::test]
+async fn raw_sse_errors_release_the_body_even_with_the_result_stream_alive() {
+    use ag_ui::client::transport::decode_raw_events;
+    use std::sync::Arc;
+    let live = Arc::new(());
+    let held = Arc::clone(&live);
+    let body = futures_util::stream::iter([Ok::<_, std::io::Error>(b"data: {}\r\rdata: ???\n\n")])
+        .chain(futures_util::stream::pending())
+        .inspect(move |_| {
+            let _ = &held;
+        });
+    let mut events = Box::pin(decode_raw_events(body));
+    assert_eq!(events.next().await.unwrap().unwrap(), serde_json::json!({}));
+    assert!(events.next().await.unwrap().is_err());
+    assert_eq!(Arc::strong_count(&live), 1);
+    assert!(events.next().await.is_none());
+}

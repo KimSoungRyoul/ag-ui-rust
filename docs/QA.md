@@ -6,6 +6,31 @@ The [official TypeScript interoperability suite](../e2e/interop/README.md) is a
 separate CI gate for acceptance and normalized values. It complements the
 event/field drift check and lists the typed representation differences explicitly.
 
+## SDK 1.0.0 release candidate (2026-11-20)
+
+These checks ran locally on macOS against the initial candidate in
+[standalone PR #107](https://github.com/KimSoungRyoul/ag-ui-rust/pull/107).
+At that point, [community PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778)
+at `26c174d` had the same runtime source. The fixes in
+[standalone PR #108](https://github.com/KimSoungRyoul/ag-ui-rust/pull/108) followed
+this verification. [UPSTREAM.md](../UPSTREAM.md) records the last shared source tree.
+
+| Check | Result |
+| --- | --- |
+| Standalone workspace, all features | 1,487 tests passed, five skipped. Doctests passed separately. |
+| Candidate monorepo workspace, including existing crates | 1,015 tests and doctests passed, four ignored. Rust 1.85 native and four wasm feature combinations compiled. |
+| AG-UI 1.0 corpus | The stream table covered 82 upstream and local cases. 80 matched directly and two recorded optional old-peer downgrades. All 135 valid schema fixtures survived whole. The invalid fixtures were checked against their errors or documented compatibility behavior. |
+| TypeScript interoperability in the community workspace | 31 current event types round-tripped from the checkout's TypeScript schema through Rust and back. Five retired thinking variants round-tripped through the compatibility codec. The published TypeScript HttpAgent 1.0.5 completed two runs against the Rust Axum endpoint and carried the first turn's messages into the second request. |
+| Packaging and dependencies | Cargo packaged and compiled both release archives together. The strict RustSec audit passed in both workspaces. |
+| Fresh Rust 1.85 consumer | An independent application resolved both packaged crates with a new lockfile, compiled and ran with the `http`, `axum`, `ag-ui-server` and `author` features. It created a Rust HTTP client, an Axum router, an A2UI painter and an author. |
+| Documentation | The site built 331 pages. Its verification script checked 330 document bodies, translations, navigation, examples, redirects and links to the bundled rustdoc. |
+
+Run the corpus with `cargo test --locked -p ag-ui --all-features --test conformance_1_0 --test fixtures_1_0 -- --nocapture`.
+It reports each case, including old-peer exceptions. The standalone fixture provenance also
+records the reference client's unknown-role divergence and the local test for the 1.0 rule.
+For the two-turn HTTP exchange, run `npm ci --ignore-scripts && npm test` in the PR's
+`sdks/community/rust/interop` directory.
+
 ## 0.5 alpha.3 A2UI followup verification (2026-09-28)
 
 This candidate imports the companion work at

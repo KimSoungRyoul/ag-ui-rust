@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "e2e", "examples/*", "xtask"]
 
 [workspace.package]
-version = "0.5.0-alpha.3"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -19,11 +19,9 @@ categories = ["web-programming", "asynchronous"]
 # A2UI stays separate: it is a different protocol, usable with no AG-UI at all,
 # and its users should not have to depend on `ag-ui` to reach it.
 #
-# Exact while the version is a prerelease: a caret requirement would let a
-# published `ag-ui-a2ui` alpha accept any later `ag-ui` alpha, or 0.5.x, and
-# the two crates are only tested in lockstep. Bump these with the version.
-ag-ui = { path = "crates/ag-ui", version = "=0.5.0-alpha.3" }
-ag-ui-a2ui = { path = "crates/ag-ui-a2ui", version = "=0.5.0-alpha.3" }
+# Registry consumers can resolve SemVer-compatible updates of the AG-UI adapter.
+ag-ui = { path = "crates/ag-ui", version = "1.0.0" }
+ag-ui-a2ui = { path = "crates/ag-ui-a2ui", version = "1.0.0" }
 
 # ---- runtime: core (must stay minimal) ----
 serde = { version = "1.0.229", features = ["derive"] }

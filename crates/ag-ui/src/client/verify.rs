@@ -273,9 +273,7 @@ fn sentence(violation: &Violation) -> String {
         Broke::StillOpen(Open::Subagent { id }) => {
             format!("{event} arrived while subagent {id:?} was still active")
         }
-        Broke::EmptyInterrupt => {
-            format!("{event} outcome `interrupt` requires at least one interrupt")
-        }
+        Broke::InvalidOutcome(detail) => detail.clone(),
         // Already a sentence that begins with the chunk it is about.
         Broke::Chunk(error) => error.to_string(),
     }

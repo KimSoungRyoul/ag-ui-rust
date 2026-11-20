@@ -17,7 +17,8 @@ cargo tree -p ag-ui --depth 0
 grep -n 'ag-ui' Cargo.toml
 ```
 
-Compare that against the version line near the top of the skill. A mismatch is not proof of
+Compare that against the version line near the top of the skill, then check the
+actual source revision. The workspace version can remain the same during development. A mismatch is not proof of
 staleness — most changes are additive — but it is the signal to prefer `cargo doc --open` and
 the source over the skill's prose.
 
@@ -45,7 +46,7 @@ the same files. **Start a new thread afterwards** — a loaded skill is not re-r
 
 The compiler wins, always. Then:
 
-1. Read the matching page under <https://kimsoungryoul.github.io/ag-ui-rust/> — the site is
+1. Read the matching page under <https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/start/> — the site is
    built from the same commit as the crates and every Rust block on it is compiled by the
    test suite, so it cannot be stale in the way a skill can.
 2. Read `sources.md` in the skill's own directory. It lists the repository files each section

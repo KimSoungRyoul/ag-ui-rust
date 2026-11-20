@@ -2131,3 +2131,181 @@ async fn hidden_reopens_what_a_subagents_state_ended_on_the_consuming_side() {
         applier.messages()
     );
 }
+
+#[cfg(feature = "client")]
+#[tokio::test]
+async fn hidden_snapshots_keep_only_previously_delivered_open_parent_content() {
+    use ag_ui::{AssistantMessage, Message};
+    for omit in [false, true] {
+        let mut snapshot = vec![Message::user("u", "a visible question")];
+        if !omit {
+            snapshot.push(Message::Assistant(AssistantMessage {
+                id: "m".into(),
+                content: Some("worker draft".into()),
+                subagent_run_id: Some("worker".into()),
+                ..Default::default()
+            }));
+        }
+        let mut call = Event::tool_call_start("c", "search");
+        let Event::ToolCallStart(start) = &mut call else {
+            unreachable!()
+        };
+        start.parent_message_id = Some("m".into());
+        let script = vec![
+            Event::text_message_start("m", Default::default()),
+            Event::text_message_content("m", "hello")
+                .with_metadata(json!({"label":"parent"}).as_object().unwrap().clone()),
+            call,
+            Event::tool_call_args("c", "{}"),
+            Event::tool_call_end("c"),
+            Event::messages_snapshot(snapshot),
+            Event::text_message_content("m", " world"),
+            Event::text_message_end("m"),
+        ];
+        let events =
+            collect(Runner::new(Replay(script)).transformer(SubagentVisibility::hidden())).await;
+        assert!(
+            !serde_json::to_string(&events)
+                .unwrap()
+                .contains("worker draft")
+        );
+        let parent = events
+            .iter()
+            .find_map(|event| match event {
+                Event::MessagesSnapshot(s) => s.messages.iter().find(|m| m.id().as_str() == "m"),
+                _ => None,
+            })
+            .unwrap();
+        let Message::Assistant(parent) = parent else {
+            unreachable!()
+        };
+        assert_eq!(parent.metadata.as_ref().unwrap()["label"], "parent");
+        assert_eq!(
+            parent.tool_calls.as_ref().unwrap()[0].function.arguments,
+            "{}"
+        );
+        assert_eq!(
+            assembled(events),
+            [("m".to_owned(), "hello world".to_owned())]
+        );
+    }
+}
+
+#[test]
+fn hidden_open_history_keeps_its_calls_and_results_together() {
+    use ag_ui::Message;
+    let mut filter = SubagentVisibility::hidden();
+    let child = Event::text_message_start("m", Default::default()).with_subagent_run_id("worker");
+    assert!(filter.transform(child).is_empty());
+    let first = filter.transform(Event::messages_snapshot(vec![Message::assistant(
+        "m", "draft",
+    )]));
+    assert!(matches!(&first[..], [Event::MessagesSnapshot(s)] if s.messages.is_empty()));
+    let messages: Vec<Message> = serde_json::from_value(json!([
+        {"role":"assistant","id":"m","toolCalls":[{"type":"function","id":"c","function":{"name":"search","arguments":"{}"}}]},
+        {"role":"tool","id":"r","toolCallId":"c","content":"draft"},
+        {"role":"user","id":"u","content":"visible"}
+    ])).unwrap();
+    let out = filter.transform(Event::messages_snapshot(messages));
+    let Event::MessagesSnapshot(snapshot) = &out[0] else {
+        unreachable!()
+    };
+    assert_eq!(snapshot.messages, vec![Message::user("u", "visible")]);
+    assert!(
+        filter
+            .transform(Event::tool_call_result("r", "c", "draft"))
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_snapshot_can_remove_a_parent_chunk_stream_that_has_implicitly_ended() {
+    let mut filter = SubagentVisibility::hidden();
+    for id in ["first", "second"] {
+        filter.transform(Event::text_message_chunk(
+            Some(id.into()),
+            Some("hello".into()),
+        ));
+    }
+    let out = filter.transform(Event::messages_snapshot(vec![]));
+    let Event::MessagesSnapshot(snapshot) = &out[0] else {
+        unreachable!()
+    };
+    assert_eq!(
+        snapshot.messages,
+        vec![ag_ui::Message::assistant("second", "hello")]
+    );
+}
+
+#[test]
+fn an_ended_child_chunk_does_not_hide_a_later_parent_snapshot() {
+    let mut filter = SubagentVisibility::hidden();
+    for id in ["first", "second"] {
+        let chunk = Event::text_message_chunk(Some(id.into()), Some("draft".into()));
+        assert!(
+            filter
+                .transform(chunk.with_subagent_run_id("worker"))
+                .is_empty()
+        );
+    }
+    let visible = ag_ui::Message::assistant("first", "published");
+    let snapshot = Event::messages_snapshot(vec![visible]);
+    assert_eq!(filter.transform(snapshot.clone()), [snapshot]);
+}
+
+#[test]
+fn a_snapshot_exposes_the_result_of_a_previously_hidden_call() {
+    use ag_ui::{AssistantMessage, Message, ToolCall};
+    let mut filter = SubagentVisibility::hidden();
+    for event in [
+        Event::tool_call_start("c", "search"),
+        Event::tool_call_end("c"),
+    ] {
+        assert!(
+            filter
+                .transform(event.with_subagent_run_id("worker"))
+                .is_empty()
+        );
+    }
+    let message = Message::Assistant(AssistantMessage {
+        id: "m".into(),
+        tool_calls: Some(vec![ToolCall::new("c", "search", "{}")]),
+        ..Default::default()
+    });
+    let snapshot = Event::messages_snapshot(vec![message]);
+    assert_eq!(filter.transform(snapshot.clone()), [snapshot]);
+    let result = Event::tool_call_result("r", "c", "published");
+    assert_eq!(filter.transform(result.clone()), [result]);
+}
+
+#[test]
+fn hidden_results_and_unknown_child_activities_keep_their_attribution() {
+    use ag_ui::ReasoningEncryptedValueSubtype;
+    let mut filter = SubagentVisibility::hidden();
+    for event in [
+        Event::tool_call_start("c", "search"),
+        Event::tool_call_end("c"),
+    ] {
+        assert!(
+            filter
+                .transform(event.with_subagent_run_id("worker"))
+                .is_empty()
+        );
+    }
+    assert!(
+        filter
+            .transform(Event::tool_call_result("r", "c", "private"))
+            .is_empty()
+    );
+    assert!(
+        filter
+            .transform(Event::reasoning_encrypted_value(
+                ReasoningEncryptedValueSubtype::Message,
+                "r",
+                "opaque"
+            ))
+            .is_empty()
+    );
+    let delta = Event::activity_delta("a", "progress", vec![]).with_subagent_run_id("worker");
+    assert!(filter.transform(delta).is_empty());
+}

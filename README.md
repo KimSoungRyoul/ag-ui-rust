@@ -2,23 +2,17 @@
 
 A Rust SDK for [AG-UI](https://docs.ag-ui.com) and
 [A2UI](https://a2ui.org): host an agent, connect to it, and generate declarative UI.
-This is an independent project, not an official AG-UI SDK.
+This independent project maintains the Rust SDK proposed for inclusion in the
+AG-UI community SDKs in [PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778).
 
-This source targets the `0.5.0-alpha.3` prerelease. Its AG-UI core is based on
-[upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778) at
-`564be451743105db9c46ef775dc90bdc69f30e2f`; the A2UI companion incorporates
-[the Rust A2UI follow-up at `5033ef049`](https://github.com/KimSoungRyoul/ag-ui/commit/5033ef049).
-The previous stable release is `0.4.5`. Choose the guide that matches your dependency:
-[0.5.0-alpha.3](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.3/start/)
-or [0.4.5](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/start/).
-Both guides are also available in
-[Korean](https://kimsoungryoul.github.io/ag-ui-rust/ko/versions/).
+SDK **1.0.0** supports the [AG-UI 1.0 wire specification](https://github.com/ag-ui-protocol/ag-ui/tree/main/spec/1.0).
+The crate versions follow Rust API SemVer. Compatible bug fixes bump the patch
+version, additive APIs bump the minor version, and breaking API changes bump the
+major version. Wire protocol support is documented separately.
 
-Alpha.3 adds A2UI streaming corrections, renderer-message validation, and form
-snapshot support. The A2UI crate now defaults to `toolkit` alone: enable `ag-ui`
-for its history/tool adapter or `ag-ui-server` for server emission. It retains
-the alpha.2 dependency constraint that fixes fresh Rust 1.85 builds of alpha.1.
-See the [alpha.2 to alpha.3 migration notes](docs/migration-0.5.md#a2ui-changes-from-alpha2).
+Start with the [English guide](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/start/)
+or [한국어 가이드](https://kimsoungryoul.github.io/ag-ui-rust/ko/v1.0.0/start/).
+For applications upgrading from 0.5.0-alpha.3, see the [migration notes](docs/migration-0.5.md#changes-in-100).
 
 ## Packages
 
@@ -28,27 +22,31 @@ See the [alpha.2 to alpha.3 migration notes](docs/migration-0.5.md#a2ui-changes-
 | `ag-ui/axum` | Hosting an agent over HTTP |
 | `ag-ui/http` | `HttpAgent`, conversations in `Thread`, and streamed updates |
 | `ag-ui/client` | The same conversation API over a custom transport |
-| `ag-ui-a2ui/toolkit` | A2UI operations, parsing, bindings and semantic validation |
+| `ag-ui-a2ui` with default features off | A2UI wire messages, catalogs, bindings and semantic validation |
+| `ag-ui-a2ui/agent` (default) | Catalog negotiation, generation prompts, response parsing and retry decisions |
 | `ag-ui-a2ui/ag-ui` | Optional AG-UI history and tool-definition adapter |
 | `ag-ui-a2ui/author` | Schema-validated A2UI generation with an async model callback |
-| `ag-ui-a2ui/ag-ui-server` | Sending generated A2UI from an AG-UI server |
+| `ag-ui-a2ui/ag-ui-server` | Surface painting from an AG-UI server |
+| `ag-ui-a2ui/a2a` | A2A extensions, capabilities and data parts |
 
 The existing `ag-ui-core` and `ag-ui-client` community crates on crates.io
 are separate packages.
 
-Install both prerelease packages from crates.io at the same exact version:
+### Released packages
+
+Install the packages from crates.io:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.3", features = ["http"] }
-ag-ui-a2ui = "=0.5.0-alpha.3"
+ag-ui = { version = "1.0.0", features = ["http"] }
+ag-ui-a2ui = "1.0.0"
 ```
 
 For a server, enable `axum` instead of `http`:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.3", features = ["axum"] }
+ag-ui = { version = "1.0.0", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 ```
@@ -57,19 +55,27 @@ For a client:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.3", features = ["http"] }
+ag-ui = { version = "1.0.0", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-For local development against a source checkout, replace each registry
-dependency with a path to its crate. For example:
+### Development checkout
+
+For local development, clone `ag-ui-rust` beside your application and use a
+path dependency. Add `ag-ui-a2ui` only for an application that uses A2UI.
 
 ```toml
 [dependencies]
-ag-ui = { path = "/absolute/path/to/ag-ui-rust/crates/ag-ui", features = ["http"] }
-ag-ui-a2ui = { path = "/absolute/path/to/ag-ui-rust/crates/ag-ui-a2ui" }
+ag-ui = { path = "../ag-ui-rust/crates/ag-ui", features = ["http"] }
+ag-ui-a2ui = { path = "../ag-ui-rust/crates/ag-ui-a2ui" }
 ```
+
+For the server example, enable `axum` on the local `ag-ui` dependency and add
+`axum` and `tokio` as shown above. For the client, enable `http` and add
+`futures-util` and `tokio`. The A2UI adapter and `author` are separate features.
+See the [A2UI feature guide](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/a2ui/)
+for the combination that fits your transport and authoring flow.
 
 ## Host an agent
 
@@ -120,7 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match update {
                 Update::Message(message) => println!("{:?}", message.change),
                 Update::Error(error) => eprintln!("{error}"),
-                Update::Done(end) => println!("{end:?}"),
+                Update::RunEnded(run) => println!("{run:?}"),
+                Update::Done(end) => println!("stream outcome: {end:?}"),
                 _ => {}
             }
         }
@@ -134,7 +141,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 An `HttpAgent` holds connection settings. Each `Thread` owns its conversation,
-state and pending approvals. Each send starts a run. Creating a thread is local;
+state and pending approvals. Each send requests a run. The response can contain replayed runs as well.
+Creating a thread is local;
 loading server history and storing thread snapshots belong to the application.
 `Transport` remains available for replay tests and custom connections.
 
@@ -143,8 +151,8 @@ loading server history and storing thread snapshots belong to the application.
 See [examples/](examples/README.md) for runnable applications and their regression
 commands. Each project consumes the public SDK rather than copying its reducers.
 
-The [0.5 migration notes](docs/migration-0.5.md) cover AG-UI 1.0
-wire behavior and API changes from 0.4.5. Version 0.4 changed the conversation
+The [migration notes](docs/migration-0.5.md) cover the move to alpha.3
+and the changes through 1.0.0. Version 0.4 changed the conversation
 API and A2UI data-update semantics; see [that migration guide](docs/migration-0.4.md).
 [The 0.3 → 0.4 design record](docs/sdk-api-improvement-proposal.ko.md) is kept as
 history, not as the current design.

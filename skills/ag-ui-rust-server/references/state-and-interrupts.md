@@ -158,8 +158,8 @@ fn main() -> ag_ui::server::Result<()> {
 }
 ```
 
-Eight rules: `RunEnded`, `DuplicateRunStarted`, `DuplicateStart`, `NotOpen`, `UnknownId`,
-`OutOfOrder`, `OpenAtFinish`, `OwnerMismatch`. `RUN_ERROR` is exempt from `OpenAtFinish` — a
+Ordering rules: `RunEnded`, `DuplicateRunStarted`, `DuplicateStart`, `NotOpen`, `UnknownId`,
+`OutOfOrder`, `OpenAtFinish`, `OwnerMismatch`, `MalformedChunk`, and `InvalidOutcome`. `RUN_ERROR` is exempt from `OpenAtFinish` — a
 run that blew up mid-message could not have closed it. `OwnerMismatch` is the subagent rule:
 the verifier remembers which subagent opened each message, call and step, and rejects a
 continuation or terminator that *names a different one*. One that names none is accepted —
@@ -252,6 +252,6 @@ body disarms itself if the run finished. Writing your own transport, take the to
 
 ## Sources
 
-- <https://kimsoungryoul.github.io/ag-ui-rust/server/interrupts/>
-- <https://kimsoungryoul.github.io/ag-ui-rust/server/errors/>
-- <https://kimsoungryoul.github.io/ag-ui-rust/server/state/>
+- <https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/interrupts/>
+- <https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/errors/>
+- <https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/state/>

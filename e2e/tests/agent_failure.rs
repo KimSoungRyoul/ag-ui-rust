@@ -177,7 +177,9 @@ async fn what_the_agent_managed_to_say_before_failing_is_kept() {
 
     {
         let mut run = thread.send("what is the weather?").expect("run preflight");
-        while run.next().await.is_some() {}
+        timeout(DEADLINE, async { while run.next().await.is_some() {} })
+            .await
+            .expect("the failed run must end");
     }
 
     assert_eq!(
@@ -272,11 +274,15 @@ async fn a_state_the_agent_cannot_decode_fails_the_run_rather_than_the_request()
     let url = serve(Picky).await;
     let client = RemoteAgent::new(transport(&url));
 
-    let events: Vec<Event> = client
-        .run_events(RunParams::new("picky", "picky-run-1").state(json!({"not": "a number"})))
-        .map(|event| event.expect("a rejected state is not a broken stream"))
-        .collect()
-        .await;
+    let events: Vec<Event> = timeout(
+        DEADLINE,
+        client
+            .run_events(RunParams::new("picky", "picky-run-1").state(json!({"not": "a number"})))
+            .map(|event| event.expect("a rejected state is not a broken stream"))
+            .collect(),
+    )
+    .await
+    .expect("a rejected state must end the run");
 
     let types: Vec<EventType> = events.iter().map(Event::event_type).collect();
     assert_eq!(types, [EventType::RunStarted, EventType::RunError]);

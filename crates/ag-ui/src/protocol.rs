@@ -32,11 +32,11 @@ pub(crate) fn event(mut value: Value, warnings: &mut Vec<String>) -> Result<Opti
     Ok(normalize(&mut value, shape, "", warnings)?.then_some(value))
 }
 
-#[cfg(feature = "axum")]
 pub(crate) fn input(mut value: Value, warnings: &mut Vec<String>) -> Result<Value> {
     // An older client's request may carry the registered nulls too; nothing
     // ahead of this function reads them as omitted.
     omit_input_nulls(&mut value, &mut Noticed::default(), warnings);
+    crate::message::upgrade_wire_messages(value.get_mut("messages"), "/messages", warnings);
     let shape = schema()
         .pointer("/$defs/RunAgentInput")
         .expect("input schema exists");
@@ -52,29 +52,7 @@ fn protocol_error(message: impl Into<String>) -> String {
     message.into()
 }
 
-/// The most characters of input text one warning repeats.
-const EXCERPT: usize = 64;
-
-/// Input text as a warning repeats it: at most [`EXCERPT`] characters, with
-/// control characters escaped, so the warning stays one bounded line however
-/// large or strange the input. `segment` also escapes it as a JSON Pointer
-/// reference token.
-pub(crate) fn excerpt(text: &str, segment: bool) -> String {
-    let mut excerpt = String::new();
-    let mut chars = text.chars();
-    for c in chars.by_ref().take(EXCERPT) {
-        match c {
-            '~' if segment => excerpt.push_str("~0"),
-            '/' if segment => excerpt.push_str("~1"),
-            c if c.is_control() => excerpt.extend(c.escape_default()),
-            c => excerpt.push(c),
-        }
-    }
-    if chars.next().is_some() {
-        excerpt.push('…');
-    }
-    excerpt
-}
+pub(crate) use crate::serde_util::excerpt;
 
 /// The AG-UI 1.0 optional-null registry: whole optional fields that pre-1.0
 /// producers wrote as `null`, which a consumer reads as omitted. Each row is a
@@ -152,6 +130,7 @@ pub(crate) fn omit_event_nulls(
                 omit_nulls(entry, "a RUN_FINISHED usage entry", noticed, warnings);
             }
         }
+        "TOOL_CALL_RESULT" => omit_content_nulls(event, noticed, warnings),
         "MESSAGES_SNAPSHOT" => {
             for message in event
                 .get_mut("messages")
@@ -159,7 +138,7 @@ pub(crate) fn omit_event_nulls(
                 .into_iter()
                 .flatten()
             {
-                omit_message_nulls(message, noticed, warnings);
+                omit_content_nulls(message, noticed, warnings);
             }
         }
         _ => {}
@@ -186,12 +165,12 @@ fn omit_input_nulls(input: &mut Value, noticed: &mut Noticed, warnings: &mut Vec
         .into_iter()
         .flatten()
     {
-        omit_message_nulls(message, noticed, warnings);
+        omit_content_nulls(message, noticed, warnings);
     }
 }
 
-fn omit_message_nulls(message: &mut Value, noticed: &mut Noticed, warnings: &mut Vec<String>) {
-    for part in message
+fn omit_content_nulls(carrier: &mut Value, noticed: &mut Noticed, warnings: &mut Vec<String>) {
+    for part in carrier
         .get_mut("content")
         .and_then(Value::as_array_mut)
         .into_iter()
@@ -587,9 +566,15 @@ mod tests {
         assert_eq!(excerpt("a/b~c", true), "a~1b~0c");
         assert_eq!(excerpt("a/b~c", false), "a/b~c");
         assert_eq!(excerpt("line\nbreak\u{1b}", false), "line\\nbreak\\u{1b}");
-        let long = "é".repeat(EXCERPT + 1);
-        assert_eq!(excerpt(&long, false), format!("{}…", "é".repeat(EXCERPT)));
-        assert_eq!(excerpt(&"é".repeat(EXCERPT), false), "é".repeat(EXCERPT));
+        let long = "é".repeat(crate::serde_util::EXCERPT + 1);
+        assert_eq!(
+            excerpt(&long, false),
+            format!("{}…", "é".repeat(crate::serde_util::EXCERPT))
+        );
+        assert_eq!(
+            excerpt(&"é".repeat(crate::serde_util::EXCERPT), false),
+            "é".repeat(crate::serde_util::EXCERPT)
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@ description: "Use when writing Rust consumers of AG-UI agents. The client is ag_
 
 # Consuming an AG-UI agent from Rust
 
-This skill targets workspace version **0.5.0-alpha.3**. Check the actual checkout before copying
+This skill targets workspace version **1.0.0**. Check the actual checkout before copying
 APIs into an older released consumer. One crate, `ag-ui`, contains protocol/server/client
 features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 
@@ -13,12 +13,11 @@ features; `ag-ui-client` and `ag-ui-core` are unrelated registry packages.
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.3", features = ["http"] }
+ag-ui = { version = "1.0.0", features = ["http"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-`ag-ui` is on crates.io; the `=` keeps Cargo from moving to a later prerelease on its own.
 `http` is opt-in.
 `client` alone accepts custom transports and supports wasm without
 Tokio or reqwest. The public relationship is endpoint → conversation → run:
@@ -103,10 +102,14 @@ AG-UI has no tool discovery. Configure tools yourself through builder `.tools` o
 
 - `Update::Message` carries the ID, index, change and assembled message.
 - `Update::Messages` replaces the transcript view; `State` carries typed current state.
-- `Reasoning` is separate from the transcript; `Subagent` carries lifecycle only.
+- `Reasoning` reports reasoning changes. Reasoning messages also live in
+  `Thread::messages()` and are sent with the next request. `Subagent` carries lifecycle data.
 - `Interrupt` announces a pending question.
-- `Error` is a diagnostic; keep consuming until `Done`.
-- `Done` contains `RunEnd::{Success, SuccessWithPendingToolCalls, Interrupted, Failed, Cancelled, Aborted}`.
+- `Error` and `Warning` report diagnostics. A late event for an entry removed by
+  a `MESSAGES_SNAPSHOT` is skipped with a warning. A content update can carry
+  metadata without text. A dropped `REASONING_ENCRYPTED_VALUE` is a warning.
+- `RunEnded` reports an individual run, including a run replayed before the requested run.
+- `Done` reports the stream outcome as `RunEnd::{Success, SuccessWithPendingToolCalls, Interrupted, Failed, Cancelled, Aborted}`.
   Pending frontend tool calls still need application results. `Cancelled` is a server-confirmed
   stop; `Aborted` only means local consumption stopped. Match all six.
 - `thread.unanswered_tool_calls()` lists every call the next run must answer first, including
@@ -116,23 +119,27 @@ AG-UI has no tool discovery. Configure tools yourself through builder `.tools` o
 
 `Update` is non-exhaustive. `RunEnd` is exhaustive. A successful terminal can coexist with
 local patch/validation diagnostics. `collect_report()` returns `end`, `new_messages`,
-`diagnostics` and `diagnostics_omitted` for the whole run even after partial consumption.
-It retains 100 diagnostics by default, without suppressing individual Error updates.
-`new_messages` selects IDs absent before this run; edits to old IDs are in the thread.
+`diagnostics`, `diagnostics_omitted` and `runs` for the response even after partial
+consumption. A conforming response ends with the requested run. If a producer sends
+another run after it, `Done` reports the final run's outcome.
+It retains 100 diagnostics by default, and still delivers individual diagnostic updates.
+`new_messages` selects IDs absent before the request; edits to old IDs are in the thread.
 
-`thread.on_event` replaces a synchronous read-only callback. It receives every decoded
-raw event once before normalize/verify/apply, including custom/raw/step events. It does
+`thread.on_event` replaces a synchronous read-only callback. It observes incoming events after decoding and compatibility filtering, before
+normalization, verification and application. It does
 not observe synthetic normalized events. Use application queues for slow I/O and
 `clear_event_observer` to remove it. Callbacks are `'static` and `Send` on native; wasm
 accepts local callbacks. Decode failures are diagnostics and terminate the high-level run.
 
 ## Approvals and uncertainty
 
-Use `thread.resume_many(entries)?` to answer **all** pending interrupts exactly once.
+Use `thread.resume_many(entries)?` with **one response per pending interrupt**.
 `resume(&interrupt, payload)` and `decline(&interrupt)` are single-interrupt conveniences.
 Unknown/duplicate/missing IDs and answers to expired stored interrupts fail before dispatch.
 An expired interrupt can still be declined, which is how the thread moves past it. The
-caller-supplied Interrupt object cannot replace the stored expiry. `response_schema` is
+stored expiry is authoritative. The client reads `expiresAt` as RFC 3339 with
+an offset or as a bare date at midnight UTC. An unreadable value permits an answer
+and yields a warning. `response_schema` is
 preserved for form rendering; arbitrary JSON Schema validation and execution authorization
 remain application/server responsibilities.
 
@@ -148,9 +155,11 @@ assert_eq!(entries[1].status, ResumeStatus::Cancelled);
 ```
 
 Dispatch keeps pending questions and records `ResumeSubmission { run_id, entries,
-status: InFlight }`. Only a validated matching `RunFinished` clears the submission and
-either clears or replaces pending questions. Transport failure, abort, `RunError` or invalid
-terminal retains it as `Unconfirmed`. Further ordinary send/resume calls are blocked.
+status: InFlight }`. For the requested run, a validated success or interrupt confirms
+the submission. An interrupt replaces pending questions. A cancelled run settles the
+submission and clears interrupts. Tool calls with missing results still need attention.
+Transport failure, local abort, `RunError` or an invalid terminal retains the submission
+as `Unconfirmed`. Further ordinary send/resume calls are blocked.
 The application must query its server's actual state and reconstruct a reconciled snapshot.
 There is no generic AG-UI reconciliation endpoint or automatic decision retry.
 
@@ -170,6 +179,17 @@ connection/response futures. If a terminal was already applied, later abort keep
 Otherwise consuming the run yields `Aborted` once. Dropping a dispatched run records
 local abortion but cannot deliver Done to a departed consumer. This does not prove remote
 cancellation. `decline` answers a question; it is distinct from aborting a run.
+
+## Concurrent requests on one conversation
+
+Restore a snapshot into a second `Thread` with the same conversation ID, then
+send one request on each thread. Restore defaults tools, context and forwarded
+properties. For the display, `client::merge_messages` combines two message lists
+while streams are open. After both streams end, `main.merge_messages_from(&side)`
+updates main's messages. Set shared state according to application policy and
+settle pending interrupts, submissions and unanswered calls before merging.
+If a side thread abandoned a call that main later answered, merge side into
+main to preserve the real result. `MergeReport::superseded` identifies the stand-in.
 
 ## Rendering subagents and incomplete messages
 

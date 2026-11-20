@@ -39,3 +39,28 @@ async fn a_1_0_producer_rejects_retired_thinking_events() {
             .all(|event| !event.event_type().as_str().starts_with("THINKING_"))
     );
 }
+
+#[tokio::test]
+async fn a_producer_rejects_duplicate_interrupt_ids_before_publishing_the_outcome() {
+    struct DuplicateInterrupt;
+
+    impl Agent for DuplicateInterrupt {
+        type State = ();
+
+        async fn run(&self, _: &mut RunContext<()>) -> Result<RunOutcome> {
+            Ok(RunOutcome::interrupt(vec![
+                ag_ui::Interrupt::new("i", "approval"),
+                ag_ui::Interrupt::new("i", "confirmation"),
+            ]))
+        }
+    }
+
+    let events: Vec<_> = Runner::new(DuplicateInterrupt)
+        .run(RunAgentInput::new("t", "r"))
+        .collect()
+        .await;
+    assert!(
+        matches!(events.as_slice(), [Event::RunStarted(_), Event::RunError(error)]
+        if error.message.contains("more than once"))
+    );
+}

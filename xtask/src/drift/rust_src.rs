@@ -134,7 +134,6 @@ pub fn scan(dir: &Path, repo_root: &Path) -> Result<RustSurface, String> {
                         rename_all.as_deref(),
                         rename_fields.as_deref(),
                         &rel,
-                        BareVariant::EventTag,
                     );
                     // `type` is a common discriminator, and the event union is
                     // not the only thing that uses it — `SubagentOutcome` is
@@ -145,7 +144,10 @@ pub fn scan(dir: &Path, repo_root: &Path) -> Result<RustSurface, String> {
                     // exist. An enum with no readable variants at all is the
                     // macro-generated union, whose members come from the
                     // macro's table instead, so it still counts.
-                    if !members.is_empty() && !members.iter().any(|m| is_wire_tag(&m.tag)) {
+                    if item.name != "Event"
+                        && !members.is_empty()
+                        && !members.iter().any(|m| is_wire_tag(&m.tag))
+                    {
                         continue;
                     }
                     if let Some(previous) = tagged_enum.replace(item.name.clone()) {
@@ -155,7 +157,11 @@ pub fn scan(dir: &Path, repo_root: &Path) -> Result<RustSurface, String> {
                             item.name
                         ));
                     }
-                    variants.extend(members.into_iter().filter(|m| is_wire_tag(&m.tag)));
+                    variants.extend(
+                        members
+                            .into_iter()
+                            .filter(|m| item.name == "Event" || is_wire_tag(&m.tag)),
+                    );
                 }
                 ItemKind::Macro => variants.extend(parse_macro_table(&item.body, &rel)),
                 ItemKind::Other => {}
@@ -351,7 +357,6 @@ pub fn scan_types(dirs: &[(&Path, bool)], repo_root: &Path) -> Result<RustTypes,
                         container_rename_all(&item.attrs).as_deref(),
                         rename_fields.as_deref(),
                         &rel,
-                        BareVariant::Verbatim,
                     );
                     RustDef::Enum {
                         tag: args.iter().find_map(|arg| arg_value(arg, "tag")),
@@ -691,22 +696,12 @@ struct UnionMember {
     file: String,
 }
 
-/// How a variant with no `rename` and no container `rename_all` is named.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BareVariant {
-    /// SCREAMING_SNAKE, the AG-UI event tag form; see [`parse_variants`].
-    EventTag,
-    /// The variant name itself, which is what serde does.
-    Verbatim,
-}
-
 /// Reads the variants of an enum, usually a `#[serde(tag = "type")]` one.
 fn parse_variants(
     body: &str,
     rename_all: Option<&str>,
     rename_all_fields: Option<&str>,
     file: &str,
-    bare: BareVariant,
 ) -> Vec<UnionMember> {
     let mut out = Vec::new();
     let mut attrs: Vec<String> = Vec::new();
@@ -748,20 +743,16 @@ fn parse_variants(
             pos = line_end + 1;
             continue;
         }
-        // An explicit rename wins; otherwise apply the container rule to the
-        // variant name. Serde's own default is the bare variant name, but the
-        // AG-UI event wire form is always SCREAMING_SNAKE, so that is what an
-        // unannotated event variant is read as rather than reported as drift.
+        // Serde uses the variant identifier unless a rename rule says otherwise.
         let tag = args
             .iter()
             .find_map(|a| arg_value(a, "rename"))
-            .unwrap_or_else(|| match (rename_all, bare) {
+            .unwrap_or_else(|| match rename_all {
                 // serde applies `rename_all` to the snake_case form of the name.
-                (Some(rule), _) => {
+                Some(rule) => {
                     apply_rename_all(&pascal_to_screaming_snake(&name).to_lowercase(), rule)
                 }
-                (None, BareVariant::EventTag) => pascal_to_screaming_snake(&name),
-                (None, BareVariant::Verbatim) => name.clone(),
+                None => name.clone(),
             });
         // A `rename_all` on the variant itself names the fields inside it,
         // and wins over the container's `rename_all_fields`.
@@ -945,6 +936,12 @@ fn container_rename_all(attrs: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unrenamed_event_variants_keep_their_serde_tag() {
+        let variants = parse_variants("RunError(RunErrorEvent),", None, None, "events.rs");
+        assert_eq!(variants[0].tag, "RunError");
+    }
 
     fn fields(surface: &RustSurface, tag: &str) -> Vec<RustField> {
         surface

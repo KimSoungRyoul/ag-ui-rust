@@ -1,32 +1,27 @@
 # ag-ui-a2ui
 
-A2UI v0.9/v0.9.1 protocol types, lossless data-model replay, semantic and JSON
-Schema validation, and provider-neutral async authoring. The crate produces and
-checks UI descriptions; the application supplies the model and renderer.
+Rust types and validation for A2UI `v0.9`, `v0.9.1`, and `1.0`, with an
+agent layer for catalog negotiation, prompts, model output and retries.
+The application supplies the model, transport and renderer.
 
-For `0.5.0-alpha.3`, pin the prerelease explicitly:
+Install the crate and enable the features used by your application:
 
 ```toml
 [dependencies]
-ag-ui-a2ui = "=0.5.0-alpha.3"
+ag-ui-a2ui = "1.0.0"
 ```
 
-Default features enable `toolkit` only. Add `features = ["ag-ui"]` for AG-UI
-history/tools or `features = ["ag-ui-server"]` for validated server emission.
-The [0.5.0-alpha.3 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.3/a2ui/)
-covers this crate; the [0.4.5 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/a2ui/)
-covers the previous stable version. Alpha.3 includes the A2UI followup from
-[`5033ef049`](https://github.com/KimSoungRyoul/ag-ui/commit/5033ef049a06f1a8d88c812ba3295a8ea55c7216)
-and retains alpha.2's Rust 1.85 dependency constraint.
+See the [1.0.0 A2UI guide](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/a2ui/)
+and the [migration notes](https://github.com/KimSoungRyoul/ag-ui-rust/blob/v1.0.0/docs/migration-0.5.md#changes-in-100)
+for changes since 0.5.0-alpha.3.
 
 ## Minimal component validation
 
 ```rust
 use ag_ui_a2ui::{Catalog, Component, Validator};
-use serde_json::json;
 
 let catalog = Catalog::basic();
-let components = [Component::new("root", "Text").with("text", json!("Hello!"))];
+let components = [Component::new("root", "Text").with("text", "Hello!".into())];
 assert!(Validator::new(&catalog).validate(&components).is_valid());
 ```
 
@@ -44,9 +39,10 @@ including nested templates; the latter also preserves undefined array slots.
 
 ## Async authoring
 
-Enable `author` for a complete shared schema/catalog contract. Enable
-`ag-ui-server` to also send validated surfaces through an AG-UI `RunContext`.
-Neither feature adds an executor, HTTP client, axum, or Tokio.
+Enable `author` to generate or edit a single surface under a fixed version and
+catalog with schema validation. Examples using the `json!` macro also require
+`serde_json = "1"` in your application. To also send it from an AG-UI `RunContext`,
+enable `ag-ui-server` alongside `author` and use `adapters::agui::SurfacePainter`.
 
 ```rust
 # #[cfg(feature = "author")]
@@ -90,15 +86,16 @@ setting is accepted.
 A different surface ID, catalog, version, create, or delete is rejected. The
 private `ValidatedSurface` fields prevent mutation after validation.
 `operations()` is the current batch; `history()` includes the prior batches and
-can be saved and revalidated with `validate_create`. Successful validation or
-`ctx.send_a2ui(&surface)` only confirms local validation/enqueue, not renderer
-receipt or application.
+can be saved and revalidated with `validate_create`. Use `SurfacePainter::from_history(ctx.messages())` and
+`painter.paint(ctx, surface.operations())` to enqueue a batch on AG-UI. Observe
+the renderer separately if your application needs delivery or application receipts.
 
-For manual `toolkit::recovery` calls, `RecoveredSurface.surface_id` identifies
-the returned components and data model. Recovery selects the single live surface
-touched by the response. If a response touches multiple live surfaces, set
-`RecoveryOptions.target_surface_id`; an untouched or deleted target is rejected.
-`operations` still contains the complete generated batch.
+For a framework that manages multiple surfaces or reads model output as it
+streams, use `agent::A2uiGenerator` to build an `A2uiRequestProcessor`
+for each request. It supplies the prompt snippet and the active catalogs.
+`RetryDriver` reports whether to accept an answer or try again. Open a
+`ResponseStream` to process chunks as they arrive. The framework calls the
+model, decides when to send messages, and owns the lifetime of renderer state.
 
 ## Renderer messages
 
@@ -112,10 +109,9 @@ that need the tolerant low-level types.
 Action and generic-error extension fields are retained in their `extensions`
 maps, including null or structured `userMessage`, `path`, and `functionCallId`
 values. `RendererError::path()` reads a validation error's string pointer.
-Typed error codes remain strings, matching the official renderer; the raw JSON
-Schema's generic-error code is less restrictive. `ClientCapabilitiesWire`
-preserves extra version namespaces and capability fields while negotiating the
-advertised v0.9 catalogs.
+Typed error codes remain strings, matching the official renderer. Use
+`agent::RendererCapabilities` to read supported catalogs for the session's
+protocol version.
 
 `ClientDataModel::from_json(&metadata)` reads `a2uiClientDataModel` snapshots
 sent by renderers for surfaces with `sendDataModel: true`. Its `surfaces` map
@@ -140,12 +136,15 @@ assert_eq!(model.lookup("/items/1").unwrap(), None);
 assert!(model.to_json().is_err()); // JSON cannot express the undefined slot.
 ```
 
-Upserts create missing/null containers; numeric paths infer arrays and sparse gaps
-are `Undefined`. Implicit array growth defaults to at most 65,536 new slots per
-update; `apply_with_array_growth_limit` makes that allocation policy explicit.
-A path of more than `binding::MAX_VALUE_DEPTH` (256) segments is rejected when
-reading and writing alike. A failed path or growth limit leaves the old model
-intact.
+`DataModel::apply_as` uses the rules for the surface's version. The examples
+above use v0.9 rules. On a `1.0` surface, `null` removes a value. Removing an
+absent path leaves the model unchanged in every version.
+
+Writes can create missing containers and sparse array slots. The model defaults
+to a maximum of 65,536 new slots per update and 65,536 undefined slots per model.
+Array writes are capped at index 10,000. Data model paths allow at most 256
+segments from the root and reject reserved path segments. A failed update leaves
+the old model intact.
 
 Deletion removes object keys, preserves array lengths with `Undefined` slots,
 and leaves an `Undefined` root on root deletion. The versioned `DataModel`
@@ -158,42 +157,39 @@ rejects a result requiring Undefined instead of silently substituting null.
 
 | Feature | Default | Adds |
 | --- | --- | --- |
-| `toolkit` | yes | Manual operations, prompts, parsing, history, sync/async recovery. |
-| `ag-ui` | no | AG-UI history and tool definitions; implies `toolkit`. |
-| `schema-validation` | no | Pinned full schemas, Draft 2020-12 engine, local references only. |
-| `author` | no | `A2uiAuthor` and immutable `ValidatedSurface`; implies full validation. |
-| `ag-ui-server` | no | `agui::A2uiRunContextExt::send_a2ui`; implies `author`, `ag-ui/server`. |
+| `agent` | yes | Prompt assembly, catalog negotiation, parsing and streaming, renderer state, retry decisions. |
+| `schema-validation` | no | Pinned schemas and a Draft 2020-12 engine with local resources. |
+| `author` | no | Fixed-target async generation and immutable validated surfaces. Enables `agent` and `schema-validation`. |
+| `ag-ui` | no | AG-UI envelopes, history, catalog context and tool definitions. Enables `agent`. |
+| `ag-ui-server` | no | Paint surfaces from a `RunContext`. Enables `ag-ui` and `ag-ui/server`. |
+| `a2a` | no | JSON helpers for the A2A extension and data parts. Enables `agent`. |
 
-Default features include only `toolkit`, so an A2A or MCP consumer gets no AG-UI
-dependency or schema engine. `default-features = false` selects the protocol
-types alone. The schema engine is pinned to `jsonschema 0.61.2` without its
-network/filesystem resolvers. Rust 1.85 and wasm builds are covered; browser
-entropy support is target- and feature-specific to the schema engine.
+Set `default-features = false` to use the protocol modules alone. The protocol
+modules and agent layer are transport independent. The optional `ag-ui` feature
+adds the AG-UI dependency. `author` and `ag-ui-server` do not add an HTTP client
+or executor.
 
-Low-level constructors default to `v0.9`; `.with_version(…)` selects another
-discriminator. Every version accepts the four server operations: create,
-component update, data update, and delete. The protocol modules also speak
-`1.0` (`A2uiVersion::V1_0`): a message is written and read as its version
-spells it. The agent layer, the author and the adapters speak it too: a
-session is of the version of the catalogs it was given.
+Low-level constructors default to `v0.9`. Use `A2uiVersion::V1_0` to select
+`1.0` explicitly. An agent session takes its protocol version from its catalogs.
+Messages can update a surface of the same wire family. To construct bindings,
+use `version.path("/field")` so the key matches that family. The crate does not
+convert messages between families.
 
-From v1.0 an agent and a renderer call each other's functions with messages
-(`callRendererFunction`, `callAgentFunction` and their responses). The crate
-carries a call and routes it, and runs no function: a call the application has
-to run comes to it as a value (`agent::RendererMessageRouter`,
-`agent::AgentFunctionCall`), a call the agent makes is a message to send and
-an entry in a table that is told the time (`agent::RendererCalls`,
-`rpc::PendingCalls`), and nothing here holds a handler, a future or a timer.
+`Catalog::basic_for(version)` and `A2uiAuthor::basic(version)` use the catalog ID
+published for the chosen version. For AG-UI frontends, read
+`CatalogContext::protocol_version()` and use `adapters::agui::basic_catalog(version)`
+to get the catalog under the ID the adapter uses. In v0.9 it is
+`BASIC_CATALOG_ID`, the frontend's catalog ID. In v1.0 it is the published ID.
 
-`BASIC_CATALOG_ID` is a historical toolkit ID. `A2uiAuthor::basic` uses the
-canonical `OFFICIAL_BASIC_CATALOG_ID` declared by the pinned schema. No alias is
-inferred. Capabilities use `ClientCapabilitiesWire` with the `v0.9` namespace,
-also for v0.9.1 messages. Negotiation requires an explicitly advertised matching
-ID and keeps inline catalogs whole; conflicts or missing matches are errors.
+## A2UI 1.0 function calls
 
-The AG-UI integration carries a batch in an `a2ui_operations` tool result.
-That envelope is an integration convention, not a mandatory A2UI transport.
-The MIME type remains `application/a2ui+json`.
+`agent::RendererMessageRouter` routes a renderer message to the application
+or returns a protocol reply. `agent::RendererCalls` prepares outbound calls
+and tracks responses using timestamps supplied by the application. The
+application runs handlers and schedules deadlines. The AG-UI adapter's
+`a2ui_operations` envelope carries surface operations. It rejects batches that
+include function-call messages. Use a message-preserving transport such as the
+`a2a` adapter for function calls.
 
 ## Verification
 
@@ -216,7 +212,7 @@ constraints, the `@index` function, validation results, and function calls as
 far as carrying and routing one goes), the fifteen of the agent tier that do
 not need another output format than direct JSON, each case as it is written,
 and the A2A extension suite, with the transcripts of v0.9.1 and of v1.0; they
-report **948 passed, 34 expected divergences, 3 failing**,
+report **948 passed, 34 expected divergences, 1,053 skipped, 3 known failures**,
 and the per-suite counts are asserted by the test. The divergences
 are executed with pinned expectations: an unreachable component is a warning,
 an empty path segment is the empty key, a binding that cannot resolve is an

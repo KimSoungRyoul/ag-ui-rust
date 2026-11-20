@@ -33,7 +33,10 @@ use serde_json::Value;
 /// orphaned ID-less chunk after filtering. Normalize chunks first, or track
 /// the producer's open streams before deciding which chunks to drop.
 ///
-/// Dropping is silent: the emit that produced the event returns `Ok`.
+/// An emit whose output is filtered out returns `Ok`. At the end of a
+/// hosted run the driver checks whether the consumer received a terminal
+/// event. If the chain removed it, the driver sends a final `RUN_ERROR`
+/// directly to the event queue.
 pub trait StreamTransformer: Send {
     /// Rewrites one event into zero or more events.
     fn transform(&mut self, event: Event) -> Vec<Event>;
@@ -615,10 +618,15 @@ impl ToolResultToState {
                 .map(Event::state_snapshot),
             // A patch a consumer could not read is no more the expected
             // shape than content that is not JSON.
-            StateForm::Delta => serde_json::from_str::<Vec<PatchOperation>>(content)
-                .ok()
-                .filter(|patch| crate::server::state::well_formed(patch).is_ok())
-                .map(Event::state_delta),
+            StateForm::Delta => {
+                // Validate the original tool output before the SDK's compatibility
+                // decoder supplies a missing value. Decode it again into the wire
+                // type to keep RFC 6902 extension members on the emitted delta.
+                serde_json::from_str::<json_patch::Patch>(content).ok()?;
+                serde_json::from_str::<Vec<PatchOperation>>(content)
+                    .ok()
+                    .map(Event::state_delta)
+            }
         }
     }
 
@@ -852,6 +860,8 @@ pub struct SubagentFilter {
     /// Whether the consumer saw each tool call start, for the result that
     /// may arrive long after the call closed.
     call_visibility: HashMap<ToolCallId, bool>,
+    // Only Hidden projects the messages actually sent to the consumer.
+    visible_messages: Option<Box<crate::client::apply::Applier>>,
 }
 
 /// What a chunk naming no id turned out to be.
@@ -881,6 +891,7 @@ impl SubagentFilter {
             activities: HashMap::new(),
             open_visibility: HashMap::new(),
             call_visibility: HashMap::new(),
+            visible_messages: (mode == SubagentVisibility::Hidden).then(Default::default),
         }
     }
 
@@ -985,8 +996,42 @@ impl SubagentFilter {
         if let Some(opener) = opener {
             self.reopen(&mut event, opener);
         }
-        self.output.track(&event);
+        self.record_output(&event);
         vec![event]
+    }
+
+    fn record_output(&mut self, event: &Event) {
+        let expanded = self.output.track(event);
+        let Some(visible) = &mut self.visible_messages else {
+            return;
+        };
+        for update in expanded {
+            let _ = visible.apply(&update);
+        }
+        match event {
+            Event::RunStarted(started) => {
+                if let Some(input) = &started.input {
+                    **visible =
+                        crate::client::apply::Applier::new().with_messages(input.messages.clone());
+                }
+            }
+            Event::RunFinished(_) | Event::RunError(_) => **visible = Default::default(),
+            Event::TextMessageStart(_)
+            | Event::TextMessageContent(_)
+            | Event::TextMessageEnd(_)
+            | Event::ReasoningMessageStart(_)
+            | Event::ReasoningMessageContent(_)
+            | Event::ReasoningMessageEnd(_)
+            | Event::ToolCallStart(_)
+            | Event::ToolCallArgs(_)
+            | Event::ToolCallEnd(_)
+            | Event::ToolCallResult(_)
+            | Event::ReasoningEncryptedValue(_)
+            | Event::MessagesSnapshot(_) => {
+                let _ = visible.apply(event);
+            }
+            _ => {}
+        }
     }
 
     /// Fills in what opens a chunk's item, unless the consumer has the
@@ -1079,6 +1124,7 @@ impl SubagentFilter {
         let owned = tag.is_some();
         let bare = self.fill_bare(&mut event, &tag);
         let opener = self.opener(&event, &tag);
+        let mut expanded = Vec::new();
         let keep = match bare {
             // The chunk continues a stream: it goes where the stream went.
             Bare::Resolved { owner, kind, id } => self
@@ -1091,11 +1137,26 @@ impl SubagentFilter {
                 // Before the event is tracked: it may end the stream that
                 // says whose it is.
                 let owner = self.owner_for(&event, &tag);
-                self.streams.track(&event);
+                expanded = self.streams.track(&event);
                 self.judge(&event, &tag, owner.as_ref())
             }
         };
-        if !keep {
+        // An implicit end releases the visibility of that chunked item. A
+        // snapshot still filters against the visibility immediately before it.
+        if !matches!(event, Event::MessagesSnapshot(_)) {
+            self.forget_chunk_ends(&expanded);
+        }
+        if !keep
+            || (owned
+                && matches!(
+                    event,
+                    Event::TextMessageStart(_)
+                        | Event::TextMessageChunk(_)
+                        | Event::ReasoningStart(_)
+                        | Event::ReasoningMessageStart(_)
+                        | Event::ReasoningMessageChunk(_)
+                ))
+        {
             return Vec::new();
         }
         match &mut event {
@@ -1104,20 +1165,51 @@ impl SubagentFilter {
             // the run established it, as the verifiers leave it.
             Event::MessagesSnapshot(snapshot) => {
                 self.seed_hidden(&snapshot.messages, true);
-                let hidden_calls = &self.hidden_tool_calls;
-                snapshot
-                    .messages
-                    .retain_mut(|message| Self::show_message(message, hidden_calls));
+                let mut present = HashSet::new();
+                snapshot.messages.retain_mut(|message| {
+                    // A result's visibility follows the final list of calls,
+                    // including any restored with an open parent below.
+                    let keep = matches!(message, Message::Tool(_)) || self.show_message(message);
+                    if keep {
+                        present.insert(message.id().clone());
+                    }
+                    keep
+                });
+                if let Some(visible) = &self.visible_messages {
+                    for message in visible.open_messages() {
+                        if present.contains(message.id()) {
+                            continue;
+                        }
+                        if let Message::Assistant(assistant) = message {
+                            for call in assistant.tool_calls.iter().flatten() {
+                                self.hidden_tool_calls.remove(&call.id);
+                                self.call_visibility.insert(call.id.clone(), true);
+                            }
+                        }
+                        snapshot.messages.push(message.clone());
+                    }
+                }
+                snapshot.messages.retain_mut(|message| {
+                    let Message::Tool(tool) = message else {
+                        return true;
+                    };
+                    if self.hidden_tool_calls.contains_key(&tool.tool_call_id) {
+                        return false;
+                    }
+                    self.hidden_text.remove(&tool.id);
+                    tool.subagent_run_id = None;
+                    true
+                });
+                self.forget_chunk_ends(&expanded);
             }
             // History, not a rewrite: what it carries is remembered alongside
             // what the run has already shown.
             Event::RunStarted(started) => {
                 if let Some(input) = &mut started.input {
                     self.seed_hidden(&input.messages, false);
-                    let hidden_calls = &self.hidden_tool_calls;
                     input
                         .messages
-                        .retain_mut(|message| Self::show_message(message, hidden_calls));
+                        .retain_mut(|message| self.show_message(message));
                 }
             }
             Event::StateSnapshot(_)
@@ -1131,6 +1223,19 @@ impl SubagentFilter {
             _ => {}
         }
         self.send(event, opener)
+    }
+
+    fn forget_chunk_ends(&mut self, expanded: &[Event]) {
+        for end in expanded {
+            if matches!(
+                end,
+                Event::TextMessageEnd(_) | Event::ReasoningMessageEnd(_) | Event::ToolCallEnd(_)
+            ) {
+                if let Some((kind, id)) = Self::entity(end) {
+                    self.open_visibility.remove(&(kind, id.to_owned()));
+                }
+            }
+        }
     }
 
     /// Whether the consumer sees an event with an id, by who owns it.
@@ -1181,11 +1286,17 @@ impl SubagentFilter {
             // A result goes where its call went, whoever executed it: one for
             // a call the consumer never saw is a protocol error, and one for
             // a call it did see is owed.
-            Event::ToolCallResult(e) => self
-                .call_visibility
-                .get(&e.tool_call_id)
-                .copied()
-                .unwrap_or_else(|| !self.hidden_tool_calls.contains_key(&e.tool_call_id)),
+            Event::ToolCallResult(e) => {
+                if let Some(owner) = self.hidden_tool_calls.get(&e.tool_call_id) {
+                    self.hidden_text.insert(e.message_id.clone(), owner.clone());
+                } else {
+                    self.hidden_text.remove(&e.message_id);
+                }
+                self.call_visibility
+                    .get(&e.tool_call_id)
+                    .copied()
+                    .unwrap_or_else(|| !self.hidden_tool_calls.contains_key(&e.tool_call_id))
+            }
 
             // An activity is owned by the snapshot that minted it, and only a
             // replacing snapshot re-mints it — the verifiers' rule. A merge
@@ -1202,7 +1313,7 @@ impl SubagentFilter {
                 !hidden
             }
             Event::ActivityDelta(e) => {
-                !self.activities.get(&e.message_id).copied().unwrap_or(false)
+                !self.activities.get(&e.message_id).copied().unwrap_or(owned)
             }
 
             // An opaque blob for an entity the consumer never saw goes with
@@ -1275,7 +1386,10 @@ impl SubagentFilter {
 
     fn closed(&mut self, kind: Kind, id: &MessageId, owned: bool) -> bool {
         let keep = self.continued(kind, id, owned);
-        self.open_visibility.remove(&(kind, id.as_str().to_owned()));
+        let key = (kind, id.as_str().to_owned());
+        if !owned || self.open_visibility.get(&key) != Some(&true) {
+            self.open_visibility.remove(&key);
+        }
         keep
     }
 
@@ -1317,60 +1431,64 @@ impl SubagentFilter {
                 }
                 continue;
             }
-            let owner = match message {
-                crate::Message::Tool(tool) => {
-                    self.hidden_tool_calls.get(&tool.tool_call_id).cloned()
-                }
-                _ => message.subagent_run_id().cloned(),
+            if matches!(message, Message::Tool(_)) {
+                continue; // Its owner follows the call, regardless of history order.
+            }
+            let kind = if matches!(message, Message::Reasoning(_)) {
+                Kind::Reasoning
+            } else {
+                Kind::Text
             };
-            let calls: Vec<ToolCallId> = match message {
-                crate::Message::Assistant(assistant) => assistant
-                    .tool_calls
-                    .iter()
-                    .flatten()
-                    .map(|call| call.id.clone())
-                    .collect(),
-                _ => Vec::new(),
-            };
-            let kind = match message {
-                crate::Message::Reasoning(_) => Kind::Reasoning,
-                _ => Kind::Text,
-            };
-            match owner {
-                Some(owner) => {
-                    for call in calls {
-                        self.hidden_tool_calls.insert(call, owner.clone());
-                    }
-                    self.owners_mut(kind).insert(id, owner);
-                }
-                None if authoritative => {
-                    self.owners_mut(kind).remove(&id);
-                    for call in &calls {
-                        self.hidden_tool_calls.remove(call);
+            let hidden_open =
+                self.open_visibility.get(&(kind, id.as_str().to_owned())) == Some(&false);
+            if let Some(owner) = message.subagent_run_id() {
+                self.owners_mut(kind).insert(id.clone(), owner.clone());
+            } else if authoritative && !hidden_open {
+                self.owners_mut(kind).remove(&id);
+            }
+            if let Message::Assistant(assistant) = message {
+                let owner = self.hidden_text.get(&id).cloned();
+                for call in assistant.tool_calls.iter().flatten() {
+                    if let Some(owner) = &owner {
+                        self.hidden_tool_calls
+                            .insert(call.id.clone(), owner.clone());
+                        self.call_visibility.insert(call.id.clone(), false);
+                    } else if authoritative || !self.call_visibility.contains_key(&call.id) {
+                        self.hidden_tool_calls.remove(&call.id);
+                        self.call_visibility.insert(call.id.clone(), true);
                     }
                 }
-                None => {}
+            }
+        }
+        for message in messages {
+            if let Message::Tool(tool) = message {
+                if let Some(owner) = self.hidden_tool_calls.get(&tool.tool_call_id) {
+                    self.hidden_text.insert(tool.id.clone(), owner.clone());
+                } else if authoritative {
+                    self.hidden_text.remove(&tool.id);
+                }
             }
         }
     }
 
-    /// Whether a replayed message reaches the consumer, stripping the tag
-    /// from the one kind that may carry one there: a tool message answering
-    /// a call the consumer saw is the parent's, whoever executed it.
-    fn show_message(
-        message: &mut crate::Message,
-        hidden_calls: &HashMap<ToolCallId, SubagentRunId>,
-    ) -> bool {
-        match message {
-            crate::Message::Tool(tool) => {
-                if hidden_calls.contains_key(&tool.tool_call_id) {
-                    return false;
-                }
-                tool.subagent_run_id = None;
-                true
+    fn show_message(&self, message: &mut Message) -> bool {
+        if let Message::Tool(tool) = message {
+            if self.hidden_tool_calls.contains_key(&tool.tool_call_id) {
+                return false;
             }
-            _ => message.subagent_run_id().is_none(),
+            tool.subagent_run_id = None;
+            return true;
         }
+        let kind = if matches!(message, Message::Reasoning(_)) {
+            Kind::Reasoning
+        } else {
+            Kind::Text
+        };
+        message.subagent_run_id().is_none()
+            && self
+                .open_visibility
+                .get(&(kind, message.id().as_str().to_owned()))
+                != Some(&false)
     }
 }
 
@@ -1411,7 +1529,7 @@ impl StreamTransformer for SubagentFilter {
     /// open are the ones a consumer has open now.
     fn replay(&mut self, sent: &[Event]) {
         for event in sent {
-            self.output.track(event);
+            self.record_output(event);
         }
     }
 
@@ -1662,23 +1780,27 @@ mod tests {
     }
 
     #[test]
-    fn a_patch_with_a_malformed_pointer_is_not_promoted() {
+    fn a_malformed_patch_is_not_promoted() {
         let mut promote = ToolResultToState::delta("patch_state");
         for (call, content) in [
             ("c1", r#"[{"op":"add","path":"oops","value":1}]"#),
             ("c2", r#"[{"op":"move","from":"oops","path":"/a"}]"#),
             ("c3", r#"[{"op":"add","path":"/a/~2","value":1}]"#),
+            ("c4", r#"[{"op":"add","path":"/a"}]"#),
+            ("c5", r#"[{"op":"replace","path":"/a"}]"#),
+            ("c6", r#"[{"op":"test","path":"/a"}]"#),
         ] {
             promote.transform(Event::tool_call_start(call, "patch_state"));
             let result = Event::tool_call_result("m1", call, content);
             assert_eq!(promote.transform(result.clone()), vec![result], "{content}");
         }
         // The root is a pointer, and so is an escaped segment.
-        promote.transform(Event::tool_call_start("c4", "patch_state"));
-        let content =
-            r#"[{"op":"add","path":"/a~1b","value":1},{"op":"test","path":"","value":{}}]"#;
-        let out = promote.transform(Event::tool_call_result("m1", "c4", content));
-        assert_eq!(out.len(), 2, "{out:?}");
+        promote.transform(Event::tool_call_start("valid", "patch_state"));
+        let content = r#"[{"op":"add","path":"/a~1b","value":null,"note":"keep"},{"op":"test","path":"","value":{}}]"#;
+        let result = Event::tool_call_result("m1", "valid", content);
+        let delta =
+            Event::state_delta(serde_json::from_str::<Vec<PatchOperation>>(content).unwrap());
+        assert_eq!(promote.transform(result.clone()), [result, delta]);
     }
 
     #[test]

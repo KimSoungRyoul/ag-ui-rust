@@ -1,4 +1,10 @@
-# Migrating from 0.4.5 to 0.5.0-alpha.3
+# Migrating from 0.4.5 and 0.5 prereleases to 1.0.0
+
+For the stable SDK, use `ag-ui = "1.0.0"` with the features your application
+needs. The A2UI companion uses `ag-ui-a2ui = "1.0.0"`. If you used alpha.3,
+start with [changes in 1.0.0](#changes-in-100).
+
+## The 0.5 prereleases
 
 `0.5.0-alpha.3` combines the `ag-ui` work proposed in
 [upstream PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778) with the separate
@@ -149,9 +155,17 @@ updated to read text from `ToolContent`, including ordered parts; A2UI protocol
 authoring and validation remain in that crate. The A2UI source proposed for
 upstream is reviewed separately from PR #2778.
 
-## Changes after alpha.3 (unreleased)
+<a id="changes-after-alpha3-unreleased"></a>
 
-These are on `main` and not yet in a published version.
+## Changes in 1.0.0
+
+The following changes apply when upgrading from 0.5.0-alpha.3.
+
+- The default HTTP transport returns redirects to the caller. Remote endpoints with
+  custom headers, URL user information, a query, or a caller-supplied HTTP client
+  require HTTPS. For a trusted cleartext service, enable
+  `allow_insecure_http(true)` on its builder. Loopback HTTP endpoints continue to work.
+  An HTTP error retains up to 2 KiB read within one second.
 
 - `MultiAgentCapabilities` reads and writes its sub-agent list under the AG-UI 1.0
   key `subagents`. Alpha.3 and earlier used `subAgents`, which 1.0 peers do not read;
@@ -185,8 +199,7 @@ These are on `main` and not yet in a published version.
 - `ag-ui-a2ui/schema-validation` uses `jsonschema` 0.61.2 instead of 0.29.1. The same
   messages pass and fail with the same diagnostics, and an `enum` failure still names
   every allowed value. A message with several errors can list them in a different order.
-- `ag-ui-a2ui` requires exactly its own version of `ag-ui` (`=0.5.0-…`) while both are
-  prereleases, instead of accepting any later alpha.
+- The A2UI adapter accepts SemVer-compatible 1.x releases of `ag-ui`.
 - An expired interrupt can be declined. `Thread::decline`, or a cancelled entry in
   `resume_many`, is no longer refused because `expiresAt` has passed or does not parse;
   only resolving such an interrupt is. Before, that interrupt blocked every later request.
@@ -286,10 +299,14 @@ These are on `main` and not yet in a published version.
 - A request carries a legacy `binary` content part as the 1.0 media part it stands for:
   `image`, `audio`, `video` or `document` by MIME type, with its `data` or else its `url` as
   the source and `filename` under `metadata`. A part that only repeats a media part already
-  in the message is dropped, and one with only an `id` is sent unchanged. This applies to
-  `Thread` runs and `RemoteAgent::run_events`; the messages the application holds are not
-  rewritten. Alpha.3 sent the `binary` part, which a 1.0 agent strips.
-- The same translation applies on the way in. A `binary` part in the messages of
+  in the message is dropped when its source, MIME type and any legacy filename match.
+  A URL part with no MIME type preserves the typed legacy attachment alongside it.
+  Outgoing schema enforcement removes an id-only binary part,
+  and a `Thread` reports the removal as a warning. This applies to `Thread` runs,
+  `RemoteAgent::run_events` and the HTTP transport. The application keeps its original
+  messages. Alpha.3 sent the `binary` part, which a 1.0 agent strips.
+- The Axum request decoder upgrades legacy binary parts from older clients before
+  enforcing the 1.0 schema. Incoming events use the same translation. A `binary` part in the messages of
   `MESSAGES_SNAPSHOT` or of the `RUN_STARTED` input echo, or in a `TOOL_CALL_RESULT`, is
   read as its media part, with a warning naming it ("translated retired binary content part
   at /messages/0/content/1 to image"). The client used to drop the part as unrecognised.

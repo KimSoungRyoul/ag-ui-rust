@@ -1,12 +1,12 @@
 ---
 name: ag-ui-rust-server
-description: "MUST USE when writing Rust against ag-ui-rust to host an agent — the crate ag-ui with its `server` and `axum` features, plus ag-ui-a2ui. UNCONVENTIONAL, and wrong from memory: this is ONE crate named ag-ui, not ag-ui-core / ag-ui-server / ag-ui-axum — those registry names belong to an unrelated community SDK — and the server lives under ag_ui::server, the axum binding under ag_ui::axum, both behind features. Events are emitted through RAII typestate handles — ctx.assistant_message() then delta() then end() — never as raw start/content/end calls; the emit path is SYNCHRONOUS with no .await, because the handle emits its terminator on Drop; two open handles at once is a borrow-check error, not a runtime one; Agent::run is a native async fn (RPITIT), so #[async_trait] does not apply and Box<dyn Agent> does not exist (use BoxAgent). Covers RunContext accessors, RunOutcome, tool calls the agent answers vs. the client runs, shared state as automatic snapshot/delta, human-in-the-loop interrupts, subagent scopes (ctx.subagent — attribution is applied by the event sink, never by hand; SubagentVisibility for older clients), the ordering verifier and its eight rules, cancellation, and mounting with route_agui. Triggers on: ag-ui-rust, ag_ui::server, ag_ui::axum, ag_ui, impl Agent for, RunContext, RunOutcome, route_agui, ctx.subagent, SubagentHandle, SubagentVisibility, AG-UI agent in Rust, Rust backend for CopilotKit or AG-UI, A2UI surface from a Rust agent."
+description: "MUST USE when writing Rust against ag-ui-rust to host an agent — the crate ag-ui with its `server` and `axum` features, plus ag-ui-a2ui. UNCONVENTIONAL, and wrong from memory: this is ONE crate named ag-ui, not ag-ui-core / ag-ui-server / ag-ui-axum — those registry names belong to an unrelated community SDK — and the server lives under ag_ui::server, the axum binding under ag_ui::axum, both behind features. Events are emitted through RAII typestate handles — ctx.assistant_message() then delta() then end() — never as raw start/content/end calls; the emit path is SYNCHRONOUS with no .await, message, reasoning, tool call and step handles close on Drop; subagents report outcomes explicitly; two open handles at once is a borrow-check error, not a runtime one; Agent::run is a native async fn (RPITIT), so #[async_trait] does not apply and Box<dyn Agent> does not exist (use BoxAgent). Covers RunContext accessors, RunOutcome, tool calls the agent answers vs. the client runs, shared state as automatic snapshot/delta, human-in-the-loop interrupts, subagent scopes (ctx.subagent — attribution is applied by the event sink, never by hand; SubagentVisibility for older clients), the ordering verifier and its rules, cancellation, and mounting with route_agui. Triggers on: ag-ui-rust, ag_ui::server, ag_ui::axum, ag_ui, impl Agent for, RunContext, RunOutcome, route_agui, ctx.subagent, SubagentHandle, SubagentVisibility, AG-UI agent in Rust, Rust backend for CopilotKit or AG-UI, A2UI surface from a Rust agent."
 ---
 
 # Serving an AG-UI agent in Rust
 
-Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.5.0-alpha.3**. If the API here disagrees with the compiler, the compiler is
+Docs: <https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/start/> · this skill is written against
+workspace version **1.0.0**. If the API here disagrees with the compiler, the compiler is
 right and the skill is stale — see `ag-ui-rust-update`.
 
 ## Adding the crates
@@ -17,12 +17,11 @@ feature; `axum` implies `server`:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.3", features = ["axum"] }
+ag-ui = { version = "1.0.0", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 ```
 
-`ag-ui` is on crates.io; the `=` keeps Cargo from moving to a later prerelease on its own.
 Rust **1.85+**, edition 2024.
 No LLM crate is involved anywhere: bring your own model client
 and call it inside `run`.
@@ -261,8 +260,8 @@ fn main() -> ag_ui::server::Result<()> {
         {
             let mut estimator = planner.subagent_events("estimator")?;   // nested: parent filled in
             estimator.say("A day each.")?;             // tagged r-sub-2
-            estimator.finish()?;
-        }                                              // SUBAGENT_FINISHED r-sub-2
+            estimator.finish()?;                       // SUBAGENT_FINISHED r-sub-2
+        }
         planner.finish_with(json!({ "tasks": 2 }))?;   // SUBAGENT_FINISHED r-sub-1, with a result
     }
     ctx.say("Plan ready.")?;                           // untagged: the parent's own
@@ -346,6 +345,30 @@ changes the interval and `.without_keep_alive()` disables them. These comments a
 events. The event queue is unbounded by default; the configured limit above closes a run with
 `EVENT_BUFFER_FULL` instead of waiting for a slow consumer.
 
+## Runs that outlive the response
+
+For an ordinary request, polling `Runner::run` runs the agent. For a run shared by
+several responses, `Runner::into_parts` gives the host the driver and one event
+receiver. Schedule the driver and persist or fan out its events. A late client
+receives either historical events or the `RunProgress` prelude, then the live tail.
+`Runner::continue_run` replays an event prefix to restore protocol state and
+continues under the same run ID. For hand-built events, `EventVerifier::seed`
+records known message/tool owners and `EventVerifier::replay` reconstructs ordering.
+Application storage, authorization, and domain checkpoints belong to the host.
+
+Transformers receive the already-sent events through `StreamTransformer::replay`
+before continued output. `FilterToolCalls` also filters names in message snapshots
+and start echoes. Unknown-name call events are dropped. For calls continued by chunks,
+name the ID on the first new chunk. Opaque event payloads and interrupts are outside
+this filter's scope. Cancellation of a continued run closes entities left open by
+the earlier driver before sending the cancelled outcome.
+
+For A2UI, choose `A2uiAuthor` for a fixed surface or the default `agent` layer for
+framework integration. `SurfacePainter` sends surface operations over AG-UI. For
+A2UI 1.0 function messages, use a transport that carries full A2UI messages, such
+as the `a2a` adapter's data parts. The host runs and authorizes those functions.
+See the [A2UI guide](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/a2ui/).
+
 ## Do not write
 
 | Instead of | Write |
@@ -355,7 +378,7 @@ events. The event queue is unbounded by default; the configured limit above clos
 | `Box<dyn Agent>` | `BoxAgent<S>` (`DynAgent` is the object-safe half) |
 | `msg.delta(..).await` | `msg.delta(..)?` — the emit path is synchronous |
 | `ctx.emit(Event::text_message_start(..))` | `ctx.assistant_message()?` |
-| `tokio::spawn` around the run | nothing; polling the stream runs the agent |
+| `tokio::spawn` around an ordinary response | poll the run stream, or use `Runner::into_parts` for a separately hosted run |
 | `Uuid::new_v4()` for ids | nothing; ids are derived strings, or `*_with_id` |
 | `Err(..)` when a human declines | `ResumeStatus::Cancelled` — declining an interrupt is not `RunOutcome::Cancelled` |
 | `Event::subagent_started(..)` + tagging each event by hand for a sequential child | `ctx.subagent_events(name)?` — the sink tags everything emitted through the handle |
@@ -363,16 +386,16 @@ events. The event queue is unbounded by default; the configured limit above clos
 
 ## Deeper
 
-- [The Agent trait](https://kimsoungryoul.github.io/ag-ui-rust/server/agent/) ·
-  [Streaming text](https://kimsoungryoul.github.io/ag-ui-rust/server/text/) ·
-  [Tool calls](https://kimsoungryoul.github.io/ag-ui-rust/server/tools/)
-- [Shared state](https://kimsoungryoul.github.io/ag-ui-rust/server/state/) ·
-  [Human in the loop](https://kimsoungryoul.github.io/ag-ui-rust/server/interrupts/) ·
-  [Subagents](https://kimsoungryoul.github.io/ag-ui-rust/server/subagents/) ·
-  [Errors and cancellation](https://kimsoungryoul.github.io/ag-ui-rust/server/errors/)
-- [Serving over HTTP](https://kimsoungryoul.github.io/ag-ui-rust/server/axum/) ·
-  [A2UI](https://kimsoungryoul.github.io/ag-ui-rust/a2ui/) ·
-  [Feature flags](https://kimsoungryoul.github.io/ag-ui-rust/reference/features/)
+- [The Agent trait](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/agent/) ·
+  [Streaming text](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/text/) ·
+  [Tool calls](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/tools/)
+- [Shared state](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/state/) ·
+  [Human in the loop](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/interrupts/) ·
+  [Subagents](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/subagents/) ·
+  [Errors and cancellation](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/errors/)
+- [Serving over HTTP](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/server/axum/) ·
+  [A2UI](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/a2ui/) ·
+  [Feature flags](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/reference/features/)
 - rustdoc for both crates:
   <https://kimsoungryoul.github.io/ag-ui-rust/api/ag_ui/server/index.html>
 - The client half is the `ag-ui-rust-client` skill.

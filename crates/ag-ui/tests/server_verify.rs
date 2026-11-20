@@ -583,15 +583,33 @@ fn the_chunked_and_the_explicit_form_do_not_mix_within_one_item() {
     // is not a continuation of it: it ends the shorthand". The local streams
     // `chunk-after-explicit-start-fatal` and
     // `explicit-content-after-chunk-fatal`.
-    let (mut ctx, _events) = context();
-    ctx.emit(Event::text_message_start("m1", TextMessageRole::Assistant))
-        .expect("start");
-    let error = ctx
-        .emit(text_chunk(Some("m1"), "a"))
-        .expect_err("the chunk opens m1 a second time");
-    assert_eq!(rule(error), Rule::DuplicateStart);
-    // The rejected chunk was not sent, so the message is as it was.
-    ctx.emit(Event::text_message_end("m1")).expect("still open");
+    for (start, chunk, end) in [
+        (
+            Event::text_message_start("m1", TextMessageRole::Assistant),
+            text_chunk(Some("m1"), "a"),
+            Event::text_message_end("m1"),
+        ),
+        (
+            Event::reasoning_message_start("m1"),
+            Event::reasoning_message_chunk(Some("m1".into()), Some("a".into())),
+            Event::reasoning_message_end("m1"),
+        ),
+    ] {
+        let (mut ctx, _events) = context();
+        ctx.emit(start.with_subagent_run_id("worker-a"))
+            .expect("start");
+        let error = ctx
+            .emit(chunk.clone().with_subagent_run_id("worker-b"))
+            .expect_err("another worker cannot reuse this message");
+        assert_eq!(rule(error), Rule::OwnerMismatch);
+        let error = ctx
+            .emit(chunk.with_subagent_run_id("worker-a"))
+            .expect_err("the chunk opens m1 a second time");
+        assert_eq!(rule(error), Rule::DuplicateStart);
+        // Neither rejected chunk changed the owner or closed the item.
+        ctx.emit(end.with_subagent_run_id("worker-a"))
+            .expect("still open");
+    }
 
     for explicit in [
         Event::text_message_content("m2", "b"),

@@ -259,6 +259,7 @@ pub struct ExecutionCapabilities {
     #[serde(
         default,
         deserialize_with = "crate::serde_util::non_negative",
+        serialize_with = "crate::serde_util::serialize_safe_integer",
         skip_serializing_if = "Option::is_none"
     )]
     pub max_iterations: Option<u64>,
@@ -266,6 +267,7 @@ pub struct ExecutionCapabilities {
     #[serde(
         default,
         deserialize_with = "crate::serde_util::non_negative",
+        serialize_with = "crate::serde_util::serialize_safe_integer",
         skip_serializing_if = "Option::is_none"
     )]
     pub max_execution_time: Option<u64>,

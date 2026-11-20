@@ -38,8 +38,7 @@ use serde_json::Value;
 
 use crate::client::transport::{EventStream, Transport, TransportStream};
 
-#[cfg(feature = "http")]
-use crate::client::error::Result;
+use crate::client::error::{Error, Result};
 #[cfg(feature = "http")]
 use crate::client::transport::{HttpTransport, HttpTransportBuilder};
 
@@ -197,23 +196,25 @@ impl<T: Transport> RemoteAgent<T> {
     /// [`TransportStream::into_events`] over [`Transport::run`] hands them to
     /// a callback.
     ///
-    /// A legacy `binary` content part in the request's messages is sent as the
-    /// 1.0 media part it stands for.
+    /// The request omits activity messages, which belong to the local rendering
+    /// history, and upgrades legacy `binary` content to its 1.0 media part.
     pub fn run_events(&self, params: impl Into<RunAgentInput>) -> EventStream {
-        let connecting = self.transport.run(outgoing(params));
-        Box::pin(
-            futures_util::stream::once(connecting)
-                .map_ok(|stream| stream.into_events(|_| {}))
-                .try_flatten(),
-        )
+        let input = match outgoing(params.into(), &mut Vec::new()) {
+            Ok(input) => input,
+            Err(error) => return Box::pin(futures_util::stream::once(async { Err(error) })),
+        };
+        Box::pin(crate::client::enforce::unchecked(
+            self.run_checked(input),
+            |_| {},
+        ))
     }
 
     /// [`Self::run_events`] with the boundary's warnings left in the stream.
     pub(crate) fn run_checked(
         &self,
-        params: impl Into<RunAgentInput>,
+        input: RunAgentInput,
     ) -> crate::client::enforce::CheckedStream {
-        let connecting = self.transport.run(outgoing(params));
+        let connecting = self.transport.run(input);
         Box::pin(
             futures_util::stream::once(connecting)
                 .map_ok(TransportStream::into_checked)
@@ -222,13 +223,19 @@ impl<T: Transport> RemoteAgent<T> {
     }
 }
 
-/// The request as it leaves the client. AG-UI 1.0 retired the `binary` content
-/// part, and a 1.0 producer strips what it does not describe, so the part is
-/// translated here rather than sent.
-fn outgoing(params: impl Into<RunAgentInput>) -> RunAgentInput {
-    let mut input = params.into();
-    crate::message::upgrade_legacy_content(&mut input.messages);
+/// Translates retired content, then applies the outgoing 1.0 schema before
+/// handing a typed request to a transport. The original conversation is kept.
+pub(crate) fn outgoing(input: RunAgentInput, warnings: &mut Vec<String>) -> Result<RunAgentInput> {
+    Ok(serde_json::from_value(outgoing_json(input, warnings)?)?)
+}
+
+/// The wire form used by the HTTP transport, including direct Transport::run calls.
+pub(crate) fn outgoing_json(mut input: RunAgentInput, warnings: &mut Vec<String>) -> Result<Value> {
     input
+        .messages
+        .retain(|message| !matches!(message, Message::Activity(_)));
+    crate::message::upgrade_legacy_content(&mut input.messages);
+    crate::protocol::input(serde_json::to_value(input)?, warnings).map_err(Error::Request)
 }
 
 /// An HTTP endpoint and reusable connection settings. Create independent local
@@ -347,6 +354,14 @@ impl HttpAgentBuilder {
         self
     }
 
+    /// Allows configured headers or URL credentials on a remote HTTP endpoint.
+    /// See [`HttpTransportBuilder::allow_insecure_http`].
+    #[must_use]
+    pub fn allow_insecure_http(mut self, allow: bool) -> Self {
+        self.transport = self.transport.allow_insecure_http(allow);
+        self
+    }
+
     /// Uses a caller-supplied `reqwest` client.
     #[must_use]
     pub fn client(mut self, client: reqwest::Client) -> Self {
@@ -358,7 +373,7 @@ impl HttpAgentBuilder {
     ///
     /// # Errors
     ///
-    /// [`Error::Config`](crate::client::Error::Config) when the URL or a header is not
+    /// [`Error::Config`] when the URL or a header is not
     /// valid.
     pub fn build(self) -> Result<HttpAgent> {
         Ok(HttpAgent::from_transport(self.transport.build()?))

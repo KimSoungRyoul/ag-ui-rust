@@ -1,19 +1,21 @@
 import { defineRouteMiddleware } from '@astrojs/starlight/route-data';
 
-const latest = 'v0.5.0-alpha.3';
-const versionPattern = /\/(v0\.4\.5|v0\.5\.0-alpha\.[123])\//;
+import { guideVersions, guideSidebarLabel, publishedVersion, readGuideRoute } from './guideVersions.mjs';
+
+const defaultGuide = guideVersions.find(({ id }) => id === publishedVersion)!;
 
 export const onRequest = defineRouteMiddleware(({ url, locals }) => {
 	const route = locals.starlightRoute;
-	const version = url.pathname.match(versionPattern)?.[1] ?? latest;
+	const guide = readGuideRoute(url.pathname);
+	const version = guide?.version ?? defaultGuide;
 	const activeGroup = route.sidebar.find(
-		(item) => item.type === 'group' && item.label.startsWith(`${version.slice(1)} (`)
+		(item) => item.type === 'group' && item.label === guideSidebarLabel(version)
 	);
 	if (!activeGroup || activeGroup.type !== 'group') {
-		throw new Error(`Missing documentation sidebar for ${version}`);
+		throw new Error(`Missing documentation sidebar for ${version.id}`);
 	}
 
-	if (/\/(?:ko\/)?versions\/$/.test(url.pathname)) {
+	if (!guide && url.pathname.endsWith('/versions/')) {
 		route.sidebar = [];
 		route.hasSidebar = false;
 		route.pagination = { prev: undefined, next: undefined };

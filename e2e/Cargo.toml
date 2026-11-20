@@ -23,7 +23,7 @@ reqwest = { workspace = true, features = ["stream"] }
 [dev-dependencies]
 # The library never names it: the A2UI tests and the doctests compiled from the
 # README, the website and the skills do. `author` is for those snippets.
-ag-ui-a2ui = { workspace = true, features = ["ag-ui-server", "author"] }
+ag-ui-a2ui = { workspace = true, features = ["ag-ui-server", "author", "a2a"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
 # The end-to-end tests mount the agent on a real router and bind a real port,
 # so they build the `axum::Router` and drive `axum::serve` themselves.

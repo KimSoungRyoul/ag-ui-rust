@@ -1,15 +1,11 @@
 import starlight from '@astrojs/starlight';
 import { defineConfig } from 'astro/config';
 import starlightLinksValidator from 'starlight-links-validator';
+import { guideVersions, guideSidebarLabel, hasGuidePage, publishedVersion, readGuideRoute } from './src/guideVersions.mjs';
 
 // Hand-written links and static redirect targets must include the GitHub Pages base.
 const site = 'https://kimsoungryoul.github.io';
 const base = '/ag-ui-rust';
-
-const latestVersion = 'v0.5.0-alpha.3';
-const previousAlphaVersion = 'v0.5.0-alpha.2';
-const supersededAlphaVersion = 'v0.5.0-alpha.1';
-const stableVersion = 'v0.4.5';
 
 // Keep labels and page order in one place across the published guide trees.
 const docSections = [
@@ -32,6 +28,7 @@ const docSections = [
 		items: [
 			{ label: 'Integration quickstart', translations: { ko: '연결 시작' }, link: '/server/' },
 			{ label: 'Agent and run context', translations: { ko: 'Agent와 실행 컨텍스트' }, link: '/server/agent/' },
+			{ label: 'Runs that outlive a response', translations: { ko: '응답 이후에도 계속되는 run' }, link: '/server/detached-runs/' },
 			{ label: 'HTTP endpoint', translations: { ko: 'HTTP endpoint' }, link: '/server/axum/' },
 			{ label: 'Streaming text', translations: { ko: '텍스트 스트리밍' }, link: '/server/text/' },
 			{ label: 'Tool calls and results', translations: { ko: '도구 호출·결과 전달' }, link: '/server/tools/' },
@@ -78,6 +75,9 @@ const docSections = [
 		items: [
 			{ label: 'Overview', translations: { ko: '개요' }, link: '/a2ui/' },
 			{ label: 'Authoring surfaces', translations: { ko: 'surface 작성' }, link: '/a2ui/authoring/' },
+			{ label: 'Agent layer', translations: { ko: 'agent 계층' }, link: '/a2ui/agent/' },
+			{ label: 'Protocol versions', translations: { ko: '프로토콜 버전' }, link: '/a2ui/versions/' },
+			{ label: 'Function calls', translations: { ko: '함수 호출' }, link: '/a2ui/functions/' },
 			{ label: 'Validation', translations: { ko: 'validation' }, link: '/a2ui/validation/' },
 		],
 	},
@@ -138,13 +138,13 @@ const docSections = [
 ];
 
 const guidePaths = docSections.flatMap((section) =>
-	section.items.map((item) => item.link).filter((link) => link.startsWith('/'))
+	section.items.map((item) => item.link).filter((link) => link.startsWith('/') && hasGuidePage(publishedVersion, link.slice(1)))
 );
 const legacyRedirects = Object.fromEntries(
 	['', 'ko/'].flatMap((locale) =>
 		guidePaths.map((path) => [
 			`/${locale}${path.slice(1)}`,
-			`${base}/${locale}${latestVersion}${path}`,
+			`${base}/${locale}${publishedVersion}${path}`,
 		])
 	)
 );
@@ -152,7 +152,7 @@ const legacyRedirects = Object.fromEntries(
 function versionedSections(version: string) {
 	return docSections.map((section) => ({
 		...section,
-		items: section.items.map((item) => ({
+		items: section.items.filter(({ link }) => hasGuidePage(version, link.slice(1))).map((item) => ({
 			...item,
 			link: item.label === 'API docs (rustdoc)'
 				? `https://docs.rs/ag-ui/${version.slice(1)}/ag_ui/`
@@ -167,8 +167,8 @@ export default defineConfig({
 	site,
 	base,
 	redirects: {
-		'/': `${base}/${latestVersion}/start/`,
-		'/ko/': `${base}/ko/${latestVersion}/start/`,
+		'/': `${base}/${publishedVersion}/start/`,
+		'/ko/': `${base}/ko/${publishedVersion}/start/`,
 		...legacyRedirects,
 	},
 	integrations: [
@@ -227,18 +227,15 @@ export default defineConfig({
 					errorOnFallbackPages: false,
 					// The plugin derives IDs with a slugger that removes dots from the
 					// version directories. The built-page verifier checks these links.
-					exclude: ({ file, link }) => {
-						const versioned = /(?:^|\/)(?:ko\/)?v0\.(?:4\.5|5\.0-alpha\.[123])\//;
-						return link.startsWith(`${base}/api/`) || versioned.test(file) || versioned.test(link);
-					},
+					exclude: ({ file, link }) =>
+						link.startsWith(`${base}/api/`) || Boolean(readGuideRoute(file) || readGuideRoute(link)),
 				}),
 			],
-			sidebar: [
-				{ label: '0.5.0-alpha.3 (preview)', collapsed: true, items: versionedSections(latestVersion) },
-				{ label: '0.5.0-alpha.2 (previous)', collapsed: true, items: versionedSections(previousAlphaVersion) },
-				{ label: '0.5.0-alpha.1 (superseded)', collapsed: true, items: versionedSections(supersededAlphaVersion) },
-				{ label: '0.4.5 (stable)', collapsed: true, items: versionedSections(stableVersion) },
-			],
+			sidebar: guideVersions.map((version) => ({
+				label: guideSidebarLabel(version),
+				collapsed: true,
+				items: versionedSections(version.id),
+			})),
 		}),
 	],
 });

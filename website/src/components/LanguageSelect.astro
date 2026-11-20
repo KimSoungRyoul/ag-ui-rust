@@ -3,6 +3,7 @@ import { Icon } from '@astrojs/starlight/components';
 import { localizedUrl } from '../../node_modules/@astrojs/starlight/utils/localizedUrl';
 import context from 'virtual:starlight/project-context';
 import config from 'virtual:starlight/user-config';
+import { guideHref, guideVersions, publishedVersion, readGuideRoute } from '../guideVersions.mjs';
 
 /*
  * Starlight's own language picker is a native `<select>`. `appearance: none`
@@ -77,38 +78,32 @@ const current = options.find((option) => option.current);
 
 const label = Astro.locals.t('languageSelect.accessibleLabel');
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
-const versionMatch = Astro.url.pathname.match(/\/(v0\.4\.5|v0\.5\.0-alpha\.[123])\/(.*)$/);
-const currentVersion = versionMatch?.[1] ?? 'v0.5.0-alpha.3';
-const page = versionMatch?.[2] || 'start/';
+const route = readGuideRoute(Astro.url.pathname);
+const selected = route?.version ?? guideVersions.find(({ id }) => id === publishedVersion)!;
+const page = route?.page ?? 'start/';
 const localePath = currentLocale === 'ko' ? 'ko/' : '';
 const versionLabel = currentLocale === 'ko' ? '문서 버전' : 'Documentation version';
-const versions = [
-	{ id: 'v0.5.0-alpha.3', label: '0.5.0-alpha.3', status: currentLocale === 'ko' ? '현재 프리릴리스' : 'Current prerelease' },
-	{ id: 'v0.5.0-alpha.2', label: '0.5.0-alpha.2', status: currentLocale === 'ko' ? '이전 프리릴리스' : 'Previous prerelease' },
-	{ id: 'v0.4.5', label: '0.4.5', status: currentLocale === 'ko' ? '안정 버전' : 'Stable' },
-	{ id: 'v0.5.0-alpha.1', label: '0.5.0-alpha.1', status: currentLocale === 'ko' ? '교체됨' : 'Superseded' },
-];
 ---
 
 <starlight-version-select>
 	<details data-picker aria-label={versionLabel}>
 		<summary>
 			<span class="sr-only">{versionLabel}</span>
-			<span class="value version-value" translate="no">{currentVersion.slice(1)}</span>
+			<span class="value version-value" translate="no">{selected.label}</span>
 			<Icon name="down-caret" class="icon caret" />
 		</summary>
 		<ul class="panel">
-			{versions.map((version) => (
+			{guideVersions.map((version) => (
 				<li>
 					<a
 						class="option"
 						data-picker-option
-						href={`${base}/${localePath}${version.id}/${page}`}
-						aria-current={currentVersion === version.id ? 'true' : undefined}
+						href={guideHref(base, localePath, version.id, page)}
+						aria-current={selected.id === version.id ? 'true' : undefined}
 					>
 						<Icon name="approve-check" class="check" />
 						<span translate="no">{version.label}</span>
-						<small class="version-status">{version.status}</small>
+						<small class="version-status">{version.status[currentLocale === 'ko' ? 'ko' : 'en']}</small>
 					</a>
 				</li>
 			))}

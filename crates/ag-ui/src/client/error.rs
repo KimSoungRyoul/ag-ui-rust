@@ -75,9 +75,8 @@ pub enum Error {
 
     /// An RFC 6902 patch could not be applied.
     ///
-    /// The target document is left exactly as it was: [`json_patch::patch`]
-    /// rolls back the operations it had already applied, so a rejected patch
-    /// never leaves half-mutated state behind.
+    /// The client applies patches to a copy and commits the new document only
+    /// after every operation succeeds.
     #[error("{target} patch failed: {message}")]
     Patch {
         /// What the patch targeted — `"state"`, or `"activity <message id>"`.
@@ -121,7 +120,7 @@ pub enum Error {
         /// The status code.
         status: u16,
         /// Up to 2 KiB of response bytes, decoded as UTF-8 with invalid sequences
-        /// replaced. The response is dropped once the byte limit is reached.
+        /// replaced. Reading stops after one second or when the byte limit is reached.
         body: String,
     },
 
