@@ -93,9 +93,9 @@ A remote state that cannot deserialize into `S` remains available through `raw_s
 `set_state()` validates before changing either representation. See
 [Threads](/ag-ui-rust/v1.0.0/client/thread/) for initialization, snapshots and approval recovery.
 
-Activity messages remain in the local thread and its snapshot. High-level Thread requests
-omit them from the conversation sent to the server, matching the reference client.
-Raw `RemoteAgent::run_events` requests are transmitted as supplied.
+Activity messages remain in the local thread and its snapshot. The client omits them
+from the outgoing message list for `Thread`, `RemoteAgent::run_events`, and direct
+HTTP requests. Reasoning messages keep their place in the conversation.
 
 ## Several runs on one stream
 

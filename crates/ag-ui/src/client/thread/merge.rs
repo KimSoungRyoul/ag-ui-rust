@@ -226,6 +226,32 @@ fn place_of_result(messages: &[Message], call: &ToolCallId) -> (usize, Option<us
     }
 }
 
+/// The assistant message that issued each result's call. Providers can reuse
+/// a call ID, so the ID alone cannot identify which call a merge is answering.
+/// Match the placement rule: newest unanswered occurrence, then newest holder.
+fn result_holders(messages: &[Message]) -> HashMap<&MessageId, (&MessageId, &ToolCallId)> {
+    let mut unanswered: HashMap<&ToolCallId, Vec<&MessageId>> = HashMap::new();
+    let mut latest = HashMap::new();
+    let mut holders = HashMap::new();
+    for message in messages {
+        for call in calls_of(message) {
+            unanswered.entry(call).or_default().push(message.id());
+            latest.insert(call, message.id());
+        }
+        if let Message::Tool(result) = message {
+            let call = &result.tool_call_id;
+            if let Some(holder) = unanswered
+                .get_mut(call)
+                .and_then(Vec::pop)
+                .or_else(|| latest.get(call).copied())
+            {
+                holders.insert(message.id(), (holder, call));
+            }
+        }
+    }
+    holders
+}
+
 /// Ids, for an error message.
 fn list<'a>(ids: impl Iterator<Item = &'a str>) -> String {
     ids.collect::<Vec<_>>().join(", ")
@@ -320,8 +346,9 @@ impl<T: Transport, S> Thread<T, S> {
     ///
     /// [`Error::Merge`], with nothing changed, when the two threads have
     /// different thread ids, when either is not at rest, when a tool call
-    /// has a result on each thread, and when this thread gave up a call the
-    /// other holds a result for.
+    /// has a result on each thread, when this thread gave up a call the
+    /// other holds a result for, or when keeping this thread's message
+    /// would detach an incoming result from the call it answers.
     pub fn merge_messages_from<U: Transport, R>(
         &mut self,
         other: &Thread<U, R>,
@@ -340,26 +367,19 @@ impl<T: Transport, S> Thread<T, S> {
         // answer to is left out: the call has its answer here. Told from a
         // result by the record `abandon_tool_call` keeps, not by what the
         // message says.
-        let answered: HashSet<&ToolCallId> = self
-            .messages()
-            .iter()
-            .filter_map(|message| match message {
-                Message::Tool(answer) => Some(&answer.tool_call_id),
-                _ => None,
-            })
-            .collect();
+        let answered: HashSet<_> = result_holders(self.messages()).into_values().collect();
+        let incoming = result_holders(other.messages());
         let superseded: Vec<&MessageId> = other
             .messages()
             .iter()
-            .filter(|message| match message {
-                Message::Tool(stand_in) => {
-                    other.abandoned.contains(&stand_in.id)
-                        && answered.contains(&stand_in.tool_call_id)
-                        && self.applier.message(&stand_in.id).is_none()
-                }
-                _ => false,
-            })
             .map(Message::id)
+            .filter(|id| {
+                other.abandoned.contains(*id)
+                    && self.applier.message(id).is_none()
+                    && incoming
+                        .get(*id)
+                        .is_some_and(|holder| answered.contains(holder))
+            })
             .collect();
         let skip: HashSet<&MessageId> = superseded.iter().copied().collect();
 
@@ -383,6 +403,20 @@ impl<T: Transport, S> Thread<T, S> {
                 "tool call {call} has a result on each thread, message {here} on this one and \
                  message {there} on the other"
             )));
+        }
+
+        // A conflicting retained message can discard the assistant's call
+        // while its result is still added. Check the settled transcript
+        // before mutating either the messages or the thread's bookkeeping.
+        let final_holders = result_holders(&merged.messages);
+        for id in &merged.added {
+            if let Some((holder, call)) = incoming.get(id) {
+                if final_holders.get(id) != Some(&(*holder, *call)) {
+                    return Err(Error::Merge(format!(
+                        "tool result {id} would no longer answer call {call} on message {holder}"
+                    )));
+                }
+            }
         }
 
         let superseded = superseded.into_iter().cloned().collect();
