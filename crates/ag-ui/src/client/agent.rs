@@ -370,7 +370,7 @@ impl HttpAgentBuilder {
     ///
     /// # Errors
     ///
-    /// [`Error::Config`](crate::client::Error::Config) when the URL or a header is not
+    /// [`Error::Config`] when the URL or a header is not
     /// valid.
     pub fn build(self) -> Result<HttpAgent> {
         Ok(HttpAgent::from_transport(self.transport.build()?))
