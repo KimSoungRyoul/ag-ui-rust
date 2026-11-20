@@ -19,7 +19,7 @@
 //! | [`OpenAtFinish`] | `RUN_FINISHED` while a message, reasoning block, tool call, step or subagent is open |
 //! | [`OwnerMismatch`] | a tagged continuation, terminator or re-open whose `subagentRunId` is not the one that opened the entity — a message, reasoning block, tool call, activity, or the entity a `REASONING_ENCRYPTED_VALUE` names; a tool call tagged with one subagent whose parent message belongs to another |
 //! | [`MalformedChunk`] | a `*_CHUNK` event that names no id with no chunk stream to continue, opens a tool call without naming the tool, or repeats `role`, `name`, `toolCallName` or `parentMessageId` with a value other than the one its stream was opened with |
-//! | [`InvalidOutcome`] | `RUN_FINISHED` with an `interrupt` outcome that carries no interrupt |
+//! | [`InvalidOutcome`] | `RUN_FINISHED` with an empty interrupt list or repeated interrupt IDs |
 //!
 //! `RUN_ERROR` is exempt from [`OpenAtFinish`]: a run that blew up mid-message
 //! could not have closed it. When several things are open, the error names
@@ -314,7 +314,7 @@ mod enabled {
             Broke::NotStarted | Broke::ResultBeforeEnd { .. } => Rule::OutOfOrder,
             Broke::StillOpen(_) => Rule::OpenAtFinish,
             Broke::OwnerMismatch { .. } | Broke::ParentMismatch { .. } => Rule::OwnerMismatch,
-            Broke::EmptyInterrupt => Rule::InvalidOutcome,
+            Broke::InvalidOutcome(_) => Rule::InvalidOutcome,
             Broke::Chunk(_) => Rule::MalformedChunk,
         }
     }
@@ -377,7 +377,7 @@ mod enabled {
                 format!("step {name:?} is still open under {}", describe(owner))
             }
             Broke::StillOpen(Open::Subagent { id }) => format!("subagent {id:?} is still active"),
-            Broke::EmptyInterrupt => "an interrupt outcome names no interrupt".to_owned(),
+            Broke::InvalidOutcome(detail) => detail.clone(),
             Broke::Chunk(error) => error.to_string(),
         }
     }

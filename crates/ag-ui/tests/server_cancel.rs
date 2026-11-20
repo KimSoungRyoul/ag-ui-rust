@@ -466,23 +466,45 @@ async fn nothing_is_sent_after_the_run_ended() {
 
 #[tokio::test]
 async fn dropping_the_stream_mid_run_disconnects_the_agent() {
-    struct Chatty;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    impl Agent for Chatty {
-        type State = ();
+    struct Waiting(Arc<AtomicBool>);
+    struct DropMarker(Arc<AtomicBool>);
 
-        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
-            for chunk in ["a", "b", "c"] {
-                ctx.say(chunk)?;
-            }
-            Ok(RunOutcome::Success)
+    impl Drop for DropMarker {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
         }
     }
 
-    let mut stream = Box::pin(Runner::new(Chatty).run(input()));
-    let first = stream.next().await.expect("a first event");
-    assert_eq!(first.event_type(), EventType::RunStarted);
+    impl Agent for Waiting {
+        type State = ();
+
+        async fn run(&self, ctx: &mut RunContext<()>) -> Result<RunOutcome> {
+            let _guard = DropMarker(self.0.clone());
+            ctx.say("waiting")?;
+            std::future::pending().await
+        }
+    }
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let runner = Runner::new(Waiting(dropped.clone()));
+    let mut stream = Box::pin(runner.run(input()));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event = stream.next().await.expect("the waiting run must stay open");
+            if matches!(event, Event::TextMessageContent(_)) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the waiting agent should start streaming");
+    assert!(!dropped.load(Ordering::SeqCst));
     drop(stream);
-    // Nothing to assert beyond "this does not hang or panic": the agent's
-    // future is dropped with the stream, so it simply stops being polled.
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "the pending agent future was retained"
+    );
 }

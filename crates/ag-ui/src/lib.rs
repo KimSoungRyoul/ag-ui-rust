@@ -181,6 +181,13 @@ pub mod encode;
 pub mod axum;
 #[cfg(feature = "client")]
 pub mod client;
+// Hidden subagent streams reuse the message reducer without enabling client I/O.
+#[cfg(all(feature = "server", not(feature = "client")))]
+#[allow(dead_code)]
+mod client {
+    pub(crate) mod apply;
+    mod error;
+}
 #[cfg(feature = "server")]
 pub mod server;
 

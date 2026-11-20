@@ -216,9 +216,9 @@ impl BinaryInputContent {
         };
         let modality = self.mime_type.split_once('/').map(|(kind, _)| kind);
         Some(match modality {
-            Some("image") => InputContent::Image(media),
-            Some("audio") => InputContent::Audio(media),
-            Some("video") => InputContent::Video(media),
+            Some(kind) if kind.eq_ignore_ascii_case("image") => InputContent::Image(media),
+            Some(kind) if kind.eq_ignore_ascii_case("audio") => InputContent::Audio(media),
+            Some(kind) if kind.eq_ignore_ascii_case("video") => InputContent::Video(media),
             _ => InputContent::Document(media),
         })
     }
@@ -229,7 +229,7 @@ impl BinaryInputContent {
 /// translates it rather than send what a 1.0 producer strips.
 ///
 /// A legacy part that merely mirrors a media part already in the same message
-/// is dropped; one that carries only an `id` stays as it is.
+/// is dropped. An id-only part is left for schema enforcement to remove with a warning.
 #[cfg(feature = "client")]
 pub(crate) fn upgrade_legacy_content(messages: &mut [Message]) {
     for message in messages {
@@ -358,7 +358,27 @@ fn mirrors(part: &InputContent, media: &InputContent, legacy: &BinaryInputConten
         .as_ref()
         .and_then(|metadata| metadata.get("filename"))
         .and_then(Value::as_str);
-    part.source == media.source
+    let same_source = match (&part.source, &media.source) {
+        (
+            InputContentSource::Url {
+                value: a,
+                mime_type: mime_a,
+            },
+            InputContentSource::Url {
+                value: b,
+                mime_type: mime_b,
+            },
+        ) => {
+            a == b
+                && mime_a.as_ref().zip(mime_b.as_ref()).is_none_or(|(a, b)| {
+                    let (a, params_a) = a.split_once(';').unwrap_or((a, ""));
+                    let (b, params_b) = b.split_once(';').unwrap_or((b, ""));
+                    a.eq_ignore_ascii_case(b) && params_a == params_b
+                })
+        }
+        _ => part.source == media.source,
+    };
+    same_source
         && legacy
             .filename
             .as_deref()

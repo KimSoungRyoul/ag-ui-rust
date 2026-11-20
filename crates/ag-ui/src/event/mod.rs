@@ -79,7 +79,11 @@ pub use tool::{
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct BaseEvent {
     /// When the event was produced, in milliseconds since the Unix epoch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::serde_util::serialize_timestamp"
+    )]
     pub timestamp: Option<i64>,
     /// The provider event this was translated from, for debugging.
     #[serde(default, skip_serializing_if = "crate::serde_util::is_none_or_null")]

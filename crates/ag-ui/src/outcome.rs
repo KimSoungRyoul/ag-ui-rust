@@ -227,19 +227,31 @@ impl RunOutcome {
         }
     }
 
-    /// Checks the one rule the type system cannot: an `interrupt` outcome must
-    /// carry at least one interrupt.
+    /// Checks that an interrupt outcome carries at least one interrupt and each ID is unique.
     ///
     /// Deserializing does not enforce this, so that a stray empty array from a
     /// buggy producer surfaces as a protocol error you can log rather than as
     /// an unparseable event that kills the stream.
     pub fn validate(&self) -> Result<()> {
-        match self {
-            Self::Interrupt { interrupts } if interrupts.is_empty() => Err(Error::Protocol(
-                "RUN_FINISHED outcome `interrupt` requires at least one interrupt".to_owned(),
-            )),
-            _ => Ok(()),
+        match self.interrupt_error() {
+            Some(reason) => Err(Error::Protocol(reason)),
+            None => Ok(()),
         }
+    }
+
+    pub(crate) fn interrupt_error(&self) -> Option<String> {
+        let Self::Interrupt { interrupts } = self else {
+            return None;
+        };
+        if interrupts.is_empty() {
+            return Some("RUN_FINISHED outcome `interrupt` requires at least one interrupt".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        let repeated = interrupts.iter().find(|entry| !seen.insert(&entry.id))?;
+        Some(format!(
+            "RUN_FINISHED carries interrupt id \"{}\" more than once: an interrupt's id is unique within its run",
+            crate::serde_util::excerpt(&repeated.id, false)
+        ))
     }
 }
 

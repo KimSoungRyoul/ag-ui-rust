@@ -121,7 +121,7 @@ pub enum Error {
         /// The status code.
         status: u16,
         /// Up to 2 KiB of response bytes, decoded as UTF-8 with invalid sequences
-        /// replaced. The response is dropped once the byte limit is reached.
+        /// replaced. Reading stops after one second or when the byte limit is reached.
         body: String,
     },
 

@@ -197,8 +197,8 @@ pub(crate) enum Broke {
     SubagentNotActive { id: String },
     /// It is a `RUN_FINISHED`, and this is still open.
     StillOpen(Open),
-    /// It is a `RUN_FINISHED` whose `interrupt` outcome carries no interrupt.
-    EmptyInterrupt,
+    /// It is a `RUN_FINISHED` with a malformed interrupt list.
+    InvalidOutcome(String),
     /// It is a chunk that cannot be read as the events it stands for.
     Chunk(ChunkError),
 }
@@ -538,10 +538,12 @@ impl Ordering {
                 if let Some(open) = self.first_open() {
                     return Err(Broke::StillOpen(open));
                 }
-                if let Some(outcome) = &e.outcome {
-                    if outcome.validate().is_err() {
-                        return Err(Broke::EmptyInterrupt);
-                    }
+                if let Some(error) = e
+                    .outcome
+                    .as_ref()
+                    .and_then(crate::RunOutcome::interrupt_error)
+                {
+                    return Err(Broke::InvalidOutcome(error));
                 }
                 self.phase = Phase::Finished;
             }
@@ -1335,7 +1337,9 @@ mod tests {
                 &mut rules,
                 Event::run_finished_interrupt("t", "r", Vec::new())
             ),
-            Broke::EmptyInterrupt
+            Broke::InvalidOutcome(
+                "RUN_FINISHED outcome `interrupt` requires at least one interrupt".into()
+            )
         );
         assert!(!rules.has_ended());
     }

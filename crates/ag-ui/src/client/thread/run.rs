@@ -857,20 +857,13 @@ impl<T, S: DeserializeOwned + Clone> RunStream<'_, T, S> {
                     self.fail(Error::protocol("RUN_FINISHED does not match RUN_STARTED"));
                     return;
                 }
-                // AG-UI 1.0, `basic/patterns/interrupt-resume`: "Each
-                // interrupt's `id` MUST be unique within the run; a resume
-                // entry answers it by this id."
-                if let Some(RunOutcome::Interrupt { interrupts }) = &finished.outcome {
-                    let mut seen = HashSet::new();
-                    let repeated = interrupts
-                        .iter()
-                        .find(|interrupt| !seen.insert(interrupt.id.as_str()));
-                    if let Some(repeated) = repeated {
-                        self.fail(Error::protocol(format!(
-                            "RUN_FINISHED carries interrupt id \"{}\" more than once: an \
-                             interrupt's id is unique within its run",
-                            crate::protocol::excerpt(&repeated.id, false)
-                        )));
+                if self.verifier.is_none() {
+                    if let Some(error) = finished
+                        .outcome
+                        .as_ref()
+                        .and_then(RunOutcome::interrupt_error)
+                    {
+                        self.fail(Error::protocol(error));
                         return;
                     }
                 }
@@ -1245,6 +1238,18 @@ impl<T: Transport, S: DeserializeOwned + Clone + Unpin> Stream for RunStream<'_,
                         this.warning(warning);
                     }
                 }
+                let mut warnings = Vec::new();
+                let prepared = crate::client::agent::outgoing(input, &mut warnings);
+                for warning in warnings {
+                    this.warning(warning);
+                }
+                let input = match prepared {
+                    Ok(input) => input,
+                    Err(error) => {
+                        this.fail(error);
+                        continue;
+                    }
+                };
                 this.dispatched = true;
                 this.thread.applier.reset_streams();
                 this.thread.run_ids.insert(input.run_id.clone());

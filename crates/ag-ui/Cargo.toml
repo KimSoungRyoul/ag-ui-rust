@@ -1,6 +1,6 @@
 [package]
 name = "ag-ui"
-description = "A Rust SDK for the AG-UI protocol: protocol types and wire encoding, a server runtime for hosting an agent, and a client runtime for consuming one. Working toward becoming the official AG-UI Rust SDK; not affiliated with the AG-UI protocol organisation today."
+description = "Rust SDK for AG-UI 1.0 with protocol types, SSE, a server runtime for hosting agents, and a client runtime for consuming them."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -50,11 +50,11 @@ verify = []
 
 # ---- client: consume an agent ----
 # Transport-agnostic. Bring your own `Transport`, or turn on `http`.
-client = ["dep:futures-core", "dep:futures-util", "dep:json-patch", "dep:getrandom", "dep:chrono", "dep:js-sys"]
+client = ["dep:futures-core", "dep:futures-util", "dep:json-patch", "dep:getrandom", "dep:jiff", "dep:js-sys"]
 # reqwest-backed HTTP transport. What most consumers want; leave it off for
 # wasm or a custom transport. Implies `sse`, because the transport negotiates
 # the SSE media type on every request.
-http = ["client", "sse", "dep:reqwest"]
+http = ["client", "sse", "dep:reqwest", "dep:tokio"]
 
 # ---- axum: mount a hosted agent on a router ----
 axum = ["server", "sse", "dep:axum"]
@@ -71,8 +71,9 @@ futures-core = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 json-patch = { workspace = true, optional = true }
-chrono = { version = "0.4.45", default-features = false, features = ["std"], optional = true }
+jiff = { version = "1.0.1", default-features = false, optional = true }
 reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["time"], optional = true }
 axum = { workspace = true, optional = true }
 
 [dev-dependencies]

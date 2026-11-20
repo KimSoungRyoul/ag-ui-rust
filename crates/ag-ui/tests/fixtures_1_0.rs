@@ -296,13 +296,8 @@ const TOLERATED: &[(&str, Fate)] = &[
         "MultiAgentCapabilities/invalid/old-subagents-key.json",
         Fate::Lossy,
     ),
-    // ... and the two execution limits are `u64`, read leniently. One above
-    // the schema's maximum is taken as written. A negative one, which some
-    // frameworks send for "no limit", reads as no limit declared.
-    (
-        "ExecutionCapabilities/invalid/max-iterations-over-maximum.json",
-        Fate::Whole,
-    ),
+    // Some producers send a negative limit for "unlimited". The compatibility
+    // reader omits it. Values above the safe-integer maximum are rejected.
     (
         "ExecutionCapabilities/invalid/negative-max-execution-time.json",
         Fate::Lossy,

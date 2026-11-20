@@ -424,43 +424,75 @@ pub(super) fn unread_expiries(pending: &[Interrupt], entries: &[ResumeEntry]) ->
 /// is not one leaves the interrupt looking permanently unexpired"), and the
 /// agent enforces expiry whatever the consumer makes of the value.
 fn instant(timestamp: &str) -> Option<i128> {
-    if let Some(midnight) = date_alone(timestamp) {
+    use jiff::civil::{Date, Time, date};
+
+    let (calendar, rest) = timestamp.split_at_checked(10)?;
+    if calendar.as_bytes()[4] != b'-' || calendar.as_bytes()[7] != b'-' {
+        return None;
+    }
+    let calendar: Date = calendar.parse().ok()?;
+    let midnight = calendar.duration_since(date(1970, 1, 1)).as_secs();
+    if rest.is_empty() {
         return Some(i128::from(midnight) * 1_000_000_000);
     }
-    let expires = chrono::DateTime::parse_from_rfc3339(timestamp).ok()?;
-    // RFC 3339 leap seconds can only end a UTC month.
-    if expires.timestamp_subsec_nanos() >= 1_000_000_000 {
-        let utc_date = expires.naive_utc().date();
-        let ends_month = utc_date
-            .succ_opt()
-            .is_some_and(|next| chrono::Datelike::day(&next) == 1);
-        if expires.timestamp().rem_euclid(86_400) != 86_399 || !ends_month {
+
+    let rest = rest.strip_prefix(['T', 't', ' '])?;
+    let (clock, zone) = rest.split_at(rest.find(['Z', 'z', '+', '-', '−'])?);
+    let offset = match zone {
+        "Z" | "z" => 0,
+        _ => {
+            let digits = zone.strip_prefix(['+', '-', '−'])?;
+            let (hour, minute) = digits.split_once(':')?;
+            if hour.len() != 2
+                || minute.len() != 2
+                || !digits.bytes().all(|b| b == b':' || b.is_ascii_digit())
+            {
+                return None;
+            }
+            let (hour, minute) = (hour.parse::<i64>().ok()?, minute.parse::<i64>().ok()?);
+            if hour > 23 || minute > 59 {
+                return None;
+            }
+            let seconds = (hour * 60 + minute) * 60;
+            if zone.starts_with('+') {
+                seconds
+            } else {
+                -seconds
+            }
+        }
+    };
+
+    let (hms, fraction) = clock.split_at_checked(8)?;
+    if hms.as_bytes()[2] != b':' || hms.as_bytes()[5] != b':' {
+        return None;
+    }
+    if !fraction.is_empty() {
+        let digits = fraction.strip_prefix('.')?;
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
     }
-    // A leap second is read as the last nanosecond before it.
-    Some(
-        i128::from(expires.timestamp()) * 1_000_000_000
-            + i128::from(expires.timestamp_subsec_nanos().min(999_999_999)),
-    )
-}
-
-/// The start in UTC of the day a `YYYY-MM-DD` names, in seconds since the
-/// Unix epoch. Exactly that shape: four digits, two and two.
-fn date_alone(timestamp: &str) -> Option<i64> {
-    let bytes = timestamp.as_bytes();
-    let shaped = bytes.len() == 10
-        && bytes.iter().enumerate().all(|(at, byte)| match at {
-            4 | 7 => *byte == b'-',
-            _ => byte.is_ascii_digit(),
-        });
-    if !shaped {
-        return None;
-    }
-    let number = |range: std::ops::Range<usize>| timestamp[range].parse::<u32>().ok();
-    let year = i32::try_from(number(0..4)?).ok()?;
-    let date = chrono::NaiveDate::from_ymd_opt(year, number(5..7)?, number(8..10)?)?;
-    Some(date.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
+    // RFC 3339 allows more fractional digits than the nanosecond clock stores.
+    let time: Time = clock.get(..clock.len().min(18))?.parse().ok()?;
+    let utc =
+        i64::from(time.hour()) * 3600 + i64::from(time.minute()) * 60 + i64::from(time.second())
+            - offset;
+    let nanos = if hms.ends_with(":60") {
+        // Jiff constrains :60 to :59. Only the end of a UTC month can leap.
+        // A negative UTC time-of-day here falls on the previous local date.
+        let ends_month = if utc < 0 {
+            calendar.day() == 1
+        } else {
+            calendar.day() == calendar.days_in_month()
+        };
+        if utc.rem_euclid(86_400) != 86_399 || !ends_month {
+            return None;
+        }
+        999_999_999
+    } else {
+        time.subsec_nanosecond()
+    };
+    Some(i128::from(midnight + utc) * 1_000_000_000 + i128::from(nanos))
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -473,4 +505,34 @@ fn now_unix_nanos() -> i128 {
 #[cfg(target_family = "wasm")]
 fn now_unix_nanos() -> i128 {
     (js_sys::Date::now() * 1_000_000.0) as i128
+}
+
+#[cfg(test)]
+mod expiry_tests {
+    use super::instant;
+
+    #[test]
+    fn expiry_preserves_nanoseconds_and_validates_utc_leap_seconds() {
+        assert_eq!(instant("1969-12-31T23:59:59.999999999Z"), Some(-1));
+        assert_eq!(
+            instant("1970-01-01 00:00:00.123456789123z"),
+            Some(123_456_789)
+        );
+        assert_eq!(instant("1970-01-01T23:59:00+23:59"), Some(0));
+        assert_eq!(instant("1969-12-31T00:01:00−23:59"), Some(0));
+        assert_eq!(
+            instant("2017-01-01T08:59:60+09:00"),
+            instant("2016-12-31T23:59:59.999999999Z")
+        );
+        for invalid in [
+            "2017-01-02T08:59:60+09:00",
+            "2000-01-01T24:00:00Z",
+            "1970-01-01T00:00:00+24:00",
+            "1970-01-01T00:00:00+00:60",
+            "1970-01-01T00:00:00.123456789xZ",
+            "1970-01-01T00:00:00Z[UTC]",
+        ] {
+            assert_eq!(instant(invalid), None, "{invalid}");
+        }
+    }
 }

@@ -90,11 +90,14 @@ pub struct SseDecoder {
     /// is taken: shifting the remainder once per read instead of once per line
     /// is what keeps a chunk carrying a thousand frames linear.
     consumed: usize,
+    /// First byte of the pending line not yet checked for a terminator.
+    scan_from: usize,
     data: String,
     event: Option<String>,
     id: Option<String>,
     retry: Option<u64>,
     max_frame_size: usize,
+    frame_bytes: usize,
     at_start: bool,
 }
 
@@ -110,16 +113,19 @@ impl SseDecoder {
         Self {
             buffer: Vec::new(),
             consumed: 0,
+            scan_from: 0,
             data: String::new(),
             event: None,
             id: None,
             retry: None,
             max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+            frame_bytes: 0,
             at_start: true,
         }
     }
 
-    /// Sets the cap on a single frame.
+    /// Sets the cap on a single frame, counting UTF-8 field and comment bytes
+    /// but excluding line terminators and the initial byte-order mark.
     #[must_use]
     pub fn with_max_frame_size(mut self, bytes: usize) -> Self {
         self.max_frame_size = bytes;
@@ -141,10 +147,16 @@ impl SseDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<()> {
         if self.consumed > 0 {
             self.buffer.drain(..self.consumed);
+            self.scan_from -= self.consumed;
             self.consumed = 0;
         }
         self.buffer.extend_from_slice(bytes);
-        self.check_frame_size()
+        // A complete line may dispatch an earlier frame. Leave later lines
+        // for next_frame so network chunking cannot hide a valid prefix.
+        if self.line_end().is_none() {
+            self.check_partial_line()?;
+        }
+        Ok(())
     }
 
     /// The bytes pushed but not yet handed out as lines.
@@ -152,48 +164,65 @@ impl SseDecoder {
         &self.buffer[self.consumed..]
     }
 
-    /// Checks the frame under construction against the cap.
-    ///
-    /// What counts is the payload accumulated so far plus the bytes that cannot
-    /// yet *become* a line — everything up to the last line terminator is a
-    /// complete line [`next_frame`](Self::next_frame) will drain, so it does
-    /// not. The cap is on one frame, not on how much a transport happens to
-    /// hand over at once: a single 1 MiB chunk of complete frames is ordinary,
-    /// and rejecting it would break a perfectly well-behaved server.
-    fn check_frame_size(&self) -> Result<()> {
-        let pending = self.pending();
-        let unterminated = match pending.iter().rposition(|b| *b == b'\n' || *b == b'\r') {
-            Some(position) => pending.len() - position - 1,
-            None => pending.len(),
-        };
-        if unterminated + self.data.len() > self.max_frame_size {
+    fn line_end(&mut self) -> Option<usize> {
+        let rest = &self.buffer[self.scan_from..];
+        let scanned = rest
+            .iter()
+            .position(|b| matches!(b, b'\n' | b'\r'))
+            .unwrap_or(rest.len());
+        self.scan_from += scanned;
+        (self.scan_from < self.buffer.len()).then_some(self.scan_from)
+    }
+
+    fn check_partial_line(&self) -> Result<()> {
+        let pending = self.without_initial_bom(self.pending());
+        let partial = pending.strip_suffix(b"\r").unwrap_or(pending);
+        self.check_size(self.frame_bytes.saturating_add(partial.len()))
+    }
+
+    fn without_initial_bom<'a>(&self, pending: &'a [u8]) -> &'a [u8] {
+        if self.at_start {
+            if b"\xef\xbb\xbf".starts_with(pending) {
+                return &[];
+            }
+            pending.strip_prefix(b"\xef\xbb\xbf").unwrap_or(pending)
+        } else {
+            pending
+        }
+    }
+
+    fn check_size(&self, bytes: usize) -> Result<()> {
+        if bytes > self.max_frame_size {
             return Err(Error::decode(format!(
-                "frame exceeded the {} byte limit before a line break",
+                "frame exceeded the {} byte limit across its data lines or fields",
                 self.max_frame_size
             )));
         }
         Ok(())
     }
 
+    fn checked_process(&mut self, line: &str) -> Result<Option<SseFrame>> {
+        if line.is_empty() {
+            self.frame_bytes = 0;
+        } else {
+            self.frame_bytes = self.frame_bytes.saturating_add(line.len());
+            self.check_size(self.frame_bytes)?;
+        }
+        Ok(self.process(line))
+    }
+
     /// Pulls the next complete frame, if the bytes pushed so far contain one.
     ///
     /// # Errors
     ///
-    /// [`Error::Decode`] when the bytes are not UTF-8.
+    /// [`Error::Decode`] when the bytes are not UTF-8 or the frame exceeds its cap.
     pub fn next_frame(&mut self) -> Result<Option<SseFrame>> {
         while let Some(line) = self.take_line(false)? {
-            if let Some(frame) = self.process(&line) {
+            if let Some(frame) = self.checked_process(&line)? {
                 return Ok(Some(frame));
             }
-            // A frame made of ten million `data:` lines never reaches
-            // [`push`]'s check, because every one of them is terminated.
-            if self.data.len() > self.max_frame_size {
-                return Err(Error::decode(format!(
-                    "frame exceeded the {} byte limit across its data lines",
-                    self.max_frame_size
-                )));
-            }
         }
+        self.check_partial_line()?;
         Ok(None)
     }
 
@@ -206,11 +235,11 @@ impl SseDecoder {
     ///
     /// # Errors
     ///
-    /// [`Error::Decode`] when the trailing bytes are not UTF-8.
+    /// [`Error::Decode`] when the trailing bytes are not UTF-8 or exceed the cap.
     pub fn finish(&mut self) -> Result<Vec<SseFrame>> {
         let mut frames = Vec::new();
         while let Some(line) = self.take_line(true)? {
-            if let Some(frame) = self.process(&line) {
+            if let Some(frame) = self.checked_process(&line)? {
                 frames.push(frame);
             }
         }
@@ -226,8 +255,9 @@ impl SseDecoder {
     /// Otherwise a `\r` at the very end of the buffer is held back: it may yet
     /// turn out to be the first half of a `\r\n` split across two chunks.
     fn take_line(&mut self, eof: bool) -> Result<Option<String>> {
+        let position = self.line_end().map(|end| end - self.consumed);
         let pending = self.pending();
-        let Some(position) = pending.iter().position(|b| *b == b'\n' || *b == b'\r') else {
+        let Some(position) = position else {
             if eof && !pending.is_empty() {
                 let line = pending.to_vec();
                 self.consumed = self.buffer.len();
@@ -248,6 +278,7 @@ impl SseDecoder {
         };
         let line = pending[..position].to_vec();
         self.consumed += position + width;
+        self.scan_from = self.consumed;
         self.decode_line(line).map(Some)
     }
 
@@ -299,6 +330,7 @@ impl SseDecoder {
 
     /// Emits the buffered frame, if it has a payload.
     fn dispatch(&mut self) -> Option<SseFrame> {
+        self.frame_bytes = 0;
         let event = self.event.take();
         let id = self.id.take();
         let retry = self.retry.take();

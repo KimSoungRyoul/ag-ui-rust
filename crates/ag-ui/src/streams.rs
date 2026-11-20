@@ -642,7 +642,7 @@ impl Streams {
 
     /// Folds an event into the model without handing back what it stands
     /// for. A chunk that cannot be placed changes nothing.
-    pub(crate) fn track(&mut self, event: &Event) {
+    pub(crate) fn track(&mut self, event: &Event) -> Vec<Event> {
         let mut stood_for = Vec::new();
         match event {
             Event::TextMessageChunk(_)
@@ -652,6 +652,7 @@ impl Streams {
             }
             other => self.end_for(other, &mut stood_for),
         }
+        stood_for
     }
 
     /// The stream a chunk that names no id continues: the one in the lane it

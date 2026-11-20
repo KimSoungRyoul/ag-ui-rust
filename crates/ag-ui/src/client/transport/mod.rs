@@ -220,7 +220,9 @@ impl TransportStream {
         match self.0 {
             Source::Json(raw) => raw,
             Source::Typed(events) => Box::pin(events.map(|event| {
-                event.and_then(|event| serde_json::to_value(event).map_err(Error::from))
+                event.and_then(|event| {
+                    serde_json::to_value(event).map_err(|error| Error::Protocol(error.to_string()))
+                })
             })),
         }
     }
