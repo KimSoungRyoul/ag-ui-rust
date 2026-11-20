@@ -1068,6 +1068,60 @@ fn a_merge_must_keep_the_holder_of_every_incoming_result() {
     assert_eq!(main.snapshot(), before);
 }
 
+#[test]
+fn a_merge_cannot_leave_a_new_tool_call_without_its_answer() {
+    let answer = Message::tool("answer", "c", "done");
+    let other = holding(vec![calling("new-holder", &["c"]), answer.clone()]);
+    for history in [
+        vec![Message::user(
+            "answer",
+            "different message with the same ID",
+        )],
+        vec![calling("old-holder", &["c"]), answer],
+    ] {
+        let mut main = holding(history);
+        let before = main.snapshot();
+        let why = refused(main.merge_messages_from(&other));
+        assert!(why.contains("unanswered tool calls c"), "{why}");
+        assert_eq!(main.snapshot(), before);
+    }
+}
+
+#[test]
+fn conflicting_result_ids_can_merge_when_the_added_call_has_another_answer() {
+    let other = holding(vec![
+        calling("holder", &["c"]),
+        Message::tool("collision", "c", "first answer"),
+        Message::tool("another", "c", "updated answer"),
+    ]);
+    let mut main = holding(vec![Message::user("collision", "keep me")]);
+    let report = main.merge_messages_from(&other).unwrap();
+    assert_eq!(report.differing, ["collision"]);
+    assert!(main.unanswered_tool_calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_confirmed_decision_covers_an_incoming_call_when_its_result_id_collides() {
+    let mut side = after(
+        [asks_approval("c", "i"), reply("approved", "Done.")],
+        "Run the tool",
+    )
+    .await;
+    let interrupt = side.interrupts()[0].clone();
+    side.resume(&interrupt, json!({"approved": true}))
+        .unwrap()
+        .collect_report()
+        .await;
+    side.push_message(Message::tool("shared-id", "c", "done"))
+        .unwrap();
+
+    let mut main = holding(vec![Message::user("shared-id", "keep me")]);
+    let report = main.merge_messages_from(&side).unwrap();
+    assert_eq!(report.differing, ["shared-id"]);
+    assert_eq!(main.snapshot().decided_interrupt_tool_call_ids, ["c"]);
+    assert!(main.unanswered_tool_calls().is_empty());
+}
+
 #[tokio::test]
 async fn a_restated_stand_in_keeps_only_the_provenance_its_contents_support() {
     let transport = script([vec![]]);

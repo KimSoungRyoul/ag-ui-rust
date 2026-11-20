@@ -8,9 +8,12 @@ event/field drift check and lists the typed representation differences explicitl
 
 ## SDK 1.0.0 release candidate (2026-11-20)
 
-The standalone and [community PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778)
-candidates share the runtime source recorded in [UPSTREAM.md](../UPSTREAM.md).
-These checks ran locally on macOS before registry publication.
+These checks ran locally on macOS against the initial candidate in
+[standalone PR #107](https://github.com/KimSoungRyoul/ag-ui-rust/pull/107).
+At that point, [community PR #2778](https://github.com/ag-ui-protocol/ag-ui/pull/2778)
+at `26c174d` had the same runtime source. The fixes in
+[standalone PR #108](https://github.com/KimSoungRyoul/ag-ui-rust/pull/108) followed
+this verification. [UPSTREAM.md](../UPSTREAM.md) records the last shared source tree.
 
 | Check | Result |
 | --- | --- |

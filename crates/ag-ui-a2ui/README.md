@@ -19,10 +19,9 @@ for changes since 0.5.0-alpha.3.
 
 ```rust
 use ag_ui_a2ui::{Catalog, Component, Validator};
-use serde_json::json;
 
 let catalog = Catalog::basic();
-let components = [Component::new("root", "Text").with("text", json!("Hello!"))];
+let components = [Component::new("root", "Text").with("text", "Hello!".into())];
 assert!(Validator::new(&catalog).validate(&components).is_valid());
 ```
 
@@ -41,7 +40,8 @@ including nested templates; the latter also preserves undefined array slots.
 ## Async authoring
 
 Enable `author` to generate or edit a single surface under a fixed version and
-catalog with schema validation. To also send it from an AG-UI `RunContext`,
+catalog with schema validation. Examples using the `json!` macro also require
+`serde_json = "1"` in your application. To also send it from an AG-UI `RunContext`,
 enable `ag-ui-server` alongside `author` and use `adapters::agui::SurfacePainter`.
 
 ```rust
