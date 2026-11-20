@@ -299,11 +299,14 @@ The following changes apply when upgrading from 0.5.0-alpha.3.
 - A request carries a legacy `binary` content part as the 1.0 media part it stands for:
   `image`, `audio`, `video` or `document` by MIME type, with its `data` or else its `url` as
   the source and `filename` under `metadata`. A part that only repeats a media part already
-  in the message is dropped. Outgoing schema enforcement removes an id-only binary part,
+  in the message is dropped when its source, MIME type and any legacy filename match.
+  A URL part with no MIME type preserves the typed legacy attachment alongside it.
+  Outgoing schema enforcement removes an id-only binary part,
   and a `Thread` reports the removal as a warning. This applies to `Thread` runs,
   `RemoteAgent::run_events` and the HTTP transport. The application keeps its original
   messages. Alpha.3 sent the `binary` part, which a 1.0 agent strips.
-- The same translation applies on the way in. A `binary` part in the messages of
+- The Axum request decoder upgrades legacy binary parts from older clients before
+  enforcing the 1.0 schema. Incoming events use the same translation. A `binary` part in the messages of
   `MESSAGES_SNAPSHOT` or of the `RUN_STARTED` input echo, or in a `TOOL_CALL_RESULT`, is
   read as its media part, with a warning naming it ("translated retired binary content part
   at /messages/0/content/1 to image"). The client used to drop the part as unrecognised.

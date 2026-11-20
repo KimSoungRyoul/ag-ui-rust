@@ -35,7 +35,7 @@ root_tree = "8e0b0ff3bddf30308b30d32b2be2e2ff2c98280e"
 # The local commit `tree` was compared with. Its `crates/ag-ui/src` was
 # byte-identical to the copy's.
 local_commit = "77061a66aba60e9d387aac77b65dcf2f87f7d03c"
-# The copy mirrors the standalone SDK release. A reservation is only needed
+# Both workspaces declare 1.0.0. A reservation is only needed
 # when upstream plans to publish a future version first.
 declared_version = "1.0.0"
 reserved_version = ""
@@ -67,6 +67,8 @@ The conformance tests use the standalone vendored corpus or the monorepo's
 metadata, lockfiles, drift tooling and CI use their respective repository's
 paths. The monorepo's interoperability checks cover AG-UI only.
 
-This repository owns the planned 1.0.0 publication. The PR carries the same
-runtime source for review. A future monorepo publication needs an unpublished crate version
-and an upstream maintainer's approval.
+This repository publishes 1.0.0. The release includes the state, stream, and
+conversation-merge fixes from [standalone PR #108](https://github.com/KimSoungRyoul/ag-ui-rust/pull/108).
+The upstream PR at the recorded sync point predates those fixes. A future
+monorepo publication needs an unpublished crate version and an upstream
+maintainer's approval.

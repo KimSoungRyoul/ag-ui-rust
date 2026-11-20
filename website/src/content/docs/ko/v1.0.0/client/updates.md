@@ -88,8 +88,9 @@ native에서는 `Send + 'static`, wasm에서는 local callback을 허용합니�
 이후 유효한 원격 갱신을 받으면 typed 조회가 복구됩니다. 로컬 `set_state()`는 검증 성공 후 두 표현을 함께 바꿉니다.
 초기화·snapshot·승인 복구는 [Thread](/ag-ui-rust/ko/v1.0.0/client/thread/)를 참고하세요.
 
-Activity 메시지는 로컬 대화와 snapshot에 보존합니다. 서버로 보내는 `Thread` 요청의 메시지 목록에서는
-공식 클라이언트처럼 제외합니다. 저수준 `RemoteAgent::run_events`는 호출자가 준 요청을 그대로 전달합니다.
+Activity 메시지는 로컬 thread와 snapshot에 보존합니다. `Thread`, `RemoteAgent::run_events`,
+직접 HTTP 전송 모두 서버에 보내는 메시지 목록에서 activity를 제외합니다. Reasoning 메시지는
+원래 대화 순서대로 전송합니다.
 
 ## 한 stream의 여러 run
 
