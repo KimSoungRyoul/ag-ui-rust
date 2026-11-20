@@ -29,9 +29,9 @@ root = "sdks/community/rust"
 path = "crates/ag-ui/src"
 # The pull request head last reviewed, the git tree of `root/path` there, and
 # the git tree of `root` there.
-commit = "087ad84bce767984a34a2c9a9dbd6a2e91ef6abf"
+commit = "26c174d15f99cb8d3583288aebb46e6ecad7f8e7"
 tree = "6b9813f4d4e0ea88571b8d57dcf7718236c9cb82"
-root_tree = "44dcd2be9ea5a7fb6185da4fb82f854baf429b4d"
+root_tree = "8e0b0ff3bddf30308b30d32b2be2e2ff2c98280e"
 # The local commit `tree` was compared with. Its `crates/ag-ui/src` was
 # byte-identical to the copy's.
 local_commit = "77061a66aba60e9d387aac77b65dcf2f87f7d03c"

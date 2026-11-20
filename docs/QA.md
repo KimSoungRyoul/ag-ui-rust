@@ -19,6 +19,7 @@ These checks ran locally on macOS before registry publication.
 | AG-UI 1.0 corpus | The stream table covered 82 upstream and local cases. 80 matched directly and two recorded optional old-peer downgrades. All 135 valid schema fixtures survived whole. The invalid fixtures were checked against their errors or documented compatibility behavior. |
 | TypeScript interoperability in the community workspace | 31 current event types round-tripped from the checkout's TypeScript schema through Rust and back. Five retired thinking variants round-tripped through the compatibility codec. The published TypeScript HttpAgent 1.0.5 completed two runs against the Rust Axum endpoint and carried the first turn's messages into the second request. |
 | Packaging and dependencies | Cargo packaged and compiled both release archives together. The strict RustSec audit passed in both workspaces. |
+| Fresh Rust 1.85 consumer | An independent application resolved both packaged crates with a new lockfile, compiled and ran with the `http`, `axum`, `ag-ui-server` and `author` features. It created a Rust HTTP client, an Axum router, an A2UI painter and an author. |
 | Documentation | The site built 331 pages. Its verification script checked 330 document bodies, translations, navigation, examples, redirects and links to the bundled rustdoc. |
 
 Run the corpus with `cargo test --locked -p ag-ui --all-features --test conformance_1_0 --test fixtures_1_0 -- --nocapture`.
