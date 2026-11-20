@@ -19,8 +19,8 @@
 //! * **sources path** — every backticked path in a skill's `sources.md` exists.
 //! * **dependency block** — every `toml` block in a skill is one of the
 //!   README's, and every `ag-ui` / `ag-ui-a2ui` line in either takes the crate
-//!   from crates.io at `=<workspace version>`. The README's local-development
-//!   block, which uses `path`, is allowed in the README only.
+//!   from crates.io at the workspace version. Prereleases use an exact requirement.
+//!   Only the README may also show local-development `path` dependencies.
 //! * **retired crate name** — `e2e/` and `examples/` never name the crates that
 //!   were merged into `ag-ui`. Elsewhere `ag-ui-core` and friends are the
 //!   unrelated community SDK and are named on purpose; in those two directories
@@ -327,7 +327,11 @@ pub enum Local {
 /// Problems with the `ag-ui` / `ag-ui-a2ui` lines of a `toml` block, as a
 /// 0-based line offset into the block and a message.
 pub fn dependency_problems(block: &str, version: &str, local: Local) -> Vec<(usize, String)> {
-    let wanted = format!("={version}");
+    let wanted = if version.contains('-') {
+        format!("={version}")
+    } else {
+        version.to_owned()
+    };
     let mut problems = Vec::new();
     for (offset, line) in block.lines().enumerate() {
         let Some((key, value)) = line.split_once('=') else {
@@ -355,7 +359,7 @@ pub fn dependency_problems(block: &str, version: &str, local: Local) -> Vec<(usi
             continue;
         }
         match pinned {
-            Some(pinned) if pinned == wanted => {}
+            Some(pinned) if pinned == wanted || pinned.strip_prefix('=') == Some(version) => {}
             Some(pinned) => problems.push((
                 offset,
                 format!("pins `{key}` at \"{pinned}\"; the workspace is {version}, so write \"{wanted}\""),
@@ -610,7 +614,7 @@ x = 1
     }
 
     #[test]
-    fn registry_lines_must_pin_the_workspace_version_exactly() {
+    fn registry_lines_use_compatible_stable_versions_and_exact_prereleases() {
         let block = "\
 [dependencies]
 ag-ui = { version = \"=0.5.0-alpha.3\", features = [\"http\"] }
@@ -618,6 +622,13 @@ ag-ui-a2ui = \"=0.5.0-alpha.3\"
 axum = \"0.8\"
 tokio = { version = \"1\", features = [\"macros\"] }";
         assert!(dependency_problems(block, "0.5.0-alpha.3", Local::Refused).is_empty());
+
+        let stable = r#"ag-ui = { version = "1.0.0", features = ["http"] }"#;
+        assert!(dependency_problems(stable, "1.0.0", Local::Refused).is_empty());
+        assert_eq!(
+            dependency_problems(stable, "1.1.0", Local::Refused).len(),
+            1
+        );
 
         let stale = "\
 ag-ui = { version = \"=0.5.0-alpha.1\", features = [\"http\"] }

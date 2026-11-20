@@ -195,9 +195,11 @@ What cannot be had is a call drawn as one line **and** kept in order.
 - `Update::Messages` means messages may have *disappeared*. Redraw all of it.
 - `Update::State` carries the state by value, so a view can hold it after the run moved on.
 - `Update::Error` is not terminal.
-- `Update::Done` is where the input goes live again.
+- `Update::RunEnded` reports each run. Re-enable request input after `Update::Done`
+  and release the stream's borrow. Render persisted reasoning separately if the
+  transcript should only show conversational messages.
 
 ## Sources
 
-- <https://kimsoungryoul.github.io/ag-ui-rust/client/rendering/>
-- <https://kimsoungryoul.github.io/ag-ui-rust/client/updates/>
+- <https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/client/rendering/>
+- <https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/client/updates/>

@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { guideHref, guideVersions, hasGuidePage, publishedVersion, readGuideRoute } from '../src/guideVersions.mjs';
 
 const website = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(website, 'dist');
 const base = '/ag-ui-rust/';
 const checkApi = process.argv.includes('--with-api');
-const versions = ['v0.4.5', 'v0.5.0-alpha.1', 'v0.5.0-alpha.2', 'v0.5.0-alpha.3'];
-const latestVersion = versions.at(-1);
+const versions = guideVersions.map(({ id }) => id);
 const docsRoot = join(website, 'src/content/docs');
 
 async function files(directory) {
@@ -27,26 +27,34 @@ const pages = sources.filter((path) => /\.mdx?$/.test(path));
 const snippetHarness = await readFile(join(website, '../e2e/src/website.rs'), 'utf8');
 const pageSlugs = pages.map((source) => source.slice(docsRoot.length + 1));
 
-// Historical guide trees describe their tagged releases. The current doctest
-// harness compiles alpha.3 snippets against the current source tree.
-for (const locale of ['', 'ko/']) {
-  const paths = versions.map((version) =>
+// Each guide has one page set in both locales. Different versions may have
+// different guides, but the version switcher still needs a valid destination.
+const routesByVersion = new Map();
+for (const version of versions) {
+  const routes = ['', 'ko/'].map((locale) =>
     pageSlugs
       .filter((slug) => slug.startsWith(`${locale}${version}/`))
-      .map((slug) => slug.slice(`${locale}${version}/`.length))
+      .map((slug) => slug.slice(`${locale}${version}/`.length).replace(/(?:\/index)?\.mdx?$/, '/'))
       .sort()
   );
-  for (const pathSet of paths.slice(1)) {
-    assert.deepEqual(paths[0], pathSet, `Guide pages differ between versions: ${locale || 'en'}`);
+  assert.deepEqual(routes[0], routes[1], `English and Korean guides differ for ${version}`);
+  assert(routes[0].includes('start/'), `No start page for ${version}`);
+  routesByVersion.set(version, routes[0]);
+}
+for (const version of versions) {
+  for (const page of routesByVersion.get(publishedVersion)) {
+    assert.equal(
+      hasGuidePage(version, page), routesByVersion.get(version).includes(page),
+      `Version switcher page list differs from the guides: ${version}/${page}`
+    );
   }
-  assert(paths[0].length > 0, `No versioned guide pages for ${locale || 'en'}`);
 }
 
 for (const source of pages) {
   const slug = source.slice(docsRoot.length + 1);
   const markdown = await readFile(source, 'utf8');
   if (/^draft: true$/m.test(markdown)) continue;
-  if (slug.replace(/^ko\//, '').startsWith(`${latestVersion}/`) && /^```rust\b/m.test(markdown)) {
+  if (readGuideRoute(slug)?.version.id === publishedVersion && /^\s*```(?:rust|compile_fail)\b/m.test(markdown)) {
     assert(snippetHarness.includes(`"${slug}"`), `Rust snippets missing from doctest harness: ${slug}`);
   }
   const route = slug.replace(/(?:\/index)?\.mdx?$/, '');
@@ -58,13 +66,20 @@ for (const source of pages) {
     html.includes(`rel="canonical" href="https://kimsoungryoul.github.io${base}${route}/"`),
     `Wrong canonical URL: ${slug}`
   );
-  if (/^(?:ko\/)?v0\.(?:4\.5|5\.0-alpha\.[123])\//.test(route)) {
+  const guide = readGuideRoute(route);
+  if (guide) {
     assert(html.includes('aria-label="Documentation version"') || html.includes('aria-label="문서 버전"'),
       `Missing version navigation: ${slug}`);
-    const selectedVersion = route.match(/(?:^|\/)(v0\.(?:4\.5|5\.0-alpha\.[123]))\//)?.[1];
+    const selectedVersion = guide.version.id;
+    const locale = route.startsWith('ko/') ? 'ko/' : '';
+    for (const version of versions) {
+      const href = guideHref(base.slice(0, -1), locale, version, guide.page);
+      assert(html.split(`href="${href}"`).length >= 3, `Missing desktop or mobile version destination in ${slug}: ${href}`);
+    }
     const sidebar = html.slice(html.indexOf('id="starlight__sidebar"'), html.indexOf('</sl-sidebar-state-persist>'));
-    assert(sidebar.includes(`href="${base}${route.startsWith('ko/') ? 'ko/' : ''}${selectedVersion}/start/"`),
+    assert(sidebar.includes(`href="${base}${locale}${selectedVersion}/start/"`),
       `Missing current version in sidebar: ${slug}`);
+    assert(sidebar.includes(`href="${base}${route}/"`), `Guide missing from sidebar: ${slug}`);
     for (const otherVersion of versions.filter((version) => version !== selectedVersion)) {
       assert(!sidebar.includes(`/${otherVersion}/`), `Other version leaked into sidebar: ${slug}`);
     }
@@ -97,15 +112,15 @@ for (const source of pages) {
 }
 for (const locale of ['', 'ko/']) {
   const html = await readFile(join(dist, locale, 'index.html'), 'utf8');
-  assert(html.includes(`content="0;url=${base}${locale}${latestVersion}/start/"`), `Wrong home redirect: ${locale || 'root'}`);
+  assert(html.includes(`content="0;url=${base}${locale}${publishedVersion}/start/"`), `Wrong home redirect: ${locale || 'root'}`);
 
-  for (const slug of pageSlugs.filter((slug) => slug.startsWith(`${locale}${latestVersion}/`))) {
-    const route = slug.slice(`${locale}${latestVersion}/`.length).replace(/(?:\/index)?\.mdx?$/, '');
+  for (const slug of pageSlugs.filter((slug) => slug.startsWith(`${locale}${publishedVersion}/`))) {
+    const route = slug.slice(`${locale}${publishedVersion}/`.length).replace(/(?:\/index)?\.mdx?$/, '');
     const redirect = await readFile(join(dist, locale, route, 'index.html'), 'utf8');
     assert(
-      redirect.includes(`content="0;url=${base}${locale}${latestVersion}/${route}/"`),
+      redirect.includes(`content="0;url=${base}${locale}${publishedVersion}/${route}/"`),
       `Wrong legacy redirect: ${locale}${route}`
     );
   }
 }
-console.log(`Verified ${pages.length} document bodies, version parity, navigation, snippets and redirects.`);
+console.log(`Verified ${pages.length} document bodies, translation parity, navigation, snippets and redirects.`);

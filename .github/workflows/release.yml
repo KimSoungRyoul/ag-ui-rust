@@ -56,12 +56,10 @@ jobs:
       - run: cargo test --doc --workspace --all-features
       - run: cargo run --locked -p xtask -- drift-check --local
 
-      # ag-ui-a2ui's registry dry run needs this ag-ui version on crates.io, so
-      # only its package list is checked here. publish.yml dry-runs it later.
+      # Selecting both lets Cargo resolve the companion against the packaged
+      # SDK even before the SDK appears in the crates.io index.
       - name: package rehearsal
-        run: |
-          cargo publish --dry-run -p ag-ui
-          cargo package --list -p ag-ui-a2ui >/dev/null
+        run: cargo publish --locked --dry-run -p ag-ui -p ag-ui-a2ui
 
       # The note says how to publish, because the release exists before the
       # crates are on crates.io.
@@ -82,9 +80,8 @@ jobs:
           ## Publishing
 
           Verified on this commit: clippy, workspace tests, doctests, protocol drift,
-          ag-ui publish dry run, and the ag-ui-a2ui package list. The latter gets its
-          registry dry run after ag-ui is published, immediately before upload. Registry
-          publication requires a separate workflow dispatch from this exact tag:
+          and a publish dry run that built both packaged crates. Publish the verified
+          release from this exact tag using the trusted-publisher workflow:
 
           \`\`\`sh
           gh workflow run publish.yml --ref $TAG -f dry_run=true

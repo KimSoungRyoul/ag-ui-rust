@@ -5,8 +5,9 @@ description: "Use when running ag-ui-rust against a real model on Qwen Cloud (Al
 
 # Qwen Cloud with ag-ui-rust
 
-Docs: <https://kimsoungryoul.github.io/ag-ui-rust/> · this skill is written against
-workspace version **0.5.0-alpha.3**. If the repository disagrees with it, the repository is right
+Docs: <https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/start/>. This skill follows
+workspace version **1.0.0**. If the repository
+disagrees with it, the repository is right
 and the skill is stale — see `ag-ui-rust-update`.
 
 The SDK depends on no LLM crate. Everything here that talks to a model is `reqwest` and

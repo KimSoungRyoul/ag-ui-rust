@@ -70,10 +70,8 @@ jobs:
             exit 1
           fi
 
-      # The upstream copy of ag-ui (PR 2778, recorded in UPSTREAM.md) reserves
-      # the version it will publish first; taking that number here would
-      # collide with it. Offline: it reads the record, which the scheduled
-      # upstream-sync job keeps honest.
+      # UPSTREAM.md records any version explicitly reserved for a future
+      # upstream publication. The PR can also mirror an ordinary local release.
       - name: the version is not reserved by the upstream copy
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -113,15 +111,26 @@ jobs:
             esac
           }
 
+          pending=()
           for crate in ag-ui ag-ui-a2ui; do
             if published "$crate"; then
               echo "::notice title=Already published::$crate $VERSION is on crates.io; skipping"
-            elif [ "$DRY_RUN" != true ]; then
-              cargo publish -p "$crate"
-            elif [ "$crate" = ag-ui ] || published ag-ui; then
-              cargo publish --dry-run -p "$crate"
             else
-              cargo package --list -p "$crate" >/dev/null
-              echo "::notice title=Dry run::the ag-ui-a2ui registry check waits for ag-ui $VERSION"
+              pending+=("$crate")
             fi
           done
+
+          if (( ${#pending[@]} == 0 )); then
+            exit 0
+          fi
+          if [ "$DRY_RUN" = true ]; then
+            packages=()
+            for crate in "${pending[@]}"; do
+              packages+=(-p "$crate")
+            done
+            cargo publish --locked --dry-run "${packages[@]}"
+          else
+            for crate in "${pending[@]}"; do
+              cargo publish --locked -p "$crate"
+            done
+          fi

@@ -53,7 +53,9 @@ pub struct Record {
     pub tree: String,
     pub root_tree: String,
     pub local_commit: String,
-    /// Empty when nothing is reserved.
+    /// Version observed in the copy's Cargo manifest at the sync point.
+    pub declared_version: String,
+    /// Version explicitly set aside for publication by upstream, if any.
     pub reserved_version: String,
 }
 
@@ -67,6 +69,7 @@ const KEYS: &[&str] = &[
     "tree",
     "root_tree",
     "local_commit",
+    "declared_version",
     "reserved_version",
 ];
 
@@ -123,6 +126,7 @@ pub fn parse(text: &str) -> Result<Record, String> {
         tree: take("tree")?,
         root_tree: take("root_tree")?,
         local_commit: take("local_commit")?,
+        declared_version: take("declared_version")?,
         reserved_version: take("reserved_version")?,
     };
     for (key, sha) in [
@@ -175,12 +179,18 @@ pub fn run(args: Args) -> Result<u8, String> {
 /// Whether `version` may be published from here, and why.
 pub fn publish_guard(record: &Record, version: &str) -> (u8, String) {
     let version = version.trim().trim_start_matches('v');
-    if !record.reserved_version.is_empty() && version == record.reserved_version {
+    // Cargo's index treats versions differing only in build metadata as equal.
+    fn without_build(value: &str) -> &str {
+        value.split_once('+').map_or(value, |(number, _)| number)
+    }
+    if !record.reserved_version.is_empty()
+        && without_build(version) == without_build(&record.reserved_version)
+    {
         return (
             EXIT_MOVED,
             format!(
-                "ag-ui {version} is reserved: the upstream copy (PR {} on {}) declares it for its \
-                 own first release.\nPublishing it from here would take the number first, and \
+                "ag-ui {version} is reserved: the upstream copy (PR {} on {}) has set it aside for its \
+                 own release.\nPublishing it from here would take the number first, and \
                  crates.io has no undo. Release another version, or update `reserved_version` \
                  in {RECORD} once upstream has published or given it up.",
                 record.pull, record.repo
@@ -458,13 +468,10 @@ pub fn assess(record: &Record, upstream: &Upstream) -> Assessment {
         _ => {}
     }
     if let Some(version) = &upstream.version {
-        if *version != record.reserved_version {
+        if *version != record.declared_version {
             out.moved.push(format!(
-                "the copy declares ag-ui {version}; the record reserves {}",
-                match record.reserved_version.as_str() {
-                    "" => "nothing",
-                    reserved => reserved,
-                }
+                "the copy declares ag-ui {version}; the record has {}",
+                record.declared_version
             ));
         }
     }
@@ -522,10 +529,14 @@ pub fn render(
             record.root,
             short(&record.root_tree)
         ));
+        out.push_str(&format!(
+            "    {:<44}{}\n",
+            "ag-ui version", record.declared_version
+        ));
         if !record.reserved_version.is_empty() {
             out.push_str(&format!(
-                "    {:<44}{} (reserved: publish.yml refuses it here)\n",
-                "ag-ui version", record.reserved_version
+                "    {:<44}{}\n",
+                "reserved for upstream publication", record.reserved_version
             ));
         }
     } else {
@@ -619,7 +630,19 @@ mod tests {
     const OTHER: &str = "0123456789abcdef0123456789abcdef01234567";
 
     fn record() -> Record {
-        parse(include_str!("../../UPSTREAM.md")).unwrap()
+        Record {
+            repo: "ag-ui-protocol/ag-ui".into(),
+            pull: 2778,
+            head: "KimSoungRyoul/ag-ui:feat/rust-sdk-migration".into(),
+            root: "sdks/community/rust".into(),
+            path: "crates/ag-ui/src".into(),
+            commit: COMMIT.into(),
+            tree: TREE.into(),
+            root_tree: ROOT_TREE.into(),
+            local_commit: "520a724cccaedeaa89d7ca37d69307f9e9f36401".into(),
+            declared_version: "0.5.0".into(),
+            reserved_version: String::new(),
+        }
     }
 
     fn open() -> Upstream {
@@ -636,11 +659,11 @@ mod tests {
     /// The committed record is what the scheduled job reads; it must parse.
     #[test]
     fn the_committed_record_parses() {
-        let record = record();
+        let record = parse(include_str!("../../UPSTREAM.md")).unwrap();
         assert_eq!(record.pull, 2778);
         assert_eq!(record.root, "sdks/community/rust");
         assert_eq!(record.path, "crates/ag-ui/src");
-        assert_eq!(record.reserved_version, "0.5.0");
+        assert!(!record.declared_version.is_empty());
     }
 
     #[test]
@@ -648,13 +671,17 @@ mod tests {
         let text = include_str!("../../UPSTREAM.md");
         let typo = text.replace("root_tree =", "roottree =");
         assert!(parse(&typo).unwrap_err().contains("unknown key `roottree`"));
-        let gap = text.replace("reserved_version = \"0.5.0\"", "");
+        let gap: String = text
+            .lines()
+            .filter(|line| !line.starts_with("reserved_version = "))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             parse(&gap)
                 .unwrap_err()
                 .contains("`reserved_version` is missing")
         );
-        let short_sha = text.replace(TREE, "53421a1");
+        let short_sha = text.replace(&parse(text).unwrap().tree, "53421a1");
         assert!(
             parse(&short_sha)
                 .unwrap_err()
@@ -774,11 +801,15 @@ mod tests {
 
     #[test]
     fn the_publish_guard_refuses_only_the_reserved_version() {
-        let record = record();
+        let record = Record {
+            reserved_version: "0.5.0".into(),
+            ..record()
+        };
         let (exit, message) = publish_guard(&record, "0.5.0");
         assert_eq!(exit, EXIT_MOVED);
         assert!(message.contains("ag-ui 0.5.0 is reserved"), "{message}");
         assert_eq!(publish_guard(&record, "v0.5.0").0, EXIT_MOVED);
+        assert_eq!(publish_guard(&record, "0.5.0+sdk.1").0, EXIT_MOVED);
         assert_eq!(publish_guard(&record, "0.5.0-alpha.3").0, EXIT_OK);
         assert_eq!(publish_guard(&record, "0.5.1").0, EXIT_OK);
 

@@ -9,28 +9,29 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
 
 ## SKILL.md
 
-- `README.md` — the client dependency block, copied verbatim; the crates are on crates.io
-- `website/src/content/docs/v0.5.0-alpha.3/start/crates.md` — the feature costs and package
+- `README.md` — the client dependency block, copied verbatim; the release block is on crates.io and the checkout uses a path
+- `website/src/content/docs/v1.0.0/start/crates.md` — the feature costs and package
   naming
-- `website/src/content/docs/v0.5.0-alpha.3/client/thread.md` — `Thread`, the builder, the
+- `website/src/content/docs/v1.0.0/client/thread.md` — `Thread`, the builder, the
   constructor-side transport bound, typed state, answering a pause, snapshots and local
   cancellation
-- `website/src/content/docs/v0.5.0-alpha.3/client/updates.md` — every `Update` variant, the
+- `website/src/content/docs/v1.0.0/client/updates.md` — every `Update` variant, the
   four ways a run ends, why `RunEnd` is exhaustive and `Update` is not, `Success` alongside
   errors, the subagent lifecycle and registry
-- `website/src/content/docs/v0.5.0-alpha.3/client/rendering.md` — grouping by subagent
+- `website/src/content/docs/v1.0.0/client/rendering.md` — grouping by subagent
 - `crates/ag-ui/src/client/apply.rs` — `Subagent`, `SubagentStatus`, `SubagentChangeKind`
 - `crates/ag-ui/tests/client_subagents.rs` — the registry, attribution on messages, the
   continuation on resume, pinned
-- `website/src/content/docs/v0.5.0-alpha.3/client/transports.md` — the trait,
+- `website/src/content/docs/v1.0.0/client/transports.md` — the trait,
   `HttpTransport`'s two timeouts, `ReplayTransport`, `SseDecoder`, turning `http` off
-- `website/src/content/docs/v0.5.0-alpha.3/client/rendering.md` — arrival order
+- `website/src/content/docs/v1.0.0/client/rendering.md` — arrival order
+- `crates/ag-ui/src/client/thread/merge.rs` — merging two local conversations
 - `crates/ag-ui/src/client/thread/`, `crates/ag-ui/src/client/interrupts.rs`,
   `crates/ag-ui/src/client/transport/`, `crates/ag-ui/src/client/error.rs`
 
 ## references/rendering.md
 
-- `website/src/content/docs/v0.5.0-alpha.3/client/rendering.md`
+- `website/src/content/docs/v1.0.0/client/rendering.md`
 - `crates/ag-ui/src/client/apply.rs` — `MessageChangeKind` and what is materialised
 - `crates/ag-ui/src/client/chunks.rs` — the `*_CHUNK` normalizer
 - `examples/board-watch/tests/client.rs` — both renderings, pinned

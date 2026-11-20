@@ -11,34 +11,32 @@ This independent SDK provides protocol types, server emitters and client convers
 It is not affiliated with or endorsed by the AG-UI protocol organisation. The
 AG-UI 1.0 schema and event baseline are checked in CI.
 
-For `0.5.0-alpha.3`, use an exact prerelease requirement. The
-[0.5.0-alpha.3 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.5.0-alpha.3/start/)
-covers this API; the [0.4.5 guide](https://kimsoungryoul.github.io/ag-ui-rust/v0.4.5/start/)
-covers the previous stable version.
-Alpha.2 supersedes alpha.1 for fresh Rust 1.85 dependency resolution.
+See the [1.0.0 guide](https://kimsoungryoul.github.io/ag-ui-rust/v1.0.0/start/)
+for the Rust API and the [migration notes](https://github.com/KimSoungRyoul/ag-ui-rust/blob/v1.0.0/docs/migration-0.5.md#changes-in-100)
+for changes since 0.5.0-alpha.3.
 
 To host an agent behind axum:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.3", features = ["axum"] }
+ag-ui = { version = "1.0.0", features = ["axum"] }
 ```
 
 To consume an agent over HTTP:
 
 ```toml
 [dependencies]
-ag-ui = { version = "=0.5.0-alpha.3", features = ["http"] }
+ag-ui = { version = "1.0.0", features = ["http"] }
 ```
 
 For local source development, clone the repository and use
-`ag-ui = { path = "/absolute/path/to/ag-ui-rust/crates/ag-ui", features = ["http"] }`
-to test the same source.
+`ag-ui = { path = "../ag-ui-rust/crates/ag-ui", features = ["http"] }`
+to test that checkout (use `axum` for the server).
 
 ## What is in the box
 
 The crate root is the shared vocabulary — the types, their exact JSON representation, and
-the SSE framing that carries them. No runtime, no I/O, no async; that part compiles for
+optional SSE framing that carries them. No runtime, no I/O, no async; that part compiles for
 everyone, including `wasm32-unknown-unknown`.
 
 Everything past it is a feature, because most programs want one side of the protocol and
@@ -79,7 +77,7 @@ valid traffic.
 | Feature | Default | What it adds |
 | --- | --- | --- |
 | `sse` | yes | `SseFormatter` and `text/event-stream` framing. No extra dependencies. |
-| `verify` | yes | `server`'s ordering state machine. Off, the verifier is a zero-sized type whose checks compile away. |
+| `verify` | yes | `server`'s ordering state machine. Off, the internal ordering checks compile away. The public `EventVerifier` requires both `server` and `verify`. |
 | `server` | no | Host an agent: the `Agent` trait, typestate emitters, state deltas. Executor-agnostic — no tokio. |
 | `client` | no | Consume a remote agent, transport-agnostic. |
 | `http` | no | Adds the reqwest-backed transport to `client`. What most consumers want; leave it off for wasm. |
@@ -97,7 +95,7 @@ feature pulls in.
 | Crate | What it is |
 | --- | --- |
 | `ag-ui` | This crate: protocol types, wire encoding, and the server, client and axum runtimes behind features. |
-| `ag-ui-a2ui` | A2UI protocol types, validator, and authoring toolkit. A different protocol, usable with no AG-UI at all, which is why it is its own crate. |
+| `ag-ui-a2ui` | A2UI protocol types, validators, agent authoring, and optional adapters. A different protocol, usable with no AG-UI at all, which is why it is its own crate. |
 
 See the [repository](https://github.com/KimSoungRyoul/ag-ui-rust) for the design rationale.
 
@@ -105,12 +103,19 @@ See the [repository](https://github.com/KimSoungRyoul/ag-ui-rust) for the design
 
 MIT
 
-## Conversations in 0.5.0-alpha.3
+## Client conversations
 
 `HttpAgent::new(url)` configures a connection. `agent.thread(id)` creates a local
-conversation; `thread.send(text)?` returns a run stream. `collect_report().await`
-collects the terminal outcome and local diagnostics. `state()` returns a Result
+conversation; `thread.send(text)?` returns a run stream. `Update::RunEnded`
+reports each run. `Update::Done` reports the response stream's outcome.
+`collect_report().await` retains individual runs and diagnostics. Reasoning
+messages join the thread's history and travel back on later requests. A
+`MESSAGES_SNAPSHOT` replaces the conversation baseline. `state()` returns a Result
 for the current typed view; `raw_state()` always exposes current raw JSON.
+
+Use two local `Thread` values with the same conversation ID to run two requests
+at once, then `Thread::merge_messages_from` to reconcile messages. The app
+chooses how to reconcile state and settles pending work on each thread first.
 
 A subagent event scope records work executed by the application. Finish, fail or
 suspend it explicitly. Drop restores attribution without inventing success.
@@ -126,8 +131,12 @@ parts when forwarding multimodal results. See the
 ## Validate events from another runtime
 
 With `server` and `verify`, `EventVerifier` exposes the same ordering and
-attribution checks used by `RunContext`, without creating a transport queue.
-There is no no-op public verifier when `verify` is disabled.
+attribution checks used by `RunContext`, without creating a transport queue. For a run that outlives its HTTP response,
+`Runner::into_parts` separates the driver and events. `RunProgress` builds a
+prelude for a late subscriber. `Runner::continue_run` restores protocol state
+from sent events, and `EventVerifier::seed` or `replay` initializes ordering
+checks for externally emitted events. The host supplies storage, scheduling
+and recovery.
 
 ```rust
 # fn main() -> Result<(), Box<dyn std::error::Error>> {

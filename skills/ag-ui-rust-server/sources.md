@@ -9,19 +9,19 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
 
 ## SKILL.md
 
-- `README.md` — the server dependency block, copied verbatim; the crates are on crates.io
-- `website/src/content/docs/v0.5.0-alpha.3/start/crates.md` — which crate does what
-- `website/src/content/docs/v0.5.0-alpha.3/server/agent.md` — the trait, `RunContext`,
+- `README.md` — the server dependency block, copied verbatim; the release block is on crates.io and the checkout uses a path
+- `website/src/content/docs/v1.0.0/start/crates.md` — which crate does what
+- `website/src/content/docs/v1.0.0/server/agent.md` — the trait, `RunContext`,
   `RunOutcome`, steps
-- `website/src/content/docs/v0.5.0-alpha.3/server/text.md` — `say`, `assistant_message`, the
+- `website/src/content/docs/v1.0.0/server/text.md` — `say`, `assistant_message`, the
   RAII handles, the synchronous emit path, the `compile_fail` guarantee
-- `website/src/content/docs/v0.5.0-alpha.3/server/tools.md` — the two endings of a call,
+- `website/src/content/docs/v1.0.0/server/tools.md` — the two endings of a call,
   streamed args, capability-list semantics, parallel calls
-- `website/src/content/docs/v0.5.0-alpha.3/server/state.md` — `update_state` and the
+- `website/src/content/docs/v1.0.0/server/state.md` — `update_state` and the
   snapshot/delta choice
-- `website/src/content/docs/v0.5.0-alpha.3/server/axum.md` — `route_agui`, `AgentEndpoint`,
+- `website/src/content/docs/v1.0.0/server/axum.md` — `route_agui`, `AgentEndpoint`,
   the status codes
-- `website/src/content/docs/v0.5.0-alpha.3/server/subagents.md` — the subagent scope,
+- `website/src/content/docs/v1.0.0/server/subagents.md` — the subagent scope,
   attribution by the sink, agents as tools, suspension, concurrency by hand,
   `SubagentVisibility`
 - `crates/ag-ui/src/server/agent.rs`, `crates/ag-ui/src/server/context.rs`,
@@ -30,16 +30,18 @@ compiled by `e2e/src/website.rs`. This skill's own blocks are compiled the same 
 - `crates/ag-ui/tests/server_subagents.rs`, `crates/ag-ui/tests/server_transformers.rs` —
   what a scope emits and what each visibility mode strips, pinned
 - `crates/ag-ui/src/axum/router.rs`
+- `crates/ag-ui/src/server/run.rs`, `crates/ag-ui/src/server/progress.rs` — long-lived runs and preludes
+- `crates/ag-ui-a2ui/src/lib.rs`, `crates/ag-ui-a2ui/src/adapters/agui/envelope.rs` — A2UI agent and transport boundaries
 
 ## references/state-and-interrupts.md
 
-- `website/src/content/docs/v0.5.0-alpha.3/server/interrupts.md` — the round trip,
+- `website/src/content/docs/v1.0.0/server/interrupts.md` — the round trip,
   `Interrupt`'s fields, the multi-interrupt failure mode
-- `website/src/content/docs/v0.5.0-alpha.3/server/errors.md` — the error variants and codes,
-  the eight verifier rules, cancellation
-- `website/src/content/docs/v0.5.0-alpha.3/server/subagents.md` — an interrupt raised inside
+- `website/src/content/docs/v1.0.0/server/errors.md` — the error variants and codes,
+  the verifier rules, cancellation
+- `website/src/content/docs/v1.0.0/server/subagents.md` — an interrupt raised inside
   a subagent, and the continuation on resume
-- `website/src/content/docs/v0.5.0-alpha.3/server/state.md`
+- `website/src/content/docs/v1.0.0/server/state.md`
 - `crates/ag-ui/src/server/verify.rs`, `crates/ag-ui/src/server/error.rs`,
   `crates/ag-ui/src/server/cancel.rs`
 - `e2e/tests/human_in_the_loop.rs` — the multi-interrupt case, pinned
